@@ -145,6 +145,9 @@ export const defaults = {
     // Language is not a property of TypeScript. A migration's column default and a contract's
     // description reach a reader exactly like a comment does.
     extensions: ["tsx?", "[cm]?js", "mjs", "md", "sql", "ya?ml", "json"],
+    // The whole repository. A language rule is not scoped to where decisions are cited.
+    roots: ["."],
+    exclude: ["(^|/)node_modules(/|$)", "(^|/)dist(/|$)", "(^|/)\\.git(/|$)", "(^|/)coverage(/|$)", "pnpm-lock\\.yaml$"],
     allowNonEnglish: [],
     translationPairs: [],
   },

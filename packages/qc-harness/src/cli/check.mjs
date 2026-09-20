@@ -106,18 +106,22 @@ async function citableFiles(roots, root) {
 }
 
 /** Every file under the citable roots whose extension matches, nothing skipped but build output. */
-async function filesMatching(config, pattern) {
+async function filesMatching(config, pattern, language) {
   const rel = relativeTo(config.root);
+  const skip = new RegExp(language.exclude.join("|"));
   const files = [];
   async function walk(dir) {
     for (const entry of await list(dir, { withFileTypes: true }).catch(() => [])) {
       const full = path.join(dir, entry.name);
-      if (/node_modules|\/dist\//.test(full)) continue;
+      if (skip.test(rel(full))) continue;
       if (entry.isDirectory()) await walk(full);
       else if (pattern.test(entry.name)) files.push({ path: rel(full), contents: await readFile(full, "utf8") });
     }
   }
-  for (const root of config.paths.citable) await walk(path.join(config.root, root));
+  // The whole repository, not the citable roots: those name where decisions are cited, which has
+  // nothing to do with where a language rule applies. Contracts and infrastructure are not citable
+  // and were invisible because of it.
+  for (const root of language.roots) await walk(path.join(config.root, root));
   return files;
 }
 
@@ -505,7 +509,7 @@ export async function runCheck(config, only) {
     // Its own file set. The citation and source walkers were built for other questions and each
     // skips something this one needs -- tests, documents, migrations, contracts. Language is not
     // a property of TypeScript: a Japanese column default in .sql reaches a reader just the same.
-    const everything = await filesMatching(config, new RegExp(`\\.(${config.language.extensions.join("|")})$`));
+    const everything = await filesMatching(config, new RegExp(`\\.(${config.language.extensions.join("|")})$`), config.language);
     problems.push(...checkEnglishSource(everything, config.language));
     problems.push(...checkTranslationPairs(everything.map((file) => file.path), config.language.translationPairs));
     lines.push("OK  english      comments, docs and rules are English; another language is declared data");
