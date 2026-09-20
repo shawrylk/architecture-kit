@@ -23,7 +23,9 @@ function emitted(blocks) {
 }
 
 test("every rule the config enables reaches the preset", () => {
-  const blocks = preset({ config: config() });
+  // Against an all-on config: a policy rule ships off, and this asks whether a rule *can* reach
+  // the preset, not which ones are in force by default.
+  const blocks = preset({ config: config({ rules: Object.fromEntries(Object.keys(allRules).map((n) => [n, true])) }) });
   const on = emitted(blocks);
   for (const name of Object.keys(allRules)) {
     assert.ok(on.has(`qc/${name}`), `qc/${name} never reaches the lint config`);

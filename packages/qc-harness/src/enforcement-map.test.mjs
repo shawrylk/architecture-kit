@@ -12,15 +12,29 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 test("the template the kit ships passes the kit's own enforcement-map gate", async () => {
   const template = await readFile(path.join(here, "../templates/docs/enforcement.md"), "utf8");
-  const filled = withEnforcementMap(template, defaults);
+  const filled = withEnforcementMap(template, allOn);
   const problems = checkEnforcementMap(filled, Object.keys(rules), Object.keys(defaults.gates));
   assert.deepEqual(problems, []);
 });
 
+// Against an all-on config: a policy gate ships off, and the map states what is in force, so the
+// two have to be asked separately -- does every check *reach* the map when enabled.
+const allOn = {
+  ...defaults,
+  gates: Object.fromEntries(Object.keys(defaults.gates).map((name) => [name, true])),
+  rules: Object.fromEntries(Object.keys(rules).map((name) => [name, true])),
+};
+
 test("a rule the kit adds reaches the map without anyone editing the template", () => {
-  const map = enforcementMap(defaults);
+  const map = enforcementMap(allOn);
   for (const name of Object.keys(rules)) assert.ok(map.includes(`qc/${name}`), name);
   for (const name of Object.keys(defaults.gates)) assert.ok(map.includes(`(${name})`), name);
+});
+
+test("a gate the kit ships off is not in the map, because it is not in force", () => {
+  const map = enforcementMap(defaults);
+  assert.ok(!map.includes("(english-source)"));
+  assert.ok(map.includes("(citations)"));
 });
 
 test("a switched-off check is not listed, because it is not in force", () => {

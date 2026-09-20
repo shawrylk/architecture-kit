@@ -226,9 +226,12 @@ export const defaults = {
     "test-mirror": true,
     "enforcement-map": true,
     "comment-style": true,
-    "config-floor": true,
-    "english-source": true,
-    "adr-format": true,
+    // Policy gates: each needs a repository to say what its policy *is* -- which language, which
+    // paths, which ADR sections, which opt-outs are legitimate. Shipping them on would red every
+    // repository the moment it upgrades the harness, which is how a gate bends the work it judges.
+    "config-floor": false,
+    "english-source": false,
+    "adr-format": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and
@@ -238,7 +241,7 @@ export const defaults = {
 
   rules: {
     "no-comment-paragraph": true,
-    "name-the-pattern": true,
+    "name-the-pattern": false,
     "no-promise-then": true,
     "no-number-in-comment": true,
     "no-cross-feature-internals": true,

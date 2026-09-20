@@ -24,7 +24,6 @@ Read it as an index; the reasoning is under the headings that follow.
 |---|---|
 | An idempotency key comes from a durable id, never the clock or fresh randomness | `qc/durable-idempotency-key` |
 | An external service's SDK belongs behind an adapter, or the composition root that selects a provider | `qc/external-service-only-in-adapter` |
-| A comment names a standard pattern and stops, it never re-teaches one | `qc/name-the-pattern` |
 | A comment is one line of why, never a paragraph, a banner or code | `qc/no-comment-paragraph` |
 | A feature exposes only its public file to other features | `qc/no-cross-feature-internals` |
 | No numeric literal or quantity threshold in a comment; cite the registry instead | `qc/no-number-in-comment` |
@@ -38,11 +37,8 @@ Read it as an index; the reasoning is under the headings that follow.
 | An exported async function takes a cancellation token last | `qc/signal-last-param` |
 | Storage imports belong in the resource block | `qc/storage-only-in-resource` |
 | Every business table carries the tenant column | `qc/tenant-scoped-table` |
-| Every decision record carries its cost and the alternatives it rejected, not just its claim | `qc check` (adr-format) |
 | Every cited id and doc path resolves, and nothing references another repository | `qc check` (citations) |
 | A comment under infra/ is one line of why, never a paragraph, a banner or code | `qc check` (comment-style) |
-| A check the kit ships on is switched off only by naming the decision that says why | `qc check` (config-floor) |
-| Comments, docs and rules are English; another language is data, declared beside its English variant | `qc check` (english-source) |
 | A repository's own gates each ship a case that must fail | `qc check` (gate-tests) |
 
 <!-- /generated -->
