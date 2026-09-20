@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkFeatureCommands } from "./feature-cli.mjs";
+import { checkFeatureCommands, governedFeatures } from "./feature-cli.mjs";
 
 const FEATURE = "backend/src/features/progress";
 
@@ -160,4 +160,13 @@ test("the key a command entry names its workflow with comes from options", () =>
   ];
   const found = [{ feature: FEATURE, files: ["cli.ts", "index.ts", "slices/create-entry.ts"] }];
   assert.deepEqual(checkFeatureCommands(found, files, { drives: "runs" }), []);
+});
+
+test("the governed count is the features the roots cover, not every feature in the tree", () => {
+  const found = [
+    { feature: "backend/src/features/progress", files: [] },
+    { feature: "frontend/src/features/progress", files: [] },
+  ];
+  assert.equal(governedFeatures(found, { roots: ["backend/src/features"] }), 1);
+  assert.equal(governedFeatures(found, {}), 2);
 });

@@ -17,7 +17,7 @@ import { checkClaimedRequirements } from "../gates/claimed-requirements.mjs";
 import { allowedPublicRoutes, checkPublicRoutes, declaredPublicRoutes } from "../gates/public-routes.mjs";
 import { calledInternalRoutes, checkInternalRoutes, declaredInternalRoutes } from "../gates/internal-routes.mjs";
 import { checkHeadlessPipelines } from "../gates/headless-sagas.mjs";
-import { checkFeatureCommands } from "../gates/feature-cli.mjs";
+import { checkFeatureCommands, governedFeatures } from "../gates/feature-cli.mjs";
 import { checkSagaTests, declaredSagas } from "../gates/saga-tests.mjs";
 import { checkGatesAreTested } from "../gates/gate-tests.mjs";
 import { checkAuditAppendOnly } from "../gates/audit-append-only.mjs";
@@ -399,7 +399,7 @@ export async function runCheck(config, only) {
         tests: relativeContents.filter((file) => TEST_FILE.test(file.path)),
       }),
     );
-    lines.push(`OK  commands     ${relativeFeatures.length} feature(s) drivable headless through \`qc run\``);
+    lines.push(`OK  commands     ${governedFeatures(relativeFeatures, { roots: config.cli.roots })} feature(s) drivable headless through \`qc run\``);
   }
   if (!rootless) lines.push(`OK  structure    ${features.length} feature folder(s)`);
 

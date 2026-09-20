@@ -86,6 +86,16 @@ export function commandedSagas(contents, options = {}) {
  * @returns {{path?: string, feature?: string, rule: string, detail: string}[]}
  */
 export function checkFeatureCommands(features, contents, options = {}) {
+  return check(features, contents, options).problems;
+}
+
+/** The problems, and how many features the roots actually cover — a summary line must not overcount. */
+export function governedFeatures(features, options = {}) {
+  const roots = options.roots ?? [];
+  return features.filter((feature) => roots.length === 0 || roots.some((root) => feature.feature.includes(root))).length;
+}
+
+function check(features, contents, options) {
   const block = names(options.block ?? DEFAULT_BLOCK, "block")[0];
   const roots = options.roots ?? [];
   const viewModules = options.viewModules ?? DEFAULT_VIEW_MODULES;
@@ -102,7 +112,8 @@ export function checkFeatureCommands(features, contents, options = {}) {
   const publishes = new RegExp(`\\bfrom\\s+["']\\.\\/${escape(block)}\\.(?:[cm]?[jt]sx?)["']`);
 
   const problems = [];
-  for (const found of blocksOf(features, contents, block, roots)) {
+  const governed = blocksOf(features, contents, block, roots);
+  for (const found of governed) {
     if (found.path === undefined) {
       problems.push({
         feature: found.feature,
@@ -183,5 +194,5 @@ export function checkFeatureCommands(features, contents, options = {}) {
       }
     }
   }
-  return problems;
+  return { problems, governed: governed.length };
 }
