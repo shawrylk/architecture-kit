@@ -357,3 +357,24 @@ test("a slice feature with deeply nested components (> depth 3) fails", () => {
   assert.equal(problems[0].detail, "components/a/b/c.tsx");
 });
 
+
+test("a cli block at a slice's root is allowed without being owed", () => {
+  const feature = [{ feature: "backend/src/features/progress", files: ["index.ts", "trigger.ts", "schema.ts", "cli.ts", "slices/entries.ts"] }];
+  assert.deepEqual(checkFeatureAnatomy(feature), []);
+});
+
+test("a feature carrying no cli block is still a complete slice", () => {
+  const feature = [{ feature: "backend/src/features/progress", files: ["index.ts", "trigger.ts", "schema.ts", "slices/entries.ts"] }];
+  assert.deepEqual(checkFeatureAnatomy(feature), []);
+});
+
+test("a root block that is neither required nor optional is still unknown", () => {
+  const feature = [{ feature: "backend/src/features/progress", files: ["index.ts", "trigger.ts", "schema.ts", "helpers.ts", "slices/entries.ts"] }];
+  const problems = checkFeatureAnatomy(feature);
+  assert.deepEqual(problems.map((problem) => problem.rule), ["unknown-block"]);
+});
+
+test("the optional roots come from config, so a repository may name its own", () => {
+  const feature = [{ feature: "a/features/pins", files: ["index.ts", "trigger.ts", "schema.ts", "command.ts", "slices/x.ts"] }];
+  assert.deepEqual(checkFeatureAnatomy(feature, { slice: { optional: ["command"] } }), []);
+});

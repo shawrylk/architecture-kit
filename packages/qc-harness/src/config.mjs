@@ -230,6 +230,8 @@ export const defaults = {
     // Bounded vertical slices.
     slice: {
       required: ["index.ts", "schema.ts", "trigger.ts"],
+      // Allowed at the root without being owed: `cli` is the headless entrypoint feature-cli reads.
+      optional: ["cli.ts"],
       sliceDir: "slices",
       sharedDir: "shared",
       sharedFiles: ["types.ts", "queries.ts", "guards.ts", "runner.ts", "components.ts"],
