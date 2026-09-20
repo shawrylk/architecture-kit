@@ -1,0 +1,51 @@
+name: ci
+
+# A push to a pull request branch fires both events, which ran every gate twice.
+on:
+  pull_request:
+  push: { branches: [main] }
+  merge_group:
+
+# A superseded push stops; a merge queue entry never cancels, since its result is the merge.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
+
+jobs:
+  gates:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      # Every rule, every gate, every config knob — each with a case that must fail.
+      - run: pnpm test
+
+      # The kit must still be able to set up a repository from nothing.
+      - name: a fresh repository reaches a green check
+        run: |
+          set -euo pipefail
+          workdir=$(mktemp -d)
+          cd "$workdir"
+          git init -q
+          echo '{"name":"smoke","private":true,"type":"module"}' > package.json
+          node "$GITHUB_WORKSPACE/packages/qc-harness/src/cli/qc.mjs" init
+          node "$GITHUB_WORKSPACE/packages/qc-harness/src/cli/qc.mjs" feature orders
+          node "$GITHUB_WORKSPACE/packages/qc-harness/src/cli/qc.mjs" check
+
+      # The kit is bound by the kit. A rule it ships and cannot itself satisfy is not a rule.
+      - name: the kit passes its own gates
+        run: node packages/qc-harness/src/cli/qc.mjs check
+
+      - name: the hooks and the lockfile agree
+        run: node packages/qc-harness/src/cli/qc.mjs doctor

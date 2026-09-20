@@ -1,0 +1,15 @@
+{
+  "threshold": 2,
+  "minLines": 10,
+  "minTokens": 75,
+  "reporters": ["console"],
+  "ignore": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/*.test.*",
+    "**/*.generated.*",
+    "**/fixtures/**"
+  ],
+  "format": ["typescript", "tsx"],
+  "absolute": false
+}

@@ -1,0 +1,114 @@
+{
+  "note": "The one home for a number a quality gate enforces. Docs carry a token, never a figure; every eslint config, the coverage config and CI import this file rather than restating it. Loosening a threshold is one edit here, visible in one diff.",
+  "updated": "replace with the date you adopted this",
+  "policy": {
+    "loosening": "Raising a limit or lowering coverage needs the same review as a spec change: the diff on this file is the record. A per-file override belongs in the config that needs it, with a comment naming why, never here.",
+    "match": "A threshold has no distinctive spelling the way a version number does, so each gate lists the phrases a page or a config would use when stating it. scripts/check.mjs reports a digit beside one of them as a literal. Add a phrase when a new wording appears; the phrases are the whole reason the literal check can exist.",
+    "notThresholds": "A performance budget is not a quality gate. Latency, memory and render budgets live in docs/performance.md, because they are measured per surface rather than enforced repository-wide."
+  },
+  "gates": {
+    "coverage": {
+      "label": "Coverage on new code",
+      "value": 70,
+      "unit": "percent",
+      "comparator": "min",
+      "enforcedBy": "vitest --coverage, thresholds read from this file",
+      "match": [
+        "coverage on new code",
+        "coverage threshold"
+      ]
+    },
+    "cognitive": {
+      "label": "Cognitive complexity per function",
+      "value": 12,
+      "unit": "count",
+      "comparator": "max",
+      "enforcedBy": "eslint sonarjs/cognitive-complexity",
+      "match": [
+        "cognitive complexity"
+      ]
+    },
+    "funclength": {
+      "label": "Function length",
+      "value": 50,
+      "unit": "lines",
+      "comparator": "max",
+      "enforcedBy": "eslint max-lines-per-function",
+      "match": [
+        "function length",
+        "max-lines-per-function",
+        "lines per function"
+      ]
+    },
+    "filelength": {
+      "label": "File length",
+      "value": 500,
+      "unit": "lines",
+      "comparator": "max",
+      "enforcedBy": "eslint max-lines",
+      "note": "Code lines: blanks and comments do not count, so a file is never shortened by deleting the reasoning. A shorter target was reviewed and declined on evidence \u2014 the anatomy was applied repo-wide first, moving every reused step into fragment.ts and every invariant into record.ts, and it moved the longest files by tens of lines while leaving the same count above 250. What is left is features that own several tables, and only a feature split shortens those; some of those splits would put a write guard across a feature boundary, which is a worse trade than the number. docs/enforcement.md. Never lower this gate ahead of the work it demands: a gate that lands first blocks only whoever is doing that work.",
+      "match": [
+        "file length",
+        "max-lines",
+        "lines per file"
+      ]
+    },
+    "nesting": {
+      "label": "Nesting depth",
+      "value": 3,
+      "unit": "count",
+      "comparator": "max",
+      "enforcedBy": "eslint max-depth",
+      "match": [
+        "nesting depth",
+        "max-depth"
+      ]
+    },
+    "duplication": {
+      "label": "Duplication",
+      "value": 2,
+      "unit": "percent",
+      "comparator": "max",
+      "enforcedBy": "jscpd, threshold read from this file",
+      "match": [
+        "duplication"
+      ]
+    },
+    "maxwarnings": {
+      "label": "ESLint warnings tolerated",
+      "value": 0,
+      "unit": "count",
+      "comparator": "max",
+      "enforcedBy": "eslint --max-warnings, value read from this file",
+      "match": [
+        "max-warnings",
+        "eslint warning",
+        "warnings tolerated"
+      ]
+    },
+    "axeviolations": {
+      "label": "Accessibility violations tolerated per route",
+      "value": 0,
+      "unit": "count",
+      "comparator": "max",
+      "enforcedBy": "@axe-core/playwright over wcag2a, wcag2aa, wcag21aa and wcag22aa",
+      "match": [
+        "accessibility violation",
+        "axe violation",
+        "violations tolerated"
+      ]
+    },
+    "touchtarget": {
+      "label": "Touch target on site-tablet flows",
+      "value": 44,
+      "unit": "px",
+      "comparator": "min",
+      "enforcedBy": "asserted in the Playwright and Maestro suites; no linter can measure a rendered box",
+      "match": [
+        "touch target",
+        "tap target",
+        "target size"
+      ]
+    }
+  }
+}

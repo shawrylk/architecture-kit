@@ -1,0 +1,80 @@
+{
+  "name": "architecture-harness",
+  "version": "0.2.1",
+  "type": "module",
+  "description": "Architecture gates, lint rules and scaffolding for the bounded-vertical-slice architecture",
+  "license": "MIT",
+  "author": "shawrylk",
+  "homepage": "https://github.com/shawrylk/architecture-kit#readme",
+  "bugs": {
+    "url": "https://github.com/shawrylk/architecture-kit/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shawrylk/architecture-kit.git",
+    "directory": "packages/qc-harness"
+  },
+  "keywords": [
+    "architecture",
+    "eslint-plugin",
+    "vertical-slice",
+    "hexagonal",
+    "adr",
+    "multi-tenant",
+    "code-quality",
+    "claude-code",
+    "ai-agents"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "qc": "./src/cli/qc.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./eslint": "./src/eslint/index.mjs",
+    "./preset": "./src/eslint/preset.mjs",
+    "./config": "./src/config.mjs",
+    "./gates/*": "./src/gates/*.mjs"
+  },
+  "files": [
+    "src",
+    "templates",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\""
+  },
+  "peerDependencies": {
+    "eslint": ">=9",
+    "@typescript-eslint/eslint-plugin": ">=8",
+    "@typescript-eslint/parser": ">=8",
+    "eslint-plugin-boundaries": ">=5",
+    "eslint-plugin-sonarjs": ">=3"
+  },
+  "peerDependenciesMeta": {
+    "@typescript-eslint/eslint-plugin": {
+      "optional": true
+    },
+    "@typescript-eslint/parser": {
+      "optional": true
+    },
+    "eslint-plugin-boundaries": {
+      "optional": true
+    },
+    "eslint-plugin-sonarjs": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "eslint": "^9",
+    "@typescript-eslint/eslint-plugin": "^8",
+    "@typescript-eslint/parser": "^8",
+    "eslint-plugin-boundaries": "^5",
+    "eslint-plugin-sonarjs": "^3"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "architecture-kit",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "pnpm --filter architecture-harness test"
+  }
+}

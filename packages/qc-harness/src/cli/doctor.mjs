@@ -1,0 +1,135 @@
+// The harness runs from two places at once: the plugin's hooks execute a checkout of this kit,
+// while `pnpm check` and CI execute the copy the lockfile pins. When those disagree, the hooks
+// judge a repository by a rulebook it was never built against, and every failure names the
+// repository's own files -- so the obvious reading is that the repository is broken. It is not.
+//
+// This names the disagreement instead, which is the only cheap moment to catch it.
+
+import { execFile } from "node:child_process";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+/** @returns the gate names a harness copy ships, or null when there is no such copy. */
+export function gateNames(harnessRoot, read = readdirSync) {
+  let entries;
+  try {
+    entries = read(path.join(harnessRoot, "src", "gates"));
+  } catch {
+    return null;
+  }
+  return entries
+    .filter((name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs"))
+    .map((name) => name.replace(/\.mjs$/, ""))
+    .sort();
+}
+
+export function versionOf(harnessRoot) {
+  const file = path.join(harnessRoot, "package.json");
+  if (!existsSync(file)) return null;
+  return JSON.parse(readFileSync(file, "utf8")).version ?? null;
+}
+
+/**
+ * The decision, as data. Direction is the whole point: a plugin copy *behind* the lockfile judges
+ * a repository by a rulebook it was never built against, and its failures name the repository's
+ * own files -- that verdict is worthless and has to stop the turn. A copy *ahead* is what every
+ * day of developing this kit looks like; it is merely stricter, and anything it reports is a real
+ * finding to act on. Blocking on that direction would make the kit unable to grow.
+ * @returns null when the two agree, else a report carrying `blocking`.
+ */
+export function drift(installed, plugin) {
+  if (!plugin || !installed) return null;
+  const missing = installed.gates.filter((name) => !plugin.gates.includes(name));
+  const extra = plugin.gates.filter((name) => !installed.gates.includes(name));
+  if (missing.length === 0 && extra.length === 0 && installed.version === plugin.version) return null;
+  return {
+    missing,
+    extra,
+    blocking: missing.length > 0,
+    installedVersion: installed.version,
+    pluginVersion: plugin.version,
+  };
+}
+
+export function driftReport(found, pluginRoot, checkoutRoot = pluginRoot) {
+  const label = found.blocking ? "FAIL  harness     " : "WARN  harness     ";
+  const lines = [
+    `${label} the hooks and the lockfile run different harnesses`,
+    `      installed    ${found.installedVersion ?? "?"} — what \`pnpm check\` and CI enforce`,
+    `      plugin       ${found.pluginVersion ?? "?"} — what the agent hooks enforce, from ${pluginRoot}`,
+  ];
+  if (found.missing.length > 0) {
+    lines.push(`      the plugin copy is missing: ${found.missing.join(", ")}`);
+    lines.push(`      so its \`qc check\` reports unknown-check for rules your docs correctly list`);
+    lines.push(`      fix the checkout, never the repository: git -C ${checkoutRoot} log --oneline -1`);
+  }
+  if (found.extra.length > 0) {
+    lines.push(`      the plugin copy adds: ${found.extra.join(", ")}`);
+    lines.push(`      it is ahead, not stale — anything it reports is real. Bump the lockfile to ship it.`);
+  }
+  return lines.join("\n");
+}
+
+/** @returns the branch position of a checkout against its own remote, or null when unavailable. */
+async function behindMain(root) {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-list", "--left-right", "--count", "origin/HEAD...HEAD"], {
+      cwd: root,
+    });
+    const [behind, ahead] = stdout.trim().split(/\s+/).map(Number);
+    return { behind, ahead };
+  } catch {
+    return null;
+  }
+}
+
+function pluginHarnessRoot() {
+  const root = process.env.CLAUDE_PLUGIN_ROOT;
+  if (!root) return null;
+  const harness = path.join(root, "packages", "qc-harness");
+  return existsSync(harness) ? harness : null;
+}
+
+function installedHarnessRoot(configRoot) {
+  const dir = path.join(configRoot, "node_modules", "architecture-harness");
+  return existsSync(dir) ? dir : null;
+}
+
+export async function runDoctor(config) {
+  const installedRoot = installedHarnessRoot(config.root);
+  const pluginRoot = pluginHarnessRoot();
+
+  if (!installedRoot) {
+    console.log("SKIP  harness      no architecture-harness in node_modules — nothing to compare");
+    return 0;
+  }
+  const installed = { gates: gateNames(installedRoot), version: versionOf(installedRoot) };
+  console.log(`OK  installed    architecture-harness ${installed.version} — ${installed.gates.length} gate(s)`);
+
+  if (!pluginRoot) {
+    console.log("SKIP  plugin       CLAUDE_PLUGIN_ROOT is unset — run this from an agent session to compare");
+    return 0;
+  }
+  const plugin = { gates: gateNames(pluginRoot), version: versionOf(pluginRoot) };
+  const checkoutRoot = path.resolve(pluginRoot, "..", "..");
+  const position = await behindMain(checkoutRoot);
+  const found = drift(installed, plugin);
+  if (!found) {
+    console.log(`OK  plugin       the same ${plugin.gates.length} gate(s) as the lockfile pins`);
+    return 0;
+  }
+  const report = driftReport(found, pluginRoot, checkoutRoot);
+  const note =
+    position && position.behind > 0
+      ? `\n      that checkout is ${position.behind} commit(s) behind its origin, ${position.ahead} ahead`
+      : "";
+  if (!found.blocking) {
+    console.log(`${report}${note}`);
+    return 0;
+  }
+  console.error(`${report}${note}`);
+  return 1;
+}

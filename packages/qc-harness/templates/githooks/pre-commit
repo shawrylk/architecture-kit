@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# A human is bound by exactly what binds an agent.
+# Fast tier only: staged-file lint, types, and each touched feature's own structure. The
+# repository-wide gates (citations, tenant predicate, route agreement...) run once per push
+# instead of once per commit — see the pre-push hook.
+set -euo pipefail
+# Runs before the extension filter below: a work order's own branch is checked regardless of
+# what kind of file it touches, so a commit of .tf/.yml/.md files is covered too.
+npx qc work-order-check || exit 1
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|mjs)$' || true)
+[ -z "$STAGED" ] && exit 0
+# `--no-warn-ignored`: a staged file the config ignores is a decision, not a finding, and
+# without it a generated file turns "I ignored that" into a warning that fails the gate.
+npx eslint $STAGED --max-warnings 0 --no-warn-ignored
+npx tsc -b --pretty false
+for file in $STAGED; do
+  npx qc check "$file"
+done

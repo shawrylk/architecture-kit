@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# A tool is not an author. Checked here because a trailer is added at commit time and nowhere else.
+set -euo pipefail
+npx qc commit-msg "$1" || exit 1

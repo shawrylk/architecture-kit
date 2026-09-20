@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "architecture-kit",
+  "description": "The architecture kit: decisions, gates, lint rules and agent harness for bounded vertical slices",
+  "owner": {
+    "name": "architecture-kit"
+  },
+  "plugins": [
+    {
+      "name": "architecture",
+      "description": "Bounded vertical slice architecture: the decision register, the gates that enforce it, and the hooks that hold an agent to it",
+      "version": "0.1.0",
+      "category": "workflow",
+      "source": "./"
+    }
+  ]
+}

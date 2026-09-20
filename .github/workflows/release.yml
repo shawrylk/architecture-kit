@@ -1,0 +1,40 @@
+name: release
+
+# Publishing from CI, not a laptop: npm requires 2FA for an interactive publish, and provenance
+# needs the OIDC token only a workflow has. A tag is the trigger, so the released tree is the
+# tagged tree and nothing else.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: pnpm, registry-url: "https://registry.npmjs.org" }
+      - run: pnpm install --frozen-lockfile
+
+      # A tag that fails its own gates is not released.
+      - run: pnpm test
+      - run: node packages/qc-harness/src/cli/qc.mjs check
+
+      # The tag and the manifest must agree, or the registry gets a version nobody tagged.
+      - name: the tag matches the version
+        run: |
+          set -euo pipefail
+          tagged="${GITHUB_REF_NAME#v}"
+          packaged=$(node -p "require('./packages/qc-harness/package.json').version")
+          [ "$tagged" = "$packaged" ] || { echo "tag $tagged != package $packaged"; exit 1; }
+
+      - run: npm publish --provenance --access public
+        working-directory: packages/qc-harness
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

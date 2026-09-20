@@ -1,0 +1,63 @@
+{
+  "//": "The kit is bound by the kit. A rule it ships and cannot itself satisfy is not a rule.",
+  "featureRoots": [],
+  "docs": {
+    "root": "packages/qc-harness/templates/docs",
+    "decisions": "packages/qc-harness/templates/docs/decisions.md",
+    "enforcement": "packages/qc-harness/templates/docs/enforcement.md"
+  },
+  "paths": {
+    "citable": [
+      "packages/qc-harness/src",
+      "hooks",
+      "skills",
+      "commands"
+    ],
+    "checks": "packages/qc-harness/src/gates"
+  },
+  "comments": {
+    "maxLines": 2
+  },
+  "gates": {
+    "citations": true,
+    "comment-style": true,
+    "gate-tests": true,
+    "enforcement-map": false,
+    "eight-blocks": false,
+    "registry-agreement": false,
+    "sql-identifiers": false,
+    "tenant-predicate": false,
+    "claimed-requirements": false,
+    "public-routes": false,
+    "internal-routes": false,
+    "headless-sagas": false,
+    "saga-tests": false,
+    "audit-append-only": false,
+    "frontend-boundaries": false,
+    "test-mirror": false
+  },
+  "floor": {
+    "exemptions": {
+      "enforcement-map": "off-by-design",
+      "eight-blocks": "off-by-design",
+      "registry-agreement": "off-by-design",
+      "sql-identifiers": "off-by-design",
+      "tenant-predicate": "off-by-design",
+      "claimed-requirements": "off-by-design",
+      "public-routes": "off-by-design",
+      "internal-routes": "off-by-design",
+      "headless-sagas": "off-by-design",
+      "saga-tests": "off-by-design",
+      "audit-append-only": "off-by-design",
+      "frontend-boundaries": "off-by-design",
+      "test-mirror": "off-by-design"
+    }
+  },
+  "//floor": "This is a CLI package, not an application: it has no features, SQL, routes or frontend for these to inspect. Its own enforcement map is the template it ships, proven by its suite instead.",
+  "language": {
+    "allowNonEnglish": [
+      "packages/qc-harness/src/gates/english-source.test.mjs"
+    ]
+  },
+  "//language": "A gate that detects Japanese needs Japanese to be proven by a case that must fail."
+}

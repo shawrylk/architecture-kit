@@ -1,0 +1,6 @@
+{
+  "$comment": "Every key is optional. A key you do not set keeps the reference default; run `qc config` to print what is in force. See the kit's README for the full surface.",
+  "featureRoots": ["backend/src/features", "frontend/src/features"],
+  "foreign": [],
+  "agreements": []
+}

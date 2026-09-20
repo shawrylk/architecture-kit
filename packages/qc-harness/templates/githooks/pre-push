@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# The full pass: every repository-wide gate the fast pre-commit tier skips — citations, the
+# tenant predicate, route agreement, sagas. Once per push, not once per commit.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+npx qc check
