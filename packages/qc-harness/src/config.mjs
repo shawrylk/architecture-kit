@@ -142,6 +142,9 @@ export const defaults = {
   // declared path beside its English variant. `scripts` names the ranges a gate looks for.
   language: {
     scripts: ["cjk"],
+    // Language is not a property of TypeScript. A migration's column default and a contract's
+    // description reach a reader exactly like a comment does.
+    extensions: ["tsx?", "[cm]?js", "mjs", "md", "sql", "ya?ml", "json"],
     allowNonEnglish: [],
     translationPairs: [],
   },

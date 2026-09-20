@@ -52,19 +52,33 @@ export function commentLines(contents, lineComment = ["//", "#", "--"]) {
   return out;
 }
 
+/** `legacyNonEnglish` is `{path: count}`: a ceiling, not a pass. A list is read as an old-style
+ *  unlimited entry and reported, so a repository cannot keep one by accident. */
+function legacyCeilings(legacy) {
+  if (Array.isArray(legacy)) return { ceilings: Object.fromEntries(legacy.map((p) => [p, Infinity])), uncounted: legacy };
+  return { ceilings: legacy ?? {}, uncounted: [] };
+}
+
 /**
  * @param {{path: string, contents: string}[]} files paths relative to the repository root
- * @param {{scripts?: string[], allowNonEnglish?: string[], translationPairs?: {pattern: string, english: string}[]}} [options]
+ * @param {{scripts?: string[], allowNonEnglish?: string[], legacyNonEnglish?: Record<string,number>|string[], translationPairs?: {pattern: string, english: string}[]}} [options]
  */
 export function checkEnglishSource(files, options = {}) {
   const script = scriptPattern(options.scripts ?? ["cjk"]);
-  // `legacyNonEnglish` names individual files that predate the rule. It is kept apart from
-  // `allowNonEnglish` so the debt stays countable, and an entry that no longer needs to be there
-  // fails -- which is what makes the list shrink instead of ossify.
-  const legacy = options.legacyNonEnglish ?? [];
+  // A file that predates the rule is listed with the number of occurrences it had. Over that is a
+  // finding, so the debt cannot grow; at zero the entry is stale, so the list can only shrink.
+  const { ceilings, uncounted } = legacyCeilings(options.legacyNonEnglish);
+  const legacy = Object.keys(ceilings);
   const allowed = [...(options.allowNonEnglish ?? []), ...legacy];
   const used = new Set();
   const problems = [];
+  for (const path of uncounted) {
+    problems.push({
+      path,
+      rule: "uncounted-legacy-entry",
+      detail: "listed as a bare path, which allows any amount. Record the count it has: { \"path\": <n> }.",
+    });
+  }
 
   for (const { path, contents } of files) {
     if (!script.test(contents)) continue;
@@ -82,7 +96,17 @@ export function checkEnglishSource(files, options = {}) {
         detail: `line ${line}: a comment is written in English. Name the term in English, or cite the glossary entry for it.`,
       });
     }
-    if (declared && legacy.includes(path)) used.add(path);
+    if (declared && legacy.includes(path)) {
+      used.add(path);
+      const found = (contents.match(new RegExp(script.source, "g")) ?? []).length;
+      if (found > ceilings[path]) {
+        problems.push({
+          path,
+          rule: "legacy-entry-grew",
+          detail: `carries ${found} non-English characters, over the ${ceilings[path]} recorded in language.legacyNonEnglish. A listed file may not get worse.`,
+        });
+      }
+    }
     if (!declared && !problems.some((problem) => problem.path === path)) {
       problems.push({
         path,

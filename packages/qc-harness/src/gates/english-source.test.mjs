@@ -69,15 +69,28 @@ test("an undeclared markdown document with Japanese still fails, at file level",
   assert.equal(checkEnglishSource(files)[0].rule, "english-source");
 });
 
-test("a legacy entry allows the file it names", () => {
+test("a legacy entry allows the file it names, up to the count recorded", () => {
   const files = [{ path: "a/old.tsx", contents: 'const label = "検査";' }];
-  assert.deepEqual(checkEnglishSource(files, { legacyNonEnglish: ["a/old.tsx"] }), []);
+  assert.deepEqual(checkEnglishSource(files, { legacyNonEnglish: { "a/old.tsx": 2 } }), []);
+});
+
+test("a listed file that gains more non-English fails, so the debt cannot grow", () => {
+  const files = [{ path: "a/old.tsx", contents: 'const a = "検査"; const b = "是正指示";' }];
+  const [problem] = checkEnglishSource(files, { legacyNonEnglish: { "a/old.tsx": 2 } });
+  assert.equal(problem.rule, "legacy-entry-grew");
+  assert.match(problem.detail, /over the 2 recorded/);
 });
 
 test("a legacy entry for a file that is already clean fails, so the list can only shrink", () => {
   const files = [{ path: "a/old.tsx", contents: 'const label = "Inspection";' }];
-  const [problem] = checkEnglishSource(files, { legacyNonEnglish: ["a/old.tsx"] });
+  const [problem] = checkEnglishSource(files, { legacyNonEnglish: { "a/old.tsx": 2 } });
   assert.equal(problem.rule, "stale-legacy-entry");
+});
+
+test("a bare path is refused, because an uncounted entry is an unlimited pass", () => {
+  const files = [{ path: "a/old.tsx", contents: 'const label = "検査";' }];
+  const [problem] = checkEnglishSource(files, { legacyNonEnglish: ["a/old.tsx"] });
+  assert.equal(problem.rule, "uncounted-legacy-entry");
 });
 
 test("fullwidth punctuation is typography, not language, so it is not a finding by default", () => {

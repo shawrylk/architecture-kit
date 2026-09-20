@@ -105,6 +105,22 @@ async function citableFiles(roots, root) {
   return files;
 }
 
+/** Every file under the citable roots whose extension matches, nothing skipped but build output. */
+async function filesMatching(config, pattern) {
+  const rel = relativeTo(config.root);
+  const files = [];
+  async function walk(dir) {
+    for (const entry of await list(dir, { withFileTypes: true }).catch(() => [])) {
+      const full = path.join(dir, entry.name);
+      if (/node_modules|\/dist\//.test(full)) continue;
+      if (entry.isDirectory()) await walk(full);
+      else if (pattern.test(entry.name)) files.push({ path: rel(full), contents: await readFile(full, "utf8") });
+    }
+  }
+  for (const root of config.paths.citable) await walk(path.join(config.root, root));
+  return files;
+}
+
 /** Every source file under the citable roots, tests included. */
 async function sourceFiles(config, only) {
   const rel = relativeTo(config.root);
@@ -486,15 +502,10 @@ export async function runCheck(config, only) {
   }
 
   if (enabled(config.gates, "english-source")) {
-    // Two sets, because neither alone is right: sourceFiles carries tests, whose comments are
-    // prose like any other, but not .md; citableFiles carries the docs and skips tests.
-    const docs = (
-      await citableFiles(
-        config.paths.citable.map((root) => path.join(config.root, root)),
-        config.root,
-      )
-    ).filter((file) => file.path.endsWith(".md"));
-    const everything = [...(await sourceFiles(config)), ...docs];
+    // Its own file set. The citation and source walkers were built for other questions and each
+    // skips something this one needs -- tests, documents, migrations, contracts. Language is not
+    // a property of TypeScript: a Japanese column default in .sql reaches a reader just the same.
+    const everything = await filesMatching(config, new RegExp(`\\.(${config.language.extensions.join("|")})$`));
     problems.push(...checkEnglishSource(everything, config.language));
     problems.push(...checkTranslationPairs(everything.map((file) => file.path), config.language.translationPairs));
     lines.push("OK  english      comments, docs and rules are English; another language is declared data");
