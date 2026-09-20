@@ -79,3 +79,13 @@ test("a legacy entry for a file that is already clean fails, so the list can onl
   const [problem] = checkEnglishSource(files, { legacyNonEnglish: ["a/old.tsx"] });
   assert.equal(problem.rule, "stale-legacy-entry");
 });
+
+test("fullwidth punctuation is typography, not language, so it is not a finding by default", () => {
+  const files = [{ path: "a/count.tsx", contents: "<span>（{count}）</span>" }];
+  assert.deepEqual(checkEnglishSource(files), []);
+});
+
+test("a repository that wants ASCII punctuation asks for the fullwidth script by name", () => {
+  const files = [{ path: "a/count.tsx", contents: "<span>（{count}）</span>" }];
+  assert.equal(checkEnglishSource(files, { scripts: ["cjk", "fullwidth"] })[0].rule, "english-source");
+});

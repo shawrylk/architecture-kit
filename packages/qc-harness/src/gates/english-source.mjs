@@ -6,8 +6,11 @@
 // the product needs in another language is declared, and its English variant must exist beside it.
 
 const SCRIPTS = {
-  // Hiragana, katakana, CJK ideographs, Hangul, and the fullwidth forms that carry them.
-  cjk: "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af\\uff00-\\uffef",
+  // Hiragana, katakana, CJK ideographs, Hangul: language a reader must know to follow the text.
+  cjk: "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af",
+  // Fullwidth forms are typography, not language -- `（{count}）` costs an English reader nothing.
+  // Separate, so a repository that wants ASCII punctuation can ask for it without conflating the two.
+  fullwidth: "\\uff00-\\uffef",
 };
 
 function scriptPattern(scripts) {
