@@ -150,6 +150,9 @@ export const defaults = {
     exclude: ["(^|/)node_modules(/|$)", "(^|/)dist(/|$)", "(^|/)\\.git(/|$)", "(^|/)coverage(/|$)", "pnpm-lock\\.yaml$"],
     allowNonEnglish: [],
     translationPairs: [],
+    // What the ledger may still carry. It may be met or lowered, never raised without saying so.
+    legacyNonEnglish: {},
+    legacyBudget: undefined,
   },
 
   // A decision record carries its cost and its rejected alternatives, or it is advocacy.

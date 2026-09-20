@@ -117,6 +117,29 @@ export function checkEnglishSource(files, options = {}) {
       });
     }
   }
+  // A budget the repository states, so adding a file to the ledger is a visible act rather than an
+  // edit nobody reviews. It may only be met or lowered: a budget above what the tree carries is
+  // itself a finding, which is what stops the debt sitting there unnoticed -- the way a document
+  // stayed Japanese for weeks because it was listed and nothing ever said so again.
+  const budget = options.legacyBudget;
+  if (budget) {
+    const files = legacy.length;
+    const occurrences = Object.values(ceilings).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
+    if (files > budget.files || occurrences > budget.occurrences) {
+      problems.push({
+        path: "qc.config.json",
+        rule: "legacy-over-budget",
+        detail: `language.legacyNonEnglish carries ${files} file(s) and ${occurrences} occurrence(s), over the budget of ${budget.files} and ${budget.occurrences}. The ledger may only shrink.`,
+      });
+    } else if (files < budget.files || occurrences < budget.occurrences) {
+      problems.push({
+        path: "qc.config.json",
+        rule: "legacy-budget-stale",
+        detail: `language.legacyBudget still allows ${budget.files} file(s) and ${budget.occurrences} occurrence(s), but the tree carries ${files} and ${occurrences}. Lower the budget to what is left.`,
+      });
+    }
+  }
+
   for (const path of legacy) {
     if (!used.has(path)) {
       problems.push({

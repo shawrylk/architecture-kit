@@ -102,3 +102,21 @@ test("a repository that wants ASCII punctuation asks for the fullwidth script by
   const files = [{ path: "a/count.tsx", contents: "<span>（{count}）</span>" }];
   assert.equal(checkEnglishSource(files, { scripts: ["cjk", "fullwidth"] })[0].rule, "english-source");
 });
+
+const ledger = [{ path: "a/one.ts", contents: 'const a = "検査";' }, { path: "a/two.ts", contents: 'const b = "是正";' }];
+const counted = { legacyNonEnglish: { "a/one.ts": 2, "a/two.ts": 2 } };
+
+test("a ledger inside its budget passes", () => {
+  assert.deepEqual(checkEnglishSource(ledger, { ...counted, legacyBudget: { files: 2, occurrences: 4 } }), []);
+});
+
+test("adding a file to the ledger without raising the budget fails", () => {
+  const [problem] = checkEnglishSource(ledger, { ...counted, legacyBudget: { files: 1, occurrences: 4 } });
+  assert.equal(problem.rule, "legacy-over-budget");
+});
+
+test("a budget above what is left fails, so the ledger cannot sit there unnoticed", () => {
+  const [problem] = checkEnglishSource(ledger, { ...counted, legacyBudget: { files: 5, occurrences: 40 } });
+  assert.equal(problem.rule, "legacy-budget-stale");
+  assert.match(problem.detail, /Lower the budget to what is left/);
+});

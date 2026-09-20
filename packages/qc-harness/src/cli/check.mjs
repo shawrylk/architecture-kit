@@ -512,7 +512,16 @@ export async function runCheck(config, only) {
     const everything = await filesMatching(config, new RegExp(`\\.(${config.language.extensions.join("|")})$`), config.language);
     problems.push(...checkEnglishSource(everything, config.language));
     problems.push(...checkTranslationPairs(everything.map((file) => file.path), config.language.translationPairs));
+    // The ledger is printed on every run, not only when it fails: a file listed once and never
+    // mentioned again is how a document stays untranslated without anyone deciding that.
+    const ledger = config.language.legacyNonEnglish ?? {};
+    const owed = Object.values(ledger).reduce((sum, n) => sum + (Number(n) || 0), 0);
     lines.push("OK  english      comments, docs and rules are English; another language is declared data");
+    if (owed > 0) {
+      lines.push(
+        `    owing      ${Object.keys(ledger).length} file(s), ${owed} occurrence(s) still to translate — language.legacyNonEnglish`,
+      );
+    }
   }
 
   if (enabled(config.gates, "adr-format")) {
