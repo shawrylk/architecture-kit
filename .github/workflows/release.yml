@@ -18,8 +18,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
+      # No cache in a release build, and a node new enough to carry npm's trusted publishing.
       - uses: actions/setup-node@v5
-        with: { node-version: 22, cache: pnpm, registry-url: "https://registry.npmjs.org" }
+        with: { node-version: 24, registry-url: "https://registry.npmjs.org" }
       - run: pnpm install --frozen-lockfile
 
       # A tag that fails its own gates is not released.
@@ -34,7 +35,8 @@ jobs:
           packaged=$(node -p "require('./packages/qc-harness/package.json').version")
           [ "$tagged" = "$packaged" ] || { echo "tag $tagged != package $packaged"; exit 1; }
 
-      - run: npm publish --provenance --access public
+      # Trusted publishing: the registry trusts this repository and this workflow file, so there is
+      # no token to store, leak or rotate. Provenance comes with it. Configured once with
+      # `npm trust github architecture-harness --file release.yml --repo shawrylk/architecture-kit`.
+      - run: npm publish --access public
         working-directory: packages/qc-harness
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
