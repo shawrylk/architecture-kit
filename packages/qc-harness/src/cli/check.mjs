@@ -17,6 +17,7 @@ import { checkClaimedRequirements } from "../gates/claimed-requirements.mjs";
 import { allowedPublicRoutes, checkPublicRoutes, declaredPublicRoutes } from "../gates/public-routes.mjs";
 import { calledInternalRoutes, checkInternalRoutes, declaredInternalRoutes } from "../gates/internal-routes.mjs";
 import { checkHeadlessPipelines } from "../gates/headless-sagas.mjs";
+import { checkFeatureCommands } from "../gates/feature-cli.mjs";
 import { checkSagaTests, declaredSagas } from "../gates/saga-tests.mjs";
 import { checkGatesAreTested } from "../gates/gate-tests.mjs";
 import { checkAuditAppendOnly } from "../gates/audit-append-only.mjs";
@@ -380,6 +381,25 @@ export async function runCheck(config, only) {
   }
   if (enabled(config.gates, "headless-sagas")) {
     problems.push(...checkHeadlessPipelines(contents, { block: config.saga.headlessBlock, viewModules: config.saga.viewModules }));
+  }
+  if (enabled(config.gates, "feature-cli") && !relativeOnly) {
+    const rel = relativeTo(config.root);
+    const relativeFeatures = features.map((feature) => ({ ...feature, feature: rel(feature.feature) }));
+    const relativeContents = contents.map((file) => ({ ...file, path: rel(file.path) }));
+    problems.push(
+      ...checkFeatureCommands(relativeFeatures, relativeContents, {
+        block: config.cli.block,
+        roots: config.cli.roots,
+        viewModules: config.cli.viewModules,
+        serverModules: config.cli.serverModules,
+        factory: config.cli.factory,
+        publisher: config.cli.publisher,
+        drives: config.cli.drives,
+        sagaFactories: config.cli.sagaFactories,
+        tests: relativeContents.filter((file) => TEST_FILE.test(file.path)),
+      }),
+    );
+    lines.push(`OK  commands     ${relativeFeatures.length} feature(s) drivable headless through \`qc run\``);
   }
   if (!rootless) lines.push(`OK  structure    ${features.length} feature folder(s)`);
 

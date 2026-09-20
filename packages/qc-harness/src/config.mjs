@@ -138,6 +138,31 @@ export const defaults = {
     headlessBlock: "pipeline",
   },
 
+  // A feature is reachable over its routes and from a command line. `cli` names the second
+  // entrypoint: the block that drives the same pipeline with no server, which is what makes a
+  // feature runnable by a test, a script or a person. `qc run <feature>.<command>` dispatches it
+  // through the registry a repository's codegen writes to `registry`.
+  cli: {
+    block: "cli",
+    // Which feature roots must carry one. Empty means every root the structure gate walks.
+    roots: [],
+    viewModules: ["react", "react-dom"],
+    serverModules: ["fastify", "express", "koa", "@nestjs/core"],
+    factory: ["defineCommands"],
+    // The key a command entry names its workflow with. The gate's real check is that this table
+    // and the feature's declared sagas agree both ways, so the name has to be readable statically.
+    drives: "saga",
+    // Read with saga-tests' own factories by default: both gates must see the same declarations.
+    sagaFactories: ["definePipeline", "defineSaga"],
+    // Only the publishing block crosses a feature boundary, so the registry reaches commands through it.
+    publisher: "index",
+    // The composed registry `qc run` imports. A repository writes it; the harness only dispatches.
+    registry: "backend/src/features/commands.generated.ts",
+    // `node --import` specifiers the registry needs. A TypeScript registry is run under the
+    // repository's own loader, so the harness never depends on one.
+    loader: ["tsx"],
+  },
+
   // English is the one language in every set. Another language is data, not prose: it lives in a
   // declared path beside its English variant. `scripts` names the ranges a gate looks for.
   language: {
@@ -241,6 +266,7 @@ export const defaults = {
     "config-floor": false,
     "english-source": false,
     "adr-format": false,
+    "feature-cli": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and

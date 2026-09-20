@@ -11,6 +11,7 @@ export const gateDescriptions = Object.freeze({
   "internal-routes": "Every path a worker posts to is a route the api serves",
   "headless-sagas": "The block that carries a workflow runs without a view layer",
   "saga-tests": "Every workflow is named by a test that imports no view module",
+  "feature-cli": "Every feature is drivable headless through a published command block, with no server",
   "gate-tests": "A repository's own gates each ship a case that must fail",
   "audit-append-only": "The audit log has no update or delete path in any repository",
   "frontend-boundaries": "Platform remains a thin substrate and never holds feature domain logic or junk drawer directories",
