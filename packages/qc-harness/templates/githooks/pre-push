@@ -3,4 +3,22 @@
 # tenant predicate, route agreement, sagas. Once per push, not once per commit.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+
+# A deletion pushes no commits, so there is nothing to gate. git sends one line per ref as
+# `<local ref> <local oid> <remote ref> <remote oid>`, and a delete carries an all-zero local oid.
+# Only skip when refs were named and every one of them was a delete: no refs on stdin means an
+# invocation this cannot reason about, which is a reason to run the gates, not to skip them.
+named=""
+carries_commits=""
+while read -r _local_ref local_oid _remote_ref _remote_oid; do
+  named=yes
+  case "$local_oid" in
+    *[!0]*) carries_commits=yes ;;
+  esac
+done
+if [ -n "$named" ] && [ -z "$carries_commits" ]; then
+  echo "pre-push: every ref is a delete, nothing to check"
+  exit 0
+fi
+
 npx qc check

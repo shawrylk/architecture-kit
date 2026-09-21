@@ -74,6 +74,16 @@ the set of declared sagas, the shape `public-routes` and `internal-routes` alrea
 gate 23 now does.
 
 
+## The pre-push hook skips a delete
+
+Deleting 42 merged branches in `quality-control-mono` ran the full gate suite 42 times, because the
+hook did not look at what was being pushed. A delete carries an all-zero local oid and no commits,
+so there is nothing to check.
+
+It skips only when refs were named and every one was a delete. Empty stdin runs the gates: an
+invocation the hook cannot reason about is a reason to check, not to skip.
+
+
 ## Gate 23 — feature-cli, and `qc run`
 
 A tree can be green and not work. `quality-control-mono` was: 2,216 tests passing, and three tabs
