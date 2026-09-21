@@ -10,6 +10,7 @@ const USAGE = `qc — architecture gates
   qc check [file]        every structural gate; one file is the fast path a hook takes
   qc init                scaffold the docs, config, hooks and workflow into this repository
   qc feature <name>      scaffold a feature in the configured anatomy
+  qc run [name]          drive one feature command headless; no name lists them
   qc install-hooks       point git at the kit's pre-commit hook
   qc work-order-check    refuse to commit on the wrong branch, per .claude/work-order.local.json
   qc commit-msg <file>   refuse a commit message that credits a tool as an author
@@ -46,6 +47,10 @@ async function main() {
       const { runScaffold } = await import("./scaffold.mjs");
       await runScaffold(config, rest);
       return;
+    }
+    case "run": {
+      const { runRun } = await import("./run.mjs");
+      process.exit(await runRun(config, rest));
     }
     case "install-hooks": {
       const { installHooks } = await import("./install-hooks.mjs");

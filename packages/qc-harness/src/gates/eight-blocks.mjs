@@ -18,6 +18,9 @@ export const BLOCKS = Object.freeze([
 export const REQUIRED_BLOCKS = Object.freeze(["index", "trigger", "pipeline", "resource"]);
 
 export const SLICE_REQUIRED_ROOTS = Object.freeze(["index", "trigger", "schema"]);
+// Allowed at a slice's root without being owed: a feature declaring none is complete, one
+// declaring it is not carrying an unknown block. `cli` is the headless entrypoint feature-cli reads.
+export const SLICE_OPTIONAL_ROOTS = Object.freeze(["cli"]);
 export const ALLOWED_SUBDIRS = Object.freeze(["slices", "shared", "components"]);
 export const ALLOWED_SHARED_FILES = Object.freeze(["types", "queries", "guards", "runner", "components"]);
 
@@ -35,6 +38,7 @@ function anatomyOf(options = {}) {
   const block = options.block ?? {};
   return {
     sliceRequired: stems(slice.required ?? SLICE_REQUIRED_ROOTS),
+    sliceOptional: stems(slice.optional ?? SLICE_OPTIONAL_ROOTS),
     sliceDir: slice.sliceDir ?? "slices",
     sharedDir: slice.sharedDir ?? "shared",
     componentsDir: slice.componentsDir ?? "components",
@@ -117,7 +121,7 @@ function checkSliceFeature(feature, files, anatomy) {
     }
     if (file.endsWith(TEST_SUFFIX) || file.endsWith(TEST_SUFFIX_TSX)) continue;
     const name = file.replace(/\.tsx?$/, "");
-    if (!anatomy.sliceRequired.includes(name)) {
+    if (!anatomy.sliceRequired.includes(name) && !anatomy.sliceOptional.includes(name)) {
       problems.push({ feature, rule: "unknown-block", detail: file });
       continue;
     }

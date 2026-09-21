@@ -7,7 +7,7 @@ Both halves are built, and `quality-control-mono` now runs on them.
 | Path | Holds |
 |---|---|
 | `.claude-plugin/`, `hooks/`, `skills/`, `commands/` | the Claude Code plugin `architecture` |
-| `packages/qc-harness/src/gates/` | 11 gates, each with its must-fail case |
+| `packages/qc-harness/src/gates/` | 12 gates, each with its must-fail case |
 | `packages/qc-harness/src/eslint/` | 10 rules, a preset, and the fixture suite |
 | `packages/qc-harness/src/cli/` | `qc check｜init｜feature｜install-hooks｜config` |
 | `packages/qc-harness/templates/` | decisions, architecture, enforcement, guards, performance, glossary, ui, CLAUDE.md, thresholds, git hook, CI |
@@ -68,10 +68,39 @@ Its first version demanded the pipeline constant's own name and reported 42 of 4
 the pipeline, so the gate now follows that one indirection, the way `tenant-predicate` already
 follows a named insert factory. The honest number is **6 of 42**, all in `rebar`.
 
-A CLI gate was considered and rejected: asserting an entrypoint file exists passes on day one and
-never fails again. When a CLI dispatcher exists, the gate worth writing is agreement between its
-dispatch table and the set of declared sagas — the shape `public-routes` and `internal-routes`
-already use.
+A CLI gate was considered and rejected here: asserting an entrypoint file exists passes on day one
+and never fails again. The condition set then — write it as agreement between a dispatch table and
+the set of declared sagas, the shape `public-routes` and `internal-routes` already use — is what
+gate 23 now does.
+
+
+## Gate 23 — feature-cli, and `qc run`
+
+A tree can be green and not work. `quality-control-mono` was: 2,216 tests passing, and three tabs
+nobody could drive without a browser and a seeded database. Every one of those tests reaches a
+feature through a mock; nothing reaches one the way the product does.
+
+So the feature gets a second entrypoint beside its routes. `cli` declares a command table, `index`
+republishes it, a repository's codegen composes the registry, and `qc run <feature>.<command>`
+dispatches through the loader the repository names. The harness stays ignorant of the tree: it
+resolves one key and calls it.
+
+The gate is the agreement, both ways:
+
+| Rule | Fails when |
+|---|---|
+| `feature-cli-undrivable-saga` | a feature declares a workflow no command drives |
+| `feature-cli-unknown-saga` | a command names a workflow the feature does not declare |
+| `feature-cli-missing` | a feature under the configured roots carries no command block |
+| `feature-cli-unpublished` | `index` does not re-export it, so the registry cannot reach it |
+| `feature-cli-no-view`, `feature-cli-no-server` | the block imports a view layer or an HTTP framework |
+| `feature-cli-undeclared`, `feature-cli-untested` | the table is not declared through the factory, or nothing imports it |
+
+The first two are the gate. The rest are hygiene that would pass forever on their own.
+
+Off by default, like the other policy gates: a repository names its own block, roots, factory and
+registry, or every tree would go red on upgrade — the failure mode `config-floor` and
+`english-source` are already off for.
 
 
 ## Gates 13–15 and rules 11–12
