@@ -42,10 +42,21 @@ function ruleOptions(config) {
       throwawayLedgers: config.idempotency.throwawayLedgers,
     },
     "no-supersession-trail": {},
+    "timeless-comment": timelessVocabulary(config),
     "signal-last-param": {},
     "no-offset-pagination": {},
     "no-status-literal": {},
   };
+}
+
+/** A list a repository states replaces the rule's own; an empty one leaves the rule's defaults. */
+function timelessVocabulary(config) {
+  const stated = config.comments?.timeless ?? {};
+  const out = {};
+  for (const key of ["promises", "moments"]) {
+    if (Array.isArray(stated[key]) && stated[key].length > 0) out[key] = stated[key];
+  }
+  return out;
 }
 
 function entries(config, names) {
@@ -63,6 +74,7 @@ function entries(config, names) {
 const UNIVERSAL = [
   "durable-idempotency-key",
   "no-supersession-trail",
+  "timeless-comment",
   "no-comment-paragraph",
   "name-the-pattern",
   "no-number-in-comment",

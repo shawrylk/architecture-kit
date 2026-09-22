@@ -37,6 +37,7 @@ Read it as an index; the reasoning is under the headings that follow.
 | An exported async function takes a cancellation token last | `qc/signal-last-param` |
 | Storage imports belong in the resource block | `qc/storage-only-in-resource` |
 | Every business table carries the tenant column | `qc/tenant-scoped-table` |
+| A comment states what is true, never when it became true or what is still owed | `qc/timeless-comment` |
 | Every cited id and doc path resolves, and nothing references another repository | `qc check` (citations) |
 | A comment under infra/ is one line of why, never a paragraph, a banner or code | `qc check` (comment-style) |
 | A repository's own gates each ship a case that must fail | `qc check` (gate-tests) |
@@ -86,8 +87,15 @@ Code carries the meaning. A comment exists only where it cannot.
 - Never write a number or quantity threshold (neither digits nor spelled-out words). Cite the
   registry or the doc that owns it. Citation ids are the exception.
 
-Prose quality is a review concern, deliberately not a rule: a second rule demanding a citation on
-every comment would fight the numeric one, and each false positive costs an agent round-trip.
+Prose quality is a review concern by default. A second rule that demanded a citation on every
+comment would fight the numeric one, and each false positive costs an agent a round trip.
+
+A repository that wants the writing itself gated switches on `plain-language`. The gate reads
+documents and comments against Simplified Technical English (ASD-STE100) and the Google developer
+documentation style. It checks sentence length, paragraph length, the voice, an approved word
+list, heading case and link text. The rest of the standard stays a review rule, because it needs a
+part-of-speech tagger, and the approved dictionary carries a licence. State the vocabulary under
+`plainLanguage.replace`, then switch the gate on.
 
 ## Gates are proven
 

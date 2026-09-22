@@ -14,6 +14,7 @@ import scopedRepository from "./rules/scoped-repository.mjs";
 import signalLastParam from "./rules/signal-last-param.mjs";
 import storageOnlyInResource from "./rules/storage-only-in-resource.mjs";
 import tenantScopedTable from "./rules/tenant-scoped-table.mjs";
+import timelessComment from "./rules/timeless-comment.mjs";
 
 export const rules = {
   "durable-idempotency-key": durableIdempotencyKey,
@@ -32,6 +33,7 @@ export const rules = {
   "signal-last-param": signalLastParam,
   "storage-only-in-resource": storageOnlyInResource,
   "tenant-scoped-table": tenantScopedTable,
+  "timeless-comment": timelessComment,
 };
 
 export default { rules };

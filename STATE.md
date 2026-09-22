@@ -7,8 +7,8 @@ Both halves are built, and `quality-control-mono` now runs on them.
 | Path | Holds |
 |---|---|
 | `.claude-plugin/`, `hooks/`, `skills/`, `commands/` | the Claude Code plugin `architecture` |
-| `packages/qc-harness/src/gates/` | 12 gates, each with its must-fail case |
-| `packages/qc-harness/src/eslint/` | 10 rules, a preset, and the fixture suite |
+| `packages/qc-harness/src/gates/` | 21 gates, each with its must-fail case |
+| `packages/qc-harness/src/eslint/` | 16 rules, a preset, and the fixture suite |
 | `packages/qc-harness/src/cli/` | `qc check｜init｜feature｜install-hooks｜config` |
 | `packages/qc-harness/templates/` | decisions, architecture, enforcement, guards, performance, glossary, ui, CLAUDE.md, thresholds, git hook, CI |
 
@@ -210,3 +210,58 @@ list ends with `qc feature <domain-name>` before `qc check` — the path CI alre
 has no feature roots, which is coherent for one that wants the citation and audit checks and no
 anatomy; flagging it would manufacture a decision nobody made. The check fires on roots that were
 named and are not there, which is the mismatch, not the opt-out.
+
+
+## Gate 21: plain-language
+
+The gate reads prose against Simplified Technical English (ASD-STE100) and the Google developer
+documentation style. It reads a Markdown document as prose, and a source file through its comments.
+
+| Rule it reports | What fails |
+|---|---|
+| `sentence-too-long` | over 20 words in a list item, or over 25 words in a paragraph |
+| `paragraph-too-long` | over 6 sentences in one paragraph |
+| `unapproved-word` | a word or a phrase in `plainLanguage.replace`, with the word that replaces it |
+| `passive-voice` | a form of "to be" and a past participle |
+| `heading-case` | a heading in title case |
+| `link-text` | link text that names the click, not the page |
+| `em-dash` | an em dash, or a spaced double hyphen, holding two sentences in one |
+| `semicolon` | a semicolon joining two sentences |
+
+A hard-wrapped paragraph counts as one block, so a sentence a writer broke over two lines stays one
+sentence. A fence, a table, a quote, an indented block and a front matter block are not prose.
+
+The rest of the standard stays a review rule. Approved meaning, approved part of speech and noun
+clusters all need a part-of-speech tagger, and the approved dictionary carries a licence, so the
+kit cannot ship it.
+
+Off by default, like every other policy gate. A repository states its own vocabulary under
+`plainLanguage.replace` first, and drops a word the kit ships by setting its value to null.
+
+The kit does not pass its own gate yet. Over its own Markdown files the gate reports about 180
+findings, most of them long sentences and passives. Turning the gate on means rewriting `README.md`,
+`STATE.md`, `NOTES.md` and the shipped templates first. That rewrite is the open decision, not the
+gate.
+
+
+The same gate runs as a Claude Code Stop hook, at `~/.claude/hooks/plain-language/check-output.mjs`.
+It reads the last message Claude wrote, runs the gate over it, and blocks the turn when the prose
+fails. `stop_hook_active` stops the block repeating, so one turn costs at most one rewrite.
+
+
+## Rule 17: timeless-comment
+
+A comment states what is true, never when it became true. `no-supersession-trail` already owned the
+past tense. This rule owns the other two halves.
+
+| Group | Catches | Message |
+|---|---|---|
+| `promises` | todo, fixme, for now, coming soon, revisit, stopgap, will be removed | put the promise in an issue or a decision record |
+| `moments` | currently, as of, recently, previously, originally, we now, renamed from | state what is true, not when it became true |
+
+Comments only, like its sibling. The same word inside a string is data.
+
+A phrase that carries an ordinary second meaning stays out of the defaults: `eventually` reads as
+eventual consistency, `so far` reads as the rows read so far, `moved from` reads as a state change,
+and a bare `temporary` reads as a temporary file. A repository adds what it wants under
+`comments.timeless`, and a list stated there replaces the rule's own.

@@ -477,6 +477,40 @@ tester.run("no-supersession-trail", rules["no-supersession-trail"], {
   ],
 });
 
+console.log("→", "timeless-comment");
+tester.run("timeless-comment", rules["timeless-comment"], {
+  valid: [
+    { code: "// the one place a caller resolves a name\nconst a = 1;" },
+    { code: 'const label = "todo";' },
+    { code: "// the repository states what is true now\nconst a = 1;" },
+    { code: "// the reader writes to a temporary file\nconst a = 1;" },
+    { code: "// the retry eventually succeeds\nconst a = 1;" },
+    { code: "// the rows read so far are returned\nconst a = 1;" },
+  ],
+  invalid: [
+    { code: "// TODO: wire the runner\nconst a = 1;", errors: [{ messageId: "promise" }] },
+    { code: "// for now the cache is in memory\nconst a = 1;", errors: [{ messageId: "promise" }] },
+    { code: "/* this will be removed with the runner */\nconst a = 1;", errors: [{ messageId: "promise" }] },
+    { code: "// a temporary fix until the queue lands\nconst a = 1;", errors: [{ messageId: "promise" }] },
+    { code: "// currently the queue holds one job\nconst a = 1;", errors: [{ messageId: "moment" }] },
+    { code: "/* as of the last release this is the only caller */\nconst a = 1;", errors: [{ messageId: "moment" }] },
+    { code: "// we now read the key from the header\nconst a = 1;", errors: [{ messageId: "moment" }] },
+    { code: "// renamed from the ledger block\nconst a = 1;", errors: [{ messageId: "moment" }] },
+    // Both halves in one sentence is still one sentence to rewrite.
+    { code: "// TODO: currently broken\nconst a = 1;", errors: [{ messageId: "promise" }] },
+  ],
+});
+
+tester.run("timeless-comment", rules["timeless-comment"], {
+  valid: [
+    { code: "// todo\nconst a = 1;", options: [{ promises: ["obsolete"] }] },
+    { code: "// currently the queue holds one job\nconst a = 1;", options: [{ moments: [] }] },
+  ],
+  invalid: [
+    { code: "// obsolete soon\nconst a = 1;", options: [{ promises: ["obsolete"] }], errors: [{ messageId: "promise" }] },
+  ],
+});
+
 console.log("→", "options: the new rules take their vocabulary from config");
 tester.run("durable-idempotency-key", rules["durable-idempotency-key"], {
   valid: [{ code: "send({ mutationId: ulid() });", options: [{ volatile: ["nanoid"] }] }],

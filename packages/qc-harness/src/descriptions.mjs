@@ -19,6 +19,7 @@ export const gateDescriptions = Object.freeze({
   "enforcement-map": "Every rule names a check, and every check the kit runs is named",
   "config-floor": "A check the kit ships on is switched off only by naming the decision that says why",
   "english-source": "Comments, docs and rules are English; another language is data, declared beside its English variant",
+  "plain-language": "Prose is Simplified Technical English: one idea per sentence, the active voice, the approved word",
   "adr-format": "Every decision record carries its cost and the alternatives it rejected, not just its claim",
   "comment-style": "A comment under infra/ is one line of why, never a paragraph, a banner or code",
 });
