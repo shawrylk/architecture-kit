@@ -1,5 +1,5 @@
 {
   "name": "architecture",
   "description": "Bounded vertical slice architecture: the decision register, the gates that enforce it, and the hooks that hold an agent to it",
-  "version": "0.4.2"
+  "version": "0.4.3"
 }

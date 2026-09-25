@@ -3,17 +3,19 @@
 # A doc is input an agent may skip; a hook result is a tool output it must react to.
 set -uo pipefail
 
-# This plugin is installed for every project. It does nothing in one that has not
-# adopted the architecture.
-ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
-[ -f "$ROOT/qc.config.json" ] || exit 0
-
 FILE=$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(j.tool_input?.file_path??"")}catch{}})' 2>/dev/null)
 [ -z "$FILE" ] && exit 0
+# A Windows hook input uses backslashes, which neither `case` nor `dirname` reads as separators.
+FILE=${FILE//\\//}
 case "$FILE" in
   *.ts|*.tsx|*.mjs) ;;
   *) exit 0 ;;
 esac
+
+# Judge the checkout that holds the file, not the one the session opened: a work order edits its
+# own worktree. The plugin is installed everywhere and does nothing where the kit is not adopted.
+ROOT=$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null) || exit 0
+[ -f "$ROOT/qc.config.json" ] || exit 0
 
 cd "$ROOT" || exit 0
 QC="node ${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"
