@@ -92,3 +92,37 @@ test("a root without a src and a tests folder is a problem that names its key, n
   assert.deepEqual(verdict(problems), [{ path: "qc.config.json", rule: "invalid-mirror-root" }]);
   assert.ok(problems[0].detail.includes("testMirror.roots[0]"), problems[0].detail);
 });
+
+const BACKEND_BY_FOLDER = [{ src: "backend/src", tests: "backend/tests", match: "folder" }];
+const BACKEND_SOURCES = ["backend/src/features/audit-log/schema.ts", "backend/src/features/audit-log/shared/queries.ts"];
+
+test("a folder root accepts a block test whose folder mirrors a source folder", () => {
+  const problems = checkTestMirror(["backend/tests/features/audit-log/record.test.ts"], BACKEND_SOURCES, BACKEND_BY_FOLDER);
+  assert.deepEqual(problems, []);
+});
+
+test("a folder root refuses a test whose folder mirrors no source folder", () => {
+  const problems = checkTestMirror(["backend/tests/features/gone/record.test.ts"], BACKEND_SOURCES, BACKEND_BY_FOLDER);
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].rule, "orphaned-test");
+  assert.match(problems[0].detail, /backend\/src\/features\/gone/);
+});
+
+test("a folder root still refuses a test left beside its source in src", () => {
+  const problems = checkTestMirror(["backend/src/features/audit-log/record.test.ts"], BACKEND_SOURCES, BACKEND_BY_FOLDER);
+  assert.equal(problems[0].rule, "unmirrored-test");
+});
+
+test("a file root still refuses the same block test, and file is the default", () => {
+  for (const roots of [[{ src: "backend/src", tests: "backend/tests", match: "file" }], [{ src: "backend/src", tests: "backend/tests" }]]) {
+    const problems = checkTestMirror(["backend/tests/features/audit-log/record.test.ts"], BACKEND_SOURCES, roots);
+    assert.equal(problems.length, 1);
+    assert.equal(problems[0].rule, "orphaned-test");
+  }
+});
+
+test("a match value other than file or folder is an invalid root", () => {
+  const problems = checkTestMirror([], BACKEND_SOURCES, [{ src: "backend/src", tests: "backend/tests", match: "stem" }]);
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].rule, "invalid-mirror-root");
+});

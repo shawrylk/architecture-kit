@@ -176,6 +176,10 @@ The `test-mirror` gate judges every root in `testMirror.roots`. The default is o
 - A test inside `src` fails as `unmirrored-test`.
 - A test inside `tests` fails as `orphaned-test` when `src` has no file at its path, and no folder
   with an `index` there.
+- A root with `match: "folder"` matches a test to its source **folder** instead of a file. Use it
+  where a test covers a block that spans several files, such as a feature's `pipeline` or
+  `resource`. Such a test passes when `src` holds a folder at its path. The default is
+  `match: "file"`.
 - A root with `testOnly: true` holds test support, such as a shared interop-test package. Its tests
   need no source file.
 
@@ -184,7 +188,7 @@ The `test-mirror` gate judges every root in `testMirror.roots`. The default is o
   "testMirror": {
     "roots": [
       { "src": "frontend/src", "tests": "frontend/tests" },
-      { "src": "backend/src", "tests": "backend/tests" },
+      { "src": "backend/src", "tests": "backend/tests", "match": "folder" },
       { "src": "packages/testing/src", "tests": "packages/testing/tests", "testOnly": true }
     ]
   }
