@@ -14,7 +14,7 @@
 // file for free and need nothing further from this script.
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -55,6 +55,17 @@ export function inSpecialGitOperation(gitDir, exists = existsSync) {
   return ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD"].some((marker) =>
     exists(path.join(gitDir, marker)),
   );
+}
+
+/** The nearest folder at or above a file that exists, since a Write may create the file's folders. */
+export function nearestExistingDir(file, exists = existsSync) {
+  let dir = path.dirname(file);
+  while (!exists(dir)) {
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return dir;
 }
 
 export function denyOutput(relPath, patterns) {
@@ -116,6 +127,22 @@ function claimLease(gitDir, sessionId, branch) {
   }
 }
 
+/** The checkout that holds a file, and the file's path inside it, or null when no checkout does. */
+async function checkoutOf(file) {
+  const dir = nearestExistingDir(file);
+  if (!dir) return null;
+  let top;
+  try {
+    top = (await execFileAsync("git", ["rev-parse", "--show-toplevel"], { cwd: dir })).stdout.trim();
+  } catch {
+    return null;
+  }
+  // Git and the hook input can spell one folder two ways on Windows: short names, slash direction.
+  const root = realpathSync.native(top);
+  const inside = path.join(realpathSync.native(dir), path.relative(dir, file));
+  return { root, rel: path.relative(root, inside).split(path.sep).join("/") };
+}
+
 /** @returns a deny payload when this agent may not generate code here, or null. */
 async function isolationVerdict(root, relPath, sessionId) {
   let settings;
@@ -155,14 +182,23 @@ export async function run(root) {
   } catch {
     return null;
   }
+  return decide(call, root);
+}
+
+/** The verdict on one Write or Edit call. @returns a deny payload, or null to allow it. */
+export async function decide(call, root) {
   const file = call.tool_input?.file_path;
   if (!file) return null;
-  const rel = path.relative(root, file).split(path.sep).join("/");
+  const absolute = path.resolve(root, file);
+  const rel = path.relative(root, absolute).split(path.sep).join("/");
 
-  // Isolation is declared by the repository, not by a work order, so it also binds the agent that
-  // declared no work order -- which is exactly the one that edits the trunk by accident.
-  const refusal = await isolationVerdict(root, rel, call.session_id);
-  if (refusal) return refusal;
+  // Isolation binds the checkout that holds the file, whichever one the session opened, and binds
+  // the agent that declared no work order too -- the one that edits the trunk by accident.
+  const checkout = await checkoutOf(absolute);
+  if (checkout) {
+    const refusal = await isolationVerdict(checkout.root, checkout.rel, call.session_id);
+    if (refusal) return refusal;
+  }
 
   const manifestPath = path.join(root, ".claude", "work-order.local.json");
   if (!existsSync(manifestPath)) return null;
