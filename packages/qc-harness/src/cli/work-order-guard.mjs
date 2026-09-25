@@ -14,20 +14,26 @@
 // file for free and need nothing further from this script.
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { load } from "../config.mjs";
+import { claimLease, leaseFileOf, readLease } from "./lease-file.mjs";
 import {
   OFF,
   denyOutput as isolationDeny,
   isolationRefusal,
   isolationSettings,
+  sessionIdOf,
   worktreeKind,
 } from "./worktree-isolation.mjs";
 
 const execFileAsync = promisify(execFile);
+const slashed = (file) => file.split(path.sep).join("/");
+
+// The refusal names this copy of the CLI: a repository's own `qc` can be a version with no `lease`.
+const QC = `node "${slashed(fileURLToPath(new URL("./qc.mjs", import.meta.url)))}"`;
 
 export function globToRegExp(glob) {
   const body = glob
@@ -104,29 +110,6 @@ async function gitState(root) {
   return { branch, gitDir, kind: worktreeKind(gitDir, commonDir) };
 }
 
-const LEASE_FILE = "qc-agent-lease.json";
-
-function readLease(gitDir) {
-  const file = path.join(gitDir, LEASE_FILE);
-  if (!existsSync(file)) return null;
-  try {
-    return JSON.parse(readFileSync(file, "utf8"));
-  } catch {
-    return null;
-  }
-}
-
-/** The lease lives in the worktree's own git dir: never committed, and gone when the worktree is. */
-function claimLease(gitDir, sessionId, branch) {
-  if (!sessionId) return;
-  try {
-    const payload = { sessionId, branch, updatedAt: new Date().toISOString() };
-    writeFileSync(path.join(gitDir, LEASE_FILE), `${JSON.stringify(payload, null, 2)}\n`);
-  } catch {
-    // A read-only or absent git dir is not a reason to block an edit.
-  }
-}
-
 /** The checkout that holds a file, and the file's path inside it, or null when no checkout does. */
 async function checkoutOf(file) {
   const dir = nearestExistingDir(file);
@@ -144,7 +127,7 @@ async function checkoutOf(file) {
 }
 
 /** @returns a deny payload when this agent may not generate code here, or null. */
-async function isolationVerdict(root, relPath, sessionId) {
+async function isolationVerdict(root, relPath, call) {
   let settings;
   try {
     settings = isolationSettings(load(root).swarm);
@@ -160,6 +143,7 @@ async function isolationVerdict(root, relPath, sessionId) {
   } catch {
     return null;
   }
+  const sessionId = sessionIdOf(call.session_id);
   const reason = isolationRefusal({
     settings,
     branch: state.branch,
@@ -168,9 +152,13 @@ async function isolationVerdict(root, relPath, sessionId) {
     lease: readLease(state.gitDir),
     sessionId,
     now: Date.now(),
+    leaseFile: slashed(leaseFileOf(state.gitDir)),
+    root: slashed(root),
+    qc: QC,
   });
   if (reason) return isolationDeny(reason);
-  claimLease(state.gitDir, sessionId, state.branch);
+  // Only the PreToolUse hook claims: a hand run of this script with a made-up session never does.
+  if (call.hook_event_name === "PreToolUse") claimLease(state.gitDir, sessionId, state.branch);
   return null;
 }
 
@@ -196,7 +184,7 @@ export async function decide(call, root) {
   // the agent that declared no work order too -- the one that edits the trunk by accident.
   const checkout = await checkoutOf(absolute);
   if (checkout) {
-    const refusal = await isolationVerdict(checkout.root, checkout.rel, call.session_id);
+    const refusal = await isolationVerdict(checkout.root, checkout.rel, call);
     if (refusal) return refusal;
   }
 

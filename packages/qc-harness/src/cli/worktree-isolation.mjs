@@ -39,13 +39,54 @@ export function worktreeKind(gitDir, gitCommonDir) {
   return path.resolve(gitDir) === path.resolve(gitCommonDir) ? "primary" : "linked";
 }
 
-/** A lease is another agent's only while it is fresh -- an abandoned session must not wedge a worktree. */
+const HOUR = 3_600_000;
+
+/** A session id is a non-empty string; anything else is no session at all. */
+export function sessionIdOf(value) {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+/**
+ * The lease clock, the one place its age and lapse are computed. A lease binds only while it is fresh,
+ * so an abandoned session cannot wedge a worktree; no holder, or a bad or future time, never binds.
+ */
+export function leaseState(lease, now, leaseHours) {
+  const holder = sessionIdOf(lease?.sessionId);
+  const written = Date.parse(lease?.updatedAt ?? "");
+  const age = now - written;
+  const lapsesAt = written + leaseHours * HOUR;
+  const live = holder !== null && age >= 0 && now <= lapsesAt;
+  return { holder, branch: lease?.branch ?? null, written, age, lapsesAt, live };
+}
+
+/** @returns the lease state when another session holds the worktree, or null. */
 export function leaseHeldByAnother(lease, sessionId, now, leaseHours) {
-  if (!lease?.sessionId || !sessionId) return null;
-  if (lease.sessionId === sessionId) return null;
-  const age = now - Date.parse(lease.updatedAt ?? 0);
-  if (!(age >= 0) || age > leaseHours * 3_600_000) return null;
-  return lease;
+  const caller = sessionIdOf(sessionId);
+  const state = leaseState(lease, now, leaseHours);
+  if (!caller || !state.live || state.holder === caller) return null;
+  return state;
+}
+
+export function duration(ms) {
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return `${Math.floor(ms / 1000)}s`;
+  const hours = Math.floor(minutes / 60);
+  return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+}
+
+export const timestamp = (ms) => new Date(ms).toISOString();
+
+function heldRefusal(held, { branch, now, leaseFile, root, qc }) {
+  const at = `"${root}"`;
+  return (
+    `Another agent (session ${held.holder}) is already working in this worktree on ` +
+    `"${held.branch ?? branch}". Two agents on one branch lose each other's edits. ` +
+    `Take your own: \`git worktree add ../<slug> -b <branch>\`. ` +
+    `The lease is ${leaseFile}, written ${duration(held.age)} ago; it lapses at ` +
+    `${timestamp(held.lapsesAt)}, in ${duration(held.lapsesAt - now)}. See it: \`${qc} lease status ${at}\`. ` +
+    `Its holder releases it: \`${qc} lease release ${at} --session <id>\`. ` +
+    `Releasing another session's lease is a person's call: \`${qc} lease release ${at} --force\`.`
+  );
 }
 
 /**
@@ -73,14 +114,7 @@ export function isolationRefusal(state) {
     );
   }
   const held = leaseHeldByAnother(lease, sessionId, now, settings.leaseHours);
-  if (held) {
-    return (
-      `Another agent (session ${held.sessionId.slice(0, 8)}) is already working in this worktree on ` +
-      `"${held.branch ?? branch}". Two agents on one branch lose each other's edits. ` +
-      `Take your own: \`git worktree add ../<slug> -b <branch>\`.`
-    );
-  }
-  return null;
+  return held ? heldRefusal(held, state) : null;
 }
 
 export function denyOutput(reason) {

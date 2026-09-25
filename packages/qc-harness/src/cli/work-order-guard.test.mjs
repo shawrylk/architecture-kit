@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -123,4 +123,82 @@ test("the primary checkout is refused even when the session opened the linked wo
   t.after(repo.cleanup);
   const output = await decide(editOf(path.join(repo.primary, "src", "file.ts")), repo.linked);
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /"main" is a protected branch/);
+});
+
+const GUARD = fileURLToPath(new URL("./work-order-guard.mjs", import.meta.url));
+const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
+const slashed = (file) => file.split(path.sep).join("/");
+const hookEditOf = (file, sessionId) => ({
+  hook_event_name: "PreToolUse",
+  tool_name: "Edit",
+  tool_input: { file_path: file },
+  session_id: sessionId,
+});
+
+function leaseFileOf(worktree) {
+  const gitDir = execFileSync("git", ["rev-parse", "--absolute-git-dir"], { cwd: worktree, encoding: "utf8" }).trim();
+  return path.join(realpathSync.native(gitDir), "qc-agent-lease.json");
+}
+
+/** Runs the guard as its own process, the way a hand test does, with the project pinned to the temp repository. */
+function runGuard(worktree, input) {
+  return spawnSync(process.execPath, [GUARD], {
+    cwd: worktree,
+    input,
+    env: { ...process.env, CLAUDE_PROJECT_DIR: worktree },
+    encoding: "utf8",
+  });
+}
+
+test("a direct run of the guard with no hook input writes no lease", (t) => {
+  const repo = isolatedRepository();
+  t.after(repo.cleanup);
+  const result = runGuard(repo.linked, "");
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(leaseFileOf(repo.linked)), false);
+});
+
+test("a hand-built input with a made-up session and no hook event writes no lease", (t) => {
+  const repo = isolatedRepository();
+  t.after(repo.cleanup);
+  const input = JSON.stringify({ tool_input: { file_path: path.join(repo.linked, "src", "a.ts") }, session_id: "test-session" });
+  const result = runGuard(repo.linked, input);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(leaseFileOf(repo.linked)), false);
+});
+
+test("PreToolUse hook input claims the lease for its session and branch", (t) => {
+  const repo = isolatedRepository();
+  t.after(repo.cleanup);
+  const result = runGuard(repo.linked, JSON.stringify(hookEditOf(path.join(repo.linked, "src", "a.ts"), "session-aaaa")));
+  assert.equal(result.status, 0, result.stderr);
+  const lease = JSON.parse(readFileSync(leaseFileOf(repo.linked), "utf8"));
+  assert.equal(lease.sessionId, "session-aaaa");
+  assert.equal(lease.branch, "feat/work-order");
+});
+
+test("PreToolUse hook input with a blank session id claims no lease", async (t) => {
+  const repo = isolatedRepository();
+  t.after(repo.cleanup);
+  assert.equal(await decide(hookEditOf(path.join(repo.linked, "src", "a.ts"), "   "), repo.linked), null);
+  assert.equal(existsSync(leaseFileOf(repo.linked)), false);
+});
+
+test("a second session is refused with the lease file, its holder, and commands this copy can run", async (t) => {
+  const repo = isolatedRepository();
+  t.after(repo.cleanup);
+  const file = path.join(repo.linked, "src", "a.ts");
+  assert.equal(await decide(hookEditOf(file, "session-aaaa"), repo.linked), null);
+  const output = await decide(hookEditOf(file, "session-bbbb"), repo.linked);
+  const reason = output.hookSpecificOutput.permissionDecisionReason;
+  assert.ok(reason.includes(slashed(leaseFileOf(repo.linked))), reason);
+  assert.ok(reason.includes("session session-aaaa"), reason);
+  assert.ok(reason.includes(`lease release "${slashed(repo.linked)}" --force`), reason);
+
+  const status = reason.match(/`node "([^"]+)" lease status "([^"]+)"`/);
+  assert.ok(status, `the refusal names no runnable status command: ${reason}`);
+  assert.equal(path.resolve(status[1]), QC, "the command must name this copy of the CLI, not whichever qc is on the path");
+  const shown = spawnSync(process.execPath, [status[1], "lease", "status", status[2]], { cwd: repo.outside, encoding: "utf8" });
+  assert.equal(shown.status, 0, shown.stderr);
+  assert.match(shown.stdout, /session-aaaa/);
 });
