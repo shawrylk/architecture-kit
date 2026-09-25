@@ -118,3 +118,47 @@ test("one present feature root is enough", async () => {
   );
   rmSync(dir, { recursive: true, force: true });
 });
+
+const MIRROR_RULES = new Set(["unmirrored-test", "orphaned-test", "invalid-mirror-root"]);
+
+/** An initialised repository with two mirror roots, and the given files under it. */
+async function mirrored(files) {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  const roots = [{ src: "frontend/src", tests: "frontend/tests" }, { src: "backend/src", tests: "backend/tests" }];
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ testMirror: { roots } }));
+  for (const file of files) {
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    writeFileSync(path.join(dir, file), "export {};\n");
+  }
+  return dir;
+}
+
+// backend/tests is in no citable root, so only a walk of the configured roots can see its orphan.
+test("check judges every configured mirror root, including a tests folder outside the citable roots", async () => {
+  const dir = await mirrored([
+    "backend/src/orders/place.ts",
+    "backend/src/orders/place.test.ts",
+    "backend/src/orders/ship.ts",
+    "backend/tests/orders/ship.test.ts",
+    "backend/tests/orders/cancel.test.ts",
+  ]);
+  const { problems } = await runCheck(load(dir));
+  const found = problems.filter((problem) => MIRROR_RULES.has(problem.rule)).map(({ path: file, rule }) => ({ file, rule }));
+  assert.deepEqual(
+    found.sort((a, b) => a.file.localeCompare(b.file)),
+    [
+      { file: "backend/src/orders/place.test.ts", rule: "unmirrored-test" },
+      { file: "backend/tests/orders/cancel.test.ts", rule: "orphaned-test" },
+    ],
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a clean mirror run names every root it judged", async () => {
+  const dir = await mirrored(["backend/src/orders/ship.ts", "backend/tests/orders/ship.test.ts"]);
+  const { lines } = await runCheck(load(dir));
+  const line = lines.find((entry) => entry.startsWith("OK  mirror"));
+  assert.ok(line?.includes("frontend/tests") && line.includes("backend/tests"), `mirror line: ${line}`);
+  rmSync(dir, { recursive: true, force: true });
+});

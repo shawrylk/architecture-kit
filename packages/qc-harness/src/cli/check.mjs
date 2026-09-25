@@ -23,7 +23,7 @@ import { checkGatesAreTested } from "../gates/gate-tests.mjs";
 import { checkAuditAppendOnly } from "../gates/audit-append-only.mjs";
 import { checkEnforcementMap } from "../gates/enforcement-map.mjs";
 import { checkFrontendBoundaries } from "../gates/frontend-boundaries.mjs";
-import { checkTestMirror } from "../gates/test-mirror.mjs";
+import { checkTestMirror, mirrorFolders } from "../gates/test-mirror.mjs";
 import { checkCommentStyle } from "../gates/comment-style.mjs";
 import { checkEnglishSource, checkTranslationPairs } from "../gates/english-source.mjs";
 import { checkAdrFormat } from "../gates/adr-format.mjs";
@@ -502,13 +502,19 @@ export async function runCheck(config, only) {
     }
   }
   if (enabled(config.gates, "test-mirror")) {
-    const all = await sourceFiles(config);
-    const testPaths = all.filter((file) => TEST_FILE.test(file.path)).map((file) => file.path);
-    const srcPaths = all.filter((file) => !TEST_FILE.test(file.path)).map((file) => file.path);
-    const mirrorProblems = checkTestMirror(testPaths, srcPaths);
+    const { roots } = config.testMirror;
+    const walked = new Set();
+    for (const dir of mirrorFolders(roots)) {
+      for (const file of await sourceFiles(config, dir)) walked.add(file.path);
+    }
+    const all = [...walked];
+    const testPaths = all.filter((file) => TEST_FILE.test(file));
+    const srcPaths = all.filter((file) => !TEST_FILE.test(file));
+    const mirrorProblems = checkTestMirror(testPaths, srcPaths, roots);
     problems.push(...mirrorProblems);
     if (mirrorProblems.length === 0) {
-      lines.push("OK  mirror       frontend tests mirror src paths 1:1, no orphaned test");
+      const judged = roots.map((root) => root.tests).join(", ") || "no configured root";
+      lines.push(`OK  mirror       tests mirror src paths 1:1, no orphaned test, in ${judged}`);
     }
   }
 

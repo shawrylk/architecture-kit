@@ -7,22 +7,29 @@ import { runCheck } from "./check.mjs";
 
 const USAGE = `qc — architecture gates
 
-  qc check [file]        every structural gate; one file is the fast path a hook takes
-  qc init                scaffold the docs, config, hooks and workflow into this repository
-  qc feature <name>      scaffold a feature in the configured anatomy
-  qc run [name]          drive one feature command headless; no name lists them
-  qc install-hooks       point git at the kit's pre-commit hook
-  qc work-order-check    refuse to commit on the wrong branch, per .claude/work-order.local.json
-  qc commit-msg <file>   refuse a commit message that credits a tool as an author
-  qc decisions [id]      where decisions are cited; --squash closes the gaps
-  qc enforcement-map     refresh the generated rule/gate table in docs/enforcement.md
-  qc doctor              the hooks and the lockfile must run the same harness
-  qc config              print the resolved configuration
+  qc check [file]          every structural gate; one file is the fast path a hook takes
+  qc init                  scaffold the docs, config, hooks and workflow into this repository
+  qc feature <name>        scaffold a feature in the configured anatomy
+  qc run [name]            drive one feature command headless; no name lists them
+  qc install-hooks         point git at the kit's pre-commit hook
+  qc work-order-check      refuse to commit on the wrong branch, per .claude/work-order.local.json
+  qc lease status [path]   who holds this worktree's lease, since when, and when it lapses
+  qc lease release [path]  remove it: --session <id> for your own, --force for another's
+  qc commit-msg <file>     refuse a commit message that credits a tool as an author
+  qc decisions [id]        where decisions are cited; --squash closes the gaps
+  qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
+  qc doctor                the hooks and the lockfile must run the same harness
+  qc config                print the resolved configuration
 
 Every gate reads qc.config.json. A key it does not set keeps the reference default.`;
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  // A broken qc.config.json must not keep a lease in place, so the lease runs before the load.
+  if (command === "lease") {
+    const { runLease } = await import("./lease.mjs");
+    process.exit(await runLease(rest));
+  }
   const config = load(process.cwd());
 
   switch (command) {
