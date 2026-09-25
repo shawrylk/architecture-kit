@@ -128,6 +128,12 @@ export const defaults = {
   // Files that may only present, never orchestrate.
   presenters: "frontend/src/features/*/trigger",
 
+  // Where the test-mirror gate looks. A test in `src` is misplaced; a test in `tests` mirrors a source
+  // file there, unless its root is `testOnly`: a package whose code is test support.
+  testMirror: {
+    roots: [{ src: "frontend/src", tests: "frontend/tests" }],
+  },
+
   // A workflow is headless-first: declared by one of these, and proven by a test that
   // imports none of the view modules. docs/architecture.md.
   saga: {

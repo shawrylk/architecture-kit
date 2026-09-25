@@ -168,6 +168,33 @@ per gate and per rule.
 A test fails if a switch ever stops reaching the runner, so the config cannot quietly lie about what
 it controls.
 
+### Mirror the tests of more than one root
+
+The `test-mirror` gate judges every root in `testMirror.roots`. The default is one root:
+`frontend/src` with `frontend/tests`.
+
+- A test inside `src` fails as `unmirrored-test`.
+- A test inside `tests` fails as `orphaned-test` when `src` has no file at its path, and no folder
+  with an `index` there.
+- A root with `testOnly: true` holds test support, such as a shared interop-test package. Its tests
+  need no source file.
+
+```json
+{
+  "testMirror": {
+    "roots": [
+      { "src": "frontend/src", "tests": "frontend/tests" },
+      { "src": "backend/src", "tests": "backend/tests" },
+      { "src": "packages/testing/src", "tests": "packages/testing/tests", "testOnly": true }
+    ]
+  }
+}
+```
+
+The list replaces the default, so name the frontend root again to keep it. The gate walks these
+folders itself, so they need no entry in `paths.citable`. A test belongs to the first root whose
+`tests` folder holds it, and otherwise to the first root whose `src` folder holds it.
+
 ## Tests
 
 ```bash
