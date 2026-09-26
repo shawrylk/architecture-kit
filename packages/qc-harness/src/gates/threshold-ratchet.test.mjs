@@ -40,6 +40,20 @@ test("a new entry passes", () => {
   assert.deepEqual(check({ ...base, nesting: { value: 9, comparator: "max" } }), []);
 });
 
+test("a removed entry fails, because dropping a limit is the widest loosening", () => {
+  const { coverage, ...rest } = base;
+  const problems = check(rest);
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].rule, "removed-threshold");
+  assert.match(problems[0].detail, /coverage/);
+});
+
+test("a removed entry passes when a changed ADR names it", () => {
+  const { coverage, ...rest } = base;
+  const adrs = [{ path: "docs/decisions/0032-coverage.md", text: "We retire `coverage` in favour of mutation score." }];
+  assert.deepEqual(check(rest, adrs), []);
+});
+
 test("the comparator in force at the base judges the change", () => {
   const after = { ...base, filelength: { value: 550, comparator: "min" } };
   assert.equal(check(after).length, 1);
