@@ -11,7 +11,11 @@
 const CONSTRAINT_OPENER = new Set(["primary", "unique", "check", "constraint", "foreign", "exclude", "like"]);
 const COLUMN_LINE = /^([a-z_][a-z0-9_]*)\s+\S/;
 const CREATE_TABLE = /create table (?:if not exists )?(\w+)\s*\(/g;
-const ADD_COLUMN = /alter table (\w+)\s+add column (?:if not exists )?([a-z_]+)\s+/g;
+const ALTER_TABLE = /\balter table (?:if exists )?(?:only )?(\w+)\s/g;
+const ADD_COLUMN = /\badd column (?:if not exists )?([a-z_][a-z0-9_]*)\s/g;
+// A statement ends at a semicolon outside a quoted string. A missed one must not hand a column to
+// the table before it, so the next statement's opening word ends the slice too.
+const STATEMENT_END = /;|\b(?:alter|create)\s+table\b/g;
 const INDEX_NAME = /\bindex\("([a-z_]+)"\)/g;
 // Columns are matched by shape — every column in this schema is snake_case.
 const SNAKE = /\b([a-z][a-z0-9]*_[a-z0-9_]+)\b/g;
@@ -83,16 +87,31 @@ export function declaredColumns(sources) {
       tables.set(match[1], columns);
       match = CREATE_TABLE.exec(sql);
     }
-    ADD_COLUMN.lastIndex = 0;
-    let added = ADD_COLUMN.exec(sql);
-    while (added !== null) {
-      const columns = tables.get(added[1]) ?? new Set();
-      columns.add(added[2]);
-      tables.set(added[1], columns);
-      added = ADD_COLUMN.exec(sql);
-    }
+    addedColumns(tables, sql);
   }
   return tables;
+}
+
+/**
+ * Quoted strings and line comments declare nothing, and a semicolon inside one ends nothing. One pass
+ * reads them in order, so an apostrophe inside a comment opens no string.
+ */
+const blanked = (sql) => sql.replace(/--[^\n]*|'(?:[^']|'')*'/g, (found) => (found.startsWith("--") ? "" : "''"));
+
+/** Every `add column` of each `alter table` statement, a comma list included. */
+function addedColumns(tables, sql) {
+  const plain = blanked(sql);
+  ALTER_TABLE.lastIndex = 0;
+  for (let alter = ALTER_TABLE.exec(plain); alter !== null; alter = ALTER_TABLE.exec(plain)) {
+    const rest = plain.slice(alter.index + alter[0].length);
+    STATEMENT_END.lastIndex = 0;
+    const end = STATEMENT_END.exec(rest);
+    const added = [...(end === null ? rest : rest.slice(0, end.index)).matchAll(ADD_COLUMN)];
+    if (added.length === 0) continue;
+    const columns = tables.get(alter[1]) ?? new Set();
+    for (const [, column] of added) columns.add(column);
+    tables.set(alter[1], columns);
+  }
 }
 
 /**

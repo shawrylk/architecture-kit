@@ -6,6 +6,7 @@ export const gateDescriptions = Object.freeze({
   "registry-agreement": "A value written twice agrees with the registry that owns it",
   "registry-readers": "Every reader a registry entry names exists and names the entry",
   "sql-identifiers": "A query names a column a migration declares, and only its own feature's tables",
+  "migration-numbers": "Each migration number is unique, and the numbers run with no gap",
   "tenant-predicate": "Every statement on a business table filters on the tenant",
   "claimed-requirements": "A requirement a route claims names the test that proves it",
   "public-routes": "The edge lets through exactly the routes the api serves without a session",

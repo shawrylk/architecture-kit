@@ -24,6 +24,33 @@ test("a later expand migration adds its column to the same table", () => {
 
 const resource = (sql) => `const SQL = \`${sql}\`;`;
 
+test("every column of a comma list of add column is declared, and each is checked", () => {
+  const expand = `alter table projects
+  add column archived_at timestamptz,
+  add column if not exists site_code2 text default 'a;b',
+  add column owner_id uuid;`;
+  const tables = declaredColumns([ddl, expand]);
+  assert.deepEqual(
+    ["archived_at", "site_code2", "owner_id"].filter((column) => !tables.get("projects").has(column)),
+    [],
+  );
+  const agreeing = resource("select owner_id, site_code2 from projects where tenant_id = $1");
+  assert.deepEqual(checkSqlIdentifiers(tables, [{ path: "r.ts", source: agreeing }]), []);
+  const unknown = resource("select owner_id, owner_name from projects where tenant_id = $1");
+  const problems = checkSqlIdentifiers(tables, [{ path: "r.ts", source: unknown }]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].detail, /'owner_name'/);
+});
+
+test("an add column belongs to its own alter table, never to the one before it", () => {
+  const tables = declaredColumns([
+    ddl,
+    "alter table projects enable row level security\ncreate table sites (id uuid);\n-- a site's name\nalter table sites add column site_name text;",
+  ]);
+  assert.equal(tables.get("projects").has("site_name"), false);
+  assert.ok(tables.get("sites").has("site_name"));
+});
+
 test("an agreeing slice has no finding", () => {
   const tables = declaredColumns([ddl]);
   const source = resource("select id, tenant_id, code from projects where tenant_id = $1");

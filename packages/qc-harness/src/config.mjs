@@ -273,6 +273,7 @@ export const defaults = {
     "registry-agreement": true,
     "registry-readers": true,
     "sql-identifiers": true,
+    "migration-numbers": true,
     "tenant-predicate": true,
     "claimed-requirements": true,
     "public-routes": true,

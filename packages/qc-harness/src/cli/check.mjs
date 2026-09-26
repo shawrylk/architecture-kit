@@ -32,6 +32,7 @@ import { defaults } from "../config.mjs";
 import { rules as lintRules } from "../eslint/index.mjs";
 import { enabled, readerEntries, thresholds } from "../config.mjs";
 import { checkRegistryReaders } from "../gates/registry-readers.mjs";
+import { checkMigrationNumbers } from "../gates/migration-numbers.mjs";
 import { repoFiles } from "./repo-files.mjs";
 
 // Each skip is tested on "/" + the relative path, so it reads a path the way it read a full one.
@@ -468,6 +469,13 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     lines.push("OK  sql          every column is declared, every statement and shared insert carries the tenant");
     // An exemption is counted and named, so it stays a decision rather than a habit.
     for (const exemption of taken) lines.push(`  exempt       ${exemption.path}: ${exemption.reason}`);
+  }
+
+  if (enabled(config.gates, "migration-numbers")) {
+    const migrationDir = posix(config.paths.migrations);
+    const names = tree.namesIn(migrationDir).filter((name) => tree.isFile(join(migrationDir, name)));
+    problems.push(...checkMigrationNumbers(names, migrationDir));
+    if (names.length > 0) lines.push(`OK  migrations   ${names.filter((name) => name.endsWith(".sql")).length} migration(s), each number unique, with no gap`);
   }
 
   if (enabled(config.gates, "saga-tests")) {
