@@ -73,7 +73,7 @@ function thresholdProblems(file, words, entries, known) {
       problems.push({
         path: `${file}:${word.line}`,
         rule: "threshold-literal",
-        detail: `'${word.raw}' restates the '${entry.key}' threshold (${entry.value}${entry.unit ? ` ${entry.unit}` : ""}); write {{q:${entry.key}}}`,
+        detail: `'${word.norm}' restates the '${entry.key}' threshold (${entry.value}${entry.unit ? ` ${entry.unit}` : ""}); write {{q:${entry.key}}}`,
       });
     }
   });

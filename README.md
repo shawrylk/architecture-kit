@@ -209,8 +209,10 @@ and allows `@ts-expect-error` with a description.
 **Gates**, for what lint cannot see — feature anatomy; citations (every cited id resolves, no
 dangling doc path, no reference to another repository); the tenant predicate (every statement on a
 business table filters on the tenant, including the one nobody wrote a test for); SQL identifiers (a
-query names a column a migration declares); public and internal route agreement; claimed
-requirements; headless pipelines; registry agreement; registry readers.
+query names a column a migration declares, every column of a comma list of `add column` included);
+migration numbers (unique, with no gap); public and internal route agreement; claimed requirements;
+headless pipelines; registry agreement; registry readers; registry literals in the docs; the
+threshold ratchet.
 
 Two more are generators your codegen imports rather than checks `qc check` runs: `tenant-tables`
 (the row-level-security policy file) and `contract-compose`.
@@ -261,6 +263,41 @@ An entry in `quality-thresholds.json` can carry two more keys:
 `qc/registry-literal` reports a numeric literal bound to a matching name, in a variable, a property
 or a class field, in any file that is not a reader. The `registry-readers` gate fails when a reader
 does not exist, or never names the entry key, as a string or through the registry accessor.
+
+### Keep registry figures out of the docs
+
+The `registry-literal` gate reads every `.md` file under `docs.root`. It reports two kinds of figure:
+
+- A threshold: the number of an entry in `quality-thresholds.json`, within six words of a phrase in the
+  entry's `match` list, in the same paragraph. The number carries the entry's unit or none. Another
+  number near the phrase passes.
+- A version: a library `label` from `versions.json`, followed by a version number.
+
+Write `{{q:<id>}}` for a threshold and `{{ver:<id>}}` or `{{v:<id>}}` for a version. The ADR log may
+state a figure, because a decision states the number as of its date. That log is each file under
+`adr.root` and the decision register `docs.decisions`. Set `registryLiteral.exempt` to a list of
+globs to replace it.
+
+```json
+{ "versions": "versions.json", "registryLiteral": { "exempt": ["docs/decisions/**", "docs/history.md"] } }
+```
+
+### Loosen a threshold only with a decision
+
+The `threshold-ratchet` gate compares each entry of `quality-thresholds.json` with the same entry at
+`git merge-base <ratchet.base> HEAD`. A `max` that rises or a `min` that falls fails, unless the
+change touches an ADR file (the ADR log above) whose text names the entry key. A new entry passes.
+With no git, no commit, no `ratchet.base` ref, or no merge base, as in a shallow clone, the gate
+prints an `OK` line that says why it skipped.
+
+```json
+{ "ratchet": { "base": "origin/main" } }
+```
+
+### Number the migrations without a gap
+
+The `migration-numbers` gate reads the `<number>_<name>.sql` files in `paths.migrations`. Each number
+is unique, and the numbers run from the lowest to the highest with no gap.
 
 ### Mirror the tests of more than one root
 
