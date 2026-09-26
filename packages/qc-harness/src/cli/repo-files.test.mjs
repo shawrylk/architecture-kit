@@ -37,6 +37,25 @@ test("a tracked file is listed, also under a folder that git ignores", async () 
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("a tracked file deleted from the working tree, but not staged, is not listed", async () => {
+  const dir = checkout({ "src/a.ts": "", "src/b.ts": "" });
+  git(dir, "add", "src/a.ts", "src/b.ts");
+  git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+  rmSync(path.join(dir, "src/b.ts"));
+  assert.deepEqual(await repoFiles(dir), ["src/a.ts"]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("the old name of an unstaged move is not listed, and the new name is", async () => {
+  const dir = checkout({ "src/old.ts": "" });
+  git(dir, "add", "src/old.ts");
+  git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init");
+  writeFileSync(path.join(dir, "src/new.ts"), "");
+  rmSync(path.join(dir, "src/old.ts"));
+  assert.deepEqual(await repoFiles(dir), ["src/new.ts"]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("ignores drop a path at the root and below, as ESLint reads them", async () => {
   const dir = checkout({ "dist/a.js": "", "pkg/dist/b.js": "", "pkg/c.tsbuildinfo": "", "pkg/d.ts": "" });
   const ignores = ["**/dist/**", "**/*.tsbuildinfo"];

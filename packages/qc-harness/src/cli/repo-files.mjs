@@ -17,13 +17,18 @@ function ignoredBy(globs) {
   return (rel) => patterns.some((pattern) => pattern.test(rel) || pattern.test(`/${rel}`));
 }
 
+// `-t` tags each entry. `R` is a tracked file gone from the working tree and `S` is skip-worktree, so neither is on disk.
+const NOT_ON_DISK = new Set(["R", "S"]);
+
 /** @returns {Promise<string[] | null>} null when `root` is in no git work tree */
 async function gitListing(root, pathspecs) {
-  const args = ["--literal-pathspecs", "ls-files", "-z", "--cached", "--others", "--exclude-standard"];
+  const args = ["--literal-pathspecs", "ls-files", "-z", "-t", "--cached", "--deleted", "--others", "--exclude-standard"];
   if (pathspecs) args.push("--", ...pathspecs);
   try {
     const { stdout } = await execFileAsync("git", args, { cwd: root, maxBuffer: MAX_BUFFER });
-    return stdout.split("\0");
+    const entries = stdout.split("\0").filter((entry) => entry.length > 2);
+    const gone = new Set(entries.filter((entry) => NOT_ON_DISK.has(entry[0])).map((entry) => entry.slice(2)));
+    return entries.map((entry) => entry.slice(2)).filter((file) => !gone.has(file));
   } catch {
     return null;
   }
