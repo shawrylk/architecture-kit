@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// The PostToolUse trigger that holds a Bash command to the rules the edit guard holds Write and Edit
-// to: the work order's declared paths, and no change on a protected branch. A shell write through
-// sed, a script or a codemod never reaches the edit guard. This one warns and never reverts.
+// The PostToolUse trigger that holds a Bash or PowerShell command to the rules the edit guard holds
+// Write and Edit to: the work order's declared paths, and no change on a protected branch. A shell
+// write through sed, a script or a codemod never reaches the edit guard. This one warns and never reverts.
 
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
@@ -12,7 +12,8 @@ import { promisify } from "node:util";
 import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { ignoredPaths } from "./ignored-paths.mjs";
-import { checkoutDirs, mayWrite } from "./shell-command.mjs";
+import * as powershell from "./powershell-command.mjs";
+import * as posix from "./shell-command.mjs";
 import { isAllowed } from "./work-order-guard.mjs";
 import { MANIFEST_FILE, readManifest } from "./work-order-manifest.mjs";
 import { OFF, isolationSettings } from "./worktree-isolation.mjs";
@@ -52,9 +53,9 @@ function resolveDir(cwd, dir) {
 }
 
 /** Every distinct checkout the command could have changed: its cwd, and each `cd` and `git -C` directory. */
-function checkoutsOf(cwd, command) {
+function checkoutsOf(cwd, command, dialect) {
   const roots = new Set();
-  for (const dir of [cwd, ...checkoutDirs(command).map((d) => resolveDir(cwd, d))]) {
+  for (const dir of [cwd, ...dialect.checkoutDirs(command).map((d) => resolveDir(cwd, d))]) {
     const root = dir && checkoutRootOf(dir);
     const real = root && native(root);
     if (real) roots.add(real);
@@ -113,7 +114,8 @@ async function findingsIn(root, manifest, projectRoot) {
  */
 export async function report(call, projectRoot) {
   const command = call.tool_input?.command;
-  if (typeof command !== "string" || !mayWrite(command)) return null;
+  const dialect = call.tool_name === "PowerShell" ? powershell : posix;
+  if (typeof command !== "string" || !dialect.mayWrite(command)) return null;
   const cwd = call.cwd ?? process.cwd();
   const project = native(projectRoot) ?? projectRoot;
 
@@ -124,7 +126,7 @@ export async function report(call, projectRoot) {
     // The edit guard names a manifest that does not parse.
   }
   const findings = [];
-  for (const root of checkoutsOf(cwd, command)) findings.push(...(await findingsIn(root, manifest, project)));
+  for (const root of checkoutsOf(cwd, command, dialect)) findings.push(...(await findingsIn(root, manifest, project)));
   if (findings.length === 0) return null;
 
   const listed = findings.slice(0, MAX_LISTED).map((line) => `- ${line}`);

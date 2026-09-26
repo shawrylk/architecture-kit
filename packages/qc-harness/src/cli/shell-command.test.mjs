@@ -34,7 +34,7 @@ test("a redirect target is recorded apart from the words, and a descriptor copy 
 
 test("a git call names its subcommand and every -C directory", () => {
   const [segment] = segmentsOf(`GIT_PAGER=cat git -C "C:/a b" -c core.x=y --no-pager commit -m x`);
-  assert.deepEqual(gitCall(segment), { sub: "commit", dirs: ["C:/a b"] });
+  assert.deepEqual(gitCall(segment), { sub: "commit", dirs: ["C:/a b"], configs: ["core.x=y"], args: ["-m", "x"] });
   assert.equal(gitCall(segmentsOf("gitk --all")[0]), null);
 });
 
@@ -92,4 +92,27 @@ test("the checkout directories are every cd target and every git -C directory, i
     "/repo/d",
   ]);
   assert.deepEqual(checkoutDirs("ls"), []);
+});
+
+test("a git call carries each -c setting and the words after its subcommand", () => {
+  const [segment] = segmentsOf(`git -c core.hooksPath=/dev/null -C repo commit -m "a b" --no-verify`);
+  assert.deepEqual(gitCall(segment), {
+    sub: "commit",
+    dirs: ["repo"],
+    configs: ["core.hooksPath=/dev/null"],
+    args: ["-m", "a b", "--no-verify"],
+  });
+  assert.deepEqual(gitCall(segmentsOf("git --version")[0]), { sub: null, dirs: [], configs: [], args: [] });
+});
+
+test("the PowerShell escape keeps a backslash literal and escapes with a backtick", () => {
+  const powershell = { escape: "`" };
+  assert.deepEqual(
+    segmentsOf('Set-Content C:\\a\\b.txt "x`"y" ; Get-Item `$HOME', powershell).map((segment) => segment.words),
+    [
+      ["Set-Content", "C:\\a\\b.txt", 'x"y'],
+      ["Get-Item", "$HOME"],
+    ],
+  );
+  assert.deepEqual(segmentsOf("Get-Date > C:\\out\\d.txt", powershell)[0].redirects, ["C:\\out\\d.txt"]);
 });
