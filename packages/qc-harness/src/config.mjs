@@ -241,6 +241,13 @@ export const defaults = {
   // racing against a cancellation, and observing a rejection nobody is waiting for any more.
   promise: { allow: [] },
 
+  // Enter and Escape in text entry wait for the IME. `components` are a repository's own text
+  // inputs. `guards` name the one guard function; empty accepts an inline isComposing or keyCode check.
+  ime: { components: [], guards: [] },
+
+  // Files a person reviewed that may call sql.raw. Each one is a decision, so the list stays short.
+  sqlRaw: { allow: [] },
+
   anatomy: {
     // Bounded vertical slices.
     slice: {
@@ -264,6 +271,7 @@ export const defaults = {
     "eight-blocks": true,
     citations: true,
     "registry-agreement": true,
+    "registry-readers": true,
     "sql-identifiers": true,
     "tenant-predicate": true,
     "claimed-requirements": true,
@@ -306,6 +314,9 @@ export const defaults = {
     "tenant-scoped-table": true,
     "signal-last-param": true,
     "no-raw-fetch": true,
+    "no-sql-raw": true,
+    "ime-safe-key": true,
+    "registry-literal": true,
     "durable-idempotency-key": true,
     "no-supersession-trail": true,
   },
@@ -374,6 +385,16 @@ export function thresholds(config) {
   const file = path.join(config.root ?? process.cwd(), config.thresholds);
   if (!existsSync(file)) return {};
   return createRequire(import.meta.url)(file).gates ?? {};
+}
+
+/**
+ * Registry entries that say who may hold their number. `names` are identifier patterns, each a
+ * regular expression matched against the whole identifier, case-insensitive. `readers` are paths.
+ */
+export function readerEntries(registry) {
+  return Object.entries(registry)
+    .filter(([, entry]) => entry.names?.length > 0 || entry.readers?.length > 0)
+    .map(([key, entry]) => ({ key, names: entry.names ?? [], readers: entry.readers ?? [] }));
 }
 
 export function enabled(map, id) {

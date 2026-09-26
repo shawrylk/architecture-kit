@@ -1,5 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { Linter } from "eslint";
+import tseslint from "@typescript-eslint/eslint-plugin";
+import tsparser from "@typescript-eslint/parser";
 import { defaults, merge } from "../config.mjs";
 import { rules as allRules } from "./index.mjs";
 import { preset } from "./preset.mjs";
@@ -78,6 +84,62 @@ test("a repository with no layers still gets the browser rules", () => {
   const client = blocks.find((b) => JSON.stringify(b.files) === JSON.stringify(["app/**/*.tsx"]));
   assert.ok(client, "no client block emitted");
   assert.ok(client.rules["qc/no-raw-fetch"]);
+});
+
+/** One file through the whole preset, the way a consumer's `eslint .` sees it. */
+function lint(code, filename, override = {}) {
+  const blocks = preset({
+    config: config(override),
+    plugins: { tseslint },
+    languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
+  });
+  return new Linter({ configType: "flat" }).verify(code, blocks, filename);
+}
+
+const RESOURCE = "backend/src/features/pins/resource.ts";
+const MIGRATE = "backend/src/infrastructure/db/migrate.ts";
+const byRule = (messages, ruleId) => messages.filter((m) => m.ruleId === ruleId);
+
+test("a registry entry with names reaches qc/registry-literal, and one without stays out", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-preset-"));
+  const holdpress = { value: 400, names: ["HOLD_\\w*MS"], readers: ["frontend/src/platform/gesture-thresholds.ts"] };
+  writeFileSync(path.join(root, "quality-thresholds.json"), JSON.stringify({ gates: { holdpress, coverage: { value: 70 } } }));
+  const setting = emitted(preset({ config: { ...config(), root } })).get("qc/registry-literal");
+  assert.deepEqual(setting[1].entries, [{ key: "holdpress", names: holdpress.names, readers: holdpress.readers }]);
+});
+
+test("the ime config reaches qc/ime-safe-key", () => {
+  const setting = emitted(preset({ config: config({ ime: { guards: ["isImeComposing"] } }) })).get("qc/ime-safe-key");
+  assert.deepEqual(setting[1], { components: [], guards: ["isImeComposing"] });
+});
+
+test("the preset refuses an inline config comment in every file", () => {
+  const block = preset({ config: config() }).find((b) => b.linterOptions);
+  assert.ok(block, "no linterOptions block emitted");
+  assert.equal(block.files, undefined, "linterOptions must reach every file");
+  assert.deepEqual(block.linterOptions, { noInlineConfig: true, reportUnusedDisableDirectives: "error" });
+});
+
+test("an inline disable comment does not silence a rule", () => {
+  const messages = lint("// eslint-disable-next-line qc/no-sql-raw\nawait db.execute(sql.raw(text));\n", RESOURCE);
+  assert.equal(byRule(messages, "qc/no-sql-raw").length, 1, "the disable comment silenced the rule");
+  const directive = messages.find((m) => m.ruleId === null && /noInlineConfig/.test(m.message));
+  assert.ok(directive, "the ignored disable comment is not reported");
+});
+
+test("sql.raw fails, and sqlRaw.allow lets one reviewed file through", () => {
+  const code = "await db.execute(sql.raw(ddl));\n";
+  assert.equal(byRule(lint(code, RESOURCE), "qc/no-sql-raw")[0]?.severity, 2);
+  assert.equal(byRule(lint(code, MIGRATE, { sqlRaw: { allow: [MIGRATE] } }), "qc/no-sql-raw").length, 0);
+  assert.equal(byRule(lint(code, RESOURCE, { sqlRaw: { allow: [MIGRATE] } }), "qc/no-sql-raw").length, 1);
+});
+
+test("ts-ignore and ts-nocheck fail; ts-expect-error passes only with a description", () => {
+  const banned = (code) => byRule(lint(code, RESOURCE), "@typescript-eslint/ban-ts-comment").length;
+  assert.equal(banned("// @ts-ignore\nconst a = 1;\n"), 1);
+  assert.equal(banned("// @ts-nocheck\nconst a = 1;\n"), 1);
+  assert.equal(banned("// @ts-expect-error\nconst a = 1;\n"), 1);
+  assert.equal(banned("// @ts-expect-error: the vendor type omits this field\nconst a = 1;\n"), 0);
 });
 
 test("the frontendLayers block is emitted when configured and boundaries plugin is supplied", () => {

@@ -2,11 +2,14 @@
 // Thresholds are imported, never restated — quality-thresholds.json is their one home.
 
 import qc from "./index.mjs";
-import { enabled, load, thresholds } from "../config.mjs";
+import { enabled, load, readerEntries, thresholds } from "../config.mjs";
 
 /** Options each rule needs, derived from one config so a name is written once. */
-function ruleOptions(config) {
+function ruleOptions(config, registry) {
   return {
+    "no-sql-raw": { allow: config.sqlRaw.allow },
+    "ime-safe-key": { components: config.ime.components, guards: config.ime.guards },
+    "registry-literal": { entries: readerEntries(registry).filter((entry) => entry.names.length > 0) },
     "no-comment-paragraph": {
       doc: config.enforcement ?? "docs/enforcement.md",
       decisions: config.docs.decisions,
@@ -48,8 +51,8 @@ function ruleOptions(config) {
   };
 }
 
-function entries(config, names) {
-  const options = ruleOptions(config);
+function entries(config, names, registry = {}) {
+  const options = ruleOptions(config, registry);
   const out = {};
   for (const name of names) {
     if (!enabled(config.rules, name)) continue;
@@ -75,13 +78,16 @@ const UNIVERSAL = [
   // Not a layered-architecture concern like the SERVER rules below — a worker or a
   // composition root outside backend/src needs this exactly as much as backend/src does.
   "external-service-only-in-adapter",
+  // A worker or a script builds a query and holds a number as much as a feature does.
+  "no-sql-raw",
+  "registry-literal",
 ];
 
 /** Rules that only make sense where the server's storage and ports live. */
 const SERVER = ["storage-only-in-resource", "tenant-scoped-table", "signal-last-param"];
 
 /** Rules that only make sense in the browser. */
-const CLIENT = ["no-raw-fetch", "storage-only-in-resource"];
+const CLIENT = ["no-raw-fetch", "storage-only-in-resource", "ime-safe-key"];
 
 /**
  * The architecture as a flat config. Spread it, then append your own blocks.
@@ -96,13 +102,22 @@ export function preset(options = {}) {
   const max = (id) => gates[id]?.value;
   const { tseslint, boundaries, sonarjs } = options.plugins ?? {};
 
-  const blocks = [{ ignores: config.ignores }];
+  // No file carries its own exemption: a rule is switched off in config, where a reviewer sees it.
+  const blocks = [{ ignores: config.ignores }, { linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: "error" } }];
 
   const base = {
     files: ["**/*.{ts,tsx,mjs}"],
     plugins: { qc, ...(tseslint ? { "@typescript-eslint": tseslint } : {}), ...(sonarjs ? { sonarjs } : {}) },
     rules: {
-      ...(tseslint ? { "@typescript-eslint/no-explicit-any": "error" } : {}),
+      ...(tseslint
+        ? {
+            "@typescript-eslint/no-explicit-any": "error",
+            "@typescript-eslint/ban-ts-comment": [
+              "error",
+              { "ts-ignore": true, "ts-nocheck": true, "ts-check": false, "ts-expect-error": "allow-with-description" },
+            ],
+          }
+        : {}),
       ...(sonarjs
         ? {
             "sonarjs/no-identical-functions": "error",
@@ -116,7 +131,7 @@ export function preset(options = {}) {
         ? { "max-lines-per-function": ["error", { max: max("funclength"), skipBlankLines: true, skipComments: true }] }
         : {}),
       ...(max("nesting") ? { "max-depth": ["error", max("nesting")] } : {}),
-      ...entries(config, UNIVERSAL),
+      ...entries(config, UNIVERSAL, gates),
     },
   };
   if (options.languageOptions) base.languageOptions = options.languageOptions;

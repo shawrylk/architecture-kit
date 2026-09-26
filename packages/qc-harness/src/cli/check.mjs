@@ -30,7 +30,8 @@ import { checkAdrFormat } from "../gates/adr-format.mjs";
 import { checkConfigFloor } from "../gates/config-floor.mjs";
 import { defaults } from "../config.mjs";
 import { rules as lintRules } from "../eslint/index.mjs";
-import { enabled } from "../config.mjs";
+import { enabled, readerEntries, thresholds } from "../config.mjs";
+import { checkRegistryReaders } from "../gates/registry-readers.mjs";
 import { repoFiles } from "./repo-files.mjs";
 
 // Each skip is tested on "/" + the relative path, so it reads a path the way it read a full one.
@@ -452,6 +453,14 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
 
   if (enabled(config.gates, "registry-agreement")) {
     problems.push(...(await agreements(config)));
+  }
+
+  if (enabled(config.gates, "registry-readers")) {
+    const entries = readerEntries(thresholds(config));
+    const readers = [...new Set(entries.flatMap((entry) => entry.readers))];
+    const sources = new Map(await Promise.all(readers.map(async (reader) => [reader, await read(path.join(config.root, reader))])));
+    problems.push(...checkRegistryReaders(entries, sources));
+    if (readers.length > 0) lines.push(`OK  readers      ${readers.length} registry reader(s), each present and naming its entry`);
   }
 
   if (enabled(config.gates, "sql-identifiers") || enabled(config.gates, "tenant-predicate")) {
