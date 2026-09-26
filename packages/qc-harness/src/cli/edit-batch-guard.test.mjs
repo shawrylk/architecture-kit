@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -56,8 +56,15 @@ test("a sequential pair passes: the batch event ends the claim", (t) => {
   assert.equal(decide(callOf("PreToolUse", ws.file), ws.tmp), null);
 });
 
+test("a batch event before any claim writes nothing", (t) => {
+  const ws = workspace(t);
+  decide(batchEnd(), ws.tmp);
+  assert.equal(existsSync(path.join(ws.tmp, "architecture-kit", "edit-batch")), false);
+});
+
 test("once the agent has seen a batch event, its result alone does not end the claim", (t) => {
   const ws = workspace(t);
+  decide(callOf("PreToolUse", ws.file), ws.tmp);
   decide(batchEnd(), ws.tmp);
   assert.equal(decide(callOf("PreToolUse", ws.file), ws.tmp), null);
   decide(callOf("PostToolUse", ws.file), ws.tmp);

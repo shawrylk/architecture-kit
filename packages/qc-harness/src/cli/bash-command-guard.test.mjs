@@ -69,6 +69,7 @@ test("a message, a dry run, a test run and a read pass", (t) => {
     'git commit -m "-n is fine"',
     'git commit -m "handle --no-verify" --author "a <a@b.c>"',
     "git commit -mn",
+    "git commit -uno -m x",
     "git push -n",
     "git log --oneline -n 5",
     "node --test packages/qc-harness/src/cli/work-order-guard.test.mjs",

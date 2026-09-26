@@ -36,7 +36,8 @@ export function decide(call, tmp = os.tmpdir(), now = Date.now()) {
   const dir = batchDirOf(call.session_id ?? "session", agentKey, tmp);
   try {
     if (call.hook_event_name === "PostToolBatch") {
-      endBatch(dir);
+      // Only a claim makes the folder, so a repository with no config gets no file here.
+      if (existsSync(dir)) endBatch(dir);
       return null;
     }
     const file = call.tool_input?.file_path;

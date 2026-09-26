@@ -38,6 +38,8 @@ function skipsHooks({ sub, args }) {
     if (sub !== "commit" || !/^-[A-Za-z]/.test(arg)) continue;
     for (let at = 1; at < arg.length; at++) {
       if (arg[at] === "n") return true;
+      // `-u` and `-S` take an optional value in the same cluster, as in `-uno`.
+      if (arg[at] === "u" || arg[at] === "S") break;
       if (COMMIT_VALUE_FLAGS.has(arg[at])) {
         if (at === arg.length - 1) i++;
         break;
