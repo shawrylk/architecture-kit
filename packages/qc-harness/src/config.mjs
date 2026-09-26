@@ -210,6 +210,10 @@ export const defaults = {
     toolCallBudget: 100,
   },
 
+  // `qc worktree`. `install` runs in each new worktree. `base` is the default `--from`: the ref a
+  // branch starts at, and the ref `remove` checks a merge against.
+  worktree: { install: "pnpm install --frozen-lockfile", base: "origin/main" },
+
   // Names that must be registered scoped, never singleton.
   scopedSuffixes: ["Repository", "Saga", "UnitOfWork", "UnitOfWorkFactory"],
 

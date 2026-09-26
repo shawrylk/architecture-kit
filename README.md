@@ -81,9 +81,16 @@ or slice is a review finding, so fill each file or delete the ones the feature d
 ### 4. Check
 
 ```bash
-npx qc check          # every structural gate
-npx qc check <file>   # the fast per-file path a post-edit hook takes
+npx qc check                 # every structural gate
+npx qc check <file>...       # the fast per-file path a post-edit hook or a pre-commit hook takes
 ```
+
+With files given, the check reads only the features that hold them, once each, and reports every
+problem before it exits 1. It also runs the per-file English rules on exactly those files.
+
+Every gate reads one file list: `git ls-files --cached --others --exclude-standard`, minus
+`ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
+`qc decisions`. Outside a git work tree, the check walks the tree instead.
 
 ### 5. Lint
 
@@ -153,6 +160,19 @@ A subagent does not count its own tool calls, so a `PreToolUse` hook counts them
 budget, the agent gets a reminder to commit, push, and plan the hand-off, and again every 10 calls.
 At the budget, only the hand-off runs: Read, read-only and `git add`, `commit`, and `push` commands,
 and a Write to a path under `/handoffs/`. The main session is never counted.
+
+Give each agent its own worktree beside the main checkout:
+
+```bash
+npx qc worktree add fix-login fix/login          # fetch, add ../fix-login from origin/main, install, print the path
+npx qc worktree remove fix-login                 # refuse a dirty tree; delete it, then the branch once safe
+```
+
+`worktree.install` in `qc.config.json` is the install command, and the default is
+`pnpm install --frozen-lockfile`. `worktree.base` is the default `--from`, and the default is
+`origin/main`. `remove` deletes the branch only when `--from` holds it, or its upstream holds every
+commit. It deletes the folder through Node, so a path past 260 characters on Windows does not stop
+it. Both commands are idempotent.
 
 ## What it enforces
 
