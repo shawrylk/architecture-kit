@@ -401,7 +401,8 @@ lines: 412
 
 `sql-identifiers` also reads the `paths.schemaFile` of each server feature. Each table that a
 `tenant.tableFactory` call declares, and each column under it, must appear in some migration, or
-it fails as `schema-without-migration`.
+it fails as `schema-without-migration`. Until `paths.migrations` holds its first `.sql` file, there
+is nothing to compare with, and the check does not run.
 
 ### Check the callers of an exempt helper
 
