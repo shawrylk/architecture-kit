@@ -13,6 +13,22 @@ export function switchedOff(shipped, configured) {
     .sort();
 }
 
+/** @returns each hook whose required calls lack one the kit ships. */
+export function weakenedHooks(shipped = {}, configured = {}) {
+  return Object.keys(shipped)
+    .filter((name) => shipped[name].some((call) => !(configured[name] ?? []).includes(call)))
+    .sort();
+}
+
+/** Every shipped check this repository has switched off, by kind. A hook's exemption key is `hooks.<name>`. */
+function offByKind(shipped, configured) {
+  return {
+    gates: switchedOff(shipped.gates ?? {}, configured.gates ?? {}),
+    rules: switchedOff(shipped.rules ?? {}, configured.rules ?? {}),
+    hooks: weakenedHooks(shipped.hooks?.required, configured.hooks?.required).map((name) => `hooks.${name}`),
+  };
+}
+
 /**
  * @param {{gates: object, rules: object}} shipped   the kit's own defaults
  * @param {{gates: object, rules: object}} configured this repository's resolved config
@@ -23,15 +39,17 @@ export function checkConfigFloor(shipped, configured, options = {}) {
   const pattern = options.pattern ?? /^[A-Z]{2,5}-\d{3,4}$/;
   const problems = [];
 
-  for (const kind of ["gates", "rules"]) {
-    for (const name of switchedOff(shipped[kind] ?? {}, configured[kind] ?? {})) {
+  const off = offByKind(shipped, configured);
+  for (const kind of ["gates", "rules", "hooks"]) {
+    for (const name of off[kind]) {
+      const shown = kind === "hooks" ? name : `${kind}.${name}`;
       const cited = exemptions[name];
       if (cited === undefined) {
         problems.push({
           path: "qc.config.json",
           rule: "unexempted-opt-out",
           detail:
-            `${kind}.${name} is switched off, and the kit ships it on. Name the decision that says ` +
+            `${shown} is switched off, and the kit ships it on. Name the decision that says ` +
             `why under floor.exemptions, or "${OFF_BY_DESIGN}" when the rule cannot apply to this repository's shape.`,
         });
         continue;
@@ -46,12 +64,9 @@ export function checkConfigFloor(shipped, configured, options = {}) {
     }
   }
   // An exemption for something that is not off is a stale reason nobody will notice going wrong.
-  const off = new Set([
-    ...switchedOff(shipped.gates ?? {}, configured.gates ?? {}),
-    ...switchedOff(shipped.rules ?? {}, configured.rules ?? {}),
-  ]);
+  const inForce = new Set([...off.gates, ...off.rules, ...off.hooks]);
   for (const name of Object.keys(exemptions).sort()) {
-    if (!off.has(name)) {
+    if (!inForce.has(name)) {
       problems.push({
         path: "qc.config.json",
         rule: "stale-exemption",

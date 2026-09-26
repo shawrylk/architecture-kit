@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { hookDrift } from "./git-hooks.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -117,6 +118,21 @@ function installedHarnessRoot(configRoot) {
 }
 
 export async function runDoctor(config) {
+  const hooksFailed = reportHooks(config);
+  const harnessCode = await compareHarnesses(config);
+  return hooksFailed ? 1 : harnessCode;
+}
+
+/** @returns true when an installed git hook lacks a call `hooks.required` names. */
+function reportHooks(config) {
+  const { problems, notes } = hookDrift(config.root, config.hooks?.required ?? {});
+  for (const problem of problems) console.error(`FAIL  hooks        ${problem.path}: ${problem.detail}`);
+  for (const note of notes) console.log(`NOTE  hooks        ${note}`);
+  if (problems.length === 0) console.log("OK  hooks        each git hook makes the calls hooks.required names");
+  return problems.length > 0;
+}
+
+async function compareHarnesses(config) {
   const installedRoot = installedHarnessRoot(config.root);
   const pluginRoot = pluginHarnessRoot();
 

@@ -235,6 +235,9 @@ export const defaults = {
   // Switching a shipped check off names the decision that says why, or "off-by-design".
   floor: { exemptions: {} },
 
+  // The calls each git hook must make. `qc doctor` and the config-floor gate read the hooks git runs.
+  hooks: { required: { "pre-commit": ["qc work-order-check"], "pre-push": ["qc check"] } },
+
   // A tool is not an author. These may never appear in a commit's attribution trailer.
   commitMessage: {
     tools: [

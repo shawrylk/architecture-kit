@@ -50,3 +50,13 @@ test("a check the kit does not ship on is not held to the floor", () => {
 test("cited ids are collected for the citations gate, and off-by-design is not one", () => {
   assert.deepEqual(exemptionIds({ a: "QC-011", b: "off-by-design", c: "ADR-0031" }), ["QC-011", "ADR-0031"]);
 });
+
+test("a weakened hooks.required entry is an opt-out, held to the same floor", () => {
+  const shipped = { gates: {}, rules: {}, hooks: { required: { "pre-commit": ["qc work-order-check"], "pre-push": ["qc check"] } } };
+  const weakened = { gates: {}, rules: {}, hooks: { required: { "pre-commit": ["qc work-order-check"], "pre-push": [] } } };
+  const problems = checkConfigFloor(shipped, weakened);
+  assert.deepEqual(problems.map((problem) => problem.rule), ["unexempted-opt-out"]);
+  assert.match(problems[0].detail, /^hooks\.pre-push is switched off/);
+  assert.deepEqual(checkConfigFloor(shipped, weakened, { exemptions: { "hooks.pre-push": "off-by-design" } }), []);
+  assert.deepEqual(checkConfigFloor(shipped, shipped, { exemptions: { "hooks.pre-push": "off-by-design" } }).map((p) => p.rule), ["stale-exemption"]);
+});
