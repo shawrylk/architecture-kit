@@ -41,7 +41,15 @@ if [ -n "$DOCTOR" ] && ! node "$DOCTOR" doctor >"$LOGS/doctor" 2>&1; then
   DRIFT="$(cat "$LOGS/doctor")"
 fi
 
-node "$QC_CLI" check >"$LOGS/struct" 2>&1 || FAIL+="structure failed:\n$(cat "$LOGS/struct")\n"
+if ! node "$QC_CLI" check >"$LOGS/struct" 2>&1; then
+  # Hook drift is about the setup too, so a check whose every failure is hook drift is drift.
+  if grep -q '^FAIL' "$LOGS/struct" && ! grep '^FAIL' "$LOGS/struct" | grep -qv ' hook-drift: '; then
+    DRIFT="${DRIFT:+$DRIFT
+}$(cat "$LOGS/struct")"
+  else
+    FAIL+="structure failed:\n$(cat "$LOGS/struct")\n"
+  fi
+fi
 
 # Anything else this repository wants in the stop gate.
 if [ -n "${QC_STOP_EXTRA:-}" ]; then
@@ -57,12 +65,12 @@ fi
 if [ -n "$DRIFT" ]; then
   # A second refusal for drift alone would loop the session: an agent cannot restart its own plugin.
   if [ -n "$ACTIVE" ]; then
-    MESSAGE="qc doctor still reports drift in the kit setup, not in the code. Fix it outside this session: $(printf '%s' "$DRIFT" | head -1)"
+    MESSAGE="The kit setup still drifts (qc doctor or hook-drift), not the code. Fix it outside this session: $(printf '%s' "$DRIFT" | head -1)"
     node -e 'process.stdout.write(JSON.stringify({systemMessage: process.argv[1]}))' "$MESSAGE"
     exit 0
   fi
   printf '%s\n' "$DRIFT" >&2
-  echo "qc doctor reports drift in the kit setup, not in your code. Fix what it names." >&2
+  echo "This is drift in the kit setup, not in your code: qc doctor or hook-drift. Fix what it names." >&2
   exit 2
 fi
 exit 0
