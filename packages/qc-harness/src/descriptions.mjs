@@ -7,6 +7,8 @@ export const gateDescriptions = Object.freeze({
   "registry-readers": "Every reader a registry entry names exists and names the entry",
   "sql-identifiers": "A query names a column a migration declares, and only its own feature's tables",
   "migration-numbers": "Each migration number is unique, and the numbers run with no gap",
+  "registry-literal": "A doc states a registry threshold or library version as its token, never as the figure",
+  "threshold-ratchet": "A threshold never loosens against the merge base unless a changed ADR names it",
   "tenant-predicate": "Every statement on a business table filters on the tenant",
   "claimed-requirements": "A requirement a route claims names the test that proves it",
   "public-routes": "The edge lets through exactly the routes the api serves without a session",

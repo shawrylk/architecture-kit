@@ -36,6 +36,15 @@ export const defaults = {
   },
 
   thresholds: "quality-thresholds.json",
+  // Pinned library versions. Docs carry a {{ver:id}} or {{v:id}} token for each.
+  versions: "versions.json",
+
+  // Globs of docs that may state a registry figure. Null is the ADR log, from adrLog(): a decision
+  // states the number as of its date.
+  registryLiteral: { exempt: null },
+
+  // A threshold loosens only with an ADR. `base` is the ref whose merge base the registry is compared with.
+  ratchet: { base: "origin/main" },
 
   // A key that makes a retry a resume rather than a second write. docs/guards.md.
   idempotency: {
@@ -274,6 +283,8 @@ export const defaults = {
     "registry-readers": true,
     "sql-identifiers": true,
     "migration-numbers": true,
+    "registry-literal": true,
+    "threshold-ratchet": true,
     "tenant-predicate": true,
     "claimed-requirements": true,
     "public-routes": true,
@@ -386,6 +397,11 @@ export function thresholds(config) {
   const file = path.join(config.root ?? process.cwd(), config.thresholds);
   if (!existsSync(file)) return {};
   return createRequire(import.meta.url)(file).gates ?? {};
+}
+
+/** The files that hold decision records: each ADR under `adr.root`, and the decision register. */
+export function adrLog(config) {
+  return [`${config.adr.root.replace(/\/+$/, "")}/**`, config.docs.decisions];
 }
 
 /**

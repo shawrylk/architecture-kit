@@ -30,9 +30,12 @@ import { checkAdrFormat } from "../gates/adr-format.mjs";
 import { checkConfigFloor } from "../gates/config-floor.mjs";
 import { defaults } from "../config.mjs";
 import { rules as lintRules } from "../eslint/index.mjs";
-import { enabled, readerEntries, thresholds } from "../config.mjs";
+import { adrLog, enabled, readerEntries, thresholds } from "../config.mjs";
 import { checkRegistryReaders } from "../gates/registry-readers.mjs";
 import { checkMigrationNumbers } from "../gates/migration-numbers.mjs";
+import { checkRegistryLiteral } from "../gates/registry-literal.mjs";
+import { checkThresholdRatchet } from "../gates/threshold-ratchet.mjs";
+import { ratchetInputs } from "./registry-history.mjs";
 import { repoFiles } from "./repo-files.mjs";
 
 // Each skip is tested on "/" + the relative path, so it reads a path the way it read a full one.
@@ -178,6 +181,15 @@ function sourceFiles(config, tree, only) {
     .flatMap((root) => tree.under(root))
     .filter((file) => !BUILD_OUTPUT.test(`/${file}`) && SOURCE_EXTENSION.test(file));
   return readEach(config.root, rels);
+}
+
+function parsedJson(source) {
+  if (source === null) return null;
+  try {
+    return JSON.parse(source);
+  } catch {
+    return null;
+  }
 }
 
 async function registered(file) {
@@ -462,6 +474,26 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     const sources = new Map(await Promise.all(readers.map(async (reader) => [reader, await read(path.join(config.root, reader))])));
     problems.push(...checkRegistryReaders(entries, sources));
     if (readers.length > 0) lines.push(`OK  readers      ${readers.length} registry reader(s), each present and naming its entry`);
+  }
+
+  if (enabled(config.gates, "registry-literal")) {
+    const docs = await readEach(config.root, tree.under(config.docs.root).filter((file) => file.endsWith(".md")));
+    const libraries = parsedJson(await read(path.join(config.root, config.versions)))?.libraries ?? {};
+    const exempt = config.registryLiteral.exempt ?? adrLog(config);
+    problems.push(...checkRegistryLiteral(docs, { thresholds: thresholds(config), libraries, exempt }));
+    if (docs.length > 0) lines.push(`OK  literals     ${docs.length} doc(s) carry a token, never a figure a registry owns`);
+  }
+
+  if (enabled(config.gates, "threshold-ratchet")) {
+    const { base } = config.ratchet;
+    const inputs = await ratchetInputs(config.root, { base, registry: config.thresholds, adrGlobs: adrLog(config) });
+    if (inputs.skip) {
+      lines.push(`OK  ratchet      skipped: ${inputs.skip}`);
+    } else {
+      problems.push(...checkThresholdRatchet(inputs.before, inputs.after, inputs.adrs, { registry: config.thresholds }));
+      const count = Object.keys(inputs.after).length;
+      if (count > 0) lines.push(`OK  ratchet      ${count} threshold(s) against the merge base with ${base}; a loosening names its ADR`);
+    }
   }
 
   if (enabled(config.gates, "sql-identifiers") || enabled(config.gates, "tenant-predicate")) {
