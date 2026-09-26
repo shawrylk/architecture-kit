@@ -261,3 +261,47 @@ export function checkSqlIdentifiers(tables, resources, owners = new Map()) {
   }
   return problems;
 }
+
+// The other direction. A schema declaration with no migration behind it typechecks, passes every
+// statement check, and fails at runtime. This is the text-level half: it cannot see a type or a
+// default that differs, and a column a later migration dropped still matches the one that added it.
+const SCHEMA_COLUMN = /\b(?:uuid|text|integer|bigint|boolean|jsonb|timestamp|numeric|real|doublePrecision|date|smallint)\(\s*"([a-z0-9_]+)"/g;
+
+/**
+ * Each table a schema file declares, with the columns under it. A column belongs to the table
+ * whose factory call precedes it: one table, then its columns.
+ * @param {string} source
+ * @param {{tableFactory?: string}} [options]
+ * @returns {{table: string, columns: string[]}[]}
+ */
+export function schemaTables(source, { tableFactory = "pgTable" } = {}) {
+  const factory = tableFactory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const starts = [...source.matchAll(new RegExp(`${factory}\\(\\s*"([a-z0-9_]+)"`, "g"))].map((match) => ({ table: match[1], at: match.index }));
+  return starts.map((start, index) => {
+    const body = source.slice(start.at, starts[index + 1]?.at ?? source.length);
+    return { table: start.table, columns: [...new Set([...body.matchAll(SCHEMA_COLUMN)].map((match) => match[1]))] };
+  });
+}
+
+/** Every name the migrations write down. A name anywhere in the SQL is enough: the question is whether it was ever written. */
+export function migrationNames(sources) {
+  const names = new Set();
+  for (const sql of sources) for (const [name] of sql.matchAll(/[a-z0-9_]+/g)) names.add(name);
+  return names;
+}
+
+/**
+ * @param {{path: string, table: string, columns: string[]}[]} declared
+ * @param {Set<string>} names
+ * @returns {{path: string, rule: string, detail: string}[]}
+ */
+export function checkSchemaInMigrations(declared, names) {
+  const problems = [];
+  for (const { path, table, columns } of declared) {
+    const missing = names.has(table) ? columns.filter((column) => !names.has(column)).map((column) => `${table}.${column}`) : [`table ${table}`];
+    for (const name of missing) {
+      problems.push({ path, rule: "schema-without-migration", detail: `${name} is declared here and named by no migration` });
+    }
+  }
+  return problems;
+}

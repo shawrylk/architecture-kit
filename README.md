@@ -330,6 +330,100 @@ The list replaces the default, so name the frontend root again to keep it. The g
 folders itself, so they need no entry in `paths.citable`. A test belongs to the first root whose
 `tests` folder holds it, and otherwise to the first root whose `src` folder holds it.
 
+### Pair the two surfaces
+
+The `parity` gate ships off. It compares the features in `paths.serverFeatures` with those in
+`paths.frontendFeatures`, and the slice files in each feature's `anatomy.slice.sliceDir`. A route that
+`paths.triggerFile` imports from the slice folder needs a slice on both surfaces.
+
+- A feature or a slice on one surface only fails as `one-sided-feature` or `one-sided-slice`.
+- The registry at `parity.registry` names each divergence with its reason: `backendOnlyFeatures`,
+  `frontendOnlyFeatures`, and `slices` by feature. A reason that starts with `Client-only` or
+  `Backend-only` names the side that must hold the slice.
+- An entry that stops being true fails as `stale-divergence`.
+- A slice file whose every value export is a function that does nothing fails as
+  `placeholder-slice`. A no-op body is empty, or holds only `void 0`, `return`, or `return undefined`.
+
+```json
+{ "gates": { "parity": true }, "parity": { "registry": "contracts/parity.json" } }
+```
+
+### Make an integration test reach the product
+
+The `integration-imports` gate ships off. Each file under `integrationImports.roots` that
+`integrationImports.subject` matches must import a product module. A relative import counts inside
+a folder of `productRoots`, and outside one only when it names such a folder. An import that matches
+a pattern of `productPackages` counts anywhere. A test that imports none fails as
+`integration-without-product`, and no matching file at all fails as `no-integration-tests`.
+
+```json
+{ "gates": { "integration-imports": true }, "integrationImports": { "productPackages": ["^@app/(?:domain|contracts)(?:/|$)"] } }
+```
+
+### Give every key of a closed set a writer
+
+The `closed-set-writers` gate ships off. Each entry of `closedSetWriters.sets` names the `source`
+that declares the keys, a `key` pattern and a `writer` pattern whose first group is a key, and the
+`roots` that hold the writers. A key with no writer fails as `unwritten-key`, unless `declaredAhead`
+names it with the mutation it waits for. A waiting key that is written now, or no longer declared,
+fails as `stale-declared-ahead`. A written key outside the set fails as `undeclared-write`.
+
+```json
+{
+  "gates": { "closed-set-writers": true },
+  "closedSetWriters": {
+    "sets": [{
+      "name": "AUDIT_ACTIONS",
+      "source": "backend/src/features/audit-log/shared/types.ts",
+      "key": "\\{ key: \"([a-z_.]+)\", category:",
+      "roots": ["backend/src/features"],
+      "writer": "recordAuditLogEntry\\([\\s\\S]{0,400}?action: \"([a-z_.]+)\"",
+      "declaredAhead": { "project.delete": "no delete-project route exists" }
+    }]
+  }
+}
+```
+
+### Keep a claim in a document true
+
+The `doc-claims` gate ships off. Each document in `docClaims.files` can hold fenced `state-claim`
+blocks. A block names a `file:` and its `lines:` count, and fails as `stale-doc-claim` when the count
+changes or the file is gone.
+
+````md
+```state-claim
+file: src/big-module.ts
+lines: 412
+```
+````
+
+### Declare every schema column in a migration
+
+`sql-identifiers` also reads the `paths.schemaFile` of each server feature. Each table that a
+`tenant.tableFactory` call declares, and each column under it, must appear in some migration, or
+it fails as `schema-without-migration`. Until `paths.migrations` holds its first `.sql` file, there
+is nothing to compare with, and the check does not run.
+
+### Check the callers of an exempt helper
+
+A helper that takes its table or its columns from its caller carries a `tenant-predicate: exempt`
+comment. `tenant-predicate` then checks each call of the helpers in `tenantPredicate.exemptHelpers`,
+in every non-test file that imports the helper from its `module`. The argument at index `argument`
+must name the tenant: the `tenant.sqlColumn` as a quoted string or an object key, or the
+`tenant.column` identifier. A bare name is followed to its own declaration, and a call to a local
+function to that function's body. A call that names no tenant fails as `unscoped-helper-call`.
+
+```json
+{
+  "tenantPredicate": {
+    "exemptHelpers": [
+      { "module": "backend/src/application/sql/crud.ts", "name": "insertReturning", "argument": 2 },
+      { "module": "backend/src/application/sql/crud.ts", "name": "updateVersionedRow", "argument": 3 }
+    ]
+  }
+}
+```
+
 ## Tests
 
 ```bash

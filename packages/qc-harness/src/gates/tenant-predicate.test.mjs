@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkSharedInsertCallSites, checkTenantPredicate } from "./tenant-predicate.mjs";
+import { checkExemptHelperCalls, checkTenantPredicate, exemptHelperCalls } from "./tenant-predicate.mjs";
 
 const owned = new Set(["projects", "pin_annotations"]);
 const one = (sql, bound = new Set()) => [{ path: "r.ts", statements: [{ sql, bound }] }];
@@ -39,36 +39,44 @@ test("a table whose name merely starts the same is not matched", () => {
   assert.deepEqual(checkTenantPredicate(one("select id from projects_archive where id = $1"), owned), []);
 });
 
-test("a shared insert naming the tenant inline passes", () => {
-  const source = `return insertReturning(tx, "projects", ["id", "tenant_id", "code"], [a, b, c], COLS, onDup, signal);`;
-  assert.deepEqual(checkSharedInsertCallSites([{ path: "r.ts", source }]), []);
+const CRUD = "backend/src/application/sql/crud.ts";
+const helpers = [
+  { module: CRUD, name: "insertReturning", argument: 2 },
+  { module: CRUD, name: "updateVersionedRow", argument: 3 },
+];
+const IMPORT = 'import { insertReturning, updateVersionedRow } from "../../../application/sql/crud.js";\n';
+const FILE = "backend/src/features/projects/shared/queries.ts";
+const calls = (source, options = {}) => checkExemptHelperCalls([{ path: FILE, contents: IMPORT + source }], helpers, options);
+
+test("a call that names the tenant inline passes", () => {
+  assert.deepEqual(calls(`return insertReturning(tx, "projects", ["id", "tenant_id", "code"], [a, b, c], COLS, onDup, signal);`), []);
 });
 
-test("a shared insert naming the tenant in a columns array just above passes", () => {
+test("a call whose columns array just above names the tenant passes", () => {
   const source = `
 async function insertProject(tx, input, signal) {
   const columns = ["id", "tenant_id", "code", "name"];
   const values = [input.id, input.tenantId, input.code, input.name];
   return insertReturning(tx, "projects", columns, values, COLS, onDup, signal);
 }`;
-  assert.deepEqual(checkSharedInsertCallSites([{ path: "r.ts", source }]), []);
+  assert.deepEqual(calls(source), []);
 });
 
-test("a shared insert that forgot the tenant is caught", () => {
+test("a call that forgot the tenant fails, and a tenant in the values beside it does not vouch", () => {
   const source = `
 async function insertProject(tx, input, signal) {
   const columns = ["id", "code", "name"];
-  const values = [input.id, input.code, input.name];
+  const values = [input.id, input.tenantId, input.code, input.name];
   return insertReturning(tx, "projects", columns, values, COLS, onDup, signal);
 }`;
-  const problems = checkSharedInsertCallSites([{ path: "r.ts", source }]);
+  const problems = calls(source);
   assert.equal(problems.length, 1);
-  assert.equal(problems[0].rule, "insert-without-tenant");
+  assert.equal(problems[0].rule, "unscoped-helper-call");
+  assert.equal(problems[0].path, FILE);
 });
 
 test("a generic call with a type argument is still matched", () => {
-  const source = `return insertReturning<ProjectRow>(tx, "projects", ["id", "code"], [a, b], COLS, onDup);`;
-  assert.equal(checkSharedInsertCallSites([{ path: "r.ts", source }]).length, 1);
+  assert.equal(calls(`return insertReturning<{ id: string }>(tx, "projects", ["id", "code"], [a, b], COLS, onDup);`).length, 1);
 });
 
 test("every call is checked, and a neighbour naming the tenant cannot vouch for one that does not", () => {
@@ -82,29 +90,19 @@ function insertB(tx, v) {
 function insertC(tx, v) {
   return insertReturning(tx, "c", ["id"], v, C, f);
 }`;
-  assert.equal(checkSharedInsertCallSites([{ path: "r.ts", source }]).length, 2);
+  assert.equal(calls(source).length, 2);
 });
 
-test("a columns factory one call away is followed, not guessed at", () => {
-  const source = `
+test("a columns factory one call away is followed, and one that forgets the tenant is caught", () => {
+  const factory = (columns) => `
 function newPhotoColumns() {
-  return ["id", "tenant_id", "delivery_id"];
+  return [${columns}];
 }
 export async function insertPhoto(tx, input, signal) {
-  return insertReturning(tx, "photos", newPhotoColumns(), newPhotoValues(input), COLS, onDup, signal);
+  return insertReturning(tx, "photos", newPhotoColumns(), newPhotoValues(input.tenantId), COLS, onDup, signal);
 }`;
-  assert.deepEqual(checkSharedInsertCallSites([{ path: "r.ts", source }]), []);
-});
-
-test("a columns factory that forgets the tenant is still caught through the indirection", () => {
-  const source = `
-function newPhotoColumns() {
-  return ["id", "delivery_id"];
-}
-export async function insertPhoto(tx, input, signal) {
-  return insertReturning(tx, "photos", newPhotoColumns(), newPhotoValues(input), COLS, onDup, signal);
-}`;
-  assert.equal(checkSharedInsertCallSites([{ path: "r.ts", source }]).length, 1);
+  assert.deepEqual(calls(factory('"id", "tenant_id", "delivery_id"')), []);
+  assert.equal(calls(factory('"id", "delivery_id"')).length, 1);
 });
 
 test("a repeated local name is not resolved to the first one in the file", () => {
@@ -117,11 +115,42 @@ export async function insertTwo(tx, input, signal) {
   const columns = ["id", "name"];
   return insertReturning(tx, "b", columns, values(input), COLS, onDup, signal);
 }`;
-  const found = checkSharedInsertCallSites([{ path: "r.ts", source }]);
+  const found = calls(source);
   assert.equal(found.length, 1);
-  assert.match(found[0].detail, /line 8:/);
+  assert.match(found[0].detail, /line 9:/);
 });
 
+test("a row object must carry the tenant key: the must-fail and must-pass of the issue", () => {
+  const helper = [{ module: CRUD, name: "insertRow", argument: 2 }];
+  const run = (source) => checkExemptHelperCalls([{ path: FILE, contents: `import { insertRow } from "../../../application/sql/crud.js";\n${source}` }], helper);
+  assert.equal(run('await insertRow(tx, "items", { id, name }, "id");').length, 1);
+  assert.deepEqual(run('await insertRow(tx, "items", { tenant_id: tenantId, id, name }, "id");'), []);
+});
+
+test("a tenant value argument must name the tenant, so swapped arguments fail", () => {
+  assert.deepEqual(calls('return updateVersionedRow(tx, "pins", fields, tenantId, pinId, expectedVersion, COLS, signal);'), []);
+  assert.deepEqual(calls('return updateVersionedRow(tx, "pins", fields, input.tenantId, pinId, 3, COLS, signal);'), []);
+  assert.equal(calls('return updateVersionedRow(tx, "pins", fields, pinId, tenantId, expectedVersion, COLS, signal);').length, 1);
+});
+
+test("only a file that imports the helper from its module is checked, under the name it imports", () => {
+  const other = 'import { insertReturning } from "./local.js";\ninsertReturning(tx, "a", ["id"], v, C, f);';
+  assert.deepEqual(checkExemptHelperCalls([{ path: FILE, contents: other }], helpers), []);
+  const renamed = 'import { insertReturning as insert } from "../../../application/sql/crud.js";\ninsert(tx, "a", ["id"], v, C, f);';
+  assert.equal(checkExemptHelperCalls([{ path: FILE, contents: renamed }], helpers).length, 1);
+});
+
+test("every call is listed with its verdict, so a reviewer can count them", () => {
+  const source = 'insertReturning(tx, "a", ["tenant_id"], v, C, f);\nupdateVersionedRow(tx, "b", f, id, id, 1, C);';
+  const found = exemptHelperCalls([{ path: FILE, contents: IMPORT + source }], helpers);
+  assert.deepEqual(found.map((call) => [call.name, call.line, call.scoped]), [["insertReturning", 2, true], ["updateVersionedRow", 3, false]]);
+});
+
+test("the tenant column and identifier come from options", () => {
+  const source = 'insertReturning(tx, "a", ["org_id"], v, C, f);\nupdateVersionedRow(tx, "b", f, orgId, id, 1, C);';
+  assert.deepEqual(calls(source, { column: "org_id", identifier: "orgId" }), []);
+  assert.equal(calls(source).length, 2);
+});
 
 test("a statement on a table named at runtime is still checked", () => {
   const sql = "select id from ${table} where id = $1";
@@ -142,7 +171,7 @@ test("an insert into a runtime-named table must list the tenant column", () => {
   assert.deepEqual(checkTenantPredicate(one(good), owned), []);
 });
 
-test("the tenant column and the shared insert helper come from options", () => {
+test("the tenant column comes from options", () => {
   const resources = [
     { path: "a/resource.ts", statements: [{ sql: "select * from pins where org_id = $1", bound: new Set() }] },
   ];
@@ -151,11 +180,4 @@ test("the tenant column and the shared insert helper come from options", () => {
   const problems = checkTenantPredicate(resources, owned, { column: "tenant_id" });
   assert.equal(problems.length, 1);
   assert.ok(problems[0].detail.includes("tenant_id"));
-});
-
-test("a renamed shared insert helper is still followed to its call sites", () => {
-  const resources = [{ path: "a/resource.ts", source: 'await addRow(uow, "pins", ["name"], [n]);' }];
-  const problems = checkSharedInsertCallSites(resources, { insertHelper: "addRow", column: "org_id" });
-  assert.equal(problems.length, 1);
-  assert.ok(problems[0].detail.includes("org_id"));
 });
