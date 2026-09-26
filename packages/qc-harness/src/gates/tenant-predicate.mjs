@@ -7,8 +7,10 @@
 // It reads the predicate, not the value. That a predicate is present is
 // structural; that it is correct is what the two-tenant test is for.
 
+import { posix } from "node:path";
+
 const DEFAULT_TENANT_COLUMN = "tenant_id";
-const DEFAULT_INSERT_HELPER = "insertReturning";
+const DEFAULT_TENANT_IDENTIFIER = "tenantId";
 
 function escape(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -66,19 +68,39 @@ export function checkTenantPredicate(resources, owned, options = {}) {
   return problems;
 }
 
-// Adopting the shared `insertReturning` moved the statement text out of the file
-// that calls it, so the predicate check above stops seeing it. The tenant is now
-// carried in the caller's column list instead — which is still in the caller's
-// file, and still checkable. Without this, cleaning up duplication would have
-// quietly bought a weaker gate.
-// A call, not a declaration: `function insertReturning<Row>(` is where the helper
-// is defined, and its own parameters are not a column list.
-function sharedInsertPattern(helper) {
-  return new RegExp(`(?<!function\\s)${escape(helper)}\\s*(?:<[^>]*>)?\\s*\\(`, "g");
+// A helper that takes its table or its columns from the caller carries an exemption above,
+// because the tenant is not readable inside it. The tenant is readable at each call, so each
+// call is checked instead, or moving a statement into a shared helper buys a weaker gate.
+
+/** A call, not the declaration: the helper's own parameters are not a tenant argument. */
+function callPattern(name) {
+  return new RegExp(`(?<![\\w$.]|function\\s)${escape(name)}\\s*(?:<[^>]*>)?\\s*\\(`, "g");
 }
 
-function tenantLiteralPattern(column) {
-  return new RegExp(`["']${escape(column)}["']`);
+/** The tenant as a quoted column, as a row key, or as the tenant identifier. */
+function tenantPattern(column, identifier) {
+  return new RegExp(`["'\`]${escape(column)}["'\`]|\\b${escape(column)}\\s*:|\\b${escape(identifier)}\\b`);
+}
+
+/** The index just past the bracket that closes the one at `open`. */
+function closeOf(source, open) {
+  let depth = 0;
+  for (let i = open; i < source.length; i += 1) {
+    if ("([{".includes(source[i])) depth += 1;
+    else if (")]}".includes(source[i]) && (depth -= 1) === 0) return i + 1;
+  }
+  return source.length;
+}
+
+/** From `at` to the semicolon that ends its statement, outside any bracket. */
+function statementFrom(source, at) {
+  let depth = 0;
+  for (let i = at; i < source.length; i += 1) {
+    if ("([{".includes(source[i])) depth += 1;
+    else if (")]}".includes(source[i])) depth -= 1;
+    if (depth < 0 || (depth === 0 && source[i] === ";")) return source.slice(at, i);
+  }
+  return source.slice(at);
 }
 
 /** The arguments of a call, split at the top level so a nested array stays whole. */
@@ -106,61 +128,89 @@ function callArguments(source, openIndex) {
   return args;
 }
 
-/**
- * The body of the factory a call passed its columns to. Only a call — `f()` — is
- * followed. A bare name is left to the enclosing-function window, because a local
- * one is free to repeat: resolving `columns` by name would find the first `const
- * columns` in the file and let a correct list two functions away vouch for this one.
- */
-function factoryBody(source, argument) {
-  const called = /^([A-Za-z_$][\w$]*)\s*\(/.exec(argument.trim());
-  if (called === null) return "";
-  const declared = new RegExp(`function\\s+${called[1]}\\b`).exec(source);
-  return declared === null ? "" : source.slice(declared.index, declared.index + 700);
+/** The nearest declaration of `name` inside the enclosing function, else at the top level. */
+function declarationOf(source, name, from, callAt) {
+  const id = escape(name);
+  const declares = `\\b(?:const|let|var)\\s+(?:\\{[^}]*\\b${id}\\b[^}]*\\}|\\[[^\\]]*\\b${id}\\b[^\\]]*\\]|${id}\\b)`;
+  const local = [...source.slice(from, callAt).matchAll(new RegExp(declares, "g"))].at(-1);
+  if (local) return statementFrom(source, from + local.index);
+  const top = new RegExp(`^(?:export\\s+)?${declares}`, "m").exec(source);
+  return top ? statementFrom(source, top.index) : "";
 }
 
 /**
- * Every call to the shared insert must name the tenant column: inline in the
- * argument list, in a `columns` array built just above it, or in the definition
- * of whatever it passed — a named factory is one indirection and is followed,
- * because a check that cries wolf is a check somebody turns off.
- *
- * @param {{path: string, source: string}[]} resources
- * @returns {{path: string, rule: string, detail: string}[]}
+ * The text an argument stands for. A call `f()` is followed to the body of `function f`, one
+ * indirection. A bare name is followed to its own declaration only, so a neighbour's local of
+ * the same name, or a values list beside it, cannot vouch for it.
  */
-export function checkSharedInsertCallSites(resources, options = {}) {
-  const column = options.column ?? DEFAULT_TENANT_COLUMN;
-  const sharedInsert = sharedInsertPattern(options.insertHelper ?? DEFAULT_INSERT_HELPER);
-  const tenantLiteral = tenantLiteralPattern(column);
-  const problems = [];
-  for (const { path, source } of resources) {
-    sharedInsert.lastIndex = 0;
-    let match = sharedInsert.exec(source);
-    while (match !== null) {
-      // Look back only as far as the enclosing function starts, so a neighbouring
-      // insert that does name the tenant cannot vouch for this one, and forward
-      // across this call's own argument list.
-      const before = source.slice(0, match.index);
-      const boundary = Math.max(
-        before.lastIndexOf("function "),
-        before.lastIndexOf("=> {"),
-        before.lastIndexOf("\n}"),
-      );
-      const from = boundary === -1 ? Math.max(0, match.index - 400) : boundary;
-      const args = callArguments(source, match.index + match[0].length - 1);
-      const followed = factoryBody(source, args[2] ?? "");
-      const neighbourhood = source.slice(from, match.index + 700) + followed;
-      if (!tenantLiteral.test(neighbourhood)) {
-        problems.push({
-          path,
-          rule: "insert-without-tenant",
-          detail: `line ${before.split("\n").length}: a shared insert names no ${column} column — the tenant moved into the caller's list, so the caller is what carries it`,
-        });
-      }
-      match = sharedInsert.exec(source);
+function resolved(source, argument, from, callAt) {
+  const called = /^([A-Za-z_$][\w$]*)\s*\(/.exec(argument);
+  if (called) {
+    const declared = new RegExp(`function\\s+${escape(called[1])}\\s*(?:<[^>]*>)?\\s*\\(`).exec(source);
+    if (declared === null) return declarationOf(source, called[1], from, callAt);
+    const open = source.indexOf("{", closeOf(source, declared.index + declared[0].length - 1));
+    return open === -1 ? "" : source.slice(open, closeOf(source, open));
+  }
+  return /^[A-Za-z_$][\w$]*$/.test(argument) ? declarationOf(source, argument, from, callAt) : "";
+}
+
+/** The local names a file imports `helper.name` under from `helper.module`. */
+function importedNames(file, source, helper) {
+  const stem = (spec) => spec.replace(/\.[cm]?[jt]sx?$/, "");
+  const folder = posix.dirname(file);
+  const names = [];
+  for (const [, list, specifier] of source.matchAll(/\bimport\s+\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
+    if (!specifier.startsWith(".") || stem(posix.join(folder, specifier)) !== stem(helper.module)) continue;
+    for (const part of list.split(",")) {
+      const [imported, local] = part.trim().split(/\s+as\s+/);
+      if (imported === helper.name) names.push(local ?? imported);
     }
   }
-  return problems;
+  return names;
+}
+
+/**
+ * Every call of an exempt helper, in a file that imports it from its module, with the argument
+ * that carries the tenant and whether that argument names it.
+ * @param {{path: string, contents: string}[]} files
+ * @param {{module: string, name: string, argument: number}[]} helpers
+ * @param {{column?: string, identifier?: string}} [options]
+ * @returns {{path: string, line: number, name: string, index: number, argument: string, scoped: boolean}[]}
+ */
+export function exemptHelperCalls(files, helpers, options = {}) {
+  const tenant = tenantPattern(options.column ?? DEFAULT_TENANT_COLUMN, options.identifier ?? DEFAULT_TENANT_IDENTIFIER);
+  const calls = [];
+  for (const { path, contents: source } of files) {
+    for (const helper of helpers) {
+      for (const local of importedNames(path, source, helper)) {
+        for (const match of source.matchAll(callPattern(local))) {
+          // The enclosing function starts the window, so a neighbour cannot vouch for this call.
+          const before = source.slice(0, match.index);
+          const from = Math.max(0, before.lastIndexOf("function "), before.lastIndexOf("=> {"), before.lastIndexOf("\n}"));
+          const argument = (callArguments(source, match.index + match[0].length - 1)[helper.argument] ?? "").trim();
+          const scoped = tenant.test(argument) || tenant.test(resolved(source, argument, from, match.index));
+          calls.push({ path, line: before.split("\n").length, name: helper.name, index: helper.argument, argument, scoped });
+        }
+      }
+    }
+  }
+  return calls.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
+}
+
+/**
+ * @param {{path: string, contents: string}[]} files
+ * @param {{module: string, name: string, argument: number}[]} helpers
+ * @param {{column?: string, identifier?: string}} [options]
+ * @returns {{path: string, rule: string, detail: string}[]}
+ */
+export function checkExemptHelperCalls(files, helpers, options = {}) {
+  return exemptHelperCalls(files, helpers, options)
+    .filter((call) => !call.scoped)
+    .map((call) => ({
+      path: call.path,
+      rule: "unscoped-helper-call",
+      detail: `line ${call.line}: ${call.name} is exempt from the statement scan, and its argument ${call.index + 1} (${call.argument}) names no tenant — the caller is what carries it`,
+    }));
 }
 
 /** Every statement whose exemption was taken, so a reviewer can count them. */

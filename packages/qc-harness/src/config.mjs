@@ -80,6 +80,8 @@ export const defaults = {
     // Files inside a feature that carry SQL.
     resourceFiles: ["resource.ts", "schema.ts"],
     resourceDirs: ["shared", "slices"],
+    // The file in each server feature whose tables and columns every migration set must name.
+    schemaFile: "schema.ts",
     triggerFile: "trigger.ts",
     // Platform and frontend features paths for boundary checks.
     platform: "frontend/src/platform",

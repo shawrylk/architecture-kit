@@ -7,12 +7,15 @@ import { checkFeatureAnatomy, checkNoEmptyBlock } from "../gates/eight-blocks.mj
 import { checkCitations, checkDocPaths, checkSelfContained, definedIds } from "../gates/citations.mjs";
 import { checkAgreement, declaredValues } from "../gates/registry-agreement.mjs";
 import {
+  checkSchemaInMigrations,
   checkSqlIdentifiers,
   declaredColumns,
+  migrationNames,
+  schemaTables,
   sqlStatements,
   tableOwners,
 } from "../gates/sql-identifiers.mjs";
-import { checkSharedInsertCallSites, checkTenantPredicate, exemptions } from "../gates/tenant-predicate.mjs";
+import { checkExemptHelperCalls, checkTenantPredicate, exemptHelperCalls, exemptions } from "../gates/tenant-predicate.mjs";
 import { checkClaimedRequirements } from "../gates/claimed-requirements.mjs";
 import { allowedPublicRoutes, checkPublicRoutes, declaredPublicRoutes } from "../gates/public-routes.mjs";
 import { calledInternalRoutes, checkInternalRoutes, declaredInternalRoutes } from "../gates/internal-routes.mjs";
@@ -261,7 +264,7 @@ async function resourceFiles(config, tree) {
 }
 
 /** Nothing runs the schema and the queries together, so this asserts their names agree. */
-async function sqlAgreement(config, tree, taken) {
+async function sqlAgreement(config, tree, taken, lines) {
   const migrationDir = posix(config.paths.migrations);
   const migrations = await readEach(
     config.root,
@@ -291,12 +294,29 @@ async function sqlAgreement(config, tree, taken) {
   if (enabled(config.gates, "sql-identifiers")) {
     const byName = migrations.map((migration) => ({ file: path.posix.basename(migration.path), sql: migration.contents }));
     problems.push(...checkSqlIdentifiers(tables, resources, tableOwners(byName, features)));
+    const declared = [];
+    for (const feature of features) {
+      const rel = `${join(posix(config.paths.serverFeatures), feature)}/${config.paths.schemaFile}`;
+      const source = tree.isFile(rel) ? await read(path.join(config.root, rel)) : null;
+      if (source === null) continue;
+      for (const entry of schemaTables(source, { tableFactory: config.tenant.tableFactory })) declared.push({ path: rel, ...entry });
+    }
+    problems.push(...checkSchemaInMigrations(declared, migrationNames(migrations.map((migration) => migration.contents))));
+    const columns = declared.reduce((sum, entry) => sum + entry.columns.length, 0);
+    if (declared.length > 0) lines.push(`OK  schema       ${declared.length} table(s), ${columns} column(s) in schema files, each named by a migration`);
   }
   if (enabled(config.gates, "tenant-predicate")) {
+    const helpers = config.tenantPredicate.exemptHelpers;
+    const callers = (await sourceFiles(config, tree)).filter(
+      (file) => !TEST_FILE.test(file.path) && helpers.some((helper) => file.contents.includes(helper.name)),
+    );
+    const helperOptions = { column: config.tenant.sqlColumn, identifier: config.tenant.column };
     problems.push(
       ...checkTenantPredicate(scoped, owned, tenantOptions),
-      ...checkSharedInsertCallSites(resources, tenantOptions),
+      ...checkExemptHelperCalls(callers, helpers, helperOptions),
     );
+    const calls = exemptHelperCalls(callers, helpers, helperOptions).length;
+    if (calls > 0) lines.push(`OK  helpers      ${calls} call(s) of ${helpers.length} exempt helper(s), each naming the tenant`);
   }
   return problems;
 }
@@ -578,8 +598,8 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   }
 
   if (enabled(config.gates, "sql-identifiers") || enabled(config.gates, "tenant-predicate")) {
-    problems.push(...(await sqlAgreement(config, tree, taken)));
-    lines.push("OK  sql          every column is declared, every statement and shared insert carries the tenant");
+    lines.push("OK  sql          every column is declared, every statement and every exempt helper's caller carries the tenant");
+    problems.push(...(await sqlAgreement(config, tree, taken, lines)));
     // An exemption is counted and named, so it stays a decision rather than a habit.
     for (const exemption of taken) lines.push(`  exempt       ${exemption.path}: ${exemption.reason}`);
   }
