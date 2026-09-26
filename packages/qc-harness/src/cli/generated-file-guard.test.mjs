@@ -55,6 +55,11 @@ test("an edit of a generated file is denied, and the reason names the command th
   }
 });
 
+test("a generated file at the repository root is denied too", (t) => {
+  const ws = workspace(t);
+  assert.match(reasonOf(decide(write(ws.at("routes.generated.ts")))), /routes\.generated\.ts is generated/);
+});
+
 test("an edit of the generated file's source passes", (t) => {
   const ws = workspace(t);
   assert.equal(decide(edit(ws.at("src/routes.ts"), "a")), null);

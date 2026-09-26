@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_FILE, load } from "../config.mjs";
 import { generatedRegions } from "../generated-markers.mjs";
-import { globToRegExp } from "../glob.mjs";
+import { globMatcher } from "../glob.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit"]);
@@ -53,7 +53,7 @@ export function decide(call) {
   }
   const rel = path.relative(root, file).split(path.sep).join("/");
   const rerun = `Change its source, then run \`${generated.command}\`.`;
-  if (generated.globs.some((glob) => globToRegExp(glob).test(rel))) {
+  if (globMatcher(generated.globs)(rel)) {
     return deny(`Generated-file guard: ${rel} is generated. ${rerun}`);
   }
   if (call.tool_name !== "Write" && MARKDOWN.test(rel) && editsRegion(file, input)) {

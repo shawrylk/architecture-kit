@@ -5,17 +5,13 @@ import { execFile } from "node:child_process";
 import { readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { globToRegExp } from "../glob.mjs";
+import { globMatcher } from "../glob.mjs";
 
 const execFileAsync = promisify(execFile);
 // The execFile default is 1 MB. A 30,000-file repository lists about 2 MB of paths.
 const MAX_BUFFER = 256 * 1024 * 1024;
 
-/** A leading `**` also matches at the root, as ESLint reads the same `ignores`. */
-function ignoredBy(globs) {
-  const patterns = globs.map(globToRegExp);
-  return (rel) => patterns.some((pattern) => pattern.test(rel) || pattern.test(`/${rel}`));
-}
+const ignoredBy = globMatcher;
 
 // `-t` tags each entry. `R` is a tracked file gone from the working tree and `S` is skip-worktree, so neither is on disk.
 const NOT_ON_DISK = new Set(["R", "S"]);
