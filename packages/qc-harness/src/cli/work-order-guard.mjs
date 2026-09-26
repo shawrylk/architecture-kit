@@ -19,6 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { load } from "../config.mjs";
+import { globToRegExp } from "../glob.mjs";
 import { ignoredPaths } from "./ignored-paths.mjs";
 import { claimLease, leaseFileOf, readLease } from "./lease-file.mjs";
 import { MANIFEST_FILE, readManifest } from "./work-order-manifest.mjs";
@@ -37,14 +38,7 @@ const slashed = (file) => file.split(path.sep).join("/");
 // The refusal names this copy of the CLI: a repository's own `qc` can be a version with no `lease`.
 const QC = `node "${slashed(fileURLToPath(new URL("./qc.mjs", import.meta.url)))}"`;
 
-export function globToRegExp(glob) {
-  const body = glob
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "\u0000")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\u0000/g, ".*");
-  return new RegExp(`^${body}$`);
-}
+export { globToRegExp };
 
 /** @param {string} relPath forward-slash, relative to the work order manifest's own root */
 export function isAllowed(relPath, patterns) {

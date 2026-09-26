@@ -155,6 +155,85 @@ test("check judges every configured mirror root, including a tests folder outsid
   rmSync(dir, { recursive: true, force: true });
 });
 
+const ENGLISH_RULES = new Set(["english-comment", "english-source"]);
+const englishPaths = (problems) => problems.filter((problem) => ENGLISH_RULES.has(problem.rule)).map((problem) => problem.path).sort();
+
+function write(dir, files) {
+  for (const [file, contents] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    writeFileSync(path.join(dir, file), contents);
+  }
+}
+
+// The English gate is a policy gate, so the kit ships it off.
+const ENGLISH_ON = JSON.stringify({ featureRoots: ["backend/src/features"], gates: { "english-source": true } });
+
+/** Japanese in a git-ignored folder, under a path in `.git/info/exclude`, and in a tracked file. */
+const JAPANESE = {
+  "qc.config.json": ENGLISH_ON,
+  ".gitignore": ".gitnexus/\n",
+  ".gitnexus/wiki/overview.md": "図面の概要\n",
+  "local/draft.md": "下書き\n",
+  "docs/tracked.md": "検査の手順\n",
+};
+
+test("check skips what git ignores and scans what git tracks", async () => {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  write(dir, JAPANESE);
+  writeFileSync(path.join(dir, ".git/info/exclude"), "local/\n");
+  execFileSync("git", ["add", "docs/tracked.md"], { cwd: dir });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(englishPaths(problems), ["docs/tracked.md"]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("outside git, check walks the tree and still scans every file", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "qc-cli-plain-"));
+  writeFileSync(path.join(dir, "package.json"), '{"name":"t","private":true,"type":"module"}\n');
+  await quiet(() => runInit(load(dir)));
+  write(dir, { ...JAPANESE, "node_modules/pkg/readme.md": "日本語\n" });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(englishPaths(problems), [".gitnexus/wiki/overview.md", "docs/tracked.md", "local/draft.md"]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("one check lists the repository once, for every gate", async () => {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  let calls = 0;
+  const lister = async (...args) => {
+    calls += 1;
+    return (await import("./repo-files.mjs")).repoFiles(...args);
+  };
+  await runCheck(load(dir), [], { lister });
+  await runCheck(load(dir), ["docs/decisions.md", "qc.config.json"], { lister });
+  assert.equal(calls, 2);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("check with several files reports every problem from each, and judges only those files", async () => {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  const orders = "backend/src/features/orders";
+  const invoices = "backend/src/features/invoices";
+  write(dir, {
+    "qc.config.json": ENGLISH_ON,
+    [`${orders}/index.ts`]: "export {};\n",
+    [`${orders}/junk/a.ts`]: "// 注文の補助\nexport {};\n",
+    [`${invoices}/index.ts`]: "export {};\n",
+    [`${invoices}/junk/b.ts`]: "export {};\n",
+    "docs/untouched.md": "触らない\n",
+  });
+  const { problems } = await runCheck(load(dir), [`${orders}/junk/a.ts`, path.join(dir, invoices, "junk/b.ts")]);
+  const features = new Set(problems.filter((problem) => problem.feature).map((problem) => problem.feature.split(path.sep).join("/")));
+  assert.deepEqual([...features].sort(), [invoices, orders]);
+  assert.deepEqual(englishPaths(problems), [`${orders}/junk/a.ts`]);
+  const full = await runCheck(load(dir));
+  assert.ok(englishPaths(full.problems).includes("docs/untouched.md"), "no file given must stay the full check");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("a clean mirror run names every root it judged", async () => {
   const dir = await mirrored(["backend/src/orders/ship.ts", "backend/tests/orders/ship.test.ts"]);
   const { lines } = await runCheck(load(dir));

@@ -24,7 +24,7 @@ fails; it names the check for every rule.
 
 ```bash
 npx qc check          # every structural gate
-npx qc check <file>   # the fast per-file path
+npx qc check <file>...   # the fast per-file path, for one file or several
 npx qc config         # the configuration in force, after defaults are merged
 ```
 

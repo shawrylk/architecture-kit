@@ -7,7 +7,7 @@ import { runCheck } from "./check.mjs";
 
 const USAGE = `qc — architecture gates
 
-  qc check [file]          every structural gate; one file is the fast path a hook takes
+  qc check [file...]       every structural gate; files given take the fast path a hook or a commit takes
   qc init                  scaffold the docs, config, hooks and workflow into this repository
   qc feature <name>        scaffold a feature in the configured anatomy
   qc run [name]            drive one feature command headless; no name lists them
@@ -17,6 +17,10 @@ const USAGE = `qc — architecture gates
   qc lease release [path]  remove it: --session <id> for your own, --force for another's
   qc commit-msg <file>     refuse a commit message that credits a tool as an author
   qc decisions [id]        where decisions are cited; --squash closes the gaps
+  qc worktree add <name> <branch> [--from <ref>]
+                           fetch, add ../<name> beside the main checkout, install, print the path
+  qc worktree remove <name>
+                           refuse a dirty tree; delete it, then its branch once merged or pushed
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
   qc doctor                the hooks and the lockfile must run the same harness
   qc config                print the resolved configuration
@@ -34,7 +38,7 @@ async function main() {
 
   switch (command) {
     case "check": {
-      const { problems, lines } = await runCheck(config, rest[0]);
+      const { problems, lines } = await runCheck(config, rest);
       if (problems.length > 0) {
         for (const problem of problems) {
           console.error(`FAIL  ${problem.feature ?? problem.path}  ${problem.rule}: ${problem.detail}`);
@@ -79,6 +83,10 @@ async function main() {
       const { runDecisions } = await import("./decisions.mjs");
       process.exit(await runDecisions(config, rest));
       return;
+    }
+    case "worktree": {
+      const { runWorktree } = await import("./worktree.mjs");
+      process.exit(await runWorktree(config, rest));
     }
     case "enforcement-map": {
       const { runSyncEnforcementMap } = await import("./sync-enforcement-map.mjs");

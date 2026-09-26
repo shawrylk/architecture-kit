@@ -5,6 +5,8 @@
 // The line is prose against data. Prose a developer writes for another developer is English. Data
 // the product needs in another language is declared, and its English variant must exist beside it.
 
+import { globToRegExp } from "../glob.mjs";
+
 const SCRIPTS = {
   // Hiragana, katakana, CJK ideographs, Hangul: language a reader must know to follow the text.
   cjk: "\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af",
@@ -17,15 +19,6 @@ function scriptPattern(scripts) {
   const ranges = scripts.map((name) => SCRIPTS[name] ?? name).join("");
   if (ranges === "") throw new Error("language.scripts must name at least one script range");
   return new RegExp(`[${ranges}]`);
-}
-
-function globToRegExp(glob) {
-  const body = glob
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "\u0000")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\u0000/g, ".*");
-  return new RegExp(`^${body}$`);
 }
 
 export function matchesAny(relPath, globs) {
@@ -150,6 +143,17 @@ export function checkEnglishSource(files, options = {}) {
     }
   }
   return problems;
+}
+
+// The stale-entry and budget rules judge the whole ledger, so only the full pass can run them.
+const PER_FILE_RULES = new Set(["english-comment", "english-source", "legacy-entry-grew"]);
+
+/**
+ * The rules that judge one file alone, for the files a hook or a commit names.
+ * @param {{path: string, contents: string}[]} files paths relative to the repository root
+ */
+export function checkEnglishFiles(files, options = {}) {
+  return checkEnglishSource(files, options).filter((problem) => PER_FILE_RULES.has(problem.rule));
 }
 
 /**

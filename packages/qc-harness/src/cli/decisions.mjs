@@ -20,6 +20,7 @@ import {
   rewrite,
   squashPlan,
 } from "../decisions.mjs";
+import { repoFiles } from "./repo-files.mjs";
 
 const run = promisify(execFile);
 
@@ -39,11 +40,9 @@ export const USAGE = `qc decisions — where every decision id is cited, and how
   --dry-run  print what would change and write nothing
   --force    run against a dirty tree`;
 
-// Tracked and untracked-but-not-ignored, so this sees what the citations gate sees.
-async function tracked(root) {
-  const args = ["ls-files", "-z", "--cached", "--others", "--exclude-standard"];
-  const { stdout } = await run("git", args, { cwd: root, maxBuffer: 64 * 1024 * 1024 });
-  return [...new Set(stdout.split("\0"))].filter((name) => name !== "" && !BINARY.test(name));
+// The lister every gate reads, so this sees what the citations gate sees.
+async function tracked(config) {
+  return (await repoFiles(config.root, { ignores: config.ignores })).filter((name) => !BINARY.test(name));
 }
 
 async function scan(config) {
@@ -51,7 +50,7 @@ async function scan(config) {
   const exclude = config.decisions.exclude ?? [];
   const sites = new Map();
   const generated = new Map();
-  for (const file of await tracked(config.root)) {
+  for (const file of await tracked(config)) {
     // A vendored tool cites its own upstream register, never this repository's.
     if (exclude.some((source) => new RegExp(source).test(file))) continue;
     const contents = await readFile(path.join(config.root, file), "utf8").catch(() => null);
