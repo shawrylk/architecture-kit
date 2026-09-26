@@ -45,6 +45,13 @@ test("with no token, or no network, the issue lookup skips with a note, but the 
   assert.match((await checkPullRequest(event(""), { gh: ghKnowing({}), hasToken: false })).problems.join(), /names no issue/);
 });
 
+test("a repository the token cannot see is a note, never a missing issue", async () => {
+  const gh = async () => ({ ok: false, stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/private'. (repository)" });
+  const result = await checkPullRequest(event("Refs acme/private#5"), { gh, hasToken: true });
+  assert.deepEqual(result.problems, []);
+  assert.match(result.notes.join(), /the token cannot see acme.private/);
+});
+
 test("an event that is no pull request is skipped", async () => {
   const result = await checkPullRequest({ repository: { full_name: "acme/app" } }, { gh: ghKnowing({}), hasToken: true });
   assert.deepEqual(result.problems, []);

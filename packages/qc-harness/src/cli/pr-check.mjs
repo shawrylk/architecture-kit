@@ -5,7 +5,9 @@ import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const REFERENCE = /\b(?:fix(?:e[sd])?|close[sd]?|resolve[sd]?|refs?)\s*:?\s+(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/gi;
-const NOT_FOUND = /could not resolve|not found/i;
+const NO_ISSUE = /could not resolve to an? (issue|pull request)/i;
+// The CI token sees only its own repository, so another repository reads as missing.
+const NO_REPOSITORY = /could not resolve to a repository|HTTP 404/i;
 
 /** @returns each issue a body names with a closing keyword or `Refs`, as `{repo, number}`. */
 export function issueReferences(body, repo) {
@@ -44,7 +46,9 @@ export async function checkPullRequest(event, { gh = runGh, hasToken }) {
     const name = `${repo}#${number}`;
     const result = await gh(["issue", "view", String(number), "-R", repo, "--json", "createdAt"]);
     if (!result.ok) {
-      if (NOT_FOUND.test(result.stderr ?? "")) problems.push(`${name} does not exist. Open the issue, then reference it.`);
+      const stderr = result.stderr ?? "";
+      if (NO_ISSUE.test(stderr)) problems.push(`${name} does not exist. Open the issue, then reference it.`);
+      else if (NO_REPOSITORY.test(stderr)) notes.push(`the token cannot see ${repo}, so ${name} was not looked up`);
       else notes.push(`could not reach GitHub for ${name}: ${(result.stderr ?? "").trim().split("\n")[0]}`);
       continue;
     }
