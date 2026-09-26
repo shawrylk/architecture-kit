@@ -5,7 +5,9 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
+      # Full history: the threshold ratchet compares the registry with the merge base.
       - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
       - uses: actions/setup-node@v5
         with: { node-version-file: package.json }
       - run: corepack enable

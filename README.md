@@ -57,6 +57,10 @@ architecture, enforcement, guards, performance, glossary, ui), `.githooks/pre-co
 adds `spec:check`,
 `gen:feature` and `prepare` to `package.json`.
 
+`qc init` skips a workflow you already have. If you copied `ci.yml` before the kit set
+`fetch-depth: 0` on its checkout step, add it: the threshold ratchet needs the merge base, and a
+depth-1 clone has none, so the ratchet skips in CI.
+
 ### 2. Make it yours
 
 - **`docs/decisions.md`** — delete what does not apply, add what you have already decided. Ids are
