@@ -3,9 +3,10 @@
 import { enabled } from "./config.mjs";
 import { gateDescriptions } from "./descriptions.mjs";
 import { rules } from "./eslint/index.mjs";
+import { GENERATED_CLOSE } from "./generated-markers.mjs";
 
 export const OPEN = "<!-- generated: rule-to-check. -->";
-export const CLOSE = "<!-- /generated -->";
+export const CLOSE = GENERATED_CLOSE;
 // A repository may annotate the open marker with its own reminder (e.g. "pnpm codegen.") —
 // matched by prefix, not by exact string, so that annotation does not break detection.
 const OPEN_PATTERN = /<!--\s*generated:\s*rule-to-check\.[^>]*-->/;

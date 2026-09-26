@@ -210,6 +210,9 @@ export const defaults = {
     toolCallBudget: 100,
   },
 
+  // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`.
+  generated: { globs: ["**/*.generated.*"], command: "pnpm codegen" },
+
   // `qc worktree`. `install` runs in each new worktree. `base` is the default `--from`: the ref a
   // branch starts at, and the ref `remove` checks a merge against.
   worktree: { install: "pnpm install --frozen-lockfile", base: "origin/main" },
