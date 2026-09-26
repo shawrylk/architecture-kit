@@ -73,3 +73,13 @@ test("a feature file in the session's own project is checked from the project", 
   assert.equal(runHook(ws, path.join(ws.project, "backend", "src")), 2);
   assert.deepEqual(ws.ranIn(), [ws.project]);
 });
+
+test("a checkout with its own installed harness is checked by that copy, not the plugin's", (t) => {
+  const ws = workspace();
+  t.after(ws.cleanup);
+  const cli = path.join(ws.linked, "node_modules", "architecture-harness", "src", "cli");
+  mkdirSync(cli, { recursive: true });
+  writeFileSync(path.join(cli, "qc.mjs"), "process.exit(0);\n");
+  assert.equal(runHook(ws, path.join(ws.linked, "backend", "src")), 0);
+  assert.deepEqual(ws.ranIn(), []);
+});

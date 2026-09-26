@@ -38,9 +38,11 @@ export function versionOf(harnessRoot) {
  * own files -- that verdict is worthless and has to stop the turn. A copy *ahead* is what every
  * day of developing this kit looks like; it is merely stricter, and anything it reports is a real
  * finding to act on. Blocking on that direction would make the kit unable to grow.
+ * A plugin whose hooks run the installed copy never judges the repository with its own gates, so
+ * a copy behind is then a note.
  * @returns null when the two agree, else a report carrying `blocking`.
  */
-export function drift(installed, plugin) {
+export function drift(installed, plugin, { hooksRunInstalled = false } = {}) {
   if (!plugin || !installed) return null;
   const missing = installed.gates.filter((name) => !plugin.gates.includes(name));
   const extra = plugin.gates.filter((name) => !installed.gates.includes(name));
@@ -48,20 +50,25 @@ export function drift(installed, plugin) {
   return {
     missing,
     extra,
-    blocking: missing.length > 0,
+    blocking: missing.length > 0 && !hooksRunInstalled,
     installedVersion: installed.version,
     pluginVersion: plugin.version,
   };
 }
 
 export function driftReport(found, pluginRoot, checkoutRoot = pluginRoot) {
-  const label = found.blocking ? "FAIL  harness     " : "WARN  harness     ";
+  const behindOnly = found.missing.length > 0 && !found.blocking;
+  const label = found.blocking ? "FAIL  harness     " : behindOnly ? "NOTE  harness     " : "WARN  harness     ";
   const lines = [
     `${label} the hooks and the lockfile run different harnesses`,
     `      installed    ${found.installedVersion ?? "?"} — what \`pnpm check\` and CI enforce`,
     `      plugin       ${found.pluginVersion ?? "?"} — what the agent hooks enforce, from ${pluginRoot}`,
   ];
-  if (found.missing.length > 0) {
+  if (behindOnly) {
+    lines.push(`      the plugin copy is missing: ${found.missing.join(", ")}`);
+    lines.push(`      the hooks run the installed copy, so the structure check is unaffected`);
+    lines.push(`      update the plugin and restart the session to get its newer guards`);
+  } else if (found.missing.length > 0) {
     lines.push(`      the plugin copy is missing: ${found.missing.join(", ")}`);
     lines.push(`      so its \`qc check\` reports unknown-check for rules your docs correctly list`);
     lines.push(`      fix the checkout, never the repository: git -C ${checkoutRoot} log --oneline -1`);
@@ -83,6 +90,17 @@ async function behindMain(root) {
     return { behind, ahead };
   } catch {
     return null;
+  }
+}
+
+/** True when the plugin's stop gate prefers the repository's installed harness over its own copy. */
+export function hooksRunInstalled(pluginCheckout, read = readFileSync) {
+  try {
+    return read(path.join(pluginCheckout, "hooks", "stop-gate.sh"), "utf8").includes(
+      "node_modules/architecture-harness/src/cli/qc.mjs",
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -116,7 +134,7 @@ export async function runDoctor(config) {
   const plugin = { gates: gateNames(pluginRoot), version: versionOf(pluginRoot) };
   const checkoutRoot = path.resolve(pluginRoot, "..", "..");
   const position = await behindMain(checkoutRoot);
-  const found = drift(installed, plugin);
+  const found = drift(installed, plugin, { hooksRunInstalled: hooksRunInstalled(checkoutRoot) });
   if (!found) {
     console.log(`OK  plugin       the same ${plugin.gates.length} gate(s) as the lockfile pins`);
     return 0;
