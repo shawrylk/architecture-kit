@@ -4,6 +4,7 @@ export const gateDescriptions = Object.freeze({
   "eight-blocks": "A feature keeps the anatomy it declares, and no block or slice is empty",
   citations: "Every cited id and doc path resolves, and nothing references another repository",
   "registry-agreement": "A value written twice agrees with the registry that owns it",
+  "registry-readers": "Every reader a registry entry names exists and names the entry",
   "sql-identifiers": "A query names a column a migration declares, and only its own feature's tables",
   "tenant-predicate": "Every statement on a business table filters on the tenant",
   "claimed-requirements": "A requirement a route claims names the test that proves it",

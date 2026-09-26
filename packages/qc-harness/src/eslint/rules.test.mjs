@@ -625,3 +625,154 @@ tester.run("name-the-pattern", rules["name-the-pattern"], {
     },
   ],
 });
+
+const MIGRATE = "backend/src/infrastructure/db/migrate.ts";
+
+console.log("→", "no-sql-raw");
+tester.run("no-sql-raw", rules["no-sql-raw"], {
+  valid: [
+    { code: "await db.execute(sql`select 1 where id = ${id}`);", filename: "backend/src/features/pins/resource.ts" },
+    { code: "await db.execute(sql.raw(ddl));", filename: MIGRATE, options: [{ allow: [MIGRATE] }] },
+    { code: "await db.execute(sql.raw(ddl));", filename: "C:\\repo\\backend\\src\\infrastructure\\db\\migrate.ts", options: [{ allow: [MIGRATE] }] },
+    { code: "const text = other.raw(value);", filename: "backend/src/features/pins/resource.ts" },
+  ],
+  invalid: [
+    { code: "await db.execute(sql.raw(text));", filename: "backend/src/features/pins/resource.ts", errors: [{ messageId: "raw" }] },
+    { code: "const splice = sql.raw;", filename: "backend/src/features/pins/resource.ts", errors: [{ messageId: "raw" }] },
+    { code: 'sql["raw"](text);', filename: "backend/src/features/pins/resource.ts", errors: [{ messageId: "raw" }] },
+    {
+      code: "await db.execute(sql.raw(ddl));",
+      filename: "backend/src/features/pins/resource.ts",
+      options: [{ allow: [MIGRATE] }],
+      errors: [{ messageId: "raw" }],
+    },
+  ],
+});
+
+const jsx = new RuleTester({
+  languageOptions: { ecmaVersion: 2023, sourceType: "module", parserOptions: { ecmaFeatures: { jsx: true } } },
+});
+const GUARDED = [{ guards: ["isImeComposing"] }];
+const unguarded = { messageId: "unguarded" };
+const inline = { messageId: "inline" };
+
+console.log("→", "ime-safe-key");
+jsx.run("ime-safe-key", rules["ime-safe-key"], {
+  valid: [
+    {
+      code: '<textarea onKeyDown={(e) => { if (isImeComposing(e.nativeEvent)) return; if (e.key === "Enter") submit(); }} />;',
+      options: GUARDED,
+    },
+    { code: '<input onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === "Enter") submit(); }} />;' },
+    { code: '<input onKeyDown={(e) => { if (e.keyCode === 229) return; if (e.key === "Escape") close(); }} />;' },
+    {
+      // A handler passed in as a prop is not resolvable here, so the component's own body is never judged as the handler.
+      code:
+        "function Field({ onKey, key }) {\n" +
+        '  if (key === "Enter") track();\n' +
+        "  return <input onKeyDown={onKey} />;\n" +
+        "}",
+      options: GUARDED,
+    },
+    {
+      code: '<input onKeyDown={(e) => { if (e.key === "Enter") { if (isImeComposing(e.nativeEvent)) return; submit(); } }} />;',
+      options: GUARDED,
+    },
+    {
+      code:
+        'const onKey = useCallback((e) => { if (isImeComposing(e.nativeEvent)) return; if (e.key === "Enter") send(); }, []);\n' +
+        "const field = <input onKeyDown={onKey} />;",
+      options: GUARDED,
+    },
+    // A row, a button or a list item reacts to Enter or Space; it is not text entry.
+    { code: '<div role="row" tabIndex={0} onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") open(); }} />;' },
+    { code: '<li onKeyDown={(e) => { if (e.key === "Enter") open(); }} />;' },
+    { code: '<FolderRow onKeyDown={(e) => { if (e.key === "Enter") open(); }} />;', options: [{ components: ["Input"] }] },
+    { code: 'const onKey = (e) => { if (e.key === "Enter") open(); };\nconst row = <div onKeyDown={onKey} />;' },
+    { code: '<div contentEditable={false} onKeyDown={(e) => { if (e.key === "Enter") open(); }} />;' },
+    { code: '<input type="checkbox" onKeyDown={(e) => { if (e.key === "Enter") toggle(); }} />;' },
+    { code: '<input onKeyDown={(e) => { if (e.key === "Tab") next(); }} />;' },
+  ],
+  invalid: [
+    {
+      // The drawing-comment-dialog case: Enter submits a half-typed kana conversion.
+      code: '<textarea onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} />;',
+      errors: [unguarded],
+    },
+    { code: '<input onKeyUp={(e) => { if (e.key === "Escape") cancel(); }} />;', errors: [unguarded] },
+    { code: '<div contentEditable onKeyDown={(e) => { if (e.key === "Enter") commit(); }} />;', errors: [unguarded] },
+    {
+      code: '<Input onKeyDown={(e) => { if (e.key === "Enter") commit(); }} />;',
+      options: [{ components: ["Input"] }],
+      errors: [unguarded],
+    },
+    {
+      // The drawing-grid-calibration case: a handler defined outside the JSX, with an inline check.
+      code:
+        'const onKeyDown = (e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) confirm(); };\n' +
+        "const field = <Input onKeyDown={onKeyDown} />;",
+      options: [{ components: ["Input"], guards: ["isImeComposing"] }],
+      errors: [unguarded, inline],
+    },
+    {
+      code: 'function onKey(e) { if (e.key === "Escape") close(); }\nconst field = <textarea onKeyDown={onKey} />;',
+      errors: [unguarded],
+    },
+    {
+      code: '<input onKeyDown={(e) => { if (e.keyCode === 229) return; if (e.key === "Enter") send(); }} />;',
+      options: GUARDED,
+      errors: [inline, unguarded],
+    },
+    {
+      code: '<input onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === "Enter") send(); }} />;',
+      options: GUARDED,
+      errors: [inline, unguarded],
+    },
+    { code: '<input onKeyDown={(e) => { switch (e.key) { case "Enter": send(); break; } }} />;', errors: [unguarded] },
+    {
+      code: '<input onKeyDown={(e) => { if (e.key === "Enter") send(); if (isImeComposing(e)) return; }} />;',
+      options: GUARDED,
+      errors: [unguarded],
+    },
+    {
+      // The guard must return early; a conjoined check is a second shape for one job.
+      code: '<input onKeyDown={(e) => { if (e.key === "Escape" && !isImeComposing(e.nativeEvent)) close(); }} />;',
+      options: GUARDED,
+      errors: [unguarded],
+    },
+    { code: '<input onKeyDown={({ key }) => { if (key === "Enter") send(); }} />;', errors: [unguarded] },
+  ],
+});
+
+const READER = "frontend/src/platform/gesture-thresholds.ts";
+const HOLD = [{ entries: [{ key: "holdpress", names: ["HOLD_\\w*MS", "\\w*_HOLD_MS"], readers: [READER] }] }];
+
+console.log("→", "registry-literal");
+tester.run("registry-literal", rules["registry-literal"], {
+  valid: [
+    { code: "export const HOLD_DURATION_MS = 400;", filename: READER, options: HOLD },
+    { code: "export const HOLD_DURATION_MS = 400;", filename: "C:\\repo\\frontend\\src\\platform\\gesture-thresholds.ts", options: HOLD },
+    { code: "const SEARCH_SETTLE_MS = 250;", filename: "frontend/src/features/search/box.ts", options: HOLD },
+    { code: "const HOLD_DURATION_MS = registry.gates.holdpress.value;", filename: "frontend/src/features/pins/drag.ts", options: HOLD },
+    // A pattern matches the whole identifier: THRESHOLD_MS holds "HOLD_MS" but is not a hold.
+    { code: "const THRESHOLD_MS = 4;", filename: "frontend/src/features/pins/drag.ts", options: HOLD },
+    { code: "const HOLD_DURATION_MS = 400;", filename: "frontend/src/features/pins/drag.ts" },
+  ],
+  invalid: [
+    {
+      code: "const HOLD_DURATION_MS = 400;",
+      filename: "frontend/src/features/pins/drag.ts",
+      options: HOLD,
+      errors: [{ messageId: "restated", data: { name: "HOLD_DURATION_MS", key: "holdpress", readers: READER } }],
+    },
+    { code: "const NAME_HOLD_MS = 900;", filename: "frontend/src/features/pins/drag.ts", options: HOLD, errors: [{ messageId: "restated" }] },
+    { code: "const GESTURE = { HOLD_DURATION_MS: 400 };", filename: "frontend/src/features/pins/drag.ts", options: HOLD, errors: [{ messageId: "restated" }] },
+    { code: "class Grip { static HOLD_DURATION_MS = 400; }", filename: "frontend/src/features/pins/drag.ts", options: HOLD, errors: [{ messageId: "restated" }] },
+    {
+      code: "const PIN_DRAG_THRESHOLD_PX = 4;",
+      filename: "frontend/src/features/pins/drag.ts",
+      options: [{ entries: [{ key: "dragslop", names: ["\\w*DRAG\\w*_PX"], readers: [] }] }],
+      errors: [{ messageId: "unread", data: { name: "PIN_DRAG_THRESHOLD_PX", key: "dragslop" } }],
+    },
+  ],
+});

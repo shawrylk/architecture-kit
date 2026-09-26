@@ -198,13 +198,19 @@ it. Both commands are idempotent.
 
 **Lint** — `no-cross-feature-internals`, `storage-only-in-resource`, `scoped-repository`,
 `tenant-scoped-table`, `no-offset-pagination`, `no-status-literal`, `signal-last-param`,
-`no-raw-fetch`, `no-orchestration-in-trigger`, `no-number-in-comment`.
+`no-raw-fetch`, `no-orchestration-in-trigger`, `no-number-in-comment`, `ime-safe-key`,
+`registry-literal`, `no-sql-raw`.
+
+The preset also refuses an exemption written in a file. `noInlineConfig` makes ESLint ignore an
+`eslint-disable` comment and report it as a warning, so a run with `--max-warnings 0` fails on it.
+With `tseslint` supplied, `@typescript-eslint/ban-ts-comment` bans `@ts-ignore` and `@ts-nocheck`,
+and allows `@ts-expect-error` with a description.
 
 **Gates**, for what lint cannot see — feature anatomy; citations (every cited id resolves, no
 dangling doc path, no reference to another repository); the tenant predicate (every statement on a
 business table filters on the tenant, including the one nobody wrote a test for); SQL identifiers (a
 query names a column a migration declares); public and internal route agreement; claimed
-requirements; headless pipelines; registry agreement.
+requirements; headless pipelines; registry agreement; registry readers.
 
 Two more are generators your codegen imports rather than checks `qc check` runs: `tenant-tables`
 (the row-level-security policy file) and `contract-compose`.
@@ -218,6 +224,43 @@ per gate and per rule.
 
 A test fails if a switch ever stops reaching the runner, so the config cannot quietly lie about what
 it controls.
+
+### Guard IME composition in text entry
+
+`qc/ime-safe-key` reads `onKeyDown` and `onKeyUp` on `input`, `textarea`, a `contentEditable`
+element, and each component in `ime.components`. An Enter or Escape branch must return early on
+the IME guard first. A row or a button that reacts to Enter is not text entry, so the rule skips it.
+
+```json
+{ "ime": { "components": ["Input"], "guards": ["isImeComposing"] } }
+```
+
+With `ime.guards` set, only a call to one of them counts, and an inline `isComposing` or
+`keyCode === 229` check is reported as a second mechanism. With no guard set, either inline check
+counts.
+
+### Let a reviewed file call `sql.raw`
+
+`qc/no-sql-raw` refuses `sql.raw` everywhere except the paths in `sqlRaw.allow`. Each path is a
+file a person reviewed, matched as a path suffix. The tooling files (`toolingFiles`) are exempt,
+like every `qc/*` rule.
+
+### Name who may hold a registry number
+
+An entry in `quality-thresholds.json` can carry two more keys:
+
+| Key | What it holds |
+| --- | --- |
+| `names` | Regular expressions for identifiers that restate the entry. Each one matches the whole identifier, case-insensitive. |
+| `readers` | Repository paths that may hold the number, matched as a path suffix. |
+
+```json
+"holdpress": { "value": 400, "names": ["(\\w+_)?HOLD(_\\w+)?_MS"], "readers": ["frontend/src/platform/gesture-thresholds.ts"] }
+```
+
+`qc/registry-literal` reports a numeric literal bound to a matching name, in a variable, a property
+or a class field, in any file that is not a reader. The `registry-readers` gate fails when a reader
+does not exist, or never names the entry key, as a string or through the registry accessor.
 
 ### Mirror the tests of more than one root
 

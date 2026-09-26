@@ -4,6 +4,7 @@
   "policy": {
     "loosening": "Raising a limit or lowering coverage needs the same review as a spec change: the diff on this file is the record. A per-file override belongs in the config that needs it, with a comment naming why, never here.",
     "match": "A threshold has no distinctive spelling the way a version number does, so each gate lists the phrases a page or a config would use when stating it. scripts/check.mjs reports a digit beside one of them as a literal. Add a phrase when a new wording appears; the phrases are the whole reason the literal check can exist.",
+    "readers": "An entry that code reads can carry `names`, regular expressions for the identifiers that would restate it, each matched against the whole identifier and case-insensitive, and `readers`, the paths that may hold its number. qc/registry-literal reports a matching literal anywhere else, and the registry-readers gate fails a reader that is missing or never names the entry.",
     "notThresholds": "A performance budget is not a quality gate. Latency, memory and render budgets live in docs/performance.md, because they are measured per surface rather than enforced repository-wide."
   },
   "gates": {
