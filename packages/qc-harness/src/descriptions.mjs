@@ -25,6 +25,10 @@ export const gateDescriptions = Object.freeze({
   "english-source": "Comments, docs and rules are English; another language is data, declared beside its English variant",
   "adr-format": "Every decision record carries its cost and the alternatives it rejected, not just its claim",
   "comment-style": "A comment under infra/ is one line of why, never a paragraph, a banner or code",
+  parity: "Every server slice has a client slice of its name and the reverse, a divergence is registered, and no slice is a no-op",
+  "integration-imports": "An integration test imports the product it integrates with",
+  "closed-set-writers": "Every key of a closed set has a writer, and every writer writes a key of the set",
+  "doc-claims": "A state-claim block in a document still matches the file it counts",
 });
 
 /** The gates a consumer can switch on, so a caller need not import the defaults to find out. */

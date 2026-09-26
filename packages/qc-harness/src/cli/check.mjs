@@ -35,6 +35,10 @@ import { checkRegistryReaders } from "../gates/registry-readers.mjs";
 import { checkMigrationNumbers } from "../gates/migration-numbers.mjs";
 import { checkRegistryLiteral } from "../gates/registry-literal.mjs";
 import { checkThresholdRatchet } from "../gates/threshold-ratchet.mjs";
+import { checkParity, placeholderSlices } from "../gates/parity.mjs";
+import { checkIntegrationImports } from "../gates/integration-imports.mjs";
+import { checkClosedSetWriters, matchedKeys } from "../gates/closed-set-writers.mjs";
+import { checkDocClaims, parseDocClaims } from "../gates/doc-claims.mjs";
 import { ratchetInputs } from "./registry-history.mjs";
 import { repoFiles } from "./repo-files.mjs";
 
@@ -363,6 +367,83 @@ function infraFiles(config, tree) {
   return readEach(config.root, rels);
 }
 
+const SLICE_FILE = /\.[jt]sx?$/;
+const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Both surfaces, feature by feature, and every slice file either one holds. */
+async function parityAgreement(config, tree) {
+  const { sliceDir } = config.anatomy.slice;
+  const server = posix(config.paths.serverFeatures);
+  const client = posix(config.paths.frontendFeatures);
+  const sliceFiles = [];
+  const slicesOf = (dir) => {
+    const folder = `${dir}/${sliceDir}`;
+    const names = tree
+      .namesIn(folder)
+      .filter((name) => SLICE_FILE.test(name) && !TEST_FILE.test(name) && tree.isFile(`${folder}/${name}`));
+    sliceFiles.push(...names.map((name) => `${folder}/${name}`));
+    return [...new Set(names.map((name) => name.replace(SLICE_FILE, "")))];
+  };
+  const routeImport = new RegExp(`from\\s+["']\\./${escapeRegex(sliceDir)}/([^"']+)\\.[cm]?[jt]sx?["']`, "g");
+  const serverSide = [];
+  for (const name of tree.foldersIn(server).sort()) {
+    const dir = join(server, name);
+    const trigger = (await read(path.join(config.root, dir, config.paths.triggerFile))) ?? "";
+    serverSide.push({ name, slices: slicesOf(dir), routes: [...trigger.matchAll(routeImport)].map((match) => match[1]) });
+  }
+  const clientSide = tree.foldersIn(client).sort().map((name) => ({ name, slices: slicesOf(join(client, name)) }));
+  const registry = parsedJson(await read(path.join(config.root, config.parity.registry))) ?? {};
+  const roots = { server, client, registry: config.parity.registry, trigger: config.paths.triggerFile };
+  return {
+    problems: [
+      ...checkParity({ server: serverSide, client: clientSide, registry }, roots),
+      ...placeholderSlices(await readEach(config.root, sliceFiles)),
+    ],
+    paired: serverSide.filter(({ name }) => clientSide.some((feature) => feature.name === name)).length,
+  };
+}
+
+/** Every file under the configured roots that the integration subject pattern matches. */
+function integrationSubjects(config, tree) {
+  const { roots, subject } = config.integrationImports;
+  const pattern = new RegExp(subject);
+  const skip = prunedBy(/(?:^|\/)(?:node_modules|dist|\.[^/]+)$/);
+  const rels = new Set(roots.flatMap((root) => tree.under(root)).filter((file) => pattern.test(file) && !skip(file)));
+  return readEach(config.root, [...rels].sort());
+}
+
+/** Each closed set against the keys its writers write. */
+async function closedSets(config, tree, lines) {
+  const problems = [];
+  for (const set of config.closedSetWriters.sets) {
+    const declared = matchedKeys((await read(path.join(config.root, set.source))) ?? "", set.key);
+    const rels = (set.roots ?? []).flatMap((root) => tree.under(root)).filter((file) => SOURCE_EXTENSION.test(file) && !SKIP.test(`/${file}`));
+    const written = new Set();
+    for (const file of await readEach(config.root, rels)) {
+      for (const key of matchedKeys(file.contents, set.writer)) written.add(key);
+    }
+    problems.push(...checkClosedSetWriters(declared, written, set));
+    const waiting = Object.keys(set.declaredAhead ?? {}).length;
+    lines.push(`OK  closed set   ${set.name}: ${written.size} of ${declared.length} key(s) written, ${waiting} waiting for a mutation`);
+  }
+  return problems;
+}
+
+/** Every state-claim block in the configured documents, against the file it counts. */
+async function docClaims(config, lines) {
+  const problems = [];
+  for (const doc of config.docClaims.files) {
+    const contents = await read(path.join(config.root, doc));
+    if (contents === null) continue;
+    const claims = parseDocClaims(contents);
+    const targets = new Map();
+    for (const claim of claims) targets.set(claim.file, await read(path.join(config.root, claim.file)));
+    problems.push(...checkDocClaims(doc, claims, targets));
+    lines.push(`OK  doc claims   ${claims.length} claim(s) in ${doc}, each still true`);
+  }
+  return problems;
+}
+
 /**
  * @param {object} config
  * @param {string | string[]} [only] files to check on the fast path a hook takes; none is the full check
@@ -627,6 +708,26 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     const docs = records.filter((file) => file.path.endsWith(".md"));
     problems.push(...checkAdrFormat(docs, config.adr));
     if (docs.length > 0) lines.push(`OK  decisions    ${docs.length} record(s), each with its cost and its rejected alternatives`);
+  }
+
+  if (enabled(config.gates, "parity")) {
+    const parity = await parityAgreement(config, tree);
+    problems.push(...parity.problems);
+    lines.push(`OK  parity       ${parity.paired} feature(s) on both surfaces, every divergence named, no no-op slice`);
+  }
+
+  if (enabled(config.gates, "integration-imports")) {
+    const subjects = await integrationSubjects(config, tree);
+    problems.push(...checkIntegrationImports(subjects, config.integrationImports));
+    lines.push(`OK  integration  ${subjects.length} integration test(s), each importing the product it integrates with`);
+  }
+
+  if (enabled(config.gates, "closed-set-writers")) {
+    problems.push(...(await closedSets(config, tree, lines)));
+  }
+
+  if (enabled(config.gates, "doc-claims")) {
+    problems.push(...(await docClaims(config, lines)));
   }
 
   return { problems, lines };

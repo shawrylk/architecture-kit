@@ -257,6 +257,36 @@ export const defaults = {
   // Files a person reviewed that may call sql.raw. Each one is a decision, so the list stays short.
   sqlRaw: { allow: [] },
 
+  // The registry names each divergence of the two surfaces with its reason: `backendOnlyFeatures`,
+  // `frontendOnlyFeatures`, and `slices` by feature. The surfaces are `paths.serverFeatures` and
+  // `paths.frontendFeatures`.
+  parity: { registry: "contracts/parity.json" },
+
+  // A test that `subject` matches imports a module under a product root or a product package.
+  // `productPackages` are patterns; the kernel every test may hold is not one of them.
+  integrationImports: {
+    roots: ["packages", "backend", "bff", "frontend", "workers"],
+    subject: "\\.(interop|live)\\.test\\.ts$",
+    productRoots: ["backend", "bff", "frontend", "workers"],
+    productPackages: [],
+  },
+
+  // Each set: `source` declares the keys, `key` and `writer` are patterns whose first group is a key,
+  // `roots` hold the writers, and `declaredAhead` maps a key with no writer yet to its reason.
+  closedSetWriters: { sets: [] },
+
+  // Documents that hold fenced `state-claim` blocks, each a file and its line count.
+  docClaims: { files: ["STATE.md"] },
+
+  // A helper exempt from the statement scan because its caller supplies the table or the columns.
+  // Each call names the tenant in the argument at index `argument`, so its callers are checked instead.
+  tenantPredicate: {
+    exemptHelpers: [
+      { module: "backend/src/application/sql/crud.ts", name: "insertReturning", argument: 2 },
+      { module: "backend/src/application/sql/crud.ts", name: "updateVersionedRow", argument: 3 },
+    ],
+  },
+
   anatomy: {
     // Bounded vertical slices.
     slice: {
@@ -304,6 +334,12 @@ export const defaults = {
     "english-source": false,
     "adr-format": false,
     "feature-cli": false,
+    // Each reads inputs only a repository can name: its registry, its product roots, its closed
+    // sets, its claims. Shipped on, each would also red a consumer's enforcement map on upgrade.
+    parity: false,
+    "integration-imports": false,
+    "closed-set-writers": false,
+    "doc-claims": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and
