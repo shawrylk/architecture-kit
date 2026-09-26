@@ -51,11 +51,13 @@
     "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\""
   },
   "peerDependencies": {
-    "eslint": ">=9",
     "@typescript-eslint/eslint-plugin": ">=8",
     "@typescript-eslint/parser": ">=8",
+    "eslint": ">=9",
     "eslint-plugin-boundaries": ">=5",
-    "eslint-plugin-sonarjs": ">=3"
+    "eslint-plugin-sonarjs": ">=3",
+    "@commitlint/lint": ">=19",
+    "@commitlint/config-conventional": ">=19"
   },
   "peerDependenciesMeta": {
     "@typescript-eslint/eslint-plugin": {
@@ -69,12 +71,20 @@
     },
     "eslint-plugin-sonarjs": {
       "optional": true
+    },
+    "@commitlint/lint": {
+      "optional": true
+    },
+    "@commitlint/config-conventional": {
+      "optional": true
     }
   },
   "devDependencies": {
-    "eslint": "^9",
+    "@commitlint/config-conventional": "^21.2.3",
+    "@commitlint/lint": "^21.2.3",
     "@typescript-eslint/eslint-plugin": "^8",
     "@typescript-eslint/parser": "^8",
+    "eslint": "^9",
     "eslint-plugin-boundaries": "^5",
     "eslint-plugin-sonarjs": "^3",
     "typescript": "^5"

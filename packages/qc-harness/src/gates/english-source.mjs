@@ -15,7 +15,7 @@ const SCRIPTS = {
   fullwidth: "\\uff00-\\uffef",
 };
 
-function scriptPattern(scripts) {
+export function scriptPattern(scripts) {
   const ranges = scripts.map((name) => SCRIPTS[name] ?? name).join("");
   if (ranges === "") throw new Error("language.scripts must name at least one script range");
   return new RegExp(`[${ranges}]`);

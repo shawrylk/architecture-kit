@@ -242,13 +242,9 @@ export const defaults = {
 
   hooks: { required: { "pre-commit": ["qc work-order-check"], "pre-push": ["qc check"] } },
 
-  // A tool is not an author. These may never appear in a commit's attribution trailer.
-  commitMessage: {
-    tools: [
-      "claude", "anthropic", "copilot", "chatgpt", "openai", "gpt-4", "gpt-5", "gemini",
-      "cursor", "codeium", "devin", "aider", "windsurf", "bot@", "noreply@anthropic.com",
-    ],
-  },
+  // `conventional` runs commitlint's conventional rules, an optional peer dependency the repository
+  // installs. `attribution` requires a Co-Authored-By trailer. The English rule always runs.
+  commitMessage: { conventional: true, attribution: false },
 
   // A named pattern is a pointer. `patterns` adds a repository's own vocabulary to the defaults.
   patterns: { maxWords: 20, extra: [] },
