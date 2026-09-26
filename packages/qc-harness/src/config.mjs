@@ -206,6 +206,8 @@ export const defaults = {
   // restricted. `require`: off | branch (refuse the trunk) | worktree (also refuse the primary).
   swarm: {
     isolation: { require: "off", protectedBranches: ["main", "master"], leaseHours: 8, allow: [] },
+    // Tool calls per subagent. The hook reminds at seventy percent and denies all but the hand-off at the budget.
+    toolCallBudget: 100,
   },
 
   // Names that must be registered scoped, never singleton.
