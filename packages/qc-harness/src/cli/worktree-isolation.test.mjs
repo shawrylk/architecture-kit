@@ -38,6 +38,19 @@ test("an agent on its own branch in its own worktree is allowed", () => {
   assert.equal(isolationRefusal(base()), null);
 });
 
+test("an ignored path passes on a protected branch, because it never reaches a commit", () => {
+  assert.equal(isolationRefusal(base({ branch: "main", kind: "linked", ignored: true })), null);
+});
+
+test("an ignored path passes in the primary worktree and past another session's lease", () => {
+  const lease = { sessionId: "session-bbbb", branch: "main", updatedAt: new Date(NOW).toISOString() };
+  assert.equal(isolationRefusal(base({ branch: "main", kind: "primary", lease, ignored: true })), null);
+});
+
+test("an ignored path is still refused on a detached HEAD", () => {
+  assert.match(isolationRefusal(base({ branch: "", ignored: true })), /detached/);
+});
+
 test("generating code on a protected branch is refused and names the branch", () => {
   const reason = isolationRefusal(base({ branch: "main" }));
   assert.match(reason, /"main" is a protected branch/);
