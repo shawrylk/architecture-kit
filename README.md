@@ -143,6 +143,17 @@ nothing is restricted — the same opt-in rule every hook here follows.
 This covers one working directory shared by several agents. An agent given its own git worktree
 needs nothing further — it already cannot reach another work order's files.
 
+A shell write does not reach the edit guard, so a `PostToolUse` hook on Bash runs `git status` in
+each checkout the command named (its directory, `cd <dir>`, `git -C <dir>`). It reports each changed
+path outside the declared paths, and each change on a protected branch that git does not ignore. It
+warns and never reverts. A command that only reads skips the check.
+
+A subagent does not count its own tool calls, so a `PreToolUse` hook counts them for it.
+`swarm.toolCallBudget` in `qc.config.json` sets the budget, and the default is 100. At 70% of the
+budget, the agent gets a reminder to commit, push, and plan the hand-off, and again every 10 calls.
+At the budget, only the hand-off runs: Read, read-only and `git add`, `commit`, and `push` commands,
+and a Write to a path under `/handoffs/`. The main session is never counted.
+
 ## What it enforces
 
 **Lint** — `no-cross-feature-internals`, `storage-only-in-resource`, `scoped-repository`,

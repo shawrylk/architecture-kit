@@ -14,13 +14,14 @@
 // file for free and need nothing further from this script.
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { load } from "../config.mjs";
 import { ignoredPaths } from "./ignored-paths.mjs";
 import { claimLease, leaseFileOf, readLease } from "./lease-file.mjs";
+import { MANIFEST_FILE, readManifest } from "./work-order-manifest.mjs";
 import {
   OFF,
   denyOutput as isolationDeny,
@@ -82,7 +83,7 @@ export function denyOutput(relPath, patterns) {
       permissionDecision: "deny",
       permissionDecisionReason:
         `"${relPath}" is outside this work order's declared paths ` +
-        `(.claude/work-order.local.json: ${patterns.join(", ")}). ` +
+        `(${MANIFEST_FILE}: ${patterns.join(", ")}). ` +
         "Ask the orchestrator before editing outside scope, or update the manifest if the scope was wrong.",
     },
   };
@@ -195,9 +196,8 @@ export async function decide(call, root) {
     if (refusal) return refusal;
   }
 
-  const manifestPath = path.join(root, ".claude", "work-order.local.json");
-  if (!existsSync(manifestPath)) return null;
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  const manifest = readManifest(root);
+  if (!manifest) return null;
   await warnOnBranchMismatch(root, manifest);
 
   const patterns = manifest.paths ?? [];
@@ -223,11 +223,8 @@ export async function runWorkOrderCheck(root) {
   // -- sed, a heredoc, a script -- never reaches it. A commit cannot be made without git.
   if (await isolationCommitRefusal(root)) return 1;
 
-  const manifestPath = path.join(root, ".claude", "work-order.local.json");
-  if (!existsSync(manifestPath)) return 0;
-
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  if (!manifest.branch) return 0;
+  const manifest = readManifest(root);
+  if (!manifest?.branch) return 0;
   if (inSpecialGitOperation(path.join(root, ".git"))) return 0;
 
   const reason = branchMismatch(manifest.branch, await currentBranch(root));

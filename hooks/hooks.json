@@ -1,7 +1,13 @@
 {
-  "description": "Architecture gates: a fast per-file pass after every edit, a full pass that refuses to end a red turn, and a work-order guard that keeps an edit inside its declared paths and warns on the wrong branch (the installed pre-commit hook is what actually refuses that commit). All three no-op without their own opt-in file.",
+  "description": "Architecture gates: a fast per-file pass after every edit, a full pass that refuses to end a red turn, a work-order guard that keeps an edit inside its declared paths and warns on the wrong branch (the installed pre-commit hook is what actually refuses that commit), a Bash edit guard that reports a shell write outside those paths or on a protected branch, and a tool-call budget that makes a subagent hand off. Each no-ops without its own opt-in file.",
   "hooks": {
     "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/budget-guard.mjs\"", "timeout": 10 }
+        ]
+      },
       {
         "matcher": "Write|Edit",
         "hooks": [
@@ -14,6 +20,12 @@
         "matcher": "Write|Edit",
         "hooks": [
           { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/post-edit-gate.sh\"", "timeout": 60 }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/bash-edit-guard.mjs\"", "timeout": 30 }
         ]
       }
     ],

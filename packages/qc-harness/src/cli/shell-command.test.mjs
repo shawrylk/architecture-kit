@@ -38,6 +38,11 @@ test("a git call names its subcommand and every -C directory", () => {
   assert.equal(gitCall(segmentsOf("gitk --all")[0]), null);
 });
 
+test("a backslash inside double quotes stays, unless it escapes a quote, a dollar, or itself", () => {
+  const [segment] = segmentsOf(String.raw`git -C "C:\Users\me\wt" commit -m "say \"hi\" for \$5"`);
+  assert.deepEqual(segment.words.slice(2), [String.raw`C:\Users\me\wt`, "commit", "-m", 'say "hi" for $5']);
+});
+
 test("a read-only command is one whose every segment reads", () => {
   for (const command of [
     "ls -la",

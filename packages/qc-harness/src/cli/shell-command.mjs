@@ -60,7 +60,8 @@ export function segmentsOf(command) {
       else word += c;
       i++;
     } else if (quote === '"') {
-      if (c === "\\" && next !== undefined) {
+      // Inside double quotes a backslash escapes only these, so a Windows path keeps its separators.
+      if (c === "\\" && next !== undefined && '$`"\\\n'.includes(next)) {
         word += next;
         i += 2;
       } else {
