@@ -47,9 +47,10 @@ function resolve(sourceCode, expression) {
   for (let scope = sourceCode.getScope(expression); scope; scope = scope.upper) {
     const variable = scope.set.get(expression.name);
     if (!variable) continue;
-    const node = variable.defs[0]?.node;
-    if (node?.type === "FunctionDeclaration") return node;
-    return node?.type === "VariableDeclarator" ? unwrap(node.init) : null;
+    // Branch on the definition kind: for a parameter, `def.node` is the enclosing function, not the handler.
+    const def = variable.defs[0];
+    if (def?.type === "FunctionName") return def.node;
+    return def?.type === "Variable" ? unwrap(def.node.init) : null;
   }
   return null;
 }

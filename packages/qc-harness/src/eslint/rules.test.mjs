@@ -666,6 +666,15 @@ jsx.run("ime-safe-key", rules["ime-safe-key"], {
     { code: '<input onKeyDown={(e) => { if (e.nativeEvent.isComposing) return; if (e.key === "Enter") submit(); }} />;' },
     { code: '<input onKeyDown={(e) => { if (e.keyCode === 229) return; if (e.key === "Escape") close(); }} />;' },
     {
+      // A handler passed in as a prop is not resolvable here, so the component's own body is never judged as the handler.
+      code:
+        "function Field({ onKey, key }) {\n" +
+        '  if (key === "Enter") track();\n' +
+        "  return <input onKeyDown={onKey} />;\n" +
+        "}",
+      options: GUARDED,
+    },
+    {
       code: '<input onKeyDown={(e) => { if (e.key === "Enter") { if (isImeComposing(e.nativeEvent)) return; submit(); } }} />;',
       options: GUARDED,
     },
