@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkSqlIdentifiers, declaredColumns, tableOwners, usedIdentifiers } from "./sql-identifiers.mjs";
+import {
+  checkSchemaInMigrations,
+  checkSqlIdentifiers,
+  declaredColumns,
+  migrationNames,
+  schemaTables,
+  tableOwners,
+  usedIdentifiers,
+} from "./sql-identifiers.mjs";
 
 const ddl = `
 create table if not exists projects (
@@ -221,4 +229,38 @@ test("the longest matching feature name wins, so a prefix does not steal a migra
 test("a slug matching no feature keeps its own name, so an unowned table is still attributed", () => {
   const owners = tableOwners([{ file: "0010_orphan.sql", sql: ddl }], ["blueprints"]);
   assert.equal(owners.get("projects"), "orphan");
+});
+
+const schema = `
+export const projects = pgTable("projects", {
+  id: uuid("id").primaryKey(),
+  tenantId: uuid("tenant_id").notNull(),
+  code: text("code").notNull(),
+});
+export const folders = pgTable("folders", {
+  id: uuid("id").primaryKey(),
+  sortOrder: integer("sort_order"),
+});`;
+
+test("a schema file yields each table with the columns declared under it", () => {
+  assert.deepEqual(schemaTables(schema), [
+    { table: "projects", columns: ["id", "tenant_id", "code"] },
+    { table: "folders", columns: ["id", "sort_order"] },
+  ]);
+  assert.deepEqual(schemaTables('export const t = table("things", { id: uuid("id") });', { tableFactory: "table" }), [{ table: "things", columns: ["id"] }]);
+});
+
+test("a schema whose every table and column a migration names passes", () => {
+  const declared = schemaTables(schema).map((entry) => ({ path: "f/schema.ts", ...entry }));
+  const names = migrationNames([ddl, "create table folders (id uuid, sort_order integer);"]);
+  assert.deepEqual(checkSchemaInMigrations(declared, names), []);
+});
+
+test("a table or a column no migration names fails, one finding each", () => {
+  const declared = schemaTables(schema).map((entry) => ({ path: "f/schema.ts", ...entry }));
+  const problems = checkSchemaInMigrations(declared, migrationNames([ddl]));
+  assert.deepEqual(problems.map((problem) => problem.rule), ["schema-without-migration"]);
+  assert.equal(problems[0].detail, "table folders is declared here and named by no migration");
+  const column = checkSchemaInMigrations([{ path: "f/schema.ts", table: "projects", columns: ["id", "archived_at"] }], migrationNames([ddl]));
+  assert.equal(column[0].detail, "projects.archived_at is declared here and named by no migration");
 });
