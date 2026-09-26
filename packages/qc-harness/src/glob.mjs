@@ -10,3 +10,14 @@ export function globToRegExp(glob) {
     .replace(/\u0000/g, ".*");
   return new RegExp(`^${body}$`);
 }
+
+/**
+ * A matcher for a list of globs over repository-relative paths. A leading `**` also matches at the
+ * root, as ESLint reads the same globs: `**\/*.generated.*` matches `a.generated.ts` and `src/a.generated.ts`.
+ * @param {readonly string[]} globs
+ * @returns {(rel: string) => boolean}
+ */
+export function globMatcher(globs) {
+  const patterns = globs.map(globToRegExp);
+  return (rel) => patterns.some((pattern) => pattern.test(rel) || pattern.test(`/${rel}`));
+}

@@ -37,6 +37,22 @@ function workspace(t) {
 
 const bash = (cwd, command) => ({ hook_event_name: "PostToolUse", tool_name: "Bash", cwd, tool_input: { command } });
 const contextOf = (output) => output?.hookSpecificOutput?.additionalContext ?? "";
+const powershell = (cwd, command) => ({ ...bash(cwd, command), tool_name: "PowerShell" });
+
+test("a PowerShell write outside the declared paths is reported, and a read-only verb skips the check", async (t) => {
+  const ws = workspace(t);
+  ws.put(ws.linked, "docs/b.md");
+  const output = await report(powershell(ws.linked, "Set-Content -Path docs\\b.md -Value changed"), ws.linked);
+  assert.match(contextOf(output), /docs\/b\.md: outside the work order's declared paths/);
+  assert.equal(await report(powershell(ws.linked, "Get-ChildItem docs | Select-String changed"), ws.linked), null);
+});
+
+test("a PowerShell location change names the checkout to inspect", async (t) => {
+  const ws = workspace(t);
+  ws.put(ws.linked, "docs/b.md");
+  const output = await report(powershell(ws.outside, `Set-Location '${ws.linked}'; New-Item docs\\b.md`), ws.linked);
+  assert.match(contextOf(output), /docs\/b\.md/);
+});
 
 test("a write inside the work order's declared paths is silent", async (t) => {
   const ws = workspace(t);

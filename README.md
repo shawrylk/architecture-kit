@@ -150,10 +150,30 @@ nothing is restricted — the same opt-in rule every hook here follows.
 This covers one working directory shared by several agents. An agent given its own git worktree
 needs nothing further — it already cannot reach another work order's files.
 
-A shell write does not reach the edit guard, so a `PostToolUse` hook on Bash runs `git status` in
-each checkout the command named (its directory, `cd <dir>`, `git -C <dir>`). It reports each changed
-path outside the declared paths, and each change on a protected branch that git does not ignore. It
-warns and never reverts. A command that only reads skips the check.
+A shell write does not reach the edit guard, so a `PostToolUse` hook on Bash and PowerShell runs
+`git status` in each checkout the command named (its directory, `cd <dir>`, `Set-Location <dir>`,
+`git -C <dir>`). It reports each changed path outside the declared paths, and each change on a
+protected branch that git does not ignore. It warns and never reverts. A command that only reads
+skips the check. For PowerShell, only known read verbs (`Get-*`, `Test-Path`, `Select-String`,
+`Format-*`, and so on) and git reads skip it. An unknown command or a script block never does.
+
+Two edits of one file in one parallel block race, and all but the last one are lost. A `PreToolUse`
+hook claims each file that a Write, Edit, or MultiEdit names, per session and per agent, and denies
+a second claim in the same block. The `PostToolBatch` event ends the block. Until an agent receives
+its first `PostToolBatch` event, the result of the edit ends the claim instead. A claim expires after
+60 seconds in any case.
+
+A generated file changes only through its generator. A `PreToolUse` hook denies a Write, Edit, or
+MultiEdit of a path that matches `generated.globs` in `qc.config.json`, and names
+`generated.command`. The defaults are `["**/*.generated.*"]` and `pnpm codegen`. The glob `**/`
+needs a folder, so a generated file at the top level needs its own glob. The hook also denies an
+Edit whose `old_string` touches a `<!-- generated: ... -->` … `<!-- /generated -->` region of a
+Markdown file, such as the rule-to-check table in `enforcement.md`.
+
+A `PreToolUse` hook on Bash refuses a command that skips the gates: `git commit` or `git push` with
+`--no-verify`, `git commit -n`, and `git -c core.hooksPath=...`. It also refuses a hand run of a hook
+script, such as `node .../work-order-guard.mjs`, because a hand run writes a lease that blocks later
+edits. A command that runs `node --test` or vitest is exempt from the second rule.
 
 A subagent does not count its own tool calls, so a `PreToolUse` hook counts them for it.
 `swarm.toolCallBudget` in `qc.config.json` sets the budget, and the default is 100. At 70% of the

@@ -25,8 +25,13 @@ function skipHeredocs(command, start, heredocs) {
   return i;
 }
 
-/** @returns {Segment[]} the segments between unquoted `;`, `&`, `&&`, `|`, `||`, parentheses and newlines. */
-export function segmentsOf(command) {
+const POSIX_ESCAPE = "\\";
+
+/**
+ * @param dialect `escape` is the escape character: a backslash for a POSIX shell, a backtick for PowerShell.
+ * @returns {Segment[]} the segments between unquoted `;`, `&`, `&&`, `|`, `||`, parentheses and newlines.
+ */
+export function segmentsOf(command, { escape = POSIX_ESCAPE } = {}) {
   const segments = [];
   let words = [];
   let redirects = [];
@@ -61,7 +66,8 @@ export function segmentsOf(command) {
       i++;
     } else if (quote === '"') {
       // Inside double quotes a backslash escapes only these, so a Windows path keeps its separators.
-      if (c === "\\" && next !== undefined && '$`"\\\n'.includes(next)) {
+      // A backtick escapes any character.
+      if (c === escape && next !== undefined && (escape !== POSIX_ESCAPE || '$`"\\\n'.includes(next))) {
         word += next;
         i += 2;
       } else {
@@ -73,7 +79,7 @@ export function segmentsOf(command) {
       quote = c;
       inWord = true;
       i++;
-    } else if (c === "\\") {
+    } else if (c === escape) {
       if (next !== "\n") word += next ?? "";
       inWord = next !== "\n" || inWord;
       i += 2;
@@ -144,25 +150,29 @@ export function segmentsOf(command) {
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /** The words after any leading `NAME=value` assignments. */
-const commandWords = (segment) => {
+export const commandWords = (segment) => {
   const start = segment.words.findIndex((word) => !ASSIGNMENT.test(word));
   return start === -1 ? [] : segment.words.slice(start);
 };
 
-const isGit = (word) => /(^|[\\/])git(\.exe)?$/.test(word ?? "");
+const isGit = (word) => /(^|[\\/])git(\.exe)?$/i.test(word ?? "");
 
-/** @returns the git subcommand and each `-C` directory, or null when the segment is no git call. */
+/**
+ * @returns the git subcommand, each `-C` directory, each `-c` setting and the words after the
+ *   subcommand, or null when the segment is no git call.
+ */
 export function gitCall(segment) {
-  const [program, ...args] = commandWords(segment);
+  const [program, ...words] = commandWords(segment);
   if (!isGit(program)) return null;
   const dirs = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "-C") dirs.push(args[++i]);
-    else if (arg === "-c") i++;
-    else if (!arg.startsWith("-")) return { sub: arg, dirs };
+  const configs = [];
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    if (word === "-C") dirs.push(words[++i]);
+    else if (word === "-c") configs.push(words[++i]);
+    else if (!word.startsWith("-")) return { sub: word, dirs, configs, args: words.slice(i + 1) };
   }
-  return { sub: null, dirs };
+  return { sub: null, dirs, configs, args: [] };
 }
 
 /** @returns the directory a `cd` or `pushd` segment moves to, or null. */
@@ -176,7 +186,7 @@ const READ_PROGRAMS = new Set([
   "cut", "tr", "jq", "which", "type", "stat", "file", "du", "df", "date", "basename",
   "dirname", "realpath", "readlink", "diff", "cmp", "true", "false", "test", "[", "popd",
 ]);
-const GIT_READS = new Set([
+export const GIT_READS = new Set([
   "status", "diff", "log", "show", "rev-parse", "ls-files", "grep", "blame", "branch", "remote",
   "fetch", "describe", "shortlog", "config",
 ]);
