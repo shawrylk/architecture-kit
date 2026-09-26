@@ -1,5 +1,5 @@
 {
-  "description": "Architecture gates: a fast per-file pass after every edit, a full pass that refuses to end a red turn, a work-order guard that keeps an edit inside its declared paths and warns on the wrong branch (the installed pre-commit hook is what actually refuses that commit), an edit batch guard that refuses a second edit of one file in one parallel block, a generated-file guard that refuses a hand edit of generated output, a Bash command guard that refuses --no-verify and a hand-run hook script, a shell edit guard that reports a Bash or PowerShell write outside those paths or on a protected branch, and a tool-call budget that makes a subagent hand off. Each no-ops without its own opt-in file.",
+  "description": "Architecture gates: a fast per-file pass after every edit, a full pass that refuses to end a red turn, a work-order guard that keeps an edit inside its declared paths and warns on the wrong branch (the installed pre-commit hook is what actually refuses that commit), an edit batch guard that refuses a second edit of one file in one parallel block, a generated-file guard that refuses a hand edit of generated output, a command guard that refuses --no-verify in Bash and PowerShell and a hand-run hook script, a shell edit guard that reports a Bash or PowerShell write outside those paths or on a protected branch, and a tool-call budget that makes a subagent hand off. Each no-ops without its own opt-in file.",
   "hooks": {
     "PreToolUse": [
       {
@@ -22,7 +22,7 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|PowerShell",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/bash-command-guard.mjs\"", "timeout": 10 }
         ]

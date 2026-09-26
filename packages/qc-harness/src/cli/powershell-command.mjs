@@ -4,6 +4,9 @@
 import { GIT_READS, commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
 
 const DIALECT = { escape: "`" };
+
+/** Splits a PowerShell command line into segments, with the backtick as its escape. */
+export const powershellSegments = (command) => segmentsOf(command, DIALECT);
 const NULL_DEVICES = new Set(["$null", "/dev/null", "nul"]);
 
 /** Approved verbs that only read, and the cmdlets and aliases that only read or print. */

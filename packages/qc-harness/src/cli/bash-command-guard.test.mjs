@@ -94,3 +94,47 @@ test("the hook process prints the deny", (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, "deny");
 });
+
+const powershell = (cwd, command) => ({ ...bash(cwd, command), tool_name: "PowerShell" });
+
+test("a PowerShell command is held to the same rules as a Bash one", (t) => {
+  const ws = workspace(t);
+  const denied = {
+    "skips the git hooks": [
+      "git commit --no-verify -m x",
+      "git commit -nm x",
+      "git push --no-verify",
+      String.raw`Set-Location C:\repo; git commit -n -m x`,
+      "git --% commit --no-verify",
+      "& git.exe commit --no-verify -m x",
+      'pwsh -NoProfile -Command "git commit --no-verify -m x"',
+      "bash -c 'git push --no-verify'",
+    ],
+    "core\.hooksPath": ["git -c core.hooksPath= commit -m x", "git -c core.hooksPath=NUL push"],
+    "writes a lease": [
+      String.raw`& node C:\kit\packages\qc-harness\src\cli\work-order-guard.mjs`,
+      String.raw`Get-Content input.json | node .\budget-guard.mjs`,
+      "bash hooks/pre-edit-guard.sh",
+    ],
+  };
+  for (const [reason, commands] of Object.entries(denied)) {
+    for (const command of commands) {
+      assert.match(reasonOf(decide(powershell(ws.adopted, command))) ?? "", new RegExp(reason), command);
+    }
+  }
+  for (const command of [
+    'git commit -m "-n is fine"',
+    "git log -n 5",
+    "git push -n",
+    String.raw`node --test packages\qc-harness\src\cli\work-order-guard.test.mjs`,
+    "Get-Content packages/qc-harness/src/cli/work-order-guard.mjs",
+    'pwsh -Command "git status"',
+  ]) {
+    assert.equal(decide(powershell(ws.adopted, command)), null, command);
+  }
+});
+
+test("the deny names the tool it guarded", (t) => {
+  const ws = workspace(t);
+  assert.match(reasonOf(decide(powershell(ws.adopted, "git push --no-verify"))), /^PowerShell command guard:/);
+});
