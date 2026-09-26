@@ -133,9 +133,10 @@ export async function report(call, projectRoot) {
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext: [
-        "Bash edit guard: this command left changes that the swarm rules do not allow. The guard does not revert them.",
+        "Bash edit guard: the checkout holds uncommitted changes that the swarm rules do not allow.",
         ...listed,
-        "Revert each one, or ask the orchestrator before you keep it.",
+        "Revert a change only if your work order made it and should not have. " +
+          "For any other change, stop and tell the orchestrator. The guard does not revert anything.",
       ].join("\n"),
     },
   };

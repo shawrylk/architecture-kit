@@ -56,6 +56,10 @@ test("a write outside the declared paths is reported with the path and the rule,
   assert.match(text, /work-order\.local\.json/);
   assert.match(text, /src\/\*\*/);
   assert.match(text, /does not revert/);
+  // Status also lists changes made before the command, in a checkout other sessions can share.
+  assert.match(text, /uncommitted changes/);
+  assert.match(text, /only if your work order made it/);
+  assert.match(text, /stop and tell the orchestrator/);
 });
 
 test("a change on a protected branch is reported with no work order, and an ignored file is not", async (t) => {

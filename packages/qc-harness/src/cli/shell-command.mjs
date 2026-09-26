@@ -172,8 +172,8 @@ export function cdTarget(segment) {
 }
 
 const READ_PROGRAMS = new Set([
-  "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "pwd", "echo", "printf", "sort",
-  "uniq", "cut", "tr", "jq", "which", "type", "stat", "file", "du", "df", "date", "basename",
+  "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "wc", "pwd", "echo", "printf",
+  "cut", "tr", "jq", "which", "type", "stat", "file", "du", "df", "date", "basename",
   "dirname", "realpath", "readlink", "diff", "cmp", "true", "false", "test", "[", "popd",
 ]);
 const GIT_READS = new Set([

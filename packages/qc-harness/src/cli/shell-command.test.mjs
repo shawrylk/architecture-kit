@@ -73,6 +73,8 @@ test("any segment that can write makes the command a possible write", () => {
     "npx prettier --write .",
     "ls && tee out.txt",
     "touch f",
+    "sort -o out.txt in.txt",
+    "uniq in.txt out.txt",
   ]) {
     assert.equal(mayWrite(command), true, command);
   }
