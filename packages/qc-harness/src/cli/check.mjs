@@ -295,7 +295,8 @@ async function sqlAgreement(config, tree, taken, lines) {
     const byName = migrations.map((migration) => ({ file: path.posix.basename(migration.path), sql: migration.contents }));
     problems.push(...checkSqlIdentifiers(tables, resources, tableOwners(byName, features)));
     const declared = [];
-    for (const feature of features) {
+    // With no migration yet there is no ledger to compare with, as with any path that does not exist.
+    for (const feature of migrations.length > 0 ? features : []) {
       const rel = `${join(posix(config.paths.serverFeatures), feature)}/${config.paths.schemaFile}`;
       const source = tree.isFile(rel) ? await read(path.join(config.root, rel)) : null;
       if (source === null) continue;
