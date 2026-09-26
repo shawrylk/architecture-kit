@@ -237,13 +237,16 @@ export const defaults = {
   // Switching a shipped check off names the decision that says why, or "off-by-design".
   floor: { exemptions: {} },
 
-  // A tool is not an author. These may never appear in a commit's attribution trailer.
-  commitMessage: {
-    tools: [
-      "claude", "anthropic", "copilot", "chatgpt", "openai", "gpt-4", "gpt-5", "gemini",
-      "cursor", "codeium", "devin", "aider", "windsurf", "bot@", "noreply@anthropic.com",
-    ],
-  },
+  // The calls each git hook must make. `qc doctor` and the config-floor gate read the hooks git runs.
+  // A branch names its issue, as in feat/340-roles. `allow` holds globs for the branches with none.
+  // A null `pattern` switches the rule off.
+  branches: { pattern: "^[a-z]+/[0-9]+-", allow: ["main", "master", "release/**"] },
+
+  hooks: { required: { "pre-commit": ["qc work-order-check"], "pre-push": ["qc check"] } },
+
+  // `conventional` runs commitlint's conventional rules, an optional peer dependency the repository
+  // installs. `attribution` requires a Co-Authored-By trailer. The English rule always runs.
+  commitMessage: { conventional: true, attribution: false },
 
   // A named pattern is a pointer. `patterns` adds a repository's own vocabulary to the defaults.
   patterns: { maxWords: 20, extra: [] },

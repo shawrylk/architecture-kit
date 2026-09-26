@@ -5,7 +5,9 @@ jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
+      # Full history: the threshold ratchet compares the registry with the merge base.
       - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
       - uses: actions/setup-node@v5
         with: { node-version-file: package.json }
       - run: corepack enable
@@ -13,6 +15,11 @@ jobs:
 
       # The structural gates. This step needs no package script of its own.
       - run: npx qc check
+
+      # A pull request names the issue it closes, and the issue predates it.
+      - if: github.event_name == 'pull_request'
+        run: npx qc pr-check
+        env: { GH_TOKEN: "${{ github.token }}" }
 
       # Uncomment each as the repository grows the thing it checks.
       # - run: pnpm typecheck

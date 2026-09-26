@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { drift, driftReport, gateNames } from "./doctor.mjs";
+import { drift, driftReport, gateNames, hooksRunInstalled } from "./doctor.mjs";
 
 const installed = { gates: ["citations", "comment-style", "headless-sagas", "test-mirror"], version: "0.3.0" };
 
@@ -54,4 +54,21 @@ test("nothing to compare is not a failure", () => {
 test("gate names come from the directory, with the test files excluded", () => {
   const read = () => ["citations.mjs", "citations.test.mjs", "headless-sagas.mjs", "README.md"];
   assert.deepEqual(gateNames(process.cwd(), read), ["citations", "headless-sagas"]);
+});
+
+test("a checkout behind the lockfile is a note, never a fail, when the plugin's hooks run the installed copy", () => {
+  const found = drift(installed, { gates: ["citations"], version: "0.2.0" }, { hooksRunInstalled: true });
+  assert.equal(found.blocking, false);
+  const report = driftReport(found, "/k");
+  assert.match(report, /^NOTE/);
+  assert.match(report, /the hooks run the installed copy/);
+  assert.doesNotMatch(report, /unknown-check/);
+});
+
+test("the plugin's hooks run the installed copy only when its stop gate prefers it", () => {
+  const gate = (text) => () => text;
+  const newer = 'if [ -f "$ROOT/node_modules/architecture-harness/src/cli/qc.mjs" ]; then';
+  assert.equal(hooksRunInstalled("/k", gate(newer)), true);
+  assert.equal(hooksRunInstalled("/k", gate('QC="node ${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"')), false);
+  assert.equal(hooksRunInstalled("/k", () => { throw new Error("ENOENT"); }), false);
 });

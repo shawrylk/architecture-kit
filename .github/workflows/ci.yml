@@ -22,7 +22,9 @@ jobs:
       run:
         shell: bash
     steps:
+      # Full history: the threshold ratchet compares the registry with the merge base.
       - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: pnpm }

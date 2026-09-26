@@ -19,7 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { load } from "../config.mjs";
-import { globToRegExp } from "../glob.mjs";
+import { globMatcher, globToRegExp } from "../glob.mjs";
 import { ignoredPaths } from "./ignored-paths.mjs";
 import { claimLease, leaseFileOf, readLease } from "./lease-file.mjs";
 import { MANIFEST_FILE, readManifest } from "./work-order-manifest.mjs";
@@ -211,11 +211,35 @@ async function warnOnBranchMismatch(root, manifest) {
 }
 
 /** The pre-commit git hook's own check — refuses the commit itself, not just an edit. */
+/** @returns why a branch name breaks `branches.pattern`, or null. A detached HEAD and an allowed branch pass. */
+export function branchNameRefusal(branch, { pattern, allow = [] }) {
+  if (!branch || !pattern || globMatcher(allow)(branch) || new RegExp(pattern).test(branch)) return null;
+  return (
+    `Branch "${branch}" names no issue: it must match branches.pattern ${pattern}, as in feat/340-roles. ` +
+    "Open the issue first, then rename the branch: git branch -m <type>/<issue>-<slug>."
+  );
+}
+
+/** The commit-time branch-name rule. @returns true when the commit must be refused. */
+async function branchNameCommitRefusal(root) {
+  let state;
+  try {
+    state = await gitState(root);
+  } catch {
+    return false;
+  }
+  if (inSpecialGitOperation(state.gitDir)) return false;
+  const reason = branchNameRefusal(state.branch, load(root).branches);
+  if (reason) console.error(reason);
+  return reason !== null;
+}
+
 export async function runWorkOrderCheck(root) {
   // Isolation is checked here as well as at edit time, and this is the check that binds: the
   // PreToolUse hook only sees the Write and Edit tools, so an agent writing through a shell
   // -- sed, a heredoc, a script -- never reaches it. A commit cannot be made without git.
   if (await isolationCommitRefusal(root)) return 1;
+  if (await branchNameCommitRefusal(root)) return 1;
 
   const manifest = readManifest(root);
   if (!manifest?.branch) return 0;

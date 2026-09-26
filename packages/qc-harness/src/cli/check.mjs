@@ -43,6 +43,7 @@ import { checkIntegrationImports } from "../gates/integration-imports.mjs";
 import { checkClosedSetWriters, matchedKeys } from "../gates/closed-set-writers.mjs";
 import { checkDocClaims, parseDocClaims } from "../gates/doc-claims.mjs";
 import { ratchetInputs } from "./registry-history.mjs";
+import { hookDrift } from "./git-hooks.mjs";
 import { repoFiles } from "./repo-files.mjs";
 
 // Each skip is tested on "/" + the relative path, so it reads a path the way it read a full one.
@@ -703,6 +704,10 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   if (enabled(config.gates, "config-floor")) {
     problems.push(...checkConfigFloor(defaults, config, { exemptions: config.floor.exemptions }));
     lines.push("OK  floor        every check the kit ships on is in force, or names the decision that switched it off");
+    const hooks = hookDrift(config.root, config.hooks.required);
+    problems.push(...hooks.problems);
+    lines.push("OK  hooks        each git hook makes the calls hooks.required names");
+    for (const note of hooks.notes) lines.push(`NOTE  hooks      ${note}`);
   }
 
   if (enabled(config.gates, "english-source")) {

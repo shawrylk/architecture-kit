@@ -18,14 +18,19 @@ ROOT=$(git -C "$(dirname "$FILE")" rev-parse --show-toplevel 2>/dev/null) || exi
 [ -f "$ROOT/qc.config.json" ] || exit 0
 
 cd "$ROOT" || exit 0
-QC="node ${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"
+# The repository pins its harness, so its enforcement map and its checker agree.
+if [ -f "$ROOT/node_modules/architecture-harness/src/cli/qc.mjs" ]; then
+  QC_CLI="$ROOT/node_modules/architecture-harness/src/cli/qc.mjs"
+else
+  QC_CLI="${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"
+fi
 
 OUT=""
 if [ -f "$ROOT/node_modules/.bin/eslint" ]; then
   LINT=$(npx eslint "$FILE" --max-warnings 0 2>&1) || OUT+="$LINT"$'\n'
 fi
 case "$FILE" in
-  */features/*) STRUCT=$($QC check "$FILE" 2>&1) || OUT+="$STRUCT"$'\n' ;;
+  */features/*) STRUCT=$(node "$QC_CLI" check "$FILE" 2>&1) || OUT+="$STRUCT"$'\n' ;;
 esac
 
 if [ -n "$OUT" ]; then

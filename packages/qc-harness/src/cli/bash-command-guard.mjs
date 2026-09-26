@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// The PreToolUse trigger that refuses a Bash command which skips the git hooks, or which runs a hook
-// script by hand. It reads the command through shell-command.mjs and never runs it.
+// The PreToolUse trigger that refuses a Bash or PowerShell command which skips the git hooks, or
+// which runs a hook script by hand. It reads the command through the shell parsers and never runs it.
 
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_FILE } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { powershellSegments } from "./powershell-command.mjs";
 import { commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
 
 const HOOK_SCRIPTS = [
@@ -23,6 +24,11 @@ const VALUE_OPTIONS = new Set([
 ]);
 /** The short options of commit whose value is the rest of the cluster, or the next word. */
 const COMMIT_VALUE_FLAGS = new Set(["m", "F", "C", "c", "t"]);
+
+/** The parser for each guarded tool. */
+const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments };
+/** The shells whose `-c` or `-Command` argument is a command line of its own, and the parser that reads it. */
+const NESTED = { bash: segmentsOf, sh: segmentsOf, pwsh: powershellSegments, powershell: powershellSegments };
 
 const programName = (word) => path.basename(word ?? "").toLowerCase().replace(/\.exe$/, "");
 const isNoVerify = (arg) => arg.length >= NO_VERIFY_MIN && NO_VERIFY.startsWith(arg);
@@ -69,6 +75,14 @@ function runsTests(segment) {
   return [program, ...args].some((word) => programName(word) === "vitest");
 }
 
+/** @returns the command line a shell runs from `-c` or `-Command`, with its parser, or null. */
+function nestedCommand(segment) {
+  const [program, ...args] = commandWords(segment);
+  const parse = NESTED[programName(program)];
+  const at = args.findIndex((arg) => /^-(c|command)$/i.test(arg));
+  return parse && at !== -1 && args[at + 1] !== undefined ? { command: args[at + 1], parse } : null;
+}
+
 const REASONS = {
   hooks:
     "the command skips the git hooks. The pre-commit and pre-push hooks are the gates: run the command " +
@@ -81,31 +95,34 @@ const REASONS = {
 };
 
 /** @returns the reasons the command breaks a rule, in a stable order. */
-export function violations(command) {
-  const segments = segmentsOf(command);
+export function violations(command, parse = segmentsOf) {
+  const segments = parse(command);
   const found = new Set();
   for (const segment of segments) {
     const git = gitCall(segment);
     if (git && skipsHooks(git)) found.add("hooks");
     if (git && setsHooksPath(git)) found.add("hooksPath");
+    const nested = nestedCommand(segment);
+    if (nested) for (const key of violations(nested.command, nested.parse)) found.add(key);
   }
   if (!segments.some(runsTests) && segments.some(runsHookScript)) found.add("script");
   return Object.keys(REASONS).filter((key) => found.has(key));
 }
 
-/** The verdict on one Bash call. @returns the hook output, or null to let the call run with no message. */
+/** The verdict on one Bash or PowerShell call. @returns the hook output, or null to let the call run with no message. */
 export function decide(call) {
   const command = call.tool_input?.command;
-  if (call.tool_name !== "Bash" || typeof command !== "string") return null;
+  const parse = PARSERS[call.tool_name];
+  if (!parse || typeof command !== "string") return null;
   const root = checkoutRootOf(call.cwd ?? process.cwd());
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
-  const found = violations(command);
+  const found = violations(command, parse);
   if (found.length === 0) return null;
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: `Bash command guard: ${found.map((key) => REASONS[key]).join(" Also, ")}`,
+      permissionDecisionReason: `${call.tool_name} command guard: ${found.map((key) => REASONS[key]).join(" Also, ")}`,
     },
   };
 }

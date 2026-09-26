@@ -15,7 +15,8 @@ const USAGE = `qc — architecture gates
   qc work-order-check      refuse to commit on the wrong branch, per .claude/work-order.local.json
   qc lease status [path]   who holds this worktree's lease, since when, and when it lapses
   qc lease release [path]  remove it: --session <id> for your own, --force for another's
-  qc commit-msg <file>     refuse a commit message that credits a tool as an author
+  qc pr-check              in CI: the pull request names an issue that exists and predates it
+  qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc worktree add <name> <branch> [--from <ref>]
                            fetch, add ../<name> beside the main checkout, install, print the path
@@ -72,12 +73,13 @@ async function main() {
       const { runWorkOrderCheck } = await import("./work-order-guard.mjs");
       process.exit(await runWorkOrderCheck(config.root));
     }
+    case "pr-check": {
+      const { runPrCheck } = await import("./pr-check.mjs");
+      process.exit(await runPrCheck());
+    }
     case "commit-msg": {
-      const { readFileSync } = await import("node:fs");
-      const { checkCommitAttribution } = await import("./commit-attribution.mjs");
-      const problems = checkCommitAttribution(readFileSync(rest[0], "utf8"), config.commitMessage);
-      for (const problem of problems) console.error(`FAIL  commit-msg  ${problem.rule}: ${problem.detail}`);
-      process.exit(problems.length > 0 ? 1 : 0);
+      const { runCommitMsg } = await import("./commit-msg.mjs");
+      process.exit(await runCommitMsg(config, rest[0]));
     }
     case "decisions": {
       const { runDecisions } = await import("./decisions.mjs");
