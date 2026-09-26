@@ -1,6 +1,24 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { checkEnglishSource, checkTranslationPairs, commentLines } from "./english-source.mjs";
+import { checkEnglishFiles, checkEnglishSource, checkTranslationPairs, commentLines } from "./english-source.mjs";
+
+test("the per-file rules report a Japanese comment in a named file", () => {
+  const problems = checkEnglishFiles(file("src/a.ts", "// 図面 keeps its card."));
+  assert.deepEqual(problems.map((problem) => problem.rule), ["english-comment"]);
+});
+
+// A commit names a few files. A ledger entry for a file it did not name is not stale.
+test("the per-file rules leave the ledger-wide rules to the full pass", () => {
+  const options = { legacyNonEnglish: { "docs/old.md": 3, "docs/bare.md": true }, legacyBudget: 1 };
+  assert.deepEqual(checkEnglishFiles(file("src/a.ts", "export const a = 1;"), options), []);
+  assert.ok(checkEnglishSource(file("src/a.ts", "export const a = 1;"), options).length > 0);
+});
+
+test("the per-file rules still refuse a ledger file that grew", () => {
+  const options = { legacyNonEnglish: { "docs/old.md": 1 } };
+  const problems = checkEnglishFiles(file("docs/old.md", "図面 and 図面"), options);
+  assert.deepEqual(problems.map((problem) => problem.rule), ["legacy-entry-grew"]);
+});
 
 const file = (path, contents) => [{ path, contents }];
 

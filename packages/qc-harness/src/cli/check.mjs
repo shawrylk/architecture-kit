@@ -1,7 +1,7 @@
 // I/O only. Every decision is a pure function under src/gates/, each with a test
 // beside it. ADR-0032. Where this file names a path, that path came from config.
 
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { checkFeatureAnatomy, checkNoEmptyBlock } from "../gates/eight-blocks.mjs";
 import { checkCitations, checkDocPaths, checkSelfContained, definedIds } from "../gates/citations.mjs";
@@ -25,63 +25,111 @@ import { checkEnforcementMap } from "../gates/enforcement-map.mjs";
 import { checkFrontendBoundaries } from "../gates/frontend-boundaries.mjs";
 import { checkTestMirror, mirrorFolders } from "../gates/test-mirror.mjs";
 import { checkCommentStyle } from "../gates/comment-style.mjs";
-import { checkEnglishSource, checkTranslationPairs } from "../gates/english-source.mjs";
+import { checkEnglishFiles, checkEnglishSource, checkTranslationPairs } from "../gates/english-source.mjs";
 import { checkAdrFormat } from "../gates/adr-format.mjs";
 import { checkConfigFloor } from "../gates/config-floor.mjs";
 import { defaults } from "../config.mjs";
 import { rules as lintRules } from "../eslint/index.mjs";
 import { enabled } from "../config.mjs";
+import { repoFiles } from "./repo-files.mjs";
 
+// Each skip is tested on "/" + the relative path, so it reads a path the way it read a full one.
 const SKIP = /node_modules|\/dist\/|\.test\.[cm]?[jt]sx?$/;
+const BUILD_OUTPUT = /node_modules|\/dist\//;
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
 const SOURCE_EXTENSION = /\.([cm]?[jt]sx?)$/;
 const CITABLE_EXTENSION = /\.(tsx?|mjs|md)$/;
 const INFRA_EXTENSIONS = [".tf", ".sh", ".tfvars", ".tfvars.example", ".hcl", ".hcl.example"];
 const INFRA_SKIP = [".lock.hcl"];
+// Windows caps a command line at 32,767 characters. A longer file list is filtered here instead.
+const PATHSPEC_BUDGET = 8_000;
 
 const read = (file) => readFile(file, "utf8").catch(() => null);
-const list = (dir, options) => readdir(dir, options).catch(() => []);
 
 /** A problem names a path a reader can open — forward slashes always, since every gate splits on "/". */
 const relativeTo = (root) => (file) => (path.relative(root, file) || file).split(path.sep).join("/");
 
-async function listFeature(dir) {
-  const files = [];
-  async function walk(current, prefix) {
-    for (const entry of await list(current, { withFileTypes: true })) {
-      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) await walk(path.join(current, entry.name), rel);
-      else files.push(rel);
+/** A config path as the listing spells it: forward slashes, no `./`, no trailing slash. The root is "". */
+function posix(dir) {
+  const normal = path.posix.normalize(String(dir).split(path.sep).join("/")).replace(/\/+$/, "");
+  return normal === "." ? "" : normal;
+}
+
+const join = (dir, name) => (dir ? `${dir}/${name}` : name);
+
+/** The one listing of a run, with the names each folder holds, as `readdir` returned them. */
+function treeOf(files) {
+  const isFile = new Set(files);
+  const children = new Map();
+  for (const file of files) {
+    let folder = "";
+    for (const part of file.split("/")) {
+      const names = children.get(folder) ?? new Set();
+      names.add(part);
+      children.set(folder, names);
+      folder = join(folder, part);
     }
   }
-  await walk(dir, "");
+  return {
+    files,
+    isFile: (rel) => isFile.has(rel),
+    /** The files at or below `dir`. */
+    under(dir) {
+      const prefix = posix(dir);
+      return prefix === "" ? files : files.filter((file) => file.startsWith(`${prefix}/`));
+    },
+    /** The names directly in `dir`, files and folders both. */
+    namesIn: (dir) => [...(children.get(posix(dir)) ?? [])],
+    foldersIn(dir) {
+      const prefix = posix(dir);
+      return [...(children.get(prefix) ?? [])].filter((name) => children.has(join(prefix, name)));
+    },
+  };
+}
+
+/** Read each listed file. One the listing names but the disk no longer holds is skipped. */
+async function readEach(root, rels) {
+  const files = [];
+  for (const rel of rels) {
+    const contents = await read(path.join(root, rel));
+    if (contents !== null) files.push({ path: rel, contents });
+  }
   return files;
 }
 
-async function readFeature(dir) {
-  const files = await listFeature(dir);
+/** The given files, and the feature folders that hold them: all the fast path reads. */
+function scopeOf(config, given) {
+  const scope = new Set(given);
+  for (const file of given) {
+    for (const root of config.featureRoots.map(posix)) {
+      const inside = root === "" ? file : file.startsWith(`${root}/`) ? file.slice(root.length + 1) : null;
+      if (inside?.includes("/")) scope.add(join(root, inside.split("/")[0]));
+    }
+  }
+  const specs = [...scope];
+  return specs.join(" ").length > PATHSPEC_BUDGET ? undefined : specs;
+}
+
+async function readFeature(config, tree, dir) {
+  const files = tree.under(dir).map((file) => file.slice(dir.length + 1));
   const contents = [];
   for (const file of files) {
-    const full = path.join(dir, file);
-    const isSource = /\.tsx?$/.test(file) && (await stat(full).catch(() => null))?.isFile();
-    if (isSource) contents.push({ path: full, contents: await readFile(full, "utf8") });
-
+    if (!/\.tsx?$/.test(file)) continue;
+    const full = path.join(config.root, dir, file);
+    const source = await read(full);
+    if (source !== null) contents.push({ path: full, contents: source });
   }
-  return { feature: { feature: dir, files }, contents };
+  return { feature: { feature: path.join(config.root, dir), files }, contents };
 }
 
-async function featureDirs(root) {
-  const entries = await list(root, { withFileTypes: true });
-  return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(root, entry.name));
-}
-
-async function collect(roots, only) {
+async function collect(config, tree, only) {
   const features = [];
   const contents = [];
-  for (const root of roots) {
-    for (const dir of await featureDirs(root)) {
-      if (only && !only.startsWith(dir)) continue;
-      const found = await readFeature(dir);
+  for (const root of config.featureRoots.map(posix)) {
+    for (const name of tree.foldersIn(root)) {
+      const dir = join(root, name);
+      if (only && !only.some((file) => file === dir || file.startsWith(`${dir}/`))) continue;
+      const found = await readFeature(config, tree, dir);
       features.push(found.feature);
       contents.push(...found.contents);
     }
@@ -89,60 +137,45 @@ async function collect(roots, only) {
   return { features, contents };
 }
 
-async function citableFiles(roots, root) {
-  const rel = relativeTo(root);
-  const files = [];
-  async function walk(dir) {
-    for (const entry of await list(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (SKIP.test(full)) continue;
-      if (entry.isDirectory()) await walk(full);
-      else if (CITABLE_EXTENSION.test(entry.name)) {
-        files.push({ path: rel(full), contents: await readFile(full, "utf8") });
-      }
-    }
-  }
-  for (const root of roots) await walk(root);
-  return files;
+function citableFiles(config, tree, roots) {
+  const rels = roots
+    .flatMap((root) => tree.under(root))
+    .filter((file) => !SKIP.test(`/${file}`) && CITABLE_EXTENSION.test(file));
+  return readEach(config.root, rels);
 }
 
-/** Every file under the citable roots whose extension matches, nothing skipped but build output. */
-async function filesMatching(config, pattern, language) {
-  const rel = relativeTo(config.root);
-  const skip = new RegExp(language.exclude.join("|"));
-  const files = [];
-  async function walk(dir) {
-    for (const entry of await list(dir, { withFileTypes: true }).catch(() => [])) {
-      const full = path.join(dir, entry.name);
-      if (skip.test(rel(full))) continue;
-      if (entry.isDirectory()) await walk(full);
-      else if (pattern.test(entry.name)) files.push({ path: rel(full), contents: await readFile(full, "utf8") });
-    }
-  }
+/** A regex tested on a file and on each folder above it, as a walk that pruned folders tested it. */
+function prunedBy(pattern) {
+  const folders = new Map();
+  const parentOf = (rel) => rel.slice(0, Math.max(rel.lastIndexOf("/"), 0));
+  const skipped = (folder) => {
+    if (folder === "") return false;
+    if (!folders.has(folder)) folders.set(folder, skipped(parentOf(folder)) || pattern.test(folder));
+    return folders.get(folder);
+  };
+  return (file) => skipped(parentOf(file)) || pattern.test(file);
+}
+
+/** Every listed file under the language roots whose extension matches, minus `language.exclude`. */
+function languageFiles(config, files) {
+  const { language } = config;
+  const pattern = new RegExp(`\\.(${language.extensions.join("|")})$`);
+  const skip = prunedBy(new RegExp(language.exclude.join("|")));
   // The whole repository, not the citable roots: those name where decisions are cited, which has
   // nothing to do with where a language rule applies. Contracts and infrastructure are not citable
   // and were invisible because of it.
-  for (const root of language.roots) await walk(path.join(config.root, root));
-  return files;
+  const roots = language.roots.map(posix);
+  const inRoot = (file) => roots.some((root) => root === "" || file.startsWith(`${root}/`));
+  return files.filter((file) => inRoot(file) && pattern.test(file) && !skip(file));
 }
 
 /** Every source file under the citable roots, tests included. */
-async function sourceFiles(config, only) {
-  const rel = relativeTo(config.root);
+function sourceFiles(config, tree, only) {
   const roots = only === undefined ? config.paths.citable : [only];
-  const files = [];
-  async function walk(dir) {
-    for (const entry of await list(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (/node_modules|\/dist\//.test(full)) continue;
-      if (entry.isDirectory()) await walk(full);
-      else if (SOURCE_EXTENSION.test(entry.name)) {
-        files.push({ path: rel(full), contents: await readFile(full, "utf8") });
-      }
-    }
-  }
-  for (const root of roots) await walk(path.join(config.root, root));
-  return files;
+  const rels = roots
+    .flatMap((root) => tree.under(root))
+    .filter((file) => !BUILD_OUTPUT.test(`/${file}`) && SOURCE_EXTENSION.test(file));
+  return readEach(config.root, rels);
 }
 
 async function registered(file) {
@@ -189,23 +222,20 @@ async function agreements(config) {
 }
 
 /** Every file inside a server feature that carries SQL, with the feature that owns it. */
-async function resourceFiles(config) {
-  const root = path.join(config.root, config.paths.serverFeatures);
-  const rel = relativeTo(config.root);
+async function resourceFiles(config, tree) {
+  const root = posix(config.paths.serverFeatures);
   const resources = [];
-  for (const feature of await list(root)) {
-    const dir = path.join(root, feature);
-    for (const name of config.paths.resourceFiles) {
-      const file = path.join(dir, name);
-      const source = await read(file);
-      if (source) resources.push({ path: rel(file), source, feature });
-    }
+  const take = async (rel, feature) => {
+    const source = tree.isFile(rel) ? await read(path.join(config.root, rel)) : null;
+    if (source) resources.push({ path: rel, source, feature });
+  };
+  for (const feature of tree.namesIn(root)) {
+    const dir = join(root, feature);
+    for (const name of config.paths.resourceFiles) await take(`${dir}/${name}`, feature);
     for (const subdir of config.paths.resourceDirs) {
-      for (const name of await list(path.join(dir, subdir))) {
+      for (const name of tree.namesIn(`${dir}/${subdir}`)) {
         if (!/\.tsx?$/.test(name) || name.includes(".test.")) continue;
-        const file = path.join(dir, subdir, name);
-        const source = await read(file);
-        if (source) resources.push({ path: rel(file), source, feature });
+        await take(`${dir}/${subdir}/${name}`, feature);
       }
     }
   }
@@ -213,16 +243,15 @@ async function resourceFiles(config) {
 }
 
 /** Nothing runs the schema and the queries together, so this asserts their names agree. */
-async function sqlAgreement(config, taken) {
-  const migrationDir = path.join(config.root, config.paths.migrations);
-  const names = (await list(migrationDir)).filter((name) => name.endsWith(".sql"));
-  const migrations = [];
-  for (const file of names) {
-    migrations.push({ file, sql: await readFile(path.join(migrationDir, file), "utf8") });
-  }
-  const resources = await resourceFiles(config);
-  const features = await list(path.join(config.root, config.paths.serverFeatures));
-  const tables = declaredColumns(migrations.map((migration) => migration.sql));
+async function sqlAgreement(config, tree, taken) {
+  const migrationDir = posix(config.paths.migrations);
+  const migrations = await readEach(
+    config.root,
+    tree.namesIn(migrationDir).filter((name) => name.endsWith(".sql")).map((name) => join(migrationDir, name)),
+  );
+  const resources = await resourceFiles(config, tree);
+  const features = tree.namesIn(config.paths.serverFeatures);
+  const tables = declaredColumns(migrations.map((migration) => migration.contents));
   const owned = new Set(
     [...tables]
       .filter(([, columns]) => columns.has(config.tenant.sqlColumn))
@@ -242,7 +271,8 @@ async function sqlAgreement(config, taken) {
     problems.push(...checkAuditAppendOnly(scoped, { table: config.audit.table }));
   }
   if (enabled(config.gates, "sql-identifiers")) {
-    problems.push(...checkSqlIdentifiers(tables, resources, tableOwners(migrations, features)));
+    const byName = migrations.map((migration) => ({ file: path.posix.basename(migration.path), sql: migration.contents }));
+    problems.push(...checkSqlIdentifiers(tables, resources, tableOwners(byName, features)));
   }
   if (enabled(config.gates, "tenant-predicate")) {
     problems.push(
@@ -254,16 +284,13 @@ async function sqlAgreement(config, taken) {
 }
 
 /** Each server feature's trigger: routes, and the requirements they claim. */
-async function triggers(config) {
-  const root = path.join(config.root, config.paths.serverFeatures);
-  const rel = relativeTo(config.root);
-  const found = [];
-  for (const feature of await list(root)) {
-    const file = path.join(root, feature, config.paths.triggerFile);
-    const source = await read(file);
-    if (source) found.push({ path: rel(file), source });
-  }
-  return found;
+async function triggers(config, tree) {
+  const root = posix(config.paths.serverFeatures);
+  const rels = tree
+    .namesIn(root)
+    .map((feature) => `${join(root, feature)}/${config.paths.triggerFile}`)
+    .filter((rel) => tree.isFile(rel));
+  return (await readEach(config.root, rels)).map(({ path: file, contents }) => ({ path: file, source: contents }));
 }
 
 /** Every unit's definition of done ends here: a claim a route makes must be backed. */
@@ -287,15 +314,14 @@ async function publicRouteAgreement(config, routes) {
 }
 
 /** A worker builds its path as a string; nothing type-checks it against the route table. */
-async function internalRouteAgreement(config, routes) {
-  const root = path.join(config.root, config.paths.workers);
-  const entries = [];
-  for (const worker of await list(root, { withFileTypes: true })) {
-    if (!worker.isDirectory() || worker.name === "node_modules") continue;
-    const file = path.join(root, worker.name, config.paths.workerEntry);
-    const source = await read(file);
-    if (source) entries.push({ path: path.relative(config.root, file), source });
-  }
+async function internalRouteAgreement(config, tree, routes) {
+  const root = posix(config.paths.workers);
+  const rels = tree
+    .foldersIn(root)
+    .filter((worker) => worker !== "node_modules")
+    .map((worker) => `${join(root, worker)}/${config.paths.workerEntry}`)
+    .filter((rel) => tree.isFile(rel));
+  const entries = (await readEach(config.root, rels)).map(({ path: file, contents }) => ({ path: file, source: contents }));
   if (entries.length === 0) return [];
   return checkInternalRoutes(
     declaredInternalRoutes(routes.map((route) => route.source)),
@@ -303,22 +329,11 @@ async function internalRouteAgreement(config, routes) {
   );
 }
 
-async function platformFiles(config) {
-  const platformDir = path.join(config.root, config.paths.platform ?? "frontend/src/platform");
-  const rel = relativeTo(config.root);
-  const files = [];
-  async function walk(dir) {
-    for (const entry of await list(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (/node_modules|\/dist\//.test(full)) continue;
-      if (entry.isDirectory()) await walk(full);
-      else if (SOURCE_EXTENSION.test(entry.name)) {
-        files.push({ path: rel(full), contents: await readFile(full, "utf8").catch(() => "") });
-      }
-    }
-  }
-  await walk(platformDir);
-  return files;
+function platformFiles(config, tree) {
+  const rels = tree
+    .under(config.paths.platform ?? "frontend/src/platform")
+    .filter((file) => !BUILD_OUTPUT.test(`/${file}`) && SOURCE_EXTENSION.test(file));
+  return readEach(config.root, rels);
 }
 
 function isInfraFile(name) {
@@ -327,32 +342,31 @@ function isInfraFile(name) {
 }
 
 /** Terraform/shell files under the configured infra roots — absent is ordinary, not an error. */
-async function infraFiles(config) {
-  const rel = relativeTo(config.root);
-  const files = [];
-  async function walk(dir) {
-    for (const entry of await list(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (/node_modules|\.terraform/.test(full)) continue;
-      if (entry.isDirectory()) await walk(full);
-      else if (isInfraFile(entry.name)) {
-        files.push({ path: rel(full), contents: await readFile(full, "utf8").catch(() => "") });
-      }
-    }
-  }
-  for (const root of config.paths.infra ?? []) await walk(path.join(config.root, root));
-  return files;
+function infraFiles(config, tree) {
+  const rels = (config.paths.infra ?? [])
+    .flatMap((root) => tree.under(root))
+    .filter((file) => !/node_modules|\.terraform/.test(file) && isInfraFile(file));
+  return readEach(config.root, rels);
 }
 
 /**
  * @param {object} config
- * @param {string} [only] one file — the fast path a post-edit hook takes
+ * @param {string | string[]} [only] files to check on the fast path a hook takes; none is the full check
+ * @param {{lister?: typeof repoFiles}} [io] the file lister, which a test replaces to count its calls
  * @returns {Promise<{problems: object[], lines: string[]}>}
  */
-export async function runCheck(config, only) {
+export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
+  const requested = [only].flat().filter(Boolean);
+  const perFile = requested.length > 0;
+  // A file outside the repository is in no listing and in no feature.
+  const given = requested
+    .map((file) => relativeTo(config.root)(path.resolve(config.root, file)))
+    .filter((rel) => !rel.startsWith("../") && !path.isAbsolute(rel));
+  const pathspecs = perFile ? scopeOf(config, given) : undefined;
+  const tree = treeOf(await lister(config.root, { ignores: config.ignores, pathspecs }));
+
   const roots = config.featureRoots.map((root) => path.join(config.root, root));
-  const relativeOnly = only ? path.resolve(config.root, only) : undefined;
-  const { features, contents } = await collect(roots, relativeOnly);
+  const { features, contents } = await collect(config, tree, perFile ? given : undefined);
 
   const problems = [];
   const lines = [];
@@ -382,7 +396,7 @@ export async function runCheck(config, only) {
   if (enabled(config.gates, "headless-sagas")) {
     problems.push(...checkHeadlessPipelines(contents, { block: config.saga.headlessBlock, viewModules: config.saga.viewModules }));
   }
-  if (enabled(config.gates, "feature-cli") && !relativeOnly) {
+  if (enabled(config.gates, "feature-cli") && !perFile) {
     const rel = relativeTo(config.root);
     const relativeFeatures = features.map((feature) => ({ ...feature, feature: rel(feature.feature) }));
     const relativeContents = contents.map((file) => ({ ...file, path: rel(file.path) }));
@@ -403,21 +417,30 @@ export async function runCheck(config, only) {
   }
   if (!rootless) lines.push(`OK  structure    ${features.length} feature folder(s)`);
 
-  if (relativeOnly) return { problems, lines };
+  if (perFile) {
+    // The English rules that judge one file alone, on exactly the files given. The ledger-wide
+    // rules need every file, so only the full check runs them.
+    if (enabled(config.gates, "english-source")) {
+      const judged = languageFiles(config, tree.files.filter((file) => given.some((g) => file === g || file.startsWith(`${g}/`))));
+      problems.push(...checkEnglishFiles(await readEach(config.root, judged), config.language));
+      lines.push(`OK  english      ${judged.length} given file(s): comments and prose are English`);
+    }
+    return { problems, lines };
+  }
 
   if (enabled(config.gates, "citations")) {
-    const cited = await citableFiles(
-      config.paths.citable.map((root) => path.join(config.root, root)),
-      config.root,
-    );
+    const cited = await citableFiles(config, tree, config.paths.citable);
     const decisionsFile = await read(path.join(config.root, config.docs.decisions));
     const decisions = definedIds(decisionsFile ?? "", config.citations);
     const requirementIds = new Set(
       (await registered(path.join(config.root, config.paths.traceability))).map((entry) => entry.id),
     );
-    const docsDir = path.join(config.root, config.docs.root);
+    const docsRoot = posix(config.docs.root);
     const docs = new Set(
-      (await list(docsDir)).filter((name) => name.endsWith(".md")).map((name) => `${config.docs.root}/${name}`),
+      tree
+        .namesIn(docsRoot)
+        .filter((name) => name.endsWith(".md") && tree.isFile(join(docsRoot, name)))
+        .map((name) => `${config.docs.root}/${name}`),
     );
     problems.push(
       ...checkCitations(cited, decisions, requirementIds, config.citations),
@@ -432,14 +455,14 @@ export async function runCheck(config, only) {
   }
 
   if (enabled(config.gates, "sql-identifiers") || enabled(config.gates, "tenant-predicate")) {
-    problems.push(...(await sqlAgreement(config, taken)));
+    problems.push(...(await sqlAgreement(config, tree, taken)));
     lines.push("OK  sql          every column is declared, every statement and shared insert carries the tenant");
     // An exemption is counted and named, so it stays a decision rather than a habit.
     for (const exemption of taken) lines.push(`  exempt       ${exemption.path}: ${exemption.reason}`);
   }
 
   if (enabled(config.gates, "saga-tests")) {
-    const sources = await sourceFiles(config);
+    const sources = await sourceFiles(config, tree);
     const sagas = declaredSagas(
       sources.filter((file) => !TEST_FILE.test(file.path)),
       { factories: config.saga.factories },
@@ -454,7 +477,7 @@ export async function runCheck(config, only) {
   }
 
   if (enabled(config.gates, "gate-tests")) {
-    const own = await sourceFiles(config, config.paths.checks);
+    const own = await sourceFiles(config, tree, config.paths.checks);
     problems.push(
       ...checkGatesAreTested(
         own.filter((file) => !TEST_FILE.test(file.path)),
@@ -478,7 +501,7 @@ export async function runCheck(config, only) {
     }
   }
 
-  const routes = await triggers(config);
+  const routes = await triggers(config, tree);
   if (enabled(config.gates, "claimed-requirements")) {
     problems.push(...(await claimAgreement(config, routes)));
     lines.push("OK  claims       every requirement a route claims names a test that proves it");
@@ -488,38 +511,38 @@ export async function runCheck(config, only) {
     lines.push("OK  public       the edge lets through exactly the routes the api serves without a session");
   }
   if (enabled(config.gates, "internal-routes")) {
-    problems.push(...(await internalRouteAgreement(config, routes)));
+    problems.push(...(await internalRouteAgreement(config, tree, routes)));
     lines.push("OK  internal     every path a worker posts to is a route the api serves");
   }
   if (enabled(config.gates, "headless-sagas")) {
     lines.push("OK  headless     pipelines are headless and triggers remain thin presenters");
   }
   if (enabled(config.gates, "frontend-boundaries")) {
-    const platform = await platformFiles(config);
+    const platform = await platformFiles(config, tree);
     if (platform.length > 0) {
       problems.push(...checkFrontendBoundaries(platform, contents));
       lines.push("OK  boundaries   platform remains a thin substrate without domain leaks or junk drawers");
     }
   }
   if (enabled(config.gates, "test-mirror")) {
-    const { roots } = config.testMirror;
+    const { roots: mirrorRoots } = config.testMirror;
     const walked = new Set();
-    for (const dir of mirrorFolders(roots)) {
-      for (const file of await sourceFiles(config, dir)) walked.add(file.path);
+    for (const dir of mirrorFolders(mirrorRoots)) {
+      for (const file of await sourceFiles(config, tree, dir)) walked.add(file.path);
     }
     const all = [...walked];
     const testPaths = all.filter((file) => TEST_FILE.test(file));
     const srcPaths = all.filter((file) => !TEST_FILE.test(file));
-    const mirrorProblems = checkTestMirror(testPaths, srcPaths, roots);
+    const mirrorProblems = checkTestMirror(testPaths, srcPaths, mirrorRoots);
     problems.push(...mirrorProblems);
     if (mirrorProblems.length === 0) {
-      const judged = roots.map((root) => root.tests).join(", ") || "no configured root";
+      const judged = mirrorRoots.map((root) => root.tests).join(", ") || "no configured root";
       lines.push(`OK  mirror       tests mirror src paths 1:1, no orphaned test, in ${judged}`);
     }
   }
 
   if (enabled(config.gates, "comment-style")) {
-    const infra = await infraFiles(config);
+    const infra = await infraFiles(config, tree);
     if (infra.length > 0) {
       problems.push(...checkCommentStyle(infra, config.comments));
       lines.push("OK  comments     every comment under infra/ is one line of why, never a paragraph");
@@ -535,7 +558,7 @@ export async function runCheck(config, only) {
     // Its own file set. The citation and source walkers were built for other questions and each
     // skips something this one needs -- tests, documents, migrations, contracts. Language is not
     // a property of TypeScript: a Japanese column default in .sql reaches a reader just the same.
-    const everything = await filesMatching(config, new RegExp(`\\.(${config.language.extensions.join("|")})$`), config.language);
+    const everything = await readEach(config.root, languageFiles(config, tree.files));
     problems.push(...checkEnglishSource(everything, config.language));
     problems.push(...checkTranslationPairs(everything.map((file) => file.path), config.language.translationPairs));
     // The ledger is printed on every run, not only when it fails: a file listed once and never
@@ -551,7 +574,7 @@ export async function runCheck(config, only) {
   }
 
   if (enabled(config.gates, "adr-format")) {
-    const records = await citableFiles([path.join(config.root, config.adr.root)], config.root);
+    const records = await citableFiles(config, tree, [config.adr.root]);
     const docs = records.filter((file) => file.path.endsWith(".md"));
     problems.push(...checkAdrFormat(docs, config.adr));
     if (docs.length > 0) lines.push(`OK  decisions    ${docs.length} record(s), each with its cost and its rejected alternatives`);
