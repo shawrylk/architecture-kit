@@ -19,6 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { load } from "../config.mjs";
+import { ignoredPaths } from "./ignored-paths.mjs";
 import { claimLease, leaseFileOf, readLease } from "./lease-file.mjs";
 import {
   OFF,
@@ -144,7 +145,7 @@ async function isolationVerdict(root, relPath, call) {
     return null;
   }
   const sessionId = sessionIdOf(call.session_id);
-  const reason = isolationRefusal({
+  const facts = {
     settings,
     branch: state.branch,
     kind: state.kind,
@@ -155,8 +156,14 @@ async function isolationVerdict(root, relPath, call) {
     leaseFile: slashed(leaseFileOf(state.gitDir)),
     root: slashed(root),
     qc: QC,
-  });
-  if (reason) return isolationDeny(reason);
+  };
+  if (isolationRefusal(facts)) {
+    // Asked only on the refusal path, so an edit that passes costs no extra git process.
+    const ignored = (await ignoredPaths(root, [relPath])).has(relPath);
+    const reason = isolationRefusal({ ...facts, ignored });
+    if (reason) return isolationDeny(reason);
+    return null;
+  }
   // Only the PreToolUse hook claims: a hand run of this script with a made-up session never does.
   if (call.hook_event_name === "PreToolUse") claimLease(state.gitDir, sessionId, state.branch);
   return null;

@@ -91,6 +91,7 @@ function isolatedRepository() {
   mkdirSync(outside);
   git(primary, "init", "-q", "-b", "main");
   writeFileSync(path.join(primary, "qc.config.json"), JSON.stringify({ swarm: { isolation: { require: "worktree" } } }));
+  writeFileSync(path.join(primary, ".gitignore"), "*.local.json\n");
   git(primary, "add", ".");
   git(primary, "-c", "user.name=qc", "-c", "user.email=qc@example.com", "commit", "-q", "-m", "init");
   git(primary, "worktree", "add", "-q", linked, "-b", "feat/work-order");
@@ -116,6 +117,23 @@ test("an edit in the primary checkout on a protected branch is still refused", a
   t.after(repo.cleanup);
   const output = await decide(editOf(path.join(repo.primary, "src", "file.ts")), repo.primary);
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /"main" is a protected branch/);
+});
+
+test("on a protected branch, an ignored local file passes and claims no lease", async (t) => {
+  const repo = isolatedRepository();
+  t.after(repo.cleanup);
+  const file = path.join(repo.primary, ".claude", "settings.local.json");
+  assert.equal(await decide({ ...editOf(file), hook_event_name: "PreToolUse" }, repo.primary), null);
+  assert.equal(existsSync(leaseFileOf(repo.primary)), false);
+});
+
+test("on a protected branch, a tracked file and a new unignored file are refused", async (t) => {
+  const repo = isolatedRepository();
+  t.after(repo.cleanup);
+  for (const file of ["qc.config.json", path.join("src", "new.ts")]) {
+    const output = await decide(editOf(path.join(repo.primary, file)), repo.primary);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /"main" is a protected branch/, file);
+  }
 });
 
 test("the primary checkout is refused even when the session opened the linked worktree", async (t) => {

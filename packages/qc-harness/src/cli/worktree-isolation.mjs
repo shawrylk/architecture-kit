@@ -94,13 +94,15 @@ function heldRefusal(held, { branch, now, leaseFile, root, qc }) {
  * @returns a reason string to refuse the edit, or null to allow it.
  */
 export function isolationRefusal(state) {
-  const { settings, branch, kind, inSpecialOperation, lease, sessionId, now } = state;
+  const { settings, branch, kind, inSpecialOperation, lease, sessionId, now, ignored = false } = state;
   if (settings.require === OFF) return null;
   if (inSpecialOperation) return null;
 
   if (!branch) {
     return "HEAD is detached, so this edit belongs to no branch. Check out a work-order branch before generating code.";
   }
+  // A path git ignores is local configuration, and it can never reach a commit on any branch.
+  if (ignored) return null;
   if (settings.protectedBranches.includes(branch)) {
     return (
       `"${branch}" is a protected branch and an agent does not generate code on it. ` +
