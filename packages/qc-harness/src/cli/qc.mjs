@@ -15,6 +15,7 @@ const USAGE = `qc — architecture gates
   qc work-order-check      refuse to commit on the wrong branch, per .claude/work-order.local.json
   qc lease status [path]   who holds this worktree's lease, since when, and when it lapses
   qc lease release [path]  remove it: --session <id> for your own, --force for another's
+  qc pr-check              in CI: the pull request names an issue that exists and predates it
   qc commit-msg <file>     refuse a commit message that credits a tool as an author
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc worktree add <name> <branch> [--from <ref>]
@@ -71,6 +72,10 @@ async function main() {
     case "work-order-check": {
       const { runWorkOrderCheck } = await import("./work-order-guard.mjs");
       process.exit(await runWorkOrderCheck(config.root));
+    }
+    case "pr-check": {
+      const { runPrCheck } = await import("./pr-check.mjs");
+      process.exit(await runPrCheck());
     }
     case "commit-msg": {
       const { readFileSync } = await import("node:fs");

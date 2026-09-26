@@ -236,6 +236,10 @@ export const defaults = {
   floor: { exemptions: {} },
 
   // The calls each git hook must make. `qc doctor` and the config-floor gate read the hooks git runs.
+  // A branch names its issue, as in feat/340-roles. `allow` holds globs for the branches with none.
+  // A null `pattern` switches the rule off.
+  branches: { pattern: "^[a-z]+/[0-9]+-", allow: ["main", "master", "release/**"] },
+
   hooks: { required: { "pre-commit": ["qc work-order-check"], "pre-push": ["qc check"] } },
 
   // A tool is not an author. These may never appear in a commit's attribution trailer.
