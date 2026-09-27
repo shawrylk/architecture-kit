@@ -38,9 +38,9 @@ export function dispatchSettingsAt(cwd) {
   return dispatchSettings(load(root).swarm);
 }
 
-/** The type a dispatch names. The Agent tool runs general-purpose when it names none. */
+/** The type a dispatch names, trimmed. The Agent tool runs general-purpose when it names none. */
 export const typeOf = (input) =>
-  typeof input.subagent_type === "string" && input.subagent_type !== "" ? input.subagent_type : DEFAULT_TYPE;
+  typeof input.subagent_type === "string" && input.subagent_type.trim() !== "" ? input.subagent_type.trim() : DEFAULT_TYPE;
 
 export const isImplementer = (type, settings) => settings.implementerTypes.includes(type);
 

@@ -71,3 +71,10 @@ test("a session folder with no settings, or settings that do not parse, changes 
   reclaimSlot(dir, "sdd-implementer", Date.now());
   assert.equal(existsSync(slotFileOf(dir)), false);
 });
+
+test("a claim whose settings cannot be written is released, and the error reaches the caller", (t) => {
+  const dir = sessionDir(t);
+  mkdirSync(path.join(dir, "settings.json"), { recursive: true });
+  assert.throws(() => claimSlot(dir, settings, Date.now()));
+  assert.equal(existsSync(slotFileOf(dir)), false);
+});

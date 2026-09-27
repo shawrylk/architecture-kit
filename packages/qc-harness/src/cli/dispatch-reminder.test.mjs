@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { REMINDER, decide } from "./dispatch-reminder.mjs";
 
+const NOTE = fileURLToPath(new URL("./dispatch-reminder.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
 
 /** Three checkouts: one per config, and `null` writes no config at all. */
@@ -55,6 +56,17 @@ test("the note names the workflow, the three types, and the one-implementer rule
 test("a config error reaches the session as context", (t) => {
   const [bad] = checkouts(t, [{ swarm: { dispatch: { maxPromptChars: "long" } } }]);
   assert.match(decide(start(bad, "startup")).hookSpecificOutput.additionalContext, /Dispatch guard is off/);
+});
+
+test("the hook runs as its own process and prints the note as JSON, or nothing with no config", (t) => {
+  const [on, plain] = checkouts(t, [{ swarm: { dispatch: {} } }, null]);
+  const run = (cwd) => spawnSync(process.execPath, [NOTE], { input: JSON.stringify(start(cwd, "startup")), encoding: "utf8" });
+  const noted = run(on);
+  assert.equal(noted.status, 0, noted.stderr);
+  assert.equal(JSON.parse(noted.stdout).hookSpecificOutput.additionalContext, REMINDER);
+  const silent = run(plain);
+  assert.equal(silent.status, 0, silent.stderr);
+  assert.equal(silent.stdout, "");
 });
 
 test("hooks.json runs the note on every SessionStart source", () => {

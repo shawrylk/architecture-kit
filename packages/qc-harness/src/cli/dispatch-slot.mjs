@@ -3,9 +3,8 @@
 
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { claimFileOf, claimPath, releasePath } from "./edit-batch-state.mjs";
+import { claimFileOf, claimPath, fileSafe, releasePath } from "./edit-batch-state.mjs";
 
-const fileSafe = (id) => String(id).replace(/[^A-Za-z0-9_.-]/g, "_");
 const KEY = "implementer";
 const SETTINGS_FILE = "settings.json";
 const MINUTE_MS = 60_000;
@@ -35,7 +34,13 @@ export function claimSlot(dir, settings, now) {
   for (;;) {
     if (claimPath(dir, KEY, now, ttlMs)) {
       const { implementerTypes, slotMinutes } = settings;
-      writeFileSync(path.join(dir, SETTINGS_FILE), JSON.stringify({ implementerTypes, slotMinutes }));
+      try {
+        writeFileSync(path.join(dir, SETTINGS_FILE), JSON.stringify({ implementerTypes, slotMinutes }));
+      } catch (error) {
+        // A claim with no settings is freed by no stop, so it would hold the slot until it expires.
+        releasePath(dir, KEY);
+        throw error;
+      }
       return null;
     }
     let claimedMs;

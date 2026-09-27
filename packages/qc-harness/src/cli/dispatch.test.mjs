@@ -71,6 +71,7 @@ test("the model rule comes before the length rule", () => {
 test("an omitted type is general-purpose, and only a listed type is an implementer", () => {
   assert.equal(typeOf({}), "general-purpose");
   assert.equal(typeOf({ subagent_type: "" }), "general-purpose");
+  assert.equal(typeOf({ subagent_type: " \t" }), "general-purpose");
   assert.equal(isImplementer("architecture:sdd-implementer", on), true);
   assert.equal(isImplementer("sdd-implementer", on), true);
   assert.equal(isImplementer("architecture:sdd-reviewer", on), false);

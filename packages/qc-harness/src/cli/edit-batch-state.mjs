@@ -5,8 +5,10 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const fileSafe = (id) => String(id).replace(/[^A-Za-z0-9_.-]/g, "_");
 const BATCH_AWARE = "batch-aware";
+
+/** An id as a file name: each character outside letters, digits, `_`, `.` and `-` becomes `_`. */
+export const fileSafe = (id) => String(id).replace(/[^A-Za-z0-9_.-]/g, "_");
 
 /** The batch folder of one agent in one session. */
 export const batchDirOf = (sessionId, agentKey, tmp) =>
