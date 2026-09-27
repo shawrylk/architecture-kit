@@ -11,7 +11,7 @@ const PLUGIN = "architecture";
 const EXPECTED = {
   "sdd-implementer": { effort: "medium", disallowedTools: ["Agent"] },
   "sdd-planner": { effort: "high", disallowedTools: ["Agent"] },
-  "sdd-reviewer": { effort: "high", disallowedTools: ["Agent", "Write", "Edit", "NotebookEdit"] },
+  "sdd-reviewer": { effort: "high", disallowedTools: ["Agent", "Write", "Edit", "MultiEdit", "NotebookEdit"] },
 };
 
 /** The `key: value` lines between the two `---` fences. A checkout on Windows can carry CRLF. */
@@ -27,7 +27,11 @@ function frontmatterOf(file) {
 }
 
 test("each subagent type runs on opus at its effort, and none can dispatch a subagent", () => {
-  assert.deepEqual(readdirSync(AGENTS).sort(), Object.keys(EXPECTED).map((name) => `${name}.md`).sort());
+  assert.deepEqual(
+    readdirSync(AGENTS).sort(),
+    Object.keys(EXPECTED).map((name) => `${name}.md`).sort(),
+    "agents/ holds exactly the shipped types",
+  );
   for (const [name, want] of Object.entries(EXPECTED)) {
     const front = frontmatterOf(path.join(AGENTS, `${name}.md`));
     assert.equal(front.name, name);

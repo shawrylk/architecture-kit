@@ -33,7 +33,7 @@ test("a checkout with no config, or no dispatch section, gets no note", (t) => {
 
 test("with the section on, every start adds the note, a compaction included", (t) => {
   const [on] = checkouts(t, [{ swarm: { dispatch: {} } }]);
-  for (const source of ["startup", "resume", "clear", "compact"]) {
+  for (const source of ["startup", "resume", "clear", "compact", "fork"]) {
     const output = decide(start(on, source));
     assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart", source);
     assert.equal(output.hookSpecificOutput.additionalContext, REMINDER, source);

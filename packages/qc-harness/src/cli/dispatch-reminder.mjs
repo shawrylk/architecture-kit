@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The SessionStart trigger for `swarm.dispatch`: one short note at each start, resume, clear and
-// compaction, because a rule held only in the conversation is lost to a compaction.
+// The SessionStart trigger for `swarm.dispatch`: one short note at each start, resume, clear, compaction
+// and fork, because a rule held only in the conversation is lost to a compaction.
 
 import { fileURLToPath } from "node:url";
 import { dispatchSettingsAt } from "./dispatch.mjs";

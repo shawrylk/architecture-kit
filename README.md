@@ -208,7 +208,8 @@ The plugin ships three subagent types for `superpowers:subagent-driven-developme
 | `architecture:sdd-implementer` | `opus` | `medium` | implements one task from a brief file, and writes a report file |
 | `architecture:sdd-reviewer` | `opus` | `high` | reviews one task, read-only |
 
-None of the three can call the `Agent` tool, and the reviewer has no edit tools.
+None of the three can call the `Agent` tool. The reviewer has no edit tools but keeps the shell for
+`git`, so its prompt holds it read-only.
 
 A prose rule is lost in a long session or a compaction, so hooks hold the orchestrator to the
 workflow. A `swarm.dispatch` section in `qc.config.json` turns them on. An empty section takes every
@@ -225,6 +226,8 @@ fix:
 
 - A dispatch that names no `model` and no type in `allowedTypes`. An omitted type is
   `general-purpose`. A fork ignores `model`, so a fork passes only when `fork` is in `allowedTypes`.
+  The hook cannot see `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: when it is `1`, Claude Code ignores every
+  `model`, in the call and in each definition.
 - A prompt longer than `maxPromptChars`. The brief goes in a file, and the prompt names its path.
 - A second dispatch of a type in `implementerTypes` while one runs in the session.
 
@@ -237,7 +240,7 @@ the session. A `SubagentStop` of an implementer type frees the slot, wherever th
 the hook can still be denied later, and then no stop comes. So the refusal names the slot file to
 delete.
 
-A `SessionStart` hook adds one short note at each start, resume, clear, and compaction. The note
+A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
 names the workflow, the three types, and the one-implementer rule.
 
 | Key | Default | Meaning |
