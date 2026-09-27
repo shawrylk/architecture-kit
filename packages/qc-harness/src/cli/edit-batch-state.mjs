@@ -5,14 +5,17 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const fileSafe = (id) => String(id).replace(/[^A-Za-z0-9_.-]/g, "_");
 const BATCH_AWARE = "batch-aware";
+
+/** An id as a file name: each character outside letters, digits, `_`, `.` and `-` becomes `_`. */
+export const fileSafe = (id) => String(id).replace(/[^A-Za-z0-9_.-]/g, "_");
 
 /** The batch folder of one agent in one session. */
 export const batchDirOf = (sessionId, agentKey, tmp) =>
   path.join(tmp, "architecture-kit", "edit-batch", `${fileSafe(sessionId)}-${fileSafe(agentKey)}`);
 
-const claimFileOf = (dir, key) => path.join(dir, `${createHash("sha256").update(key).digest("hex")}.claim`);
+/** The claim file of one key in one folder. A hash names it, so a key may hold any character. */
+export const claimFileOf = (dir, key) => path.join(dir, `${createHash("sha256").update(key).digest("hex")}.claim`);
 
 /**
  * Claims one path through an exclusive create, so two hooks that run at once cannot both win.

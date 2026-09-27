@@ -10,7 +10,7 @@ beside the check that enforces it — and every check ships a case that must fai
 
 | | Install | Holds |
 |---|---|---|
-| Plugin `architecture` | `claude plugin install` | agent hooks, 4 skills, 3 slash commands |
+| Plugin `architecture` | `claude plugin install` | agent hooks, 3 subagent types, 4 skills, 3 slash commands |
 | Package `architecture-harness` | `pnpm add -D` | 11 gates, 10 lint rules, the `qc` CLI, doc templates |
 
 The plugin's hooks call the package's CLI. Either half works alone: the package is an ordinary dev
@@ -197,6 +197,61 @@ npx qc worktree remove fix-login                 # refuse a dirty tree; delete i
 `origin/main`. `remove` deletes the branch only when `--from` holds it, or its upstream holds every
 commit. It deletes the folder through Node, so a path past 260 characters on Windows does not stop
 it. Both commands are idempotent.
+
+### 9. Hold an orchestrator to the subagent workflow
+
+The plugin ships three subagent types for `superpowers:subagent-driven-development`:
+
+| Type | Model | Effort | Role |
+|---|---|---|---|
+| `architecture:sdd-planner` | `opus` | `high` | writes one plan and edits nothing else |
+| `architecture:sdd-implementer` | `opus` | `medium` | implements one task from a brief file, and writes a report file |
+| `architecture:sdd-reviewer` | `opus` | `high` | reviews one task, read-only |
+
+None of the three can call the `Agent` tool. The reviewer has no edit tools but keeps the shell for
+`git`, so its prompt holds it read-only.
+
+A prose rule is lost in a long session or a compaction, so hooks hold the orchestrator to the
+workflow. A `swarm.dispatch` section in `qc.config.json` turns them on. An empty section takes every
+default:
+
+```json
+{ "swarm": { "dispatch": {} } }
+```
+
+A repository without the section sees no change.
+
+A `PreToolUse` hook on the `Agent` tool refuses three kinds of dispatch, and each refusal names its
+fix:
+
+- A dispatch that names no `model` and no type in `allowedTypes`. An omitted type is
+  `general-purpose`. A fork ignores `model`, so a fork passes only when `fork` is in `allowedTypes`.
+  The hook cannot see `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: when it is `1`, Claude Code ignores every
+  `model`, in the call and in each definition.
+- A prompt longer than `maxPromptChars`. The brief goes in a file, and the prompt names its path.
+- A second dispatch of a type in `implementerTypes` while one runs in the session.
+
+The hook judges the dispatches of the main session only. A subagent's dispatch follows that
+subagent's own definition, which is often another plugin's. The hook keeps one implementer slot per session
+under the OS temp folder. The `Agent` call does not know the new agent's id, so the slot is keyed on
+the session. A `SubagentStop` of an implementer type frees the slot, wherever that agent ran. A
+`SubagentStart` of an implementer type claims a free slot again, so an implementer resumed through
+`SendMessage` holds it too. A slot with no stop expires after `slotMinutes`. A dispatch that passes
+the hook can still be denied later, and then no stop comes. So the refusal names the slot file to
+delete.
+
+A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
+names the workflow, the three types, and the one-implementer rule.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `allowedTypes` | the three types, bare and with the `architecture:` prefix | the types that may omit `model` |
+| `implementerTypes` | `["sdd-implementer", "architecture:sdd-implementer"]` | the types that share the one slot |
+| `maxPromptChars` | `12000` | the longest prompt, in characters |
+| `slotMinutes` | `60` | when a slot with no stop expires |
+
+The bare names cover a copy of the agents in `~/.claude/agents`. A list replaces its default and
+does not extend it. To allow `Explore` with no model, list it beside the six default names.
 
 ## What it enforces
 
