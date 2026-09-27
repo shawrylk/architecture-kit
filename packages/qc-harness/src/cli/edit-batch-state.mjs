@@ -12,7 +12,8 @@ const BATCH_AWARE = "batch-aware";
 export const batchDirOf = (sessionId, agentKey, tmp) =>
   path.join(tmp, "architecture-kit", "edit-batch", `${fileSafe(sessionId)}-${fileSafe(agentKey)}`);
 
-const claimFileOf = (dir, key) => path.join(dir, `${createHash("sha256").update(key).digest("hex")}.claim`);
+/** The claim file of one key in one folder. A hash names it, so a key may hold any character. */
+export const claimFileOf = (dir, key) => path.join(dir, `${createHash("sha256").update(key).digest("hex")}.claim`);
 
 /**
  * Claims one path through an exclusive create, so two hooks that run at once cannot both win.

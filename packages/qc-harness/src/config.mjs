@@ -219,6 +219,8 @@ export const defaults = {
     isolation: { require: "off", protectedBranches: ["main", "master"], leaseHours: 8, allow: [] },
     // Tool calls per subagent. The hook reminds at seventy percent and denies all but the hand-off at the budget.
     toolCallBudget: 100,
+    // Off until a repository writes the section. `{}` turns it on, and `dispatchDefaults` fills each key it omits.
+    dispatch: null,
   },
 
   // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`.
@@ -408,6 +410,25 @@ export const defaults = {
   toolingFiles: ["scripts/**/*.mjs", "**/*.test.{ts,tsx,mjs}"],
 
   ignores: ["**/dist/**", "**/node_modules/**", "**/*.tsbuildinfo"],
+};
+
+// What each key of `swarm.dispatch` means when a repository omits it. A list replaces its default.
+export const dispatchDefaults = {
+  // Types that may omit `model`: the plugin's three, and the bare names of a user-level copy.
+  allowedTypes: [
+    "sdd-implementer",
+    "sdd-planner",
+    "sdd-reviewer",
+    "architecture:sdd-implementer",
+    "architecture:sdd-planner",
+    "architecture:sdd-reviewer",
+  ],
+  // Types that share one slot per session.
+  implementerTypes: ["sdd-implementer", "architecture:sdd-implementer"],
+  // The longest prompt, in characters. A brief belongs in a file.
+  maxPromptChars: 12000,
+  // A slot with no stop expires after this many minutes.
+  slotMinutes: 60,
 };
 
 function isPlainObject(value) {
