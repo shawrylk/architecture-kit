@@ -4,7 +4,18 @@
 // a second attempt, so a real need for the whole file costs one retry, never a standing exemption.
 
 import { createHash } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readSync,
+  realpathSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,9 +33,19 @@ const output = (fields) => ({ hookSpecificOutput: { hookEventName: "PreToolUse",
 const deny = (reason) => output({ permissionDecision: "deny", permissionDecisionReason: reason });
 const context = (text) => output({ additionalContext: text });
 
+/** The real path of `absolute`, so two spellings of one file (a `..` segment, a case-folded drive
+ * letter) share one marker; falls back to `absolute` itself when the real path cannot be read. */
+function keyOf(absolute) {
+  try {
+    return realpathSync.native(absolute);
+  } catch {
+    return absolute;
+  }
+}
+
 // One marker file per refused path, named by its hash, never a shared list: two Read hooks of one
 // batch each create their own marker, so neither call can lose the other's write.
-const markerFileOf = (dir, absolute) => path.join(dir, `${createHash("sha256").update(absolute).digest("hex")}${REFUSED_SUFFIX}`);
+const markerFileOf = (dir, absolute) => path.join(dir, `${createHash("sha256").update(keyOf(absolute)).digest("hex")}${REFUSED_SUFFIX}`);
 
 /** Records one refusal. An existing marker (a concurrent refusal of the same path) is left as is. */
 function recordRefusal(dir, absolute) {
@@ -152,8 +173,9 @@ export function decide(call, tmp = os.tmpdir()) {
   if (!existsSync(absolute)) return null;
 
   const root = checkoutRootOf(path.dirname(absolute));
-  const rel = root ? path.relative(root, absolute).split(path.sep).join("/") : null;
-  if (rel !== null && globMatcher(settings.exempt)(rel)) return null;
+  if (!root) return null; // A file outside any checkout is not this checkout's to judge.
+  const rel = path.relative(root, absolute).split(path.sep).join("/");
+  if (globMatcher(settings.exempt)(rel)) return null;
 
   if (input.offset !== undefined || input.limit !== undefined) return null;
   if (isBinaryByExtension(absolute) || isBinaryByContent(absolute)) return null;

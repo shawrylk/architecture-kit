@@ -24,6 +24,7 @@ function checkouts(t, configs) {
 }
 
 const start = (cwd, source) => ({ session_id: "s", cwd, hook_event_name: "SessionStart", source });
+const subagentStart = (cwd) => ({ session_id: "s", cwd, hook_event_name: "SubagentStart", agent_type: "sonnet-implementer" });
 
 test("a checkout with no config, or no dispatch section, gets no note", (t) => {
   const [plain, off] = checkouts(t, [null, { swarm: { toolCallBudget: 50 } }]);
@@ -72,6 +73,28 @@ test("with swarm.explore off, or naming no tools, the note is exactly REMINDER",
   assert.equal(decide(start(empty, "startup")).hookSpecificOutput.additionalContext, REMINDER);
 });
 
+test("with swarm.explore on and swarm.dispatch off, the SessionStart note still names the tools", (t) => {
+  const [on] = checkouts(t, [{ swarm: { explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }] } } }]);
+  const output = decide(start(on, "startup"));
+  assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(output.hookSpecificOutput.additionalContext, /slm-rerank/);
+  assert.ok(!output.hookSpecificOutput.additionalContext.startsWith(" "));
+});
+
+test("SubagentStart names the tools when swarm.explore is on, independent of swarm.dispatch", (t) => {
+  const [on] = checkouts(t, [{ swarm: { explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }] } } }]);
+  const output = decide(subagentStart(on));
+  assert.equal(output.hookSpecificOutput.hookEventName, "SubagentStart");
+  assert.match(output.hookSpecificOutput.additionalContext, /slm-rerank/);
+});
+
+test("SubagentStart with no swarm.explore section, or none naming tools, is a no-op", (t) => {
+  const [plain, off, empty] = checkouts(t, [null, { swarm: { dispatch: {} } }, { swarm: { explore: { tools: [] } } }]);
+  assert.equal(decide(subagentStart(plain)), null);
+  assert.equal(decide(subagentStart(off)), null);
+  assert.equal(decide(subagentStart(empty)), null);
+});
+
 test("a config error reaches the session as context", (t) => {
   const [bad] = checkouts(t, [{ swarm: { dispatch: { maxPromptChars: "long" } } }]);
   assert.match(decide(start(bad, "startup")).hookSpecificOutput.additionalContext, /Dispatch guard is off/);
@@ -94,4 +117,15 @@ test("hooks.json runs the note on every SessionStart source", () => {
     entry.hooks.some((hook) => hook.command.includes("dispatch-reminder.mjs")),
   );
   assert.deepEqual(entries.map((entry) => entry.matcher), [undefined]);
+});
+
+test("hooks.json also runs the note on SubagentStart, all matchers, beside the existing entry", () => {
+  const { hooks } = JSON.parse(readFileSync(HOOKS, "utf8"));
+  const entries = hooks.SubagentStart ?? [];
+  const noteEntries = entries.filter((entry) => entry.hooks.some((hook) => hook.command.includes("dispatch-reminder.mjs")));
+  assert.deepEqual(noteEntries.map((entry) => entry.matcher), [undefined]);
+  assert.ok(
+    entries.some((entry) => entry.hooks.some((hook) => hook.command.includes("dispatch-guard.mjs"))),
+    "the existing dispatch-guard.mjs SubagentStart entry stays",
+  );
 });

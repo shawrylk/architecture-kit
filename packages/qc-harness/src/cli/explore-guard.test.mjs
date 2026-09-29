@@ -145,6 +145,26 @@ test("a third whole read after a consumed marker is refused again", (t) => {
   assert.notEqual(decide(readCall(ws.on, file), ws.tmp), null); // third: refused again
 });
 
+test("a file outside the checkout passes with no judgment", (t) => {
+  const ws = workspace(t);
+  const outside = mkdtempSync(path.join(os.tmpdir(), "qc-outside-"));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  const file = longFile(outside);
+  assert.equal(decide(readCall(ws.on, file), ws.tmp), null);
+});
+
+test("a refusal is consumed by a retry through a differently spelled path", (t) => {
+  const ws = workspace(t);
+  const file = longFile(ws.on);
+  assert.notEqual(decide(readCall(ws.on, file), ws.tmp), null);
+  const drive = /^[a-zA-Z]:/.test(file) ? file[0] : null;
+  const respelled =
+    drive !== null
+      ? (drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase()) + file.slice(1)
+      : path.join(ws.on, "..", path.basename(ws.on), path.basename(file));
+  assert.equal(decide(readCall(ws.on, respelled), ws.tmp), null);
+});
+
 test("a non-Read call, or a Read with no file_path, sees no change", (t) => {
   const ws = workspace(t);
   assert.equal(decide({ hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: {} }, ws.tmp), null);

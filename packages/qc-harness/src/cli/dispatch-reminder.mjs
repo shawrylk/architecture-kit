@@ -13,7 +13,7 @@ export const REMINDER =
   "Run one implementer at a time: a hook refuses a second while one runs. Name a model on any other dispatch, and " +
   "pass each brief as a file path.";
 
-const context = (text) => ({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } });
+const context = (eventName, text) => ({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
 
 /** One added line naming `swarm.explore`'s tools, or "" when the section is off or names none. */
 function exploreLine(cwd) {
@@ -28,17 +28,30 @@ function exploreLine(cwd) {
   return ` The repository's own explore tools: ${settings.tools.map((tool) => tool.name).join(", ")}.`;
 }
 
-/** @returns the hook output, or null when the checkout does not turn the section on. */
-export function decide(call) {
-  let settings;
-  try {
-    settings = dispatchSettingsAt(call.cwd ?? process.cwd());
-  } catch (error) {
-    return context(`Dispatch guard is off: ${error.message}`);
-  }
-  if (!settings) return null;
+/** @returns the hook output for a subagent's own start, or null when `swarm.explore` names no tools. */
+function decideSubagentStart(cwd) {
+  const line = exploreLine(cwd).trim();
+  return line === "" ? null : context("SubagentStart", line);
+}
+
+/** @returns the hook output, or null when the checkout turns on neither `swarm.dispatch` nor `swarm.explore`. */
+function decideSessionStart(call) {
   const cwd = call.cwd ?? process.cwd();
-  return context(`${REMINDER}${exploreLine(cwd)}`);
+  let dispatch;
+  try {
+    dispatch = dispatchSettingsAt(cwd);
+  } catch (error) {
+    return context("SessionStart", `Dispatch guard is off: ${error.message}`);
+  }
+  const explore = exploreLine(cwd);
+  if (!dispatch) return explore === "" ? null : context("SessionStart", explore.trim());
+  return context("SessionStart", `${REMINDER}${explore}`);
+}
+
+/** @returns the hook output, or null when there is nothing to add for this event. */
+export function decide(call) {
+  if (call.hook_event_name === "SubagentStart") return decideSubagentStart(call.cwd ?? process.cwd());
+  return decideSessionStart(call);
 }
 
 async function readStdin() {

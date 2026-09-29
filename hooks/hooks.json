@@ -86,6 +86,11 @@
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/dispatch-guard.mjs\"", "timeout": 10 }
         ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/dispatch-reminder.mjs\"", "timeout": 10 }
+        ]
       }
     ],
     "SubagentStop": [
