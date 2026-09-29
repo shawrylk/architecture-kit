@@ -71,3 +71,14 @@ test("requiredHooks drops commit-msg only when conventional is false", () => {
   assert.deepEqual(defaults.hooks.required["commit-msg"], ["qc commit-msg"], "the shipped map is not mutated");
   assert.deepEqual(requiredHooks({ hooks: { required: { "pre-push": ["qc check"] } } }), { "pre-push": ["qc check"] });
 });
+
+test("extraExemptHelpers defaults to an empty list, and exemptHelpers keeps the kit defaults", () => {
+  assert.deepEqual(defaults.tenantPredicate.extraExemptHelpers, []);
+  assert.deepEqual(
+    defaults.tenantPredicate.exemptHelpers.map((helper) => helper.name),
+    ["insertReturning", "updateVersionedRow"],
+  );
+  const config = load(here);
+  assert.deepEqual(config.tenantPredicate.extraExemptHelpers, []);
+  assert.equal(config.tenantPredicate.exemptHelpers.length, 2);
+});

@@ -603,6 +603,8 @@ must name the tenant: the `tenant.sqlColumn` as a quoted string or an object key
 `tenant.column` identifier. A bare name is followed to its own declaration, and a call to a local
 function to that function's body. A call that names no tenant fails as `unscoped-helper-call`.
 
+The kit ships these two defaults in `tenantPredicate.exemptHelpers`:
+
 ```json
 {
   "tenantPredicate": {
@@ -611,6 +613,34 @@ function to that function's body. A call that names no tenant fails as `unscoped
       { "module": "backend/src/application/sql/crud.ts", "name": "updateVersionedRow", "argument": 3 }
     ]
   }
+}
+```
+
+Two keys hold the list. A repository adds a helper to the second, and the kit defaults stay:
+
+| Key | Holds | A repository |
+|---|---|---|
+| `tenantPredicate.exemptHelpers` | The kit defaults | Leaves it alone. A value here replaces the list. |
+| `tenantPredicate.extraExemptHelpers` | The repository's own helpers | Appends to the defaults. It ships empty. |
+
+```json
+{
+  "tenantPredicate": {
+    "extraExemptHelpers": [
+      { "module": "backend/src/application/sql/bulk.ts", "name": "insertMany", "argument": 1 }
+    ]
+  }
+}
+```
+
+`qc check` reads the two lists as one, and checks a helper that both name once. With the
+`config-floor` gate on, a kit default that neither list names fails as `dropped-default-helper`. A
+default named in either list counts as kept. The detail names the entry by `module` and `name`. To drop a default on purpose, cite a decision id, or `off-by-design`, under
+`floor.exemptions` with the key `tenantPredicate.<name>`:
+
+```json
+{
+  "floor": { "exemptions": { "tenantPredicate.updateVersionedRow": "QC-011" } }
 }
 ```
 
