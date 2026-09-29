@@ -723,3 +723,116 @@ test("a diamond of stars, a namespace import of a renaming barrel, and a re-expo
   const listed = { index: 'import * as crud from "./crud.js";\nexport { crud };\n' };
   assert.deepEqual(found(listed, `import * as b from "${specifierOf("index")}";\n${badCall("b.crud.insertReturning")}`), UNSCOPED);
 });
+
+// ---- Fix round 1: a byte-order mark, comments in a list, a default function, an alias in the helper's
+// module, a cap on the paths, a lexer for templates and regular expressions, an unmapped default import.
+
+const importOf = (name, from = "crud") => `import { ${name} } from "${specifierOf(from)}";\n`;
+const callsOf = (name) => `${importOf(name)}${badCall(name)}`;
+
+test("a leading byte-order mark does not hide the first import", () => {
+  assert.deepEqual(withFiles({}, `\uFEFF${callsOf("insertReturning")}`), UNSCOPED);
+  const barrel = { index: '\uFEFFexport { insertReturning as put } from "./crud.js";\n' };
+  assert.deepEqual(found(barrel, `\uFEFFimport { put } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+});
+
+test("a comment inside an import or export list does not stop the read", () => {
+  const list = (body) => `import {\n${body}\n} from "${specifierOf("crud")}";\n${badCall("insertReturning")}`;
+  const bodies = [
+    " // c\n  insertReturning,",
+    "  insertReturning /* h */,\n  other,",
+    "  other, // don't\n  insertReturning,",
+    "  other, // a; b\n  insertReturning,",
+    "  /* it's; here */ insertReturning,",
+  ];
+  for (const body of bodies) assert.deepEqual(withFiles({}, list(body)), UNSCOPED, body);
+  const barrel = { index: 'export {\n  // eslint-disable-next-line\n  insertReturning as put,\n} from "./crud.js";\n' };
+  assert.deepEqual(found(barrel, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+  const quoted = { index: 'export {\n  // it\'s; a "quote"\n  insertReturning as put,\n} from "./crud.js";\n' };
+  assert.deepEqual(found(quoted, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+});
+
+test("a commented-out import or export is still not read", () => {
+  const barrel = { index: '// export { insertReturning as put } from "./crud.js";\n/* export { insertReturning as put } from "./crud.js"; */\n' };
+  assert.deepEqual(found(barrel, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`), []);
+});
+
+test("a default export of the helper's own function is followed, and so is the async form", () => {
+  for (const declaration of ["export default function insertReturning() {}", "export default async function insertReturning<T>(a: T) {}"]) {
+    const own = { crud: `${declaration}\n` };
+    assert.deepEqual(found(own, `import put from "${specifierOf("crud")}";\n${badCall("put")}`), UNSCOPED, declaration);
+    const barrel = { ...own, index: 'export { default as put } from "./crud.js";\nexport { default } from "./crud.js";\n' };
+    assert.deepEqual(found(barrel, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED, declaration);
+  }
+  const other = { crud: "export default function somethingElse() {}\nexport function insertReturning() {}\n" };
+  assert.deepEqual(found(other, `import put from "${specifierOf("crud")}";\n${badCall("put")}`), []);
+});
+
+test("a local alias in the helper's own module is followed, and any other use of the helper there is opaque", () => {
+  const alias = { crud: "export function insertReturning() {}\nconst alias = insertReturning;\nexport { alias as put };\n" };
+  assert.deepEqual(found(alias, callsOf("put")), UNSCOPED);
+  const chained = { crud: "export function insertReturning() {}\nconst a = insertReturning;\nlet b = a;\nexport { b as put };\n" };
+  assert.deepEqual(found(chained, callsOf("put")), UNSCOPED);
+  const wrapped = { crud: "export function insertReturning() {}\nconst safe = wrap(insertReturning);\nexport { safe as put };\n" };
+  assert.deepEqual(found(wrapped, callsOf("put")).slice(-1), UNRESOLVED);
+  const plain = { crud: "export function insertReturning() { return insertReturning(); }\nexport const other = 1;\n" };
+  assert.deepEqual(found(plain, callsOf("insertReturning")), UNSCOPED);
+  const declared = { crud: "export const insertReturning = async () => {};\nexport const other = 1;\n" };
+  assert.deepEqual(found(declared, callsOf("insertReturning")), UNSCOPED);
+});
+
+test("the paths kept per module are capped, so self-aliasing namespaces cannot blow up the work", { timeout: 20_000 }, () => {
+  const K = 14;
+  const self = Array.from({ length: K }, (_, i) => `export * as a${i} from "./M.js";`).join("\n");
+  const modules = { M: `export { insertReturning as put } from "./crud.js";\n${self}\n` };
+  const files = [
+    ...Object.entries(modulesAt(modules)).map(([path, contents]) => ({ path, contents })),
+    ...Array.from({ length: 20 }, (_, i) => ({ path: `backend/src/features/f${i}/shared/q.ts`, contents: `import { put } from "${specifierOf("M")}";\n${badCall("put")}` })),
+  ];
+  const before = performance.now();
+  const rules = unresolvedHelperImports(files, helpers).map((problem) => problem.rule);
+  const elapsed = performance.now() - before;
+  assert.ok(elapsed < 1000, `took ${Math.round(elapsed)} ms`);
+  const { widest } = gate.resolveHelpers(files, helpers);
+  assert.ok(widest <= 64, `${widest} paths in one summary`);
+  assert.equal(rules.length, 20);
+  assert.ok(rules.every((rule) => rule === UNRESOLVED[0]));
+});
+
+test("a quote inside a template or a regular expression does not hide a later alias", () => {
+  const head = `import { insertReturning } from "${specifierOf("crud")}";\n`;
+  const shapes = [
+    "const a = `x ' y`; const f = insertReturning; const b = 'z';",
+    'const a = `x " y`; const f = insertReturning; const b = "z";',
+    "const re = /'/; const f = insertReturning; const g = '';",
+    "const re = /[\"']/g; const f = insertReturning; const g = '';",
+    "const a = `${b}'`; const f = insertReturning; const g = '';",
+    "const a = `${`'`}`; const f = insertReturning; const g = '';",
+    "const a = x / 2; const f = insertReturning; const g = y / 3;",
+  ];
+  for (const shape of shapes) assert.deepEqual(withFiles({}, `${head}${shape}\n${badCall("f")}`), UNRESOLVED, shape);
+});
+
+test("text inside a template or a regular expression is not a use, but an expression inside a template is", () => {
+  const head = `import { insertReturning } from "${specifierOf("crud")}";\n`;
+  const text = "const a = `call insertReturning here`;\nconst re = /insertReturning/;\nconst b = x / 2; const c = y / 3;\n";
+  assert.deepEqual(withFiles({}, `${head}${text}${badCall("insertReturning")}`), UNSCOPED);
+  const inside = "const s = `${wrap(insertReturning)}`;\n";
+  assert.deepEqual(withFiles({}, `${head}${inside}${badCall("insertReturning")}`), [...UNSCOPED, ...UNRESOLVED]);
+});
+
+const rulesOf = (problems) => problems.map((problem) => problem.rule);
+
+test("a default import from an unmapped local alias fails closed, as the named import does", () => {
+  assert.deepEqual(rulesOf(both('import put from "@/application/sql/crud";\nput(tx, "a", ["id"], v, C, f);\n')), UNRESOLVED);
+  assert.deepEqual(rulesOf(both('import put from "~/sql/crud";\n')), UNRESOLVED);
+  assert.deepEqual(rulesOf(both('import z from "zod";\nimport data from "./data.json";\n')), []);
+  assert.deepEqual(rulesOf(both('import put from "@/application/sql/crud.js";\n', { aliases })), []);
+});
+
+test("what the gate still does not read passes unseen: an import-equals require, and a regular expression after a bracket", () => {
+  const modules = { index: 'export { insertReturning as put } from "./crud.js";\n' };
+  assert.deepEqual(found(modules, `import put = require("${specifierOf("index")}");\n${badCall("put")}`), []);
+  const head = `import { insertReturning } from "${specifierOf("crud")}";\n`;
+  assert.deepEqual(withFiles({}, `${head}if (x) /'/.test(y); const f = insertReturning; const g = '';\n${badCall("f")}`), []);
+});

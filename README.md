@@ -753,17 +753,26 @@ the helper, through any number of barrels and around any cycle:
 - `export { insertReturning as insertRow } from "./crud"`
 - `export * from "./crud"`, and `export * as crud from "./crud"`, also nested as `db.crud`
 - `export const insertRow = insertReturning`, and `export { insertReturning as insertRow }`
-- a default export of the helper, and a default import of it
+- a default export of the helper, and a default import of it. The forms are
+  `export default insertReturning` and `export { insertReturning as default }`. In the helper's
+  own module they are also `export default function insertReturning` and its `async` form.
+- a local alias in the helper's own module: `const alias = insertReturning; export { alias as put }`.
+  Any other use of the helper there, such as `wrap(insertReturning)`, makes that module opaque.
 
 The gate checks the calls `insertRow(`, `crud.insertReturning(`, and `db.crud.insertReturning(`. It
-reads `import{x}from"y"` with no whitespace. The work is bounded: after 50,000 worklist steps over
-all helpers, the gate stops and reports one `unresolved-helper-import` that names the budget.
+reads `import{x}from"y"` with no whitespace, and a comment or a byte-order mark anywhere in a
+statement. It reads no statement in a comment, a template, or a regular expression.
+
+The work is bounded. After 50,000 worklist steps over all helpers, the gate stops and reports one
+`unresolved-helper-import` that names the budget. A module that holds more than 64 member paths for
+one helper, as a set of namespaces that alias each other does, is opaque.
 
 A file fails as `unresolved-helper-import` when it reaches the helper in a form the gate cannot
 follow:
 
 - It imports the helper's name, or a namespace of its module, by a specifier the gate cannot
-  resolve to that module, such as an alias with no matching path.
+  resolve to that module, such as an alias with no matching path. A default import by such a
+  specifier, `import put from "@/sql/crud"`, fails the same way.
 - It imports any name from an opaque module.
 - It imports the helper and uses the local name other than by a call, an import, or an export. That
   covers `const f = insertReturning`, a destructure, and `wrap(insertReturning)`. `typeof` and an
@@ -785,6 +794,12 @@ The gate passes each of these unseen:
   unseen, and an `export *` through it is opaque
 - a renamed name imported from an unscanned local file: `import { put } from "../outside"` passes
   unseen, and `import { insertReturning } from "../outside"` fails
+- `import x = require("./crud")`
+- a quote in code the lexer misreads, which can hide a later `const f = insertReturning` from the
+  use check. The lexer reads comments, strings, templates with `${}`, and regular expressions. It
+  takes a `/` after `)`, `]`, `}`, or a name as a division, so `if (x) /'/.test(y)` and a regular
+  expression at the start of a line after an expression with no semicolon are not seen. An
+  apostrophe in JSX text can do the same.
 
 The kit ships these two defaults in `tenantPredicate.exemptHelpers`:
 

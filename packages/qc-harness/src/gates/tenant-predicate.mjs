@@ -264,6 +264,8 @@ function looksLocal(specifier, aliases) {
 const STEP_BUDGET = 50_000;
 /** A namespace path longer than this, `a.b.c.d.name`, makes its module opaque. */
 const MAX_PATH_SEGMENTS = 4;
+/** A module that holds more member paths than this for one helper is opaque: self-aliasing namespaces grow them as K to the fourth. */
+const MAX_PATHS = 64;
 
 const LEAD = String.raw`(?:^|;|\*\/)[ \t]*`;
 const CHAIN = String.raw`[\w$]+(?:\s*\.\s*[\w$]+)*`;
@@ -275,7 +277,113 @@ const STATEMENTS = {
   consts: new RegExp(String.raw`${LEAD}export\s+(?:const|let|var)\s+([\w$]+)\s*(?::[^=;\n]+)?=\s*(${CHAIN})${TAIL}`, "gm"),
   defaults: new RegExp(String.raw`${LEAD}export\s+default\s+(${CHAIN})${TAIL}`, "gm"),
 };
-const NOISE = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
+const STRINGS = /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
+
+// A small lexer, so a quote inside a comment, a template or a regular expression starts nothing. It blanks
+// what is not code, keeps every newline and offset, and leaves a string alone when `keepStrings` is set,
+// because a specifier is one. A template's text goes, and the code in its `${}` stays. A `/` starts a
+// regular expression after an operator or a keyword, and divides after a name or a closing bracket.
+const TOKENS = /\/[/*]|["'`/]/g;
+const TOKENS_IN_TEMPLATE = /\/[/*]|["'`/{}]/g;
+const REGEX_AFTER = /(?:(?<![+-])[+-]|[(,=:[!&|?{};*%~^]|(?<![\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|else|do|yield|await))\s*$/;
+
+/** The index past the string that opens at `from`, or -1 when the line ends first. */
+function stringEnd(source, from) {
+  for (let i = from + 1; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === "\\") i += 1;
+    else if (ch === source[from]) return i + 1;
+    else if (ch === "\n") return -1;
+  }
+  return -1;
+}
+
+/** The index past the regular expression that opens at `from`, or -1 when it is not one. */
+function regexEnd(source, from) {
+  let inClass = false;
+  for (let i = from + 1; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === "\n") return -1;
+    if (ch === "\\") i += 1;
+    else if (ch === "[") inClass = true;
+    else if (ch === "]") inClass = false;
+    else if (ch === "/" && !inClass) {
+      let end = i + 1;
+      while (end < source.length && /[a-z]/.test(source[end])) end += 1;
+      return end;
+    }
+  }
+  return -1;
+}
+
+/** The end of a template's text from `from`, and whether a `${` opened an expression there. */
+function templateEnd(source, from) {
+  for (let i = from; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === "\\") i += 1;
+    else if (ch === "`") return [i + 1, false];
+    else if (ch === "$" && source[i + 1] === "{") return [i + 2, true];
+  }
+  return [source.length, false];
+}
+
+function scrub(source, keepStrings) {
+  const pieces = [];
+  let copied = 0;
+  const blank = (from, to) => {
+    pieces.push(source.slice(copied, from));
+    const dead = source.slice(from, to);
+    pieces.push(dead.includes("\n") ? dead.replace(/[^\n]/g, " ") : " ".repeat(to - from));
+    copied = to;
+  };
+  const expressions = [];
+  let depth = 0;
+  let pattern = TOKENS;
+  let at = 0;
+  for (;;) {
+    pattern.lastIndex = at;
+    const match = pattern.exec(source);
+    if (match === null) break;
+    const start = match.index;
+    const token = match[0];
+    at = start + token.length;
+    if (token === "//") {
+      const end = source.indexOf("\n", at);
+      at = end === -1 ? source.length : end;
+      blank(start, at);
+    } else if (token === "/*") {
+      const close = source.indexOf("*/", at);
+      at = close === -1 ? source.length : close + 2;
+      blank(start, at);
+    } else if (token === "/") {
+      const end = start === 0 || REGEX_AFTER.test(source.slice(Math.max(0, start - 20), start)) ? regexEnd(source, start) : -1;
+      if (end !== -1) {
+        blank(start, end);
+        at = end;
+      }
+    } else if (token === "{") {
+      depth += 1;
+    } else if (token === "}" && !(expressions.length > 0 && depth === expressions.at(-1))) {
+      depth -= 1;
+    } else if (token === "`" || token === "}") {
+      if (token === "}") expressions.pop();
+      const [end, opened] = templateEnd(source, at);
+      blank(start, end);
+      at = end;
+      if (opened) expressions.push(depth);
+      pattern = expressions.length > 0 ? TOKENS_IN_TEMPLATE : TOKENS;
+    } else {
+      const end = stringEnd(source, start);
+      if (end !== -1) {
+        if (!keepStrings) blank(start, end);
+        at = end;
+      }
+    }
+  }
+  if (pieces.length === 0) return source;
+  pieces.push(source.slice(copied));
+  return pieces.join("");
+}
 
 /** The parts of `a, b as c`, without a type-only part. */
 const partsOf = (list) =>
@@ -326,17 +434,24 @@ function resolver(known, helperModules, aliases) {
   };
 }
 
-/** One scanned file: what it imports and what it exports, each with its resolved target. */
-function parseModule(path, source, resolve) {
-  const record = { path, source, imports: [], reexports: [], stars: [], starAs: [], listed: [], consts: [], defaults: [], code: null, missing: false };
+/**
+ * One scanned file: what it imports and what it exports, each with its resolved target. A leading
+ * byte-order mark goes, and so do the comments, templates and regular expressions, before any
+ * statement is read.
+ */
+function parseModule(path, contents, resolve) {
+  const source = contents.charCodeAt(0) === 0xfeff ? contents.slice(1) : contents;
+  const mentions = source.includes("import") || source.includes("export");
+  const text = mentions ? scrub(source, true) : source;
+  const record = { path, text, imports: [], reexports: [], stars: [], starAs: [], listed: [], consts: [], defaults: [], code: null, missing: false };
   if (source.includes("import")) {
-    for (const [, clause, , specifier] of source.matchAll(STATEMENTS.imports)) {
+    for (const [, clause, , specifier] of text.matchAll(STATEMENTS.imports)) {
       const target = resolve(path, specifier);
-      for (const binding of bindingsOf(clause)) record.imports.push({ ...binding, specifier, to: target.to });
+      for (const binding of bindingsOf(clause)) record.imports.push({ ...binding, specifier, to: target.to, missing: target.missing });
     }
   }
   if (!source.includes("export")) return record;
-  for (const [, alias, list, , specifier] of source.matchAll(STATEMENTS.from)) {
+  for (const [, alias, list, , specifier] of text.matchAll(STATEMENTS.from)) {
     const target = resolve(path, specifier);
     record.missing ||= target.missing;
     if (list !== undefined) {
@@ -347,11 +462,11 @@ function parseModule(path, source, resolve) {
       record.stars.push(target);
     }
   }
-  for (const [, list] of source.matchAll(STATEMENTS.listed)) {
+  for (const [, list] of text.matchAll(STATEMENTS.listed)) {
     for (const [name, renamed] of partsOf(list)) record.listed.push({ local: name, exported: renamed ?? name });
   }
-  for (const [, exported, chain] of source.matchAll(STATEMENTS.consts)) record.consts.push({ exported, chain: chain.split(/\s*\.\s*/) });
-  for (const [, chain] of source.matchAll(STATEMENTS.defaults)) record.defaults.push({ exported: "default", chain: chain.split(/\s*\.\s*/) });
+  for (const [, exported, chain] of text.matchAll(STATEMENTS.consts)) record.consts.push({ exported, chain: chain.split(/\s*\.\s*/) });
+  for (const [, chain] of text.matchAll(STATEMENTS.defaults)) record.defaults.push({ exported: "default", chain: chain.split(/\s*\.\s*/) });
   return record;
 }
 
@@ -395,19 +510,26 @@ function buildGraph(files, helpers, aliases, leaves) {
 const joined = (name, path) => (path === "" ? name : `${name}.${path}`);
 const depthOf = (path) => (path === "" ? 0 : path.split(".").length);
 
-function addPaths(summary, name, paths) {
+/** Adds one member path under a name. Past the depth or the count limit the summary is `all` instead. True when it grew. */
+function admit(summary, name, path) {
   let entry = summary.names.get(name);
-  for (const path of paths) {
-    if (depthOf(path) > MAX_PATH_SEGMENTS) {
-      summary.all = true;
-      continue;
-    }
-    if (entry === undefined) {
-      entry = new Set();
-      summary.names.set(name, entry);
-    }
-    entry.add(path);
+  if (entry?.has(path)) return false;
+  if (summary.count >= MAX_PATHS || depthOf(path) > MAX_PATH_SEGMENTS) {
+    const grew = !summary.all;
+    summary.all = true;
+    return grew;
   }
+  if (entry === undefined) {
+    entry = new Set();
+    summary.names.set(name, entry);
+  }
+  entry.add(path);
+  summary.count += 1;
+  return true;
+}
+
+function addPaths(summary, name, paths) {
+  for (const path of paths) admit(summary, name, path);
 }
 
 /** Every path at which the helper sits under a namespace of the module. */
@@ -421,17 +543,7 @@ function namespacePaths(summary) {
 function grow(summary, next) {
   let grew = false;
   for (const [name, paths] of next.names) {
-    let entry = summary.names.get(name);
-    if (entry === undefined) {
-      entry = new Set();
-      summary.names.set(name, entry);
-    }
-    for (const path of paths) {
-      if (!entry.has(path)) {
-        entry.add(path);
-        grew = true;
-      }
-    }
+    for (const path of paths) if (admit(summary, name, path)) grew = true;
   }
   for (const name of next.opaque) {
     if (!summary.opaque.has(name)) {
@@ -446,7 +558,32 @@ function grow(summary, next) {
   return grew;
 }
 
-const newSummary = () => ({ names: new Map(), opaque: new Set(), all: false });
+const newSummary = () => ({ names: new Map(), opaque: new Set(), all: false, count: 0 });
+
+/** `const alias = name`, and its chain `let b = alias`: a plain alias of a name, on one line. */
+const aliasOf = (name) => new RegExp(String.raw`(?<![\w$.])(?:const|let|var)\s+([\w$]+)\s*(?::[^=;\n]+)?=\s*${escape(name)}\s*(?=[;\n]|$)`, "g");
+
+/** The names that denote the helper in its own module: its name, and each local alias of it. */
+function ownNames(record, helper, state) {
+  if (state.own !== undefined) return state.own;
+  const code = codeOf(record);
+  const names = new Set([helper.name]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    const before = names.size;
+    for (const name of [...names]) for (const match of code.matchAll(aliasOf(name))) names.add(match[1]);
+    for (const { exported, chain } of record.consts) if (chain.length === 1 && names.has(chain[0])) names.add(exported);
+    grew = names.size > before;
+  }
+  state.own = names;
+  return names;
+}
+
+/** The helper's own module exports its function as the default: `export default [async] function name`. */
+function exportsDefaultFunction(record, helper) {
+  const pattern = new RegExp(String.raw`${LEAD}export\s+default\s+(?:async\s+)?function\b\s*\*?\s*${escape(helper.name)}(?![\w$])`, "m");
+  return pattern.test(codeOf(record));
+}
 
 /**
  * What a module's imports bind, for one helper: the local names and the member paths where the
@@ -463,7 +600,7 @@ function localsOf(record, helper, state, aliases) {
     locals.set(local, entry);
     if (!origin.has(local)) origin.set(local, specifier);
   };
-  if (record.path === state.module) bind(helper.name, [""], "the helper's own module");
+  if (record.path === state.module) for (const name of ownNames(record, helper, state)) bind(name, [""], "the helper's own module");
   for (const imp of record.imports) {
     const summary = state.summaries.get(imp.to);
     if (imp.kind === "namespace") {
@@ -485,7 +622,7 @@ function localsOf(record, helper, state, aliases) {
     if (summary !== undefined && (summary.all || summary.opaque.has(imp.imported))) {
       opaque.add(imp.local);
       unresolved.push({ specifier: imp.specifier, name: imp.imported, why: "opaque" });
-    } else if (paths === undefined && imp.kind === "named" && imp.imported === helper.name) {
+    } else if (paths === undefined && ((imp.kind === "named" && imp.imported === helper.name) || (imp.kind === "default" && imp.missing))) {
       opaque.add(imp.local);
       unresolved.push({ specifier: imp.specifier, name: imp.imported, why: "unresolved" });
     }
@@ -506,7 +643,10 @@ function throughChain(paths, chain) {
 /** What one module exports of the helper, from the summaries of the modules it reads. */
 function exportsOf(record, helper, state, bound) {
   const out = newSummary();
-  if (record.path === state.module) addPaths(out, helper.name, [""]);
+  if (record.path === state.module) {
+    addPaths(out, helper.name, [""]);
+    if (exportsDefaultFunction(record, helper)) addPaths(out, "default", [""]);
+  }
   const summaryOf = (to) => state.summaries.get(to);
   for (const { to, missing, imported, exported } of record.reexports) {
     const summary = summaryOf(to);
@@ -542,12 +682,12 @@ function exportsOf(record, helper, state, bound) {
   return out;
 }
 
-/** The text of a module with its import and export statements, comments and strings blanked. */
+/** The text of a module with its import and export statements, comments, templates, regular expressions and strings blanked. */
 function codeOf(record) {
   if (record.code === null) {
-    let text = record.source;
+    let text = record.text;
     for (const pattern of Object.values(STATEMENTS)) text = text.replace(pattern, (match) => " ".repeat(match.length));
-    record.code = text.replace(NOISE, " ");
+    record.code = text.replace(STRINGS, " ");
   }
   return record.code;
 }
@@ -586,13 +726,27 @@ function usedOtherwise(code, local, paths) {
   return false;
 }
 
+/**
+ * The code of the helper's own module without its declarations: `const alias = name`, and `const name`,
+ * which are not uses. What remains of a name is a call, or a use the gate cannot follow.
+ */
+function ownUses(record, state) {
+  let code = codeOf(record);
+  const blanked = (match) => " ".repeat(match.length);
+  for (const name of state.own) {
+    code = code.replace(aliasOf(name), blanked);
+    code = code.replace(new RegExp(String.raw`(?<![\w$.])(?:const|let|var)\s+${escape(name)}(?![\w$])`, "g"), blanked);
+  }
+  return code;
+}
+
 /** The locals of a module that the helper flows into other than by a call, an import or an export list. */
 function offendersOf(record, locals, state) {
   let size = 0;
   for (const paths of locals.values()) size += paths.size;
   const hit = state.uses.get(record.path);
   if (hit !== undefined && hit.size === size) return hit.offenders;
-  const code = codeOf(record);
+  const code = record.path === state.module ? ownUses(record, state) : codeOf(record);
   const offenders = [...locals].filter(([local, paths]) => usedOtherwise(code, local, paths)).map(([local]) => local);
   state.uses.set(record.path, { size, offenders });
   return offenders;
@@ -626,7 +780,7 @@ function resolveHelper(graph, helper, room, aliases) {
     const record = graph.records.get(path);
     const bound = localsOf(record, helper, state, aliases);
     const out = exportsOf(record, helper, state, bound);
-    if (path !== module && bound.locals.size > 0 && offendersOf(record, bound.locals, state).length > 0) out.all = true;
+    if (bound.locals.size > 0 && offendersOf(record, bound.locals, state).length > 0) out.all = true;
     let summary = state.summaries.get(path);
     if (summary === undefined) {
       summary = newSummary();
@@ -634,7 +788,9 @@ function resolveHelper(graph, helper, room, aliases) {
     }
     if (grow(summary, out)) for (const dependent of graph.dependents.get(path) ?? []) enqueue(dependent);
   }
-  return { state, steps, exceeded: false };
+  let widest = 0;
+  for (const { count } of state.summaries.values()) widest = Math.max(widest, count);
+  return { state, steps, exceeded: false, widest };
 }
 
 /** What each module does with the helper, once the summaries are final. */
@@ -660,7 +816,9 @@ const RESOLUTIONS = new WeakMap();
 /**
  * Where each exempt helper's names go: the calls to check, the imports the gate cannot resolve, and
  * the modules that use a helper in a way it cannot follow. It is computed once for a list of files,
- * so the three checks below share it. `steps` counts the worklist steps taken over all helpers.
+ * so the three checks below share it. The memo assumes that the file list, and each entry in it, is not
+ * mutated between calls. `steps` counts the worklist steps taken over all helpers, and `widest` is the
+ * most member paths that one module holds for one helper.
  * Past `budget` steps the resolution stops, and `exceeded` is set.
  * @param {{path: string, contents: string}[]} files
  * @param {{module: string, name: string, argument: number}[]} helpers
@@ -675,17 +833,19 @@ export function resolveHelpers(files, helpers, options = {}) {
   const graph = buildGraph(files, helpers, aliases, leaves);
   const found = new Map();
   let steps = 0;
+  let widest = 0;
   let stoppedAt = null;
   for (const helper of helpers) {
     const outcome = resolveHelper(graph, helper, budget - steps, aliases);
     steps += outcome.steps;
+    widest = Math.max(widest, outcome.widest ?? 0);
     if (outcome.exceeded) {
       stoppedAt = helper;
       break;
     }
     reportHelper(graph, helper, outcome.state, aliases, found);
   }
-  const resolution = { steps, budget, exceeded: stoppedAt !== null, stoppedAt, files: stoppedAt === null ? [...found.values()] : [] };
+  const resolution = { steps, budget, widest, exceeded: stoppedAt !== null, stoppedAt, files: stoppedAt === null ? [...found.values()] : [] };
   RESOLUTIONS.set(files, { helpers, aliases, leaves, budget, resolution });
   return resolution;
 }
