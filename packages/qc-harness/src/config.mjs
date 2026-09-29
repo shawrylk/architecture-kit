@@ -276,6 +276,16 @@ export const defaults = {
   // installs. `attribution` requires a Co-Authored-By trailer. The English rule always runs.
   commitMessage: { conventional: true, attribution: false },
 
+  // `qc prose` runs Vale on the lines a diff adds to `paths`, a markdown file each, and on a PR body.
+  // `exempt` adds to the ADR log, which is always exempt. `base` is the ref whose merge base the diff
+  // starts at. `valeConfig` is the repository's Vale config; the kit's template stands in while it is absent.
+  prose: {
+    paths: ["docs/**", "README.md"],
+    exempt: ["**/CHANGELOG*", "**/reports/**"],
+    base: "origin/main",
+    valeConfig: ".vale/.vale.ini",
+  },
+
   // A named pattern is a pointer. `patterns` adds a repository's own vocabulary to the defaults.
   patterns: { maxWords: 20, extra: [] },
 
