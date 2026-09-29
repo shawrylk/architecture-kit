@@ -633,9 +633,9 @@ Two keys hold the list. A repository adds a helper to the second, and the kit de
 }
 ```
 
-`qc check` reads the two lists as one. With the `config-floor` gate on, an `exemptHelpers` list that
-omits a kit default fails as `dropped-default-helper`. The detail names the entry by `module` and
-`name`. To drop a default on purpose, cite a decision id, or `off-by-design`, under
+`qc check` reads the two lists as one, and checks a helper that both name once. With the
+`config-floor` gate on, a kit default that neither list names fails as `dropped-default-helper`. A
+default named in either list counts as kept. The detail names the entry by `module` and `name`. To drop a default on purpose, cite a decision id, or `off-by-design`, under
 `floor.exemptions` with the key `tenantPredicate.<name>`:
 
 ```json

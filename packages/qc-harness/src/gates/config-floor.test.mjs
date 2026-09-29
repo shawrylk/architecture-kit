@@ -120,3 +120,13 @@ test("a config with no tenantPredicate block reports every shipped helper", () =
   const problems = checkConfigFloor(shippedHelpers, { gates: {}, rules: {} });
   assert.equal(problems.length, 2);
 });
+
+test("a default named in extraExemptHelpers counts as kept", () => {
+  assert.deepEqual(checkConfigFloor(shippedHelpers, withHelpers([insert], [update])), []);
+  assert.deepEqual(checkConfigFloor(shippedHelpers, withHelpers([], [insert, update])), []);
+});
+
+test("the dropped-default-helper detail says a default in either list counts as kept", () => {
+  const [problem] = checkConfigFloor(shippedHelpers, withHelpers([insert]));
+  assert.match(problem.detail, /neither exemptHelpers nor extraExemptHelpers/);
+});

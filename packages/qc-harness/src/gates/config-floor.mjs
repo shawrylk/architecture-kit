@@ -72,14 +72,15 @@ export function checkConfigFloor(shipped, configured, options = {}) {
       );
     }
   }
-  // A kit default helper left out of `exemptHelpers` is the same opt-out. An addition belongs in `extraExemptHelpers`.
-  const dropped = droppedHelpers(shipped.tenantPredicate?.exemptHelpers, configured.tenantPredicate?.exemptHelpers);
+  // A kit default helper named in neither list is the same opt-out. `qc check` reads the two lists as one.
+  const { exemptHelpers = [], extraExemptHelpers = [] } = configured.tenantPredicate ?? {};
+  const dropped = droppedHelpers(shipped.tenantPredicate?.exemptHelpers, [...exemptHelpers, ...extraExemptHelpers]);
   for (const { module, name } of dropped) {
     judge(
       `tenantPredicate.${name}`,
       "dropped-default-helper",
-      `tenantPredicate.exemptHelpers omits the kit default ${name} (${module}). Keep it there, and move a helper you add to ` +
-        `tenantPredicate.extraExemptHelpers. To drop it on purpose, name the decision that says why under ` +
+      `The kit default ${name} (${module}) is in neither exemptHelpers nor extraExemptHelpers under tenantPredicate. Keep it in exemptHelpers, and put a helper you add in ` +
+        `extraExemptHelpers. To drop it on purpose, name the decision that says why under ` +
         `floor.exemptions.tenantPredicate.${name}, or "${OFF_BY_DESIGN}".`,
     );
   }

@@ -377,7 +377,10 @@ async function sqlAgreement(config, tree, taken, lines) {
     if (declared.length > 0) lines.push(`OK  schema       ${declared.length} table(s), ${columns} column(s) in schema files, each named by a migration`);
   }
   if (enabled(config.gates, "tenant-predicate")) {
-    const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers];
+    // A default also listed in `extraExemptHelpers` is one helper, so each call is judged once.
+    const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers].filter(
+      (helper, at, all) => all.findIndex((first) => first.module === helper.module && first.name === helper.name) === at,
+    );
     const callers = (await sourceFiles(config, tree)).filter(
       (file) => !TEST_FILE.test(file.path) && helpers.some((helper) => file.contents.includes(helper.name)),
     );

@@ -292,3 +292,25 @@ test("a config whose exemptHelpers omits a default fails the check as dropped-de
   assert.match(dropped[0].detail, /updateVersionedRow/);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("a default also listed in extraExemptHelpers gives one unscoped-helper-call per call", async () => {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  const config = JSON.parse(readFileSync(path.join(dir, "qc.config.json"), "utf8"));
+  config.tenantPredicate = {
+    extraExemptHelpers: [{ module: "backend/src/application/sql/crud.ts", name: "insertReturning", argument: 2 }],
+  };
+  write(dir, {
+    "qc.config.json": JSON.stringify(config),
+    "backend/src/application/orders.ts": [
+      'import { insertReturning } from "./sql/crud";',
+      "export function place(tx, v) {",
+      '  insertReturning(tx, "orders", ["id"], v);',
+      "}",
+      "",
+    ].join("\n"),
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.equal(problems.filter((problem) => problem.rule === "unscoped-helper-call").length, 1);
+  rmSync(dir, { recursive: true, force: true });
+});
