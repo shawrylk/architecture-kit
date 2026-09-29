@@ -64,8 +64,10 @@ function deref(document, node, seen) {
  * the depth is a backstop.
  */
 function schemaProps(document, schema, seen, depth = 0) {
+  // The cap comes first: a ref reached past it must stay unseen, so a shallower path can still walk it.
+  if (depth > MAX_HOPS) return [];
   const resolved = deref(document, schema, seen);
-  if (depth > MAX_HOPS || !resolved || typeof resolved !== "object") return [];
+  if (!resolved || typeof resolved !== "object") return [];
   const own = Object.keys(resolved.properties ?? {});
   const composed = (resolved.allOf ?? []).flatMap((part) => schemaProps(document, part, seen, depth + 1));
   return [...new Set([...own, ...composed])];

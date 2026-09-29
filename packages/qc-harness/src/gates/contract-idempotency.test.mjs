@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { defaults, load } from "../config.mjs";
 import { runCheck } from "../cli/check.mjs";
-import { checkContractIdempotency, isDeleteById } from "./contract-idempotency.mjs";
+import { checkContractIdempotency, checkLedgerGrowth, isDeleteById } from "./contract-idempotency.mjs";
 
 const options = {
   fields: ["mutationId", "idempotencyKey"],
@@ -86,6 +86,7 @@ test("every failing operation is named once, in the order the contract lists it"
 const GATE_RULES = new Set([
   "missing-idempotency-field",
   "legacy-now-declares",
+  "legacy-grew",
   "unreadable-contract",
   "unreadable-ledger",
   "contract-reader-unavailable",
@@ -145,4 +146,70 @@ test("the contract path is the top-level `contract`, and an override moves it", 
 test("a ledger with an entry that is not a string is unreadable", async () => {
   const ledger = await checked({ contract: POSTS, ledger: '["createBoard", 7]' });
   assert.deepEqual(ledger.problems.map((problem) => problem.rule), ["unreadable-ledger"]);
+});
+
+test("an id added to the ledger fails unless the operation existed at the merge base", () => {
+  const before = { ledger: ["oldOne"], ids: ["oldOne", "existedThenUnlisted"] };
+  const after = ["oldOne", "existedThenUnlisted", "brandNew"];
+  const found = checkLedgerGrowth(after, before, { ledger: "contracts/idempotency-legacy.json" });
+  assert.deepEqual(found.map((problem) => problem.rule), ["legacy-grew"]);
+  assert.equal(found[0].path, "contracts/idempotency-legacy.json");
+  assert.match(found[0].detail, /brandNew/);
+  assert.deepEqual(checkLedgerGrowth(["oldOne"], before, { ledger: "l.json" }), []);
+});
+
+// Growth is compared with the merge base, so these run in a repository with two commits.
+const git = (dir, ...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: dir, stdio: "pipe" });
+
+async function grown({ atBase, now, base = "main" }) {
+  const dir = mkdtempSync(path.join(tmpdir(), "qc-growth-"));
+  try {
+    git(dir, "init", "-q", "-b", "main");
+    mkdirSync(path.join(dir, "contracts"), { recursive: true });
+    const write = (files) => {
+      for (const [name, text] of Object.entries(files)) writeFileSync(path.join(dir, "contracts", name), text);
+    };
+    write(atBase);
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "base");
+    git(dir, "checkout", "-q", "-b", "topic");
+    write(now);
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "topic");
+    const start = load(dir);
+    const config = { ...start, ratchet: { base }, gates: { ...start.gates, "contract-idempotency": true } };
+    const { problems, lines } = await runCheck(config);
+    return { problems: problems.filter((problem) => GATE_RULES.has(problem.rule)), lines };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const TWO_POSTS = `${POSTS}  /v1/tasks:\n    post:\n      operationId: createTask\n`;
+
+test("qc check fails a ledger id whose operation is new since the merge base", async () => {
+  const found = await grown({
+    atBase: { "openapi.yaml": POSTS, "idempotency-legacy.json": '["createBoard"]' },
+    now: { "openapi.yaml": TWO_POSTS, "idempotency-legacy.json": '["createBoard","createTask"]' },
+  });
+  assert.deepEqual(found.problems.map((problem) => problem.rule), ["legacy-grew"]);
+  assert.match(found.problems[0].detail, /createTask/);
+});
+
+test("a ledger first written on the branch may list what the contract already held", async () => {
+  const found = await grown({
+    atBase: { "openapi.yaml": POSTS },
+    now: { "openapi.yaml": POSTS, "idempotency-legacy.json": '["createBoard"]' },
+  });
+  assert.deepEqual(found.problems, []);
+});
+
+test("with no merge base the growth check passes and says it did not run", async () => {
+  const found = await grown({
+    atBase: { "openapi.yaml": POSTS, "idempotency-legacy.json": '["createBoard"]' },
+    now: { "openapi.yaml": TWO_POSTS, "idempotency-legacy.json": '["createBoard","createTask"]' },
+    base: "no-such-ref",
+  });
+  assert.deepEqual(found.problems, []);
+  assert.ok(found.lines.some((line) => line.includes("growth") && line.includes("skipped")));
 });

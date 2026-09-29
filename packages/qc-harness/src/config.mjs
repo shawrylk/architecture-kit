@@ -62,8 +62,8 @@ export const defaults = {
   contract: "contracts/openapi.yaml",
 
   // Every write of the contract carries one of `idempotency.keys`, as a body property or a
-  // parameter. `legacy` lists the operation ids that predate the gate;
-  // an entry whose operation no longer owes the key fails.
+  // parameter. `legacy` lists the operation ids that predate the gate; an entry that no longer owes
+  // the key fails, and so does one added since the merge base with `ratchet.base`.
   // A DELETE whose last path segment is a parameter names one row, so it is exempt unless this is off.
   contractIdempotency: {
     legacy: "contracts/idempotency-legacy.json",

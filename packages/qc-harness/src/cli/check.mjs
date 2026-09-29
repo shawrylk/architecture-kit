@@ -43,7 +43,8 @@ import { checkParity, placeholderSlices } from "../gates/parity.mjs";
 import { checkIntegrationImports } from "../gates/integration-imports.mjs";
 import { checkClosedSetWriters, matchedKeys } from "../gates/closed-set-writers.mjs";
 import { checkDocClaims, parseDocClaims } from "../gates/doc-claims.mjs";
-import { checkContractIdempotency } from "../gates/contract-idempotency.mjs";
+import { checkContractIdempotency, checkLedgerGrowth } from "../gates/contract-idempotency.mjs";
+import { contractHistory } from "./contract-history.mjs";
 import { contractOperations } from "../gates/contract-operations.mjs";
 import { ratchetInputs } from "./registry-history.mjs";
 import { hookDrift } from "./git-hooks.mjs";
@@ -558,6 +559,12 @@ async function contractIdempotency(config, lines) {
   const fields = config.idempotency.keys;
   const problems = checkContractIdempotency(operations, ledger ?? [], { fields, exemptDeleteById, contract, ledger: legacy });
   lines.push(`OK  idempotency  ${operations.length} operation(s), each write names its key or sits in the ${(ledger ?? []).length}-entry ledger`);
+  const history = await contractHistory(config.root, { base: config.ratchet.base, contract, legacy });
+  if (history.skip) {
+    lines.push(`OK  idempotency  ledger growth skipped: ${history.skip}`);
+  } else {
+    problems.push(...checkLedgerGrowth(ledger ?? [], history, { ledger: legacy }));
+  }
   return problems;
 }
 

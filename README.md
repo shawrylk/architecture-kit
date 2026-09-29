@@ -595,7 +595,10 @@ a parameter. The gate follows a `$ref` body into `components.schemas`, and each 
 - The ledger at `contractIdempotency.legacy` is a JSON array of operation-id strings. An operation with no
   `operationId` is named `METHOD /path`, as in `POST /v1/boards`. A listed operation passes.
 - A ledger entry fails as `legacy-now-declares` when its operation now declares the key, no longer
-  exists, or needs no key. Nothing yet stops a new entry: growth against the merge base is not checked.
+  exists, or needs no key.
+- A ledger entry added since the merge base with `ratchet.base` fails as `legacy-grew`, unless that
+  operation existed in the contract at the merge base. The ledger cannot absorb a new write. With no
+  merge base, as in a shallow clone or with no git, the check is skipped and `qc check` says so.
 - A `DELETE` whose last path segment is a parameter is exempt. Set `exemptDeleteById` to `false` to
   judge it too.
 - An absent contract file is ordinary: the gate reports nothing.

@@ -1,7 +1,8 @@
 // A mutating operation names the key that makes a retry a resume: docs/guards.md. The contract
 // carries it, so a client cannot call a write that has no way to say "this is the same attempt".
 // Operations that predate the gate sit in a ledger. An entry whose operation no longer owes the key
-// fails, so a stale entry cannot linger. Nothing here stops a new entry: that is the merge-base check.
+// fails, so a stale entry cannot linger. An entry new since the merge base fails unless its operation
+// already existed then, so the ledger cannot absorb a new write.
 
 const MUTATING = new Set(["post", "put", "patch", "delete"]);
 const PARAMETER_SEGMENT = /^(?:\{[^}]+\}|:[^/]+)$/;
@@ -47,4 +48,24 @@ export function checkContractIdempotency(operations, legacy, { fields, exemptDel
     if (reason) problems.push({ path: ledger, rule: "legacy-now-declares", detail: `'${id}' ${reason}; remove it from the ledger` });
   }
   return problems;
+}
+
+/**
+ * An id added to the ledger since the merge base fails unless its operation existed then, so the
+ * ledger cannot absorb a write that is new.
+ * @param {string[]} legacy the ledger now
+ * @param {{ledger: string[], ids: string[]}} before the ledger and the operation ids at the merge base
+ * @param {{ledger: string}} options the path a problem reports
+ * @returns {{path: string, rule: string, detail: string}[]}
+ */
+export function checkLedgerGrowth(legacy, before, { ledger }) {
+  const listed = new Set(before.ledger);
+  const existed = new Set(before.ids);
+  return [...new Set(legacy)]
+    .filter((id) => !listed.has(id) && !existed.has(id))
+    .map((id) => ({
+      path: ledger,
+      rule: "legacy-grew",
+      detail: `'${id}' was added to the ledger, and no such operation existed at the merge base; declare its idempotency field instead`,
+    }));
 }
