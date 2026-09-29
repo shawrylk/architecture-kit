@@ -92,7 +92,7 @@ test("a trigger with no routes and a contract with no operations agree", () => {
 });
 
 // The runner reads each feature trigger and the contract from disk.
-const GATE_RULES = new Set(["route-not-in-contract", "operation-not-served", "stale-route-exemption", "unreadable-contract", "contract-reader-unavailable"]);
+const GATE_RULES = new Set(["route-not-in-contract", "operation-not-served", "stale-route-exemption", "exemption-without-reason", "malformed-exemption", "unreadable-contract", "contract-reader-unavailable"]);
 
 async function checked({ contract, triggerSource = trigger.source, gates = { "contract-routes": true }, overrides = {} }) {
   const dir = mkdtempSync(path.join(tmpdir(), "qc-routes-"));
@@ -130,7 +130,7 @@ test("the gate ships off, and an absent contract is ordinary", async () => {
 });
 
 test("config.contractRoutes.exempt excuses a route, and a stale one fails", async () => {
-  const extra = { ...trigger, source: trigger.source + ' // { method: "post", path: "/v1/internal/x" }' };
+  const extra = { ...trigger, source: `${trigger.source}\n  { method: "post", path: "/v1/internal/x" },` };
   const exempt = [{ method: "post", path: "/v1/internal/x", why: "a worker callback" }];
   const overrides = { contractRoutes: { exempt } };
   assert.deepEqual((await checked({ contract: CONTRACT, triggerSource: extra.source, overrides })).problems, []);
@@ -143,4 +143,54 @@ test("the contract path is the top-level `contract`, and an unreadable contract 
   assert.deepEqual(moved.problems, []);
   const broken = await checked({ contract: "paths: [unclosed" });
   assert.deepEqual(broken.problems.map((problem) => problem.rule), ["unreadable-contract"]);
+});
+
+const rulesOf = (problems) => problems.map((problem) => problem.rule);
+const exemptCheck = (exempt) => checkContractRoutes(declaredTriggerRoutes([trigger]), operations, { contract: "c.yaml", exempt });
+
+test("an exemption with no why, or an empty one, fails as exemption-without-reason", () => {
+  assert.deepEqual(rulesOf(exemptCheck([{ method: "post", path: "/v1/internal/x" }])), ["exemption-without-reason"]);
+  assert.deepEqual(rulesOf(exemptCheck([{ method: "post", path: "/v1/internal/x", why: "  " }])), ["exemption-without-reason"]);
+  const [problem] = exemptCheck([{ method: "post", path: "/v1/internal/x" }]);
+  assert.equal(problem.path, "qc.config.json");
+});
+
+test("a malformed exemption is a problem, not a TypeError, and excuses nothing", () => {
+  for (const bad of [{ method: "get" }, { path: "/v1/x", why: "w" }, { method: 5, path: "/v1/x", why: "w" }, null, "get /v1/x", 7]) {
+    assert.deepEqual(rulesOf(exemptCheck([bad])), ["malformed-exemption"], JSON.stringify(bad));
+  }
+  const routes = declaredTriggerRoutes([{ path: "t.ts", source: '{ method: "post", path: "/v1/internal/x" }' }]);
+  const problems = checkContractRoutes(routes, [], { contract: "c.yaml", exempt: [{ method: "post", why: "w" }] });
+  assert.deepEqual(rulesOf(problems).sort(), ["malformed-exemption", "route-not-in-contract"]);
+});
+
+test("a valid exemption beside a bad one still applies", () => {
+  const routes = declaredTriggerRoutes([{ path: "t.ts", source: '{ method: "post", path: "/v1/internal/x" }' }]);
+  const exempt = [{ method: "get" }, { method: "post", path: "/v1/internal/x", why: "a worker callback" }];
+  assert.deepEqual(rulesOf(checkContractRoutes(routes, [], { contract: "c.yaml", exempt })), ["malformed-exemption"]);
+});
+
+test("a route in a line comment or a block comment is not served", () => {
+  const source = [
+    '  // { method: "get", path: "/v1/photos" },',
+    '  /* { method: "post", path: "/v1/photos/:photoId/derivatives" } */',
+    '  { method: "get", path: "/v1/live", note: "see http://example.test/a" }, // trailing { method: "get", path: "/v1/gone" }',
+  ].join("\n");
+  assert.deepEqual(declaredTriggerRoutes([{ path: "t.ts", source }]).map(({ path: route }) => route), ["/v1/live"]);
+});
+
+test("a commented route next to its contract operation fails as operation-not-served", () => {
+  const source = '// { method: "get", path: "/v1/photos" },\n  { method: "post", path: "/v1/photos/:photoId/derivatives" },';
+  const problems = check(declaredTriggerRoutes([{ path: "t.ts", source }]), operations);
+  assert.deepEqual(rulesOf(problems), ["operation-not-served"]);
+  assert.match(problems[0].detail, /get \/v1\/photos/);
+});
+
+test("qc check reports a non-array exempt and a bad entry instead of throwing", async () => {
+  const notList = await checked({ contract: CONTRACT, overrides: { contractRoutes: { exempt: "post /v1/x" } } });
+  assert.deepEqual(rulesOf(notList.problems), ["malformed-exemption"]);
+  const missing = await checked({ contract: CONTRACT, overrides: { contractRoutes: { exempt: [{ method: "get" }] } } });
+  assert.deepEqual(rulesOf(missing.problems), ["malformed-exemption"]);
+  const noReason = await checked({ contract: CONTRACT, overrides: { contractRoutes: { exempt: [{ method: "get", path: "/x" }] } } });
+  assert.deepEqual(rulesOf(noReason.problems), ["exemption-without-reason"]);
 });

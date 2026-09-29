@@ -639,6 +639,10 @@ The `contract-routes` gate ships off. It reads the composed contract at `contrac
 - `contractRoutes.exempt` lists `{ method, path, why }` entries for a route or an operation that
   has no partner, such as an internal worker route. An entry fails as `stale-route-exemption` when
   it excuses nothing: no route lacks its operation there, and no operation lacks its route.
+- Every entry needs a string `method`, a string `path` and a non-empty `why`. An entry without a `why`
+  fails as `exemption-without-reason`. An entry that is not an object with a string method and path,
+  and an `exempt` that is not an array, fail as `malformed-exemption`. A bad entry excuses nothing.
+- A route inside a `//` or `/* */` comment is not served.
 - The `yaml` package reads the contract, as for `contract-idempotency`. An absent contract file is
   ordinary: the gate reports nothing.
 - The gate does not compare a client's request paths with the contract.

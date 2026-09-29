@@ -519,9 +519,13 @@ async function contractRouteAgreement(config, routes, lines) {
     const rule = error.code === "CONTRACT_PEER_MISSING" ? "contract-reader-unavailable" : "unreadable-contract";
     return [{ path: contract, rule, detail: error.message }];
   }
+  const { exempt } = config.contractRoutes;
+  if (!Array.isArray(exempt)) {
+    return [{ path: "qc.config.json", rule: "malformed-exemption", detail: "contractRoutes.exempt must be an array of { method, path, why }" }];
+  }
   const served = declaredTriggerRoutes(routes);
   lines.push(`OK  contract     ${served.length} route(s) and ${operations.length} operation(s) agree by method and path`);
-  return checkContractRoutes(served, operations, { contract, exempt: config.contractRoutes.exempt });
+  return checkContractRoutes(served, operations, { contract, exempt });
 }
 
 /**
