@@ -10,12 +10,13 @@ import { checkPlan, parsePlan } from "./plan-check.mjs";
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const FENCE = "`".repeat(3);
 
-const task = (n, { files = true, testStep = true, commit = true, estimate = null, extra = [] } = {}) =>
+const task = (n, { files = true, fileLines = null, exempt = null, testStep = true, commit = true, estimate = null, extra = [] } = {}) =>
   [
     `### Task ${n}: Part ${n}`,
     "",
     "**Files:**",
-    ...(files ? [`- Create: \`src/part-${n}.mjs\``, `- Test: \`src/part-${n}.test.mjs\``] : []),
+    ...(fileLines ?? (files ? [`- Create: \`src/part-${n}.mjs\``, `- Test: \`src/part-${n}.test.mjs\``] : [])),
+    ...(exempt === null ? [] : [exempt]),
     ...(estimate === null ? [] : [`**Estimate:** ${estimate} tool calls`]),
     "",
     ...(testStep ? ["- [ ] **Step 1: Write the failing test**"] : ["- [ ] **Step 1: Write the code**"]),
@@ -71,4 +72,37 @@ test("qc plan-check exits 0 on a good plan and 1 on a bad one, reading the budge
   assert.match(bad.stderr, /FAIL {2}plan-check {2}Task 1: estimates 20 tool calls, over swarm\.review\.maxTaskCalls \(10\)/);
   const missing = spawnSync(process.execPath, [QC, "plan-check", "none.md"], { cwd: dir, encoding: "utf8" });
   assert.equal(missing.status, 1);
+});
+
+const DOC_FILES = ["- Modify: `README.md` (the table)", "- Modify: `packages/pkg/package.json` (`version` bump)", "- Modify: `CHANGELOG.md`"];
+
+test("a task with no code may carry the Test: none line in place of a test step", () => {
+  const exempt = "Test: none — a docs and version change with no code";
+  const docs = task(1, { fileLines: DOC_FILES, exempt, testStep: false });
+  assert.deepEqual(checkPlan(plan(docs)), []);
+  assert.deepEqual(checkPlan(plan(task(1, { fileLines: DOC_FILES, exempt: "- " + exempt, testStep: false }))), []);
+  assert.equal(parsePlan(plan(docs))[0].files, 3, "the exemption line is not a file");
+});
+
+test("the Test: none line needs a reason of a few words", () => {
+  for (const exempt of ["Test: none", "Test: none — ", "Test: none — docs", "Test: none — docs only"]) {
+    const problems = checkPlan(plan(task(1, { fileLines: DOC_FILES, exempt, testStep: false })));
+    assert.equal(problems.length, 1, exempt);
+    assert.match(problems[0].detail, /Test: none.*reason/, exempt);
+  }
+});
+
+test("the Test: none line is refused for a task that names a source file", () => {
+  const code = ["- Modify: `README.md`", "- Modify: `src/photos/create.ts` (drop the runner)"];
+  const problems = checkPlan(plan(task(1, { fileLines: code, exempt: "Test: none — the gates cover this cleanup", testStep: false })));
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].detail, /src\/photos\/create\.ts/);
+  assert.match(problems[0].detail, /Test: none/);
+  assert.equal(checkPlan(plan(task(1, { fileLines: code, exempt: "Test: none — the gates cover this cleanup" }))).length, 1, "a test step does not excuse it");
+});
+
+test("the missing-test-step message names the Test: none line as the way out", () => {
+  const [problem] = checkPlan(plan(task(1, { testStep: false })));
+  assert.match(problem.detail, /no test step/);
+  assert.match(problem.detail, /Test: none — <reason>/);
 });

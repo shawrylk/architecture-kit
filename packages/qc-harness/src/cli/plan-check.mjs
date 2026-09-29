@@ -15,6 +15,19 @@ const FENCE = /^[ \t]*(`{3,}|~{3,})/;
 const GIT_COMMIT = /\bgit[ \t]+commit\b/;
 const TEST_WORD = /\btests?\b/i;
 const COMMIT_WORD = /\bcommit\b/i;
+const NO_TEST_LINE = /^[ \t]*(?:[-*][ \t]+)?Test:[ \t]*none(?![\w.])(.*)$/i;
+const NO_TEST_DASH = /^[ \t]*(?:—|–|--?)[ \t]*/;
+const NO_TEST_WORDS = 3;
+const PATH_LINE = /^[ \t]*[-*][ \t]+(?:Create|Modify|Test|Delete|Rename)\b/i;
+const SOURCE_FILE = /\.(?:mjs|cjs|js|jsx|ts|tsx|py|sh|ps1|sql|go|rs|java|kt|rb|css|scss|html|vue|svelte)$/i;
+const NO_TEST_SPELLING = "`Test: none — <reason>`";
+
+/** The source files a path line names: backticked paths, else the first word after the colon. */
+function sourceFilesOf(line) {
+  const spans = [...line.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+  const words = spans.length > 0 ? spans : [line.replace(/^[^:]*:/, "").trim().split(/\s+/)[0] ?? ""];
+  return words.map((word) => word.replace(/[,;:.)]+$/, "")).filter((word) => SOURCE_FILE.test(word));
+}
 
 /** The tasks of a plan, with their file lines, step titles, commit evidence, and estimate. Fenced code is not structure. */
 export function parsePlan(markdown) {
@@ -34,7 +47,17 @@ export function parsePlan(markdown) {
     }
     const heading = TASK_HEADING.exec(line);
     if (heading) {
-      task = { number: Number(heading[1]), title: heading[2].trim(), line: index + 1, files: 0, steps: [], commitCommand: false, estimate: null };
+      task = {
+        number: Number(heading[1]),
+        title: heading[2].trim(),
+        line: index + 1,
+        files: 0,
+        steps: [],
+        commitCommand: false,
+        estimate: null,
+        sourceFiles: [],
+        noTest: null,
+      };
       tasks.push(task);
       return;
     }
@@ -43,6 +66,13 @@ export function parsePlan(markdown) {
       return;
     }
     if (!task) return;
+    const noTest = NO_TEST_LINE.exec(line);
+    if (noTest) {
+      const reason = noTest[1].replace(NO_TEST_DASH, "").trim();
+      task.noTest = { reason, words: reason === "" ? 0 : reason.split(/\s+/).length };
+      return;
+    }
+    if (PATH_LINE.test(line)) task.sourceFiles.push(...sourceFilesOf(line));
     if (FILE_LINE.test(line)) task.files += 1;
     const step = STEP_LINE.exec(line)?.[1];
     if (step) task.steps.push(step);
@@ -60,7 +90,16 @@ export function checkPlan(markdown, { maxTaskCalls = reviewDefaults.maxTaskCalls
   for (const task of tasks) {
     const add = (detail) => problems.push({ task: task.number, detail });
     if (task.files === 0) add("names no file: list each as `- Create:`, `- Modify:` or `- Test:` with its path");
-    if (!task.steps.some((step) => TEST_WORD.test(step))) add("has no test step: a step whose title names the test it writes or runs");
+    if (task.noTest) {
+      if (task.noTest.words < NO_TEST_WORDS) {
+        add(`carries \`Test: none\` without a reason of at least ${NO_TEST_WORDS} words: write ${NO_TEST_SPELLING}`);
+      }
+      else if (task.sourceFiles.length > 0) {
+        add(`carries \`Test: none\` but names source code (${task.sourceFiles.join(", ")}); ${NO_TEST_SPELLING} is only for a task with no code`);
+      }
+    } else if (!task.steps.some((step) => TEST_WORD.test(step))) {
+      add(`has no test step: a step whose title names the test it writes or runs, or for a task with no code the line ${NO_TEST_SPELLING}`);
+    }
     if (!task.commitCommand && !task.steps.some((step) => COMMIT_WORD.test(step))) {
       add("has no commit step: a step titled Commit, or a `git commit` in a step's code");
     }
