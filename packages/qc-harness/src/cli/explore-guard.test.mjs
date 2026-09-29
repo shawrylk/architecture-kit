@@ -1,31 +1,15 @@
 import { strict as assert } from "node:assert";
-import { execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
 import { decide } from "./explore-guard.mjs";
-
-const EXPLORE_GUARD = fileURLToPath(new URL("./explore-guard.mjs", import.meta.url));
-
-/** Runs the guard as its own process, as one Read hook of a batch does, with its state folder pinned to `tmp`. */
-function runGuard(call, tmp) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [EXPLORE_GUARD], {
-      env: { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp },
-    });
-    let stdout = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.on("error", reject);
-    child.on("close", () => resolve(stdout));
-    child.stdin.end(JSON.stringify(call));
-  });
-}
+import { slotDirOf } from "./dispatch-slot.mjs";
 
 const TOOLS = [{ name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' }];
+const markerNameOf = (absolute) => `${createHash("sha256").update(absolute).digest("hex")}.refused`;
 
 /** A checkout with `swarm.explore` on, one with no config, and a temp folder for the guard's own state. */
 function workspace(t, explore = { tools: TOOLS, maxReadLines: 5 }) {
@@ -120,14 +104,45 @@ test("a bad key reports the error as context instead of refusing", (t) => {
   assert.match(result.hookSpecificOutput.additionalContext, /swarm\.explore\.maxReadLines/);
 });
 
-test("two refusals of different files recorded concurrently both pass on retry", async (t) => {
+test("a refusal leaves one marker file named by the sha256 of the absolute path, nothing else", (t) => {
   const ws = workspace(t);
-  mkdirSync(ws.tmp, { recursive: true });
+  const file = longFile(ws.on);
+  assert.notEqual(decide(readCall(ws.on, file), ws.tmp), null);
+  const dir = slotDirOf("session-aaaa", ws.tmp);
+  assert.deepEqual(readdirSync(dir), [markerNameOf(file)]);
+});
+
+test("two refusals of different files each leave their own marker; consuming one leaves the other", (t) => {
+  const ws = workspace(t);
   const fileA = longFile(ws.on, "a.txt");
   const fileB = longFile(ws.on, "b.txt");
-  await Promise.all([runGuard(readCall(ws.on, fileA), ws.tmp), runGuard(readCall(ws.on, fileB), ws.tmp)]);
+  assert.notEqual(decide(readCall(ws.on, fileA), ws.tmp), null);
+  assert.notEqual(decide(readCall(ws.on, fileB), ws.tmp), null);
+  const dir = slotDirOf("session-aaaa", ws.tmp);
+  assert.deepEqual(new Set(readdirSync(dir)), new Set([markerNameOf(fileA), markerNameOf(fileB)]));
+
   assert.equal(decide(readCall(ws.on, fileA), ws.tmp), null);
-  assert.equal(decide(readCall(ws.on, fileB), ws.tmp), null);
+  assert.deepEqual(readdirSync(dir), [markerNameOf(fileB)]);
+});
+
+test("the session state folder holds only marker files, never a shared list file", (t) => {
+  const ws = workspace(t);
+  const fileA = longFile(ws.on, "a.txt");
+  const fileB = longFile(ws.on, "b.txt");
+  decide(readCall(ws.on, fileA), ws.tmp);
+  decide(readCall(ws.on, fileB), ws.tmp);
+  const dir = slotDirOf("session-aaaa", ws.tmp);
+  for (const name of readdirSync(dir)) assert.match(name, /^[0-9a-f]{64}\.refused$/);
+});
+
+test("a third whole read after a consumed marker is refused again", (t) => {
+  const ws = workspace(t);
+  const file = longFile(ws.on);
+  assert.notEqual(decide(readCall(ws.on, file), ws.tmp), null); // first: refused, marker recorded
+  assert.equal(decide(readCall(ws.on, file), ws.tmp), null); // second: passes, marker consumed
+  const dir = slotDirOf("session-aaaa", ws.tmp);
+  assert.equal(existsSync(path.join(dir, markerNameOf(file))), false);
+  assert.notEqual(decide(readCall(ws.on, file), ws.tmp), null); // third: refused again
 });
 
 test("a non-Read call, or a Read with no file_path, sees no change", (t) => {
