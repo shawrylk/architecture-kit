@@ -63,7 +63,8 @@ import { repoFiles } from "./repo-files.mjs";
 const SKIP = /node_modules|\/dist\/|\.test\.[cm]?[jt]sx?$/;
 const BUILD_OUTPUT = /node_modules|\/dist\//;
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
-const MODULE_LINKS = /\bimport\b|\bexport\b[^;]*\bfrom\b/;
+// A file with none of these cannot import an exempt helper, alias it, or re-export it.
+const MODULE_LINKS = /\bimport\b|\bexport\s*(?:\{|\*|default\b|(?:const|let|var)\b)/;
 const SOURCE_EXTENSION = /\.([cm]?[jt]sx?)$/;
 const CITABLE_EXTENSION = /\.(tsx?|mjs|md)$/;
 const INFRA_EXTENSIONS = [".tf", ".sh", ".tfvars", ".tfvars.example", ".hcl", ".hcl.example"];
@@ -326,10 +327,12 @@ async function sqlAgreement(config, tree, taken, lines) {
     const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers].filter(
       (helper, at, all) => all.findIndex((first) => first.module === helper.module && first.name === helper.name) === at,
     );
-    // A file with no import and no re-export cannot reach a helper, and cannot be a barrel: the gate
-    // treats it as read, so a barrel that re-exports it is not an untraceable one.
+    // A file with no import and no export list cannot reach a helper, and cannot be a barrel: the gate
+    // treats it as read, so a barrel that re-exports it is not an untraceable one. A helper's own
+    // module is always parsed, since it may export its helper under another name, or as its default.
     const scanned = await sourceFiles(config, tree);
-    const isCaller = (file) => !TEST_FILE.test(file.path) && MODULE_LINKS.test(file.contents);
+    const isCaller = (file) =>
+      !TEST_FILE.test(file.path) && (MODULE_LINKS.test(file.contents) || helpers.some((helper) => helper.module === file.path));
     const callers = scanned.filter(isCaller);
     const leaves = new Set(scanned.filter((file) => !isCaller(file)).map((file) => file.path));
     const tsconfig = posix(config.tenantPredicate.tsconfig);

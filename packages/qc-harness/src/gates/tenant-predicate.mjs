@@ -73,11 +73,11 @@ export function checkTenantPredicate(resources, owned, options = {}) {
 // call is checked instead, or moving a statement into a shared helper buys a weaker gate.
 
 /**
- * A call, not the declaration: the helper's own parameters are not a tenant argument. A `prefix`
- * makes it a member call, `ns.name(`, for a namespace import.
+ * A call, not the declaration: the helper's own parameters are not a tenant argument. A `prefix`,
+ * a list of names, makes it a member call, `ns.inner.name(`, for a namespace import.
  */
-function callPattern(name, prefix = "") {
-  const member = prefix ? `${escape(prefix)}\\s*\\.\\s*` : "";
+function callPattern(name, prefix = []) {
+  const member = prefix.map((segment) => `${escape(segment)}\\s*\\.\\s*`).join("");
   return new RegExp(`(?<![\\w$.]|function\\s)${member}${escape(name)}\\s*(?:<[^>]*>)?\\s*\\(`, "g");
 }
 
@@ -187,6 +187,7 @@ function stripJsonc(text) {
 /**
  * The path aliases of one tsconfig, as root-relative targets. Only that file is read: an `extends`
  * chain is not followed, so its aliases must be repeated there, or the import fails as unresolved.
+ * A pattern whose `*` is not at the end has no target, but its prefix still marks a specifier as local.
  * @param {string} tsconfigText the file's contents; comments and trailing commas are allowed
  * @param {string} [dir] the folder of the tsconfig, relative to the repository root
  * @returns {{prefix: string, wildcard: boolean, targets: string[]}[]}
@@ -202,7 +203,10 @@ export function aliasMap(tsconfigText, dir = "") {
   const map = [];
   for (const [pattern, targets] of Object.entries(options.paths ?? {})) {
     const star = pattern.indexOf("*");
-    if (star !== -1 && star !== pattern.length - 1) continue;
+    if (star !== -1 && star !== pattern.length - 1) {
+      map.push({ prefix: pattern.slice(0, star), wildcard: true, targets: [] });
+      continue;
+    }
     const resolvedTargets = [].concat(targets).map((target) => posix.join(base, target));
     map.push({ prefix: star === -1 ? pattern : pattern.slice(0, star), wildcard: star !== -1, targets: resolvedTargets });
   }
@@ -231,8 +235,6 @@ function namesModule(file, specifier, target, aliases) {
 const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
 // A specifier to one of these is data, not a module, so it cannot re-export the helper.
 const ASSET = /\.(?:json|css|scss|less|svg|png|jpe?g|gif|webp|ico|woff2?|ttf|md|html|txt|ya?ml|csv|sql|wasm|mp4)$/i;
-/** How many barrels a chain may pass through. A longer one fails closed. */
-const MAX_BARREL_DEPTH = 8;
 
 /** The scanned file a specifier points at: the path itself, or with an extension, or its `index`. */
 function fileFor(candidates, known) {
@@ -245,171 +247,447 @@ function fileFor(candidates, known) {
   return null;
 }
 
-const partsOf = (list) => list.split(",").map((part) => part.trim().split(/\s+as\s+/)).filter(([name]) => name !== "");
+/** A specifier that names a file of this repository, not a package: relative, `@/`, `~/`, `#`, or an alias prefix. */
+function looksLocal(specifier, aliases) {
+  if (specifier.startsWith(".") || /^(?:\/|@\/|~\/|#)/.test(specifier)) return true;
+  return aliases.some(({ prefix, wildcard }) => prefix !== "" && (wildcard ? specifier.startsWith(prefix) : specifier === prefix));
+}
+
+// ---- The module graph ------------------------------------------------------------------------
+//
+// One pass over each scanned file builds a record of its imports and exports. Nothing reads a file
+// twice, and no read follows a chain: a name reaches a module by a worklist over the records. The
+// regular expressions allow no whitespace (`import{x}from"y"`), and a statement starts a line, so a
+// commented-out one is not read.
+
+/** The most steps the worklist takes over all helpers, before the gate fails closed. */
+const STEP_BUDGET = 50_000;
+/** A namespace path longer than this, `a.b.c.d.name`, makes its module opaque. */
+const MAX_PATH_SEGMENTS = 4;
+
+const LEAD = String.raw`(?:^|;|\*\/)[ \t]*`;
+const CHAIN = String.raw`[\w$]+(?:\s*\.\s*[\w$]+)*`;
+const TAIL = String.raw`[ \t]*(?:\/\/[^\n]*)?(?=;|$)`;
+const STATEMENTS = {
+  imports: new RegExp(String.raw`${LEAD}import(?![\w$])([^'";]*?)from\s*(["'])([^"']+)\2`, "gm"),
+  from: new RegExp(String.raw`${LEAD}export(?![\w$])\s*(?:\*\s*(?:as\s+([\w$]+))?|\{([^}]*)\})\s*from\s*(["'])([^"']+)\3`, "gm"),
+  listed: new RegExp(String.raw`${LEAD}export\s*\{([^}]*)\}(?!\s*from\b)`, "gm"),
+  consts: new RegExp(String.raw`${LEAD}export\s+(?:const|let|var)\s+([\w$]+)\s*(?::[^=;\n]+)?=\s*(${CHAIN})${TAIL}`, "gm"),
+  defaults: new RegExp(String.raw`${LEAD}export\s+default\s+(${CHAIN})${TAIL}`, "gm"),
+};
+const NOISE = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
+
+/** The parts of `a, b as c`, without a type-only part. */
+const partsOf = (list) =>
+  list
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part !== "" && !/^type\s+(?!as\b)/.test(part))
+    .map((part) => part.split(/\s+as\s+/));
+
+/** What an import clause binds: a default, a namespace, and named imports. A type import binds nothing. */
+function bindingsOf(clause) {
+  const text = clause.trim();
+  if (/^type[\s{*]/.test(text)) return [];
+  const bindings = [];
+  const head = /^([\w$]+)\s*(?:,|$)/.exec(text);
+  const namespace = /\*\s*as\s+([\w$]+)/.exec(text);
+  const named = /\{([^}]*)\}/.exec(text);
+  if (head) bindings.push({ kind: "default", imported: "default", local: head[1] });
+  if (namespace) bindings.push({ kind: "namespace", imported: "*", local: namespace[1] });
+  if (named) for (const [name, renamed] of partsOf(named[1])) bindings.push({ kind: "named", imported: name, local: renamed ?? name });
+  return bindings;
+}
 
 /**
- * What one run of the gate reads from: the aliases, the contents of every scanned file, the paths
- * of files the scan knows hold no re-export, and a cache of barrels already read.
- * `taint` counts reads cut short by a cycle or the cap. `seen` is the deepest chain under the
- * barrel being read.
+ * A specifier resolved once: `to` is a scanned file, or a helper's module, or null. `missing` is a
+ * local-looking specifier that reaches nothing, which the gate cannot read.
  */
-function contextOf(files, options) {
-  return {
-    aliases: options.aliases ?? [],
-    sources: new Map(files.map((file) => [file.path, file.contents])),
-    leaves: options.leaves ?? new Set(),
-    cache: new Map(),
-    taint: 0,
-    seen: 0,
+function resolver(known, helperModules, aliases) {
+  const cache = new Map();
+  const resolve = (from, specifier) => {
+    const candidates = candidatesOf(from, specifier, aliases);
+    for (const candidate of candidates) {
+      const module = helperModules.get(stem(candidate));
+      if (module !== undefined) return { to: module, missing: false };
+    }
+    const to = fileFor(candidates, known);
+    if (to !== null) return { to, missing: false };
+    return { to: null, missing: !ASSET.test(specifier) && looksLocal(specifier, aliases) };
+  };
+  return (from, specifier) => {
+    const key = specifier.startsWith(".") ? `${posix.dirname(from)}\0${specifier}` : specifier;
+    let found = cache.get(key);
+    if (found === undefined) {
+      found = resolve(from, specifier);
+      cache.set(key, found);
+    }
+    return found;
   };
 }
 
-/**
- * What a specifier leads to. `helper`: the module itself. `barrel`: a scanned file, read for its
- * re-exports. `cycle` and `capped`: a read cut short. `known`: a package, an asset or a file the scan
- * knows re-exports nothing. `untraceable`: a local file the gate cannot read.
- */
-function readModule(from, specifier, helper, ctx, trail) {
-  const candidates = candidatesOf(from, specifier, ctx.aliases);
-  const target = stem(helper.module);
-  if (candidates.some((candidate) => stem(candidate) === target)) return { kind: "helper" };
-  const path = fileFor(candidates, ctx.sources);
-  if (path === null) {
-    const known = candidates.length === 0 || ASSET.test(specifier) || fileFor(candidates, ctx.leaves) !== null;
-    return { kind: known ? "known" : "untraceable" };
+/** One scanned file: what it imports and what it exports, each with its resolved target. */
+function parseModule(path, source, resolve) {
+  const record = { path, source, imports: [], reexports: [], stars: [], starAs: [], listed: [], consts: [], defaults: [], code: null, missing: false };
+  if (source.includes("import")) {
+    for (const [, clause, , specifier] of source.matchAll(STATEMENTS.imports)) {
+      const target = resolve(path, specifier);
+      for (const binding of bindingsOf(clause)) record.imports.push({ ...binding, specifier, to: target.to });
+    }
   }
-  if (trail.visited.has(path)) {
-    ctx.taint += 1;
-    return { kind: "cycle" };
+  if (!source.includes("export")) return record;
+  for (const [, alias, list, , specifier] of source.matchAll(STATEMENTS.from)) {
+    const target = resolve(path, specifier);
+    record.missing ||= target.missing;
+    if (list !== undefined) {
+      for (const [name, renamed] of partsOf(list)) record.reexports.push({ ...target, imported: name, exported: renamed ?? name });
+    } else if (alias !== undefined) {
+      record.starAs.push({ ...target, exported: alias });
+    } else {
+      record.stars.push(target);
+    }
   }
-  if (trail.depth >= MAX_BARREL_DEPTH) {
-    ctx.taint += 1;
-    return { kind: "capped" };
+  for (const [, list] of source.matchAll(STATEMENTS.listed)) {
+    for (const [name, renamed] of partsOf(list)) record.listed.push({ local: name, exported: renamed ?? name });
   }
-  const key = `${helper.module}\0${helper.name}\0${path}`;
-  let exports = ctx.cache.get(key);
-  // A finished read holds anywhere, as long as its chain still fits under the cap from here.
-  if (exports === undefined || trail.depth + exports.height > MAX_BARREL_DEPTH) {
-    exports = reexportsOf(path, ctx.sources.get(path), helper, ctx, { visited: new Set([...trail.visited, path]), depth: trail.depth + 1 });
-  }
-  ctx.seen = Math.max(ctx.seen, exports.height);
-  return { kind: "barrel", exports };
+  for (const [, exported, chain] of source.matchAll(STATEMENTS.consts)) record.consts.push({ exported, chain: chain.split(/\s*\.\s*/) });
+  for (const [, chain] of source.matchAll(STATEMENTS.defaults)) record.defaults.push({ exported: "default", chain: chain.split(/\s*\.\s*/) });
+  return record;
 }
 
-/**
- * What a barrel exports of the helper: the names it exports the helper under, an `export *` that
- * reaches it, namespaces of it (each with the member names), and names or a star it cannot trace.
- * It follows a re-export through other barrels, so a rename at any depth maps back.
- */
-function reexportsOf(barrel, source, helper, ctx, trail) {
-  const found = { named: new Set(), star: false, namespaces: new Map(), opaque: new Set(), opaqueStar: false, height: 1 };
-  const taintBefore = ctx.taint;
-  const seenBefore = ctx.seen;
-  ctx.seen = 0;
-  const read = (specifier) => readModule(barrel, specifier, helper, ctx, trail);
-  const membersOf = (exports) => new Set([...exports.named, ...(exports.star ? [helper.name] : [])]);
-
-  for (const [, list, specifier] of source.matchAll(/\bexport\s+\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
-    const module = read(specifier);
-    for (const [name, renamed] of partsOf(list)) {
-      const exported = renamed ?? name;
-      if (module.kind === "helper") {
-        if (name === helper.name) found.named.add(exported);
-      } else if (module.kind === "barrel") {
-        const there = module.exports;
-        if (there.named.has(name) || (there.star && name === helper.name)) found.named.add(exported);
-        if (there.namespaces.has(name)) found.namespaces.set(exported, there.namespaces.get(name));
-        if (there.opaque.has(name) || there.opaqueStar) found.opaque.add(exported);
-      } else if (module.kind === "capped" || module.kind === "untraceable" || (module.kind === "known" && name === helper.name)) {
-        found.opaque.add(exported);
-      }
+/** The records, who depends on whom, and the modules whose exports the gate cannot fully read. */
+function buildGraph(files, helpers, aliases, leaves) {
+  const known = new Set([...files.map((file) => file.path), ...leaves]);
+  const helperModules = new Map(helpers.map((helper) => [stem(helper.module), fileFor([helper.module], known) ?? helper.module]));
+  const resolve = resolver(known, helperModules, aliases);
+  const records = new Map();
+  const dependents = new Map();
+  const importersOf = new Map();
+  const unreadable = [];
+  const depend = (to, path) => {
+    if (to === null) return;
+    const list = dependents.get(to);
+    if (list === undefined) dependents.set(to, [path]);
+    else if (list.at(-1) !== path) list.push(path);
+  };
+  for (const { path, contents } of files) {
+    const record = parseModule(path, contents, resolve);
+    records.set(path, record);
+    for (const { to } of [...record.imports, ...record.reexports, ...record.stars, ...record.starAs]) depend(to, path);
+    for (const { imported, kind } of record.imports) {
+      if (kind !== "named") continue;
+      const list = importersOf.get(imported);
+      if (list === undefined) importersOf.set(imported, [path]);
+      else if (list.at(-1) !== path) list.push(path);
     }
+    if (record.missing) unreadable.push(path);
   }
-  for (const [, specifier] of source.matchAll(/\bexport\s+\*\s*from\s*["']([^"']+)["']/g)) {
-    const module = read(specifier);
-    if (module.kind === "helper") {
-      found.star = true;
-    } else if (module.kind === "barrel") {
-      const there = module.exports;
-      found.star ||= there.star;
-      for (const name of there.named) found.named.add(name);
-      for (const [name, members] of there.namespaces) found.namespaces.set(name, members);
-      for (const name of there.opaque) found.opaque.add(name);
-      found.opaqueStar ||= there.opaqueStar;
-    } else if (module.kind === "capped" || module.kind === "untraceable") {
-      found.opaqueStar = true;
-    }
-  }
-  for (const [, name, specifier] of source.matchAll(/\bexport\s+\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']/g)) {
-    const module = read(specifier);
-    if (module.kind === "helper") {
-      found.namespaces.set(name, new Set([helper.name]));
-    } else if (module.kind === "barrel") {
-      const members = membersOf(module.exports);
-      if (members.size > 0) found.namespaces.set(name, members);
-      if (module.exports.opaque.size > 0 || module.exports.opaqueStar) found.opaque.add(name);
-    } else if (module.kind === "capped" || module.kind === "untraceable") {
-      found.opaque.add(name);
-    }
-  }
-  // A barrel that imports the helper, or a re-export of it, and exports the local name.
-  const local = helperImports(barrel, source, helper, ctx, trail);
-  for (const [, list] of source.matchAll(/\bexport\s+\{([^}]*)\}(?!\s*from\b)/g)) {
-    for (const [name, renamed] of partsOf(list)) {
-      const exported = renamed ?? name;
-      if (local.names.includes(name)) found.named.add(exported);
-      for (const space of local.namespaces.filter((entry) => entry.local === name)) {
-        found.namespaces.set(exported, new Set([...(found.namespaces.get(exported) ?? []), space.member]));
-      }
-      if (local.unresolved.some((entry) => entry.local === name)) found.opaque.add(exported);
-    }
-  }
-
-  found.height = 1 + ctx.seen;
-  ctx.seen = Math.max(seenBefore, found.height);
-  // A read cut short by a cycle depends on where it started, so only a complete one is kept.
-  if (ctx.taint === taintBefore) ctx.cache.set(`${helper.module}\0${helper.name}\0${barrel}`, found);
-  return found;
+  return { records, dependents, importersOf, unreadable, helperModules };
 }
 
-/**
- * How a file imports `helper.name` from `helper.module`: the local names, the namespaces whose
- * `member` is the helper, and the imports the gate cannot resolve to the module. A local barrel is
- * followed to the module, through renames. A barrel it cannot trace fails closed.
- * @returns {{names: string[], namespaces: {local: string, member: string}[], unresolved: {specifier: string, name: string, local: string}[]}}
- */
-function helperImports(file, source, helper, ctx, trail = { visited: new Set([file]), depth: 0 }) {
-  const result = { names: [], namespaces: [], unresolved: [] };
-  const target = stem(helper.module);
-  for (const [, list, specifier] of source.matchAll(/\bimport\s+(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
-    const module = readModule(file, specifier, helper, ctx, trail);
-    for (const [imported, renamed] of partsOf(list)) {
-      const local = renamed ?? imported;
-      if (module.kind === "helper") {
-        if (imported === helper.name) result.names.push(local);
-      } else if (module.kind === "barrel") {
-        const there = module.exports;
-        if (there.named.has(imported) || (there.star && imported === helper.name)) result.names.push(local);
-        else if (there.namespaces.has(imported)) for (const member of there.namespaces.get(imported)) result.namespaces.push({ local, member });
-        else if (imported === helper.name || there.opaque.has(imported) || there.opaqueStar) result.unresolved.push({ specifier, name: imported, local });
-      } else if (imported === helper.name || module.kind === "capped") {
-        result.unresolved.push({ specifier, name: imported, local });
+// ---- The fixed point -------------------------------------------------------------------------
+//
+// For one helper, `summaries` maps each module to what it exports of it. `names` maps an exported
+// name to the member paths at which the helper sits under it: "" is the name itself, "crud" is
+// `name.crud`. `all` and `opaque` mark what the gate cannot read: every export, or named ones.
+// A summary only grows, so the worklist ends, and a cycle needs no special case.
+
+const joined = (name, path) => (path === "" ? name : `${name}.${path}`);
+const depthOf = (path) => (path === "" ? 0 : path.split(".").length);
+
+function addPaths(summary, name, paths) {
+  let entry = summary.names.get(name);
+  for (const path of paths) {
+    if (depthOf(path) > MAX_PATH_SEGMENTS) {
+      summary.all = true;
+      continue;
+    }
+    if (entry === undefined) {
+      entry = new Set();
+      summary.names.set(name, entry);
+    }
+    entry.add(path);
+  }
+}
+
+/** Every path at which the helper sits under a namespace of the module. */
+function namespacePaths(summary) {
+  const paths = [];
+  for (const [name, entry] of summary.names) for (const path of entry) paths.push(joined(name, path));
+  return paths;
+}
+
+/** Adds `next` to `summary`, and says whether anything was new. */
+function grow(summary, next) {
+  let grew = false;
+  for (const [name, paths] of next.names) {
+    let entry = summary.names.get(name);
+    if (entry === undefined) {
+      entry = new Set();
+      summary.names.set(name, entry);
+    }
+    for (const path of paths) {
+      if (!entry.has(path)) {
+        entry.add(path);
+        grew = true;
       }
     }
   }
-  for (const [, local, specifier] of source.matchAll(/\bimport\s+(?:[\w$]+\s*,\s*)?\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']/g)) {
-    const module = readModule(file, specifier, helper, ctx, trail);
-    if (module.kind === "helper") {
-      result.namespaces.push({ local, member: helper.name });
-    } else if (module.kind === "barrel") {
-      const there = module.exports;
-      for (const member of new Set([...there.named, ...(there.star ? [helper.name] : [])])) result.namespaces.push({ local, member });
-      if (there.opaque.size > 0 || there.opaqueStar) result.unresolved.push({ specifier, name: "*", local });
-    } else if (module.kind === "capped" || namesModule(file, specifier, target, ctx.aliases)) {
-      result.unresolved.push({ specifier, name: "*", local });
+  for (const name of next.opaque) {
+    if (!summary.opaque.has(name)) {
+      summary.opaque.add(name);
+      grew = true;
     }
   }
-  return result;
+  if (next.all && !summary.all) {
+    summary.all = true;
+    grew = true;
+  }
+  return grew;
+}
+
+const newSummary = () => ({ names: new Map(), opaque: new Set(), all: false });
+
+/**
+ * What a module's imports bind, for one helper: the local names and the member paths where the
+ * helper sits, the locals the gate cannot follow, and the imports that do not resolve.
+ */
+function localsOf(record, helper, state, aliases) {
+  const locals = new Map();
+  const opaque = new Set();
+  const unresolved = [];
+  const origin = new Map();
+  const bind = (local, paths, specifier) => {
+    const entry = locals.get(local) ?? new Set();
+    for (const path of paths) entry.add(path);
+    locals.set(local, entry);
+    if (!origin.has(local)) origin.set(local, specifier);
+  };
+  if (record.path === state.module) bind(helper.name, [""], "the helper's own module");
+  for (const imp of record.imports) {
+    const summary = state.summaries.get(imp.to);
+    if (imp.kind === "namespace") {
+      if (summary !== undefined) {
+        const paths = namespacePaths(summary);
+        if (paths.length > 0) bind(imp.local, paths, imp.specifier);
+        if (summary.all || summary.opaque.size > 0) {
+          opaque.add(imp.local);
+          unresolved.push({ specifier: imp.specifier, name: "*", why: "opaque" });
+        }
+      } else if (imp.to === null && namesModule(record.path, imp.specifier, stem(helper.module), aliases)) {
+        opaque.add(imp.local);
+        unresolved.push({ specifier: imp.specifier, name: "*", why: "unresolved" });
+      }
+      continue;
+    }
+    const paths = summary?.names.get(imp.imported);
+    if (paths !== undefined) bind(imp.local, paths, imp.specifier);
+    if (summary !== undefined && (summary.all || summary.opaque.has(imp.imported))) {
+      opaque.add(imp.local);
+      unresolved.push({ specifier: imp.specifier, name: imp.imported, why: "opaque" });
+    } else if (paths === undefined && imp.kind === "named" && imp.imported === helper.name) {
+      opaque.add(imp.local);
+      unresolved.push({ specifier: imp.specifier, name: imp.imported, why: "unresolved" });
+    }
+  }
+  return { locals, opaque, unresolved, origin };
+}
+
+/** The member paths of a chain `a.b.c` that lead to the helper, given what `a` stands for. */
+function throughChain(paths, chain) {
+  const rest = [];
+  for (const path of paths ?? []) {
+    const segments = path === "" ? [] : path.split(".");
+    if (chain.length <= segments.length && chain.every((segment, i) => segments[i] === segment)) rest.push(segments.slice(chain.length).join("."));
+  }
+  return rest;
+}
+
+/** What one module exports of the helper, from the summaries of the modules it reads. */
+function exportsOf(record, helper, state, bound) {
+  const out = newSummary();
+  if (record.path === state.module) addPaths(out, helper.name, [""]);
+  const summaryOf = (to) => state.summaries.get(to);
+  for (const { to, missing, imported, exported } of record.reexports) {
+    const summary = summaryOf(to);
+    if (summary?.names.has(imported)) addPaths(out, exported, summary.names.get(imported));
+    if (missing || summary?.all || summary?.opaque.has(imported)) out.opaque.add(exported);
+  }
+  for (const { to, missing } of record.stars) {
+    const summary = summaryOf(to);
+    if (summary !== undefined) {
+      for (const [name, paths] of summary.names) if (name !== "default") addPaths(out, name, paths);
+      for (const name of summary.opaque) if (name !== "default") out.opaque.add(name);
+      if (summary.all) out.all = true;
+    }
+    if (missing) out.all = true;
+  }
+  for (const { to, missing, exported } of record.starAs) {
+    const summary = summaryOf(to);
+    if (summary !== undefined) {
+      addPaths(out, exported, namespacePaths(summary));
+      if (summary.all || summary.opaque.size > 0) out.opaque.add(exported);
+    }
+    if (missing) out.opaque.add(exported);
+  }
+  for (const { local, exported } of record.listed) {
+    if (bound.locals.has(local)) addPaths(out, exported, bound.locals.get(local));
+    if (bound.opaque.has(local)) out.opaque.add(exported);
+  }
+  for (const { exported, chain } of [...record.consts, ...record.defaults]) {
+    const [local, ...members] = chain;
+    addPaths(out, exported, throughChain(bound.locals.get(local), members));
+    if (bound.opaque.has(local)) out.opaque.add(exported);
+  }
+  return out;
+}
+
+/** The text of a module with its import and export statements, comments and strings blanked. */
+function codeOf(record) {
+  if (record.code === null) {
+    let text = record.source;
+    for (const pattern of Object.values(STATEMENTS)) text = text.replace(pattern, (match) => " ".repeat(match.length));
+    record.code = text.replace(NOISE, " ");
+  }
+  return record.code;
+}
+
+const MEMBER = /\s*\.\s*([\w$]+)/y;
+const CALL = /\s*(?:<[^>]*>)?\s*\(/y;
+
+/** True when a use of `local` is anything but a call of the helper, or a member the helper is not under. */
+function usedOtherwise(code, local, paths) {
+  const pattern = new RegExp(String.raw`(?<![\w$.])${escape(local)}(?![\w$])`, "g");
+  for (const match of code.matchAll(pattern)) {
+    let at = match.index + match[0].length;
+    const chain = [];
+    for (;;) {
+      MEMBER.lastIndex = at;
+      const member = MEMBER.exec(code);
+      if (member === null) break;
+      chain.push(member[1]);
+      at += member[0].length;
+    }
+    // An object key, `{ insertReturning: 1 }`, names nothing.
+    const key = chain.length === 0 && /[{,]\s*$/.test(code.slice(Math.max(0, match.index - 40), match.index)) && /^\s*:(?!:)/.test(code.slice(at, at + 8));
+    // `typeof insertReturning` reads a type or a string, and passes the helper nowhere.
+    if (key || /\btypeof\s+$/.test(code.slice(Math.max(0, match.index - 12), match.index))) continue;
+    for (const path of paths) {
+      const segments = path === "" ? [] : path.split(".");
+      const reaches = chain.length >= segments.length && segments.every((segment, i) => chain[i] === segment);
+      const above = chain.length < segments.length && chain.every((segment, i) => segments[i] === segment);
+      if (above) return true;
+      if (!reaches) continue;
+      if (chain.length > segments.length) return true;
+      CALL.lastIndex = at;
+      if (!CALL.test(code)) return true;
+    }
+  }
+  return false;
+}
+
+/** The locals of a module that the helper flows into other than by a call, an import or an export list. */
+function offendersOf(record, locals, state) {
+  let size = 0;
+  for (const paths of locals.values()) size += paths.size;
+  const hit = state.uses.get(record.path);
+  if (hit !== undefined && hit.size === size) return hit.offenders;
+  const code = codeOf(record);
+  const offenders = [...locals].filter(([local, paths]) => usedOtherwise(code, local, paths)).map(([local]) => local);
+  state.uses.set(record.path, { size, offenders });
+  return offenders;
+}
+
+/** Resolves one helper over the graph. `room` is how many steps are left of the budget. */
+function resolveHelper(graph, helper, room, aliases) {
+  const module = graph.helperModules.get(stem(helper.module));
+  const state = { module, summaries: new Map(), uses: new Map() };
+  const seed = newSummary();
+  addPaths(seed, helper.name, [""]);
+  state.summaries.set(module, seed);
+  const queue = [];
+  const queued = new Set();
+  const enqueue = (path) => {
+    if (queued.has(path) || !graph.records.has(path)) return;
+    queued.add(path);
+    queue.push(path);
+  };
+  enqueue(module);
+  // Where the helper's name is imported, and where a re-export cannot be read, count from the start.
+  for (const path of graph.dependents.get(module) ?? []) enqueue(path);
+  for (const path of graph.importersOf.get(helper.name) ?? []) enqueue(path);
+  for (const path of graph.unreadable) enqueue(path);
+  let steps = 0;
+  for (let next = 0; next < queue.length; next += 1) {
+    if (steps >= room) return { state, steps, exceeded: true };
+    steps += 1;
+    const path = queue[next];
+    queued.delete(path);
+    const record = graph.records.get(path);
+    const bound = localsOf(record, helper, state, aliases);
+    const out = exportsOf(record, helper, state, bound);
+    if (path !== module && bound.locals.size > 0 && offendersOf(record, bound.locals, state).length > 0) out.all = true;
+    let summary = state.summaries.get(path);
+    if (summary === undefined) {
+      summary = newSummary();
+      state.summaries.set(path, summary);
+    }
+    if (grow(summary, out)) for (const dependent of graph.dependents.get(path) ?? []) enqueue(dependent);
+  }
+  return { state, steps, exceeded: false };
+}
+
+/** What each module does with the helper, once the summaries are final. */
+function reportHelper(graph, helper, state, aliases, found) {
+  for (const record of graph.records.values()) {
+    if (record.path === state.module) continue;
+    const bound = localsOf(record, helper, state, aliases);
+    if (bound.locals.size === 0 && bound.unresolved.length === 0) continue;
+    const entry = found.get(record.path) ?? { path: record.path, patterns: [], unresolved: [], offenders: [] };
+    for (const [local, paths] of bound.locals) for (const path of paths) entry.patterns.push({ helper, local, path });
+    for (const item of bound.unresolved) entry.unresolved.push({ helper, ...item });
+    if (bound.locals.size > 0) {
+      for (const local of offendersOf(record, bound.locals, state)) entry.offenders.push({ helper, local, specifier: bound.origin.get(local) });
+    }
+    found.set(record.path, entry);
+  }
+}
+
+const NO_ALIASES = Object.freeze([]);
+const NO_LEAVES = new Set();
+const RESOLUTIONS = new WeakMap();
+
+/**
+ * Where each exempt helper's names go: the calls to check, the imports the gate cannot resolve, and
+ * the modules that use a helper in a way it cannot follow. It is computed once for a list of files,
+ * so the three checks below share it. `steps` counts the worklist steps taken over all helpers.
+ * Past `budget` steps the resolution stops, and `exceeded` is set.
+ * @param {{path: string, contents: string}[]} files
+ * @param {{module: string, name: string, argument: number}[]} helpers
+ * @param {{aliases?: ReturnType<typeof aliasMap>, leaves?: Set<string>, budget?: number}} [options]
+ */
+export function resolveHelpers(files, helpers, options = {}) {
+  const aliases = options.aliases ?? NO_ALIASES;
+  const leaves = options.leaves ?? NO_LEAVES;
+  const budget = options.budget ?? STEP_BUDGET;
+  const cached = RESOLUTIONS.get(files);
+  if (cached && cached.helpers === helpers && cached.aliases === aliases && cached.leaves === leaves && cached.budget === budget) return cached.resolution;
+  const graph = buildGraph(files, helpers, aliases, leaves);
+  const found = new Map();
+  let steps = 0;
+  let stoppedAt = null;
+  for (const helper of helpers) {
+    const outcome = resolveHelper(graph, helper, budget - steps, aliases);
+    steps += outcome.steps;
+    if (outcome.exceeded) {
+      stoppedAt = helper;
+      break;
+    }
+    reportHelper(graph, helper, outcome.state, aliases, found);
+  }
+  const resolution = { steps, budget, exceeded: stoppedAt !== null, stoppedAt, files: stoppedAt === null ? [...found.values()] : [] };
+  RESOLUTIONS.set(files, { helpers, aliases, leaves, budget, resolution });
+  return resolution;
 }
 
 /**
@@ -417,26 +695,24 @@ function helperImports(file, source, helper, ctx, trail = { visited: new Set([fi
  * that carries the tenant and whether that argument names it.
  * @param {{path: string, contents: string}[]} files
  * @param {{module: string, name: string, argument: number}[]} helpers
- * @param {{column?: string, identifier?: string, aliases?: ReturnType<typeof aliasMap>, leaves?: Set<string>}} [options]
+ * @param {{column?: string, identifier?: string, aliases?: ReturnType<typeof aliasMap>, leaves?: Set<string>, budget?: number}} [options]
  * @returns {{path: string, line: number, name: string, index: number, argument: string, scoped: boolean}[]}
  */
 export function exemptHelperCalls(files, helpers, options = {}) {
   const tenant = tenantPattern(options.column ?? DEFAULT_TENANT_COLUMN, options.identifier ?? DEFAULT_TENANT_IDENTIFIER);
+  const sources = new Map(files.map((file) => [file.path, file.contents]));
   const calls = [];
-  const ctx = contextOf(files, options);
-  for (const { path, contents: source } of files) {
-    for (const helper of helpers) {
-      const { names, namespaces } = helperImports(path, source, helper, ctx);
-      const patterns = [...names.map((local) => callPattern(local)), ...namespaces.map(({ local, member }) => callPattern(member, local))];
-      for (const pattern of patterns) {
-        for (const match of source.matchAll(pattern)) {
-          // The enclosing function starts the window, so a neighbour cannot vouch for this call.
-          const before = source.slice(0, match.index);
-          const from = Math.max(0, before.lastIndexOf("function "), before.lastIndexOf("=> {"), before.lastIndexOf("\n}"));
-          const argument = (callArguments(source, match.index + match[0].length - 1)[helper.argument] ?? "").trim();
-          const scoped = tenant.test(argument) || tenant.test(resolved(source, argument, from, match.index));
-          calls.push({ path, line: before.split("\n").length, name: helper.name, index: helper.argument, argument, scoped });
-        }
+  for (const { path, patterns } of resolveHelpers(files, helpers, options).files) {
+    const source = sources.get(path);
+    for (const { helper, local, path: member } of patterns) {
+      const segments = member === "" ? [] : member.split(".");
+      for (const match of source.matchAll(callPattern(segments.at(-1) ?? local, segments.length === 0 ? [] : [local, ...segments.slice(0, -1)]))) {
+        // The enclosing function starts the window, so a neighbour cannot vouch for this call.
+        const before = source.slice(0, match.index);
+        const from = Math.max(0, before.lastIndexOf("function "), before.lastIndexOf("=> {"), before.lastIndexOf("\n}"));
+        const argument = (callArguments(source, match.index + match[0].length - 1)[helper.argument] ?? "").trim();
+        const scoped = tenant.test(argument) || tenant.test(resolved(source, argument, from, match.index));
+        calls.push({ path, line: before.split("\n").length, name: helper.name, index: helper.argument, argument, scoped });
       }
     }
   }
@@ -446,7 +722,7 @@ export function exemptHelperCalls(files, helpers, options = {}) {
 /**
  * @param {{path: string, contents: string}[]} files
  * @param {{module: string, name: string, argument: number}[]} helpers
- * @param {{column?: string, identifier?: string, aliases?: ReturnType<typeof aliasMap>, leaves?: Set<string>}} [options]
+ * @param {{column?: string, identifier?: string, aliases?: ReturnType<typeof aliasMap>, leaves?: Set<string>, budget?: number}} [options]
  * @returns {{path: string, rule: string, detail: string}[]}
  */
 export function checkExemptHelperCalls(files, helpers, options = {}) {
@@ -459,31 +735,60 @@ export function checkExemptHelperCalls(files, helpers, options = {}) {
     }));
 }
 
+const REMEDY = "Import it from the module by a relative path, or map the alias in the tsconfig that tenantPredicate.tsconfig names";
+
 /**
- * A file that imports an exempt helper by a specifier the gate cannot resolve to the helper's
- * module, an alias no tsconfig maps or a barrel that re-exports it, has calls the gate cannot see.
- * That is a finding, not a pass.
+ * A file that reaches an exempt helper in a form the gate cannot follow has calls it cannot see.
+ * That is a finding, not a pass. Three forms count. An import of the helper's name, or a namespace
+ * of its module, by a specifier the gate cannot resolve to the module: an alias no tsconfig maps.
+ * An import from an opaque module: one that re-exports from a local file the gate cannot read, or
+ * that uses the helper other than by a call, an import or an export list. And the use itself, in a
+ * file that imports the helper and stores it, as in `const f = insertReturning`. A resolution past
+ * its step budget is one problem that names the budget.
  * @param {{path: string, contents: string}[]} files
  * @param {{module: string, name: string, argument: number}[]} helpers
- * @param {{aliases?: ReturnType<typeof aliasMap>, leaves?: Set<string>}} [options]
+ * @param {{aliases?: ReturnType<typeof aliasMap>, leaves?: Set<string>, budget?: number}} [options]
  * @returns {{path: string, rule: string, detail: string}[]}
  */
 export function unresolvedHelperImports(files, helpers, options = {}) {
+  const resolution = resolveHelpers(files, helpers, options);
+  if (resolution.exceeded) {
+    const { name, module } = resolution.stoppedAt;
+    return [
+      {
+        path: module,
+        rule: "unresolved-helper-import",
+        detail: `following where ${name} is re-exported took more than the budget of ${resolution.budget} steps, so the gate stopped and its calls are not checked. Import the helper from its own module, and cut the cycles between barrels`,
+      },
+    ];
+  }
   const problems = [];
-  const ctx = contextOf(files, options);
-  for (const { path, contents: source } of files) {
-    const bySpecifier = new Map();
-    for (const helper of helpers) {
-      for (const { specifier, name } of helperImports(path, source, helper, ctx).unresolved) {
-        const label = name === "*" ? `a namespace of ${helper.module}` : name;
-        bySpecifier.set(specifier, new Set([...(bySpecifier.get(specifier) ?? []), label]));
-      }
+  for (const { path, unresolved, offenders } of resolution.files) {
+    const groups = new Map();
+    for (const { helper, specifier, name, why } of unresolved) {
+      const label = name === "*" ? `a namespace of ${helper.module}` : name;
+      const key = `${why}\0${specifier}`;
+      const group = groups.get(key) ?? { why, specifier, labels: new Set() };
+      group.labels.add(label);
+      groups.set(key, group);
     }
-    for (const [specifier, labels] of bySpecifier) {
+    for (const { why, specifier, labels } of groups.values()) {
+      const list = [...labels].join(", ");
       problems.push({
         path,
         rule: "unresolved-helper-import",
-        detail: `imports ${[...labels].join(", ")} from '${specifier}', which the gate cannot resolve to the exempt helper's module, so its calls are not checked. Import it from the module by a relative path, or map the alias in the tsconfig that tenantPredicate.tsconfig names`,
+        detail:
+          why === "opaque"
+            ? `imports ${list} from '${specifier}', which is opaque: it re-exports from a file the gate cannot read, or uses the exempt helper other than by a call, so the calls it exposes are not checked. ${REMEDY}`
+            : `imports ${list} from '${specifier}', which the gate cannot resolve to the exempt helper's module, so its calls are not checked. ${REMEDY}`,
+      });
+    }
+    if (offenders.length > 0) {
+      const list = [...new Set(offenders.map(({ helper, local }) => `${local} (${helper.name})`))].join(", ");
+      problems.push({
+        path,
+        rule: "unresolved-helper-import",
+        detail: `uses ${list} other than by a call, an import or an export list, so the gate cannot tell which calls it must check. Call the exempt helper directly`,
       });
     }
   }

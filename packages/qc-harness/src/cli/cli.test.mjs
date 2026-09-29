@@ -426,3 +426,31 @@ test("check treats a scanned file with no import as read, and one outside the sc
   assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/y.ts", rule: "unresolved-helper-import" }]);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("check follows a default export of a helper module that has no import or re-export", async () => {
+  const dir = await helperRepo({
+    "backend/src/application/sql/crud.ts": "export function insertReturning() {}\nexport default insertReturning;\n",
+    "backend/src/features/a/x.ts": 'import put from "../../application/sql/crud.js";\nput(tx, "a", ["id"], v);\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/x.ts", rule: "unscoped-helper-call" }]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("check follows an export const alias, and fails a file that aliases the helper in its body", async () => {
+  const dir = await helperRepo({
+    "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+    "backend/src/application/sql/index.ts": 'import { insertReturning } from "./crud.js";\nexport const insertRow = insertReturning;\n',
+    "backend/src/features/a/x.ts": 'import { insertRow } from "../../application/sql/index.js";\ninsertRow(tx, "a", ["id"], v);\n',
+    "backend/src/features/a/y.ts": 'import { insertReturning } from "../../application/sql/crud.js";\nconst f = insertReturning;\nf(tx, "a", ["id"], v);\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(
+    helperProblems(problems).sort((a, b) => a.file.localeCompare(b.file)),
+    [
+      { file: "backend/src/features/a/x.ts", rule: "unscoped-helper-call" },
+      { file: "backend/src/features/a/y.ts", rule: "unresolved-helper-import" },
+    ],
+  );
+  rmSync(dir, { recursive: true, force: true });
+});

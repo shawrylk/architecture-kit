@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { aliasMap, checkExemptHelperCalls, checkTenantPredicate, exemptHelperCalls, unresolvedHelperImports } from "./tenant-predicate.mjs";
+import * as gate from "./tenant-predicate.mjs";
+
+const { aliasMap, checkExemptHelperCalls, checkTenantPredicate, exemptHelperCalls, unresolvedHelperImports } = gate;
 
 const owned = new Set(["projects", "pin_annotations"]);
 const one = (sql, bound = new Set()) => [{ path: "r.ts", statements: [{ sql, bound }] }];
@@ -414,9 +416,10 @@ function chain(count) {
   return barrels;
 }
 
-test("a chain of eight barrels is followed, and a chain of nine fails closed", () => {
+test("a chain of barrels is followed to any length, since the step budget bounds the work", () => {
   assert.deepEqual(withFiles(chain(8), importFrom("insertRow")), ["unscoped-helper-call"]);
-  assert.deepEqual(withFiles(chain(9), importFrom("insertRow")), ["unresolved-helper-import"]);
+  assert.deepEqual(withFiles(chain(9), importFrom("insertRow")), ["unscoped-helper-call"]);
+  assert.deepEqual(withFiles(chain(200), importFrom("insertRow")), ["unscoped-helper-call"]);
 });
 
 test("a barrel that exports a name from a module the gate cannot read fails closed for that name", () => {
@@ -447,4 +450,235 @@ test("every importer of one barrel is checked, not only the first", () => {
     { path: "backend/src/features/projects/shared/other.ts", contents: importFrom("put") },
   ];
   assert.equal(checkExemptHelperCalls(files, helpers).length, 2);
+});
+
+// The gate parses each file once into a module record, then finds where the helper's names go by a
+// fixed point over the module graph. A cycle, a namespace, an alias, a default and a missing space
+// all resolve. What it cannot follow makes the module opaque, and a caller of an opaque module fails.
+
+const modulesAt = (modules) => Object.fromEntries(Object.entries(modules).map(([name, contents]) => [`${SQL}/${name}.ts`, contents]));
+const specifierOf = (name) => `../../../application/sql/${name}.js`;
+const badCall = (call) => `${call}(tx, "a", ["id"], v, C, f);`;
+/** The rules found for a caller that imports from a module of `modules`. */
+const found = (modules, caller, options = {}) => withFiles(modulesAt(modules), caller, options);
+const UNSCOPED = ["unscoped-helper-call"];
+const UNRESOLVED = ["unresolved-helper-import"];
+
+test("a cycle keeps its names: a rename that a star export feeds back through the same cycle", () => {
+  const modules = {
+    A: 'export * from "./B.js";\nexport { insertReturning as put } from "./crud.js";\n',
+    B: 'export { put as q } from "./A.js";\n',
+  };
+  assert.deepEqual(found(modules, `import { q } from "${specifierOf("A")}";\n${badCall("q")}`), UNSCOPED);
+  assert.deepEqual(found(modules, `import { q } from "${specifierOf("B")}";\n${badCall("q")}`), UNSCOPED);
+});
+
+test("a cycle keeps its names: a ring of stars, and a rename through a member of the ring", () => {
+  const ring = {
+    A: 'export * from "./B.js";\n',
+    B: 'export * from "./A.js";\nexport { insertReturning as put } from "./crud.js";\n',
+  };
+  assert.deepEqual(found(ring, `import { put } from "${specifierOf("A")}";\n${badCall("put")}`), UNSCOPED);
+  const rename = {
+    A: 'export { y as w } from "./B.js";\nexport * from "./B.js";\n',
+    B: 'export { put as y } from "./A.js";\nexport { insertReturning as put } from "./crud.js";\n',
+  };
+  assert.deepEqual(found(rename, `import { w } from "${specifierOf("A")}";\n${badCall("w")}`), UNSCOPED);
+  const three = {
+    A: 'export * from "./B.js";\n',
+    B: 'export { z as y } from "./C.js";\n',
+    C: 'export { insertReturning as z } from "./crud.js";\nexport * from "./A.js";\n',
+  };
+  assert.deepEqual(found(three, `import { y } from "${specifierOf("A")}";\n${badCall("y")}`), UNSCOPED);
+});
+
+test("a cycle with a scoped call passes, and a cycle that reaches no helper reports nothing", () => {
+  const modules = { A: 'export * from "./B.js";\nexport { insertReturning as put } from "./crud.js";\n', B: 'export { put as q } from "./A.js";\n' };
+  assert.deepEqual(found(modules, `import { q } from "${specifierOf("B")}";\nq(tx, "a", ["tenant_id"], v, C, f);`), []);
+  const empty = { A: 'export * from "./B.js";\n', B: 'export * from "./A.js";\n' };
+  assert.deepEqual(found(empty, `import { other } from "${specifierOf("A")}";\n${badCall("other")}`), []);
+});
+
+test("a member of a namespace that a barrel re-exports is checked: b.crud.insertReturning(", () => {
+  const modules = { index: 'export * as crud from "./crud.js";\n' };
+  const viaNamespace = `import * as b from "${specifierOf("index")}";\n${badCall("b.crud.insertReturning")}`;
+  assert.deepEqual(found(modules, viaNamespace), UNSCOPED);
+  const viaName = `import { crud } from "${specifierOf("index")}";\n${badCall("crud.insertReturning")}`;
+  assert.deepEqual(found(modules, viaName), UNSCOPED);
+  const good = `import * as b from "${specifierOf("index")}";\nb.crud.insertReturning(tx, "a", ["tenant_id"], v, C, f);`;
+  assert.deepEqual(found(modules, good), []);
+});
+
+test("a namespace nested two barrels deep is checked: db.crud.insertReturning(", () => {
+  const modules = { inner: 'export * as crud from "./crud.js";\n', index: 'export * as db from "./inner.js";\n' };
+  assert.deepEqual(found(modules, `import { db } from "${specifierOf("index")}";\n${badCall("db.crud.insertReturning")}`), UNSCOPED);
+  assert.deepEqual(found(modules, `import * as all from "${specifierOf("index")}";\n${badCall("all.db.crud.insertReturning")}`), UNSCOPED);
+});
+
+test("an alias by export const is followed, for a name and for a member of a namespace", () => {
+  const byName = { index: 'import { insertReturning } from "./crud.js";\nexport const insertRow = insertReturning;\n' };
+  assert.deepEqual(found(byName, `import { insertRow } from "${specifierOf("index")}";\n${badCall("insertRow")}`), UNSCOPED);
+  const byMember = { index: 'import * as crud from "./crud.js";\nexport const insertRow = crud.insertReturning;\n' };
+  assert.deepEqual(found(byMember, `import { insertRow } from "${specifierOf("index")}";\n${badCall("insertRow")}`), UNSCOPED);
+});
+
+test("a module that aliases the helper in its own body is opaque, and it fails as a file too", () => {
+  const source = `import { insertReturning } from "${specifierOf("crud")}";\nconst f = insertReturning;\n${badCall("f")}`;
+  assert.deepEqual(withFiles({}, source), UNRESOLVED);
+  const destructured = `import * as crud from "${specifierOf("crud")}";\nconst { insertReturning: put } = crud;\n${badCall("put")}`;
+  assert.deepEqual(withFiles({}, destructured), UNRESOLVED);
+  const wrapped = `import { insertReturning } from "${specifierOf("crud")}";\nexport const insertRow = wrap(insertReturning);\n`;
+  assert.deepEqual(withFiles({}, wrapped), UNRESOLVED);
+});
+
+test("a caller that imports from an opaque module fails, for any name and for a namespace", () => {
+  const modules = { index: 'import { insertReturning } from "./crud.js";\nexport const insertRow = wrap(insertReturning);\nexport const other = 1;\n' };
+  assert.deepEqual(found(modules, `import { other } from "${specifierOf("index")}";\n`).slice(-1), UNRESOLVED);
+  assert.deepEqual(found(modules, `import * as all from "${specifierOf("index")}";\n`).slice(-1), UNRESOLVED);
+});
+
+test("a helper that is only called, exported in a list, or named in a comment, a string or a typeof is not opaque", () => {
+  const modules = { index: 'import { insertReturning } from "./crud.js";\nexport { insertReturning as put };\n' };
+  assert.deepEqual(found(modules, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+  const called = `import { insertReturning } from "${specifierOf("crud")}";\n// insertReturning is exempt\nconst text = "insertReturning";\nother.insertReturning(1);\ntype T = typeof insertReturning;\n${badCall("insertReturning")}`;
+  assert.deepEqual(withFiles({}, called), UNSCOPED);
+});
+
+test("a default export and a default import are followed, through a barrel and from the helper module", () => {
+  const viaLocal = { index: 'import { insertReturning } from "./crud.js";\nexport default insertReturning;\n' };
+  assert.deepEqual(found(viaLocal, `import put from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+  const viaFrom = { index: 'export { insertReturning as default } from "./crud.js";\n' };
+  assert.deepEqual(found(viaFrom, `import put from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+  assert.deepEqual(found(viaFrom, `import { default as put } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+  assert.deepEqual(found(viaFrom, `import put, { other } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+  const own = { crud: "export function insertReturning() {}\nexport default insertReturning;\n" };
+  assert.deepEqual(found(own, `import put from "${specifierOf("crud")}";\n${badCall("put")}`), UNSCOPED);
+  assert.equal(found(own, `import put, * as crud from "${specifierOf("crud")}";\n${badCall("put")}\n${badCall("crud.insertReturning")}`).length, 2);
+});
+
+test("a star export does not carry a default", () => {
+  const modules = { crud: "export function insertReturning() {}\nexport default insertReturning;\n", index: 'export * from "./crud.js";\n' };
+  assert.deepEqual(found(modules, `import put from "${specifierOf("index")}";\n${badCall("put")}`), []);
+});
+
+test("an unmapped alias in an export star makes the barrel opaque, so a rename through it fails", () => {
+  const modules = {
+    b1: 'export * from "@/application/sql/crud.js";\n',
+    index: 'export { insertReturning as put } from "./b1.js";\n',
+  };
+  assert.deepEqual(found(modules, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`), UNRESOLVED);
+  assert.deepEqual(found(modules, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`, { aliases }), UNSCOPED);
+});
+
+test("an export star from a local-looking specifier that resolves to nothing is opaque, and a package is not", () => {
+  for (const specifier of ["@/x/y.js", "~/x/y.js", "#internal/y", "../../../outside/y.js"]) {
+    const modules = { index: `export * from "${specifier}";\n` };
+    assert.deepEqual(found(modules, `import { anything } from "${specifierOf("index")}";\n`), UNRESOLVED, specifier);
+  }
+  const packages = { index: 'export * from "zod";\nexport * from "@scope/pkg";\nexport { insertReturning as put } from "./crud.js";\n' };
+  assert.deepEqual(found(packages, `import { other } from "${specifierOf("index")}";\n`), []);
+  assert.deepEqual(found(packages, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+});
+
+test("an export star from a path pattern the alias map skips is opaque too", () => {
+  const skipped = aliasMap('{"compilerOptions":{"paths":{"@app/*/sql":["src/*/sql"]}}}');
+  const modules = { index: 'export * from "@app/x/sql";\n' };
+  assert.deepEqual(found(modules, `import { anything } from "${specifierOf("index")}";\n`, { aliases: skipped }), UNRESOLVED);
+});
+
+test("opacity travels through a re-export chain and a cycle", () => {
+  const modules = {
+    inner: 'export * from "@/x/y.js";\n',
+    mid: 'export * from "./inner.js";\nexport * from "./index.js";\n',
+    index: 'export * from "./mid.js";\n',
+  };
+  assert.deepEqual(found(modules, `import { anything } from "${specifierOf("index")}";\n`), UNRESOLVED);
+});
+
+test("import and export with no whitespace are read", () => {
+  assert.deepEqual(withFiles({}, `import{insertReturning}from"${specifierOf("crud")}";\n${badCall("insertReturning")}`), UNSCOPED);
+  const named = { index: 'export{insertReturning as put}from"./crud.js";\n' };
+  assert.deepEqual(found(named, `import{put}from"${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+  const star = { index: 'export*from"./crud.js";\n' };
+  assert.deepEqual(found(star, `import{insertReturning}from"${specifierOf("index")}";\n${badCall("insertReturning")}`), UNSCOPED);
+  const space = { index: 'export*as crud from"./crud.js";\n' };
+  assert.deepEqual(found(space, `import*as b from"${specifierOf("index")}";\n${badCall("b.crud.insertReturning")}`), UNSCOPED);
+});
+
+test("a multi-line import and re-export list are read", () => {
+  const modules = { index: 'export {\n  updateVersionedRow as upd,\n  insertReturning as put,\n} from "./crud.js";\n' };
+  const caller = `import {\n  put,\n  upd,\n} from "${specifierOf("index")}";\n${badCall("put")}\nupd(tx, "b", f, id, id, 1, C);`;
+  assert.deepEqual(found(modules, caller), [...UNSCOPED, ...UNSCOPED]);
+});
+
+test("what the gate does not read passes unseen: require, a dynamic import, a type import", () => {
+  const modules = { index: 'export { insertReturning as put } from "./crud.js";\n' };
+  const unseen = [
+    `const { put } = require("${specifierOf("index")}");\n${badCall("put")}`,
+    `const { put } = await import("${specifierOf("index")}");\n${badCall("put")}`,
+    `import type { put } from "${specifierOf("index")}";\n${badCall("put")}`,
+  ];
+  for (const source of unseen) assert.deepEqual(found(modules, source), [], source);
+});
+
+/** A small deterministic generator, so a pinned count does not move. */
+function random(seed) {
+  let state = seed;
+  return () => {
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 2 ** 32;
+  };
+}
+
+/** A strongly connected graph: a ring of stars plus random stars, the helper renamed inside it. */
+function denseCycle(count, edges) {
+  const next = random(45);
+  const lines = Array.from({ length: count }, (_, i) => new Set([`export * from "./m${(i + 1) % count}.js";`]));
+  for (let extra = count; extra < edges; extra += 1) {
+    const from = Math.floor(next() * count);
+    lines[from].add(`export * from "./m${Math.floor(next() * count)}.js";`);
+  }
+  lines[0].add('export { insertReturning as put } from "./crud.js";');
+  lines[7].add('export { put as again } from "./m0.js";');
+  lines[count - 1].add('export * as crud from "./crud.js";');
+  return Object.fromEntries(Array.from(lines, (set, i) => [`${SQL}/m${i}.ts`, `${[...set].join("\n")}\n`]));
+}
+
+test("a dense cyclic graph of 2,000 files and 5,000 edges resolves in under 2 s, within the step budget", { timeout: 20_000 }, () => {
+  const barrels = denseCycle(2000, 5000);
+  const files = [
+    ...Object.entries(barrels).map(([path, contents]) => ({ path, contents })),
+    { path: FILE, contents: `import { put, again } from "${specifierOf("m1000")}";\nimport { crud } from "${specifierOf("m1500")}";\n${badCall("put")}\n${badCall("again")}\n${badCall("crud.insertReturning")}` },
+  ];
+  const before = performance.now();
+  const resolution = gate.resolveHelpers(files, helpers);
+  const problems = [...checkExemptHelperCalls(files, helpers), ...unresolvedHelperImports(files, helpers)];
+  const elapsed = performance.now() - before;
+  assert.ok(elapsed < 2000, `took ${Math.round(elapsed)} ms`);
+  assert.equal(resolution.exceeded, false);
+  assert.ok(resolution.steps <= 50_000, `${resolution.steps} steps`);
+  assert.equal(resolution.steps, 8604, "the pinned step count moves only when the algorithm does");
+  assert.deepEqual(problems.map((problem) => problem.rule), [UNSCOPED[0], UNSCOPED[0], UNSCOPED[0]]);
+});
+
+test("a resolution past the step budget fails closed with one problem that names the budget", () => {
+  const barrels = denseCycle(60, 150);
+  const files = [
+    ...Object.entries(barrels).map(([path, contents]) => ({ path, contents })),
+    { path: FILE, contents: `import { put } from "${specifierOf("m30")}";\n${badCall("put")}` },
+  ];
+  const problems = unresolvedHelperImports(files, helpers, { budget: 25 });
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].rule, "unresolved-helper-import");
+  assert.match(problems[0].detail, /budget of 25 steps/);
+  assert.deepEqual(checkExemptHelperCalls(files, helpers, { budget: 25 }), []);
+  assert.equal(gate.resolveHelpers(files, helpers, { budget: 25 }).exceeded, true);
+  assert.deepEqual(unresolvedHelperImports(files, helpers), []);
+});
+
+test("the three checks share one resolution of a file list, so no file is parsed twice", () => {
+  const files = [{ path: FILE, contents: IMPORT }];
+  const options = { aliases: [] };
+  assert.equal(gate.resolveHelpers(files, helpers, options), gate.resolveHelpers(files, helpers, options));
+  assert.notEqual(gate.resolveHelpers(files, helpers, options), gate.resolveHelpers([...files], helpers, options));
 });

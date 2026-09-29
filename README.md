@@ -746,19 +746,45 @@ repository whose `paths` live in `backend/tsconfig.json` must say so. That file 
 `compilerOptions.baseUrl` and `paths` count, and an `extends` chain is not followed. A file with no
 such tsconfig has no aliases.
 
-A local barrel is followed to the module, through as many barrels as it takes, up to 8. An
-`export { insertReturning as insertRow } from "./crud"`, an `export *` from the module, an
-`export * as crud` of it, and an import that a barrel re-exports under a new name all map back to
-the helper, and their calls are checked. A cycle of barrels ends. An import of the helper that the
-gate cannot resolve to its `module` fails as `unresolved-helper-import`, naming the file and the
-specifier. So does an import through a barrel the gate cannot trace: a chain longer than 8, or a
-re-export from a source file outside `paths.citable` (a name it exports, or an `export *`). An alias
-with no matching path fails the same way. Import the helper from its own module, or add the folder
-to `paths.citable`.
+The gate parses each scanned file once into a record of its imports and exports. It then finds
+every name that denotes the helper by a fixed point over those records. These forms all map back to
+the helper, through any number of barrels and around any cycle:
 
-The gate does not see `require()`, a dynamic `import()`, or an `import type`, and it passes them
-unseen. A `paths` pattern whose `*` is not at the end is skipped, so an alias it would cover fails
-as `unresolved-helper-import`.
+- `export { insertReturning as insertRow } from "./crud"`
+- `export * from "./crud"`, and `export * as crud from "./crud"`, also nested as `db.crud`
+- `export const insertRow = insertReturning`, and `export { insertReturning as insertRow }`
+- a default export of the helper, and a default import of it
+
+The gate checks the calls `insertRow(`, `crud.insertReturning(`, and `db.crud.insertReturning(`. It
+reads `import{x}from"y"` with no whitespace. The work is bounded: after 50,000 worklist steps over
+all helpers, the gate stops and reports one `unresolved-helper-import` that names the budget.
+
+A file fails as `unresolved-helper-import` when it reaches the helper in a form the gate cannot
+follow:
+
+- It imports the helper's name, or a namespace of its module, by a specifier the gate cannot
+  resolve to that module, such as an alias with no matching path.
+- It imports any name from an opaque module.
+- It imports the helper and uses the local name other than by a call, an import, or an export. That
+  covers `const f = insertReturning`, a destructure, and `wrap(insertReturning)`. `typeof` and an
+  object key are not uses. This file is opaque too.
+
+A module is opaque when it does the third, or when it has an `export *` from a local-looking
+specifier that resolves to nothing. A local-looking specifier is a `paths` prefix, `@/`, `~/`, `#`,
+or a relative path outside `paths.citable`. A named re-export from such a specifier makes that name
+opaque. Opacity travels through re-exports and cycles. A package specifier such as `zod` is never
+opaque. A namespace nested more than four names deep makes its module opaque as well. Import the
+helper from its own module, add the folder to `paths.citable`, or map the alias.
+
+The gate passes each of these unseen:
+
+- `require()`
+- a dynamic `import()`
+- an `import type`
+- a `*` that is not at the end of a `paths` pattern: a renamed import through that alias passes
+  unseen, and an `export *` through it is opaque
+- a renamed name imported from an unscanned local file: `import { put } from "../outside"` passes
+  unseen, and `import { insertReturning } from "../outside"` fails
 
 The kit ships these two defaults in `tenantPredicate.exemptHelpers`:
 
