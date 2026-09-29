@@ -360,10 +360,10 @@ export const defaults = {
     "tenant-isolation-test": false,
   },
 
-  // Gates that produce rather than inspect: a repository's codegen imports these and
-  // writes their output. `qc check` does not run them, so they carry no switch — a
-  // switch that changed nothing would be a lie about what the config controls.
-  generators: ["tenant-tables", "contract-compose"],
+  // Modules under gates/ that `qc check` does not run, so they carry no switch — a switch that
+  // changed nothing would be a lie about what the config controls. A repository's codegen imports
+  // a generator and writes its output; `contract-operations` is the reader the contract gates share.
+  generators: ["tenant-tables", "contract-compose", "contract-operations"],
 
   rules: {
     "no-comment-paragraph": true,
