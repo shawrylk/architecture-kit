@@ -102,6 +102,9 @@ export function exploreSettingsAt(cwd) {
   return exploreSettings(load(root).swarm);
 }
 
+/** One `- name: use (how)` line per explore tool: the form every explore note and refusal shares. */
+export const exploreToolLines = (tools) => tools.map((tool) => `- ${tool.name}: ${tool.use} (${tool.how})`);
+
 /** The type a dispatch names, trimmed. The Agent tool runs general-purpose when it names none. */
 export const typeOf = (input) =>
   typeof input.subagent_type === "string" && input.subagent_type.trim() !== "" ? input.subagent_type.trim() : DEFAULT_TYPE;

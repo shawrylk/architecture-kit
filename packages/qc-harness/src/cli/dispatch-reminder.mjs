@@ -3,7 +3,7 @@
 // and fork, because a rule held only in the conversation is lost to a compaction.
 
 import { fileURLToPath } from "node:url";
-import { dispatchSettingsAt, exploreSettingsAt } from "./dispatch.mjs";
+import { dispatchSettingsAt, exploreSettingsAt, exploreToolLines } from "./dispatch.mjs";
 
 export const REMINDER =
   "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
@@ -22,23 +22,30 @@ const slotsLine = ({ implementerSlots }) =>
     ? ` This repository allows up to ${implementerSlots} implementers at once, each in its own worktree, so the one-at-a-time rule above does not apply. A hook refuses one over the limit.`
     : "";
 
-/** One added line naming `swarm.explore`'s tools, or "" when the section is off or names none. */
-function exploreLine(cwd) {
+/** The explore tools, or null when the section is off, names none, or does not parse. */
+function exploreToolsAt(cwd) {
   let settings;
   try {
     settings = exploreSettingsAt(cwd);
   } catch {
-    // The explore guard and hint each report their own config error; the dispatch note stays unaffected.
-    return "";
+    // The explore guard and hint each report their own config error; the notes stay unaffected.
+    return null;
   }
-  if (!settings || settings.tools.length === 0) return "";
-  return ` The repository's own explore tools: ${settings.tools.map((tool) => tool.name).join(", ")}.`;
+  return settings && settings.tools.length > 0 ? settings.tools : null;
 }
 
-/** @returns the hook output for a subagent's own start, or null when `swarm.explore` names no tools. */
+/** One added line naming `swarm.explore`'s tools, or "" when there are none. */
+function exploreLine(cwd) {
+  const tools = exploreToolsAt(cwd);
+  return tools ? ` The repository's own explore tools: ${tools.map((tool) => tool.name).join(", ")}.` : "";
+}
+
+/** A subagent may carry no MCP tool, so its note gives each tool's command, not only its name. */
 function decideSubagentStart(cwd) {
-  const line = exploreLine(cwd).trim();
-  return line === "" ? null : context("SubagentStart", line);
+  const tools = exploreToolsAt(cwd);
+  if (!tools) return null;
+  const lines = ["The repository's own explore tools, and how to run each:", ...exploreToolLines(tools)];
+  return context("SubagentStart", lines.join("\n"));
 }
 
 /** @returns the hook output, or null when the checkout turns on neither `swarm.dispatch` nor `swarm.explore`. */
