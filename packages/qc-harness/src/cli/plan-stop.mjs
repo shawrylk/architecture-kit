@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { appendRecord } from "./ledger.mjs";
 import { checkPlan } from "./plan-check.mjs";
 import { dropReport, keepReport, reportOf } from "./report-stash.mjs";
+import { nativePath } from "./workflow-place.mjs";
 import { workflowOf } from "./workflow-settings.mjs";
 
 const HANDBACK = "SubagentHandback";
@@ -26,7 +27,7 @@ export const planPathOf = (text) => PLAN_LINE.exec(String(text))?.[1]?.replace(Q
 export function planProblems(text, cwd, maxTaskCalls) {
   const named = planPathOf(text);
   if (!named) return ["a line that starts `PLAN:` with the plan's absolute path"];
-  const file = path.resolve(cwd, named);
+  const file = path.resolve(cwd, nativePath(named));
   let markdown;
   try {
     markdown = readFileSync(file, "utf8");
@@ -37,6 +38,9 @@ export function planProblems(text, cwd, maxTaskCalls) {
 }
 
 const refusal = (problems) => `Plan check: fix these, then send the report again. ${problems.map((problem, i) => `${i + 1}) ${problem}.`).join(" ")}`;
+
+/** A block already held this stop once, so it ends now, records nothing, and says what is still missing. */
+const held = (problems) => ({ systemMessage: `${refusal(problems)} A block already held this stop once, so it ends now and the ledger records nothing.` });
 
 /** The verdict on one hook event. @returns the hook output, or null to let it pass with no message. */
 export function decide(call, tmp = os.tmpdir()) {
@@ -64,10 +68,13 @@ export function decide(call, tmp = os.tmpdir()) {
   const text = event === "PreToolUse" ? String(call.tool_input?.message ?? "") : reportOf(call, tmp);
   const cwd = call.cwd ?? process.cwd();
   const problems = planProblems(text, cwd, workflow.review.maxTaskCalls);
-  if (problems.length > 0) return event === "PreToolUse" ? deny(refusal(problems)) : block(refusal(problems));
+  if (problems.length > 0) {
+    if (event === "PreToolUse") return deny(refusal(problems));
+    return call.stop_hook_active === true ? held(problems) : block(refusal(problems));
+  }
   if (event === "PreToolUse") return null;
   try {
-    appendRecord(workflow.ledger, { type: "stop", session, agentType: call.agent_type, agentId, role: "planner", plan: path.resolve(cwd, planPathOf(text)) });
+    appendRecord(workflow.ledger, { type: "stop", session, agentType: call.agent_type, agentId, role: "planner", plan: path.resolve(cwd, nativePath(planPathOf(text))) });
     dropReport(session, agentId, tmp);
   } catch (error) {
     return { systemMessage: `Plan check: the ledger write failed (${error.message}), so this planner stop is not recorded.` };

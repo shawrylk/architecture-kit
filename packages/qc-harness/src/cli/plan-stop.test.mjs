@@ -48,7 +48,15 @@ const handback = (cwd, message, event = "PreToolUse") => ({
   agent_id: "planner-1",
   agent_type: "architecture:sdd-planner",
 });
-const stop = (cwd, last) => ({ session_id: "s", cwd, hook_event_name: "SubagentStop", agent_id: "planner-1", agent_type: "sdd-planner", last_assistant_message: last });
+const stop = (cwd, last, active = false) => ({
+  session_id: "s",
+  cwd,
+  hook_event_name: "SubagentStop",
+  agent_id: "planner-1",
+  agent_type: "sdd-planner",
+  last_assistant_message: last,
+  stop_hook_active: active,
+});
 const denied = (output) => output?.hookSpecificOutput?.permissionDecisionReason ?? null;
 
 test("the plan path is read from its PLAN: line", () => {
@@ -101,4 +109,28 @@ test("the hook process is silent in a checkout without the checks", (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
   assert.equal(existsSync(ws.ledger), false);
+});
+
+test("a stop that a block already held once ends with a message and records nothing", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(stop(ws.on, "Done."), ws.tmp)?.decision, "block");
+  const output = decide(stop(ws.on, "Done.", true), ws.tmp);
+  assert.equal(output.decision, undefined);
+  assert.match(output.systemMessage, /PLAN:/);
+  assert.equal(existsSync(ws.ledger), false);
+});
+
+test("the retry after a block records the plan once the report is fixed", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(stop(ws.on, "Done."), ws.tmp)?.decision, "block");
+  assert.equal(decide(stop(ws.on, `PLAN: ${path.join(ws.plans, "good.md")}`, true), ws.tmp), null);
+  assert.deepEqual(readLedger(ws.ledger).map((record) => [record.type, record.role]), [["stop", "planner"]]);
+});
+
+test("a plan named with a Git Bash drive path resolves on Windows", { skip: process.platform !== "win32" }, (t) => {
+  const ws = workspace(t);
+  const gitBash = "/" + path.join(ws.plans, "good.md").replace(/^([A-Za-z]):/, (_, drive) => drive.toLowerCase()).replaceAll("\\", "/");
+  assert.equal(decide(handback(ws.on, `PLAN: ${gitBash}`), ws.tmp), null);
+  assert.equal(decide(stop(ws.on, `PLAN: ${gitBash}`), ws.tmp), null);
+  assert.equal(readLedger(ws.ledger)[0].plan.toLowerCase(), path.join(ws.plans, "good.md").toLowerCase());
 });
