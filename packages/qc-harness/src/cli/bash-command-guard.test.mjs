@@ -42,6 +42,31 @@ test("a commit or push that skips the git hooks is denied", (t) => {
   }
 });
 
+test("git commit --no-verify inside bash -lc, env, sudo, and an if block is refused", (t) => {
+  const ws = workspace(t);
+  for (const command of [
+    `bash -lc 'git commit --no-verify -m x'`,
+    `bash -ic "git commit -n -m x"`,
+    `sh -c 'git push --no-verify'`,
+    `env git commit -n -m x`,
+    `env -i HOME=/h git commit --no-verify -m x`,
+    `sudo -u ci git push --no-verify`,
+    `command git commit -n -m x`,
+    `timeout 60 git commit --no-verify -m x`,
+    `eval 'git commit --no-verify -m x'`,
+    `eval git commit -n -m x`,
+    `if true; then git commit --no-verify -m x; fi`,
+    `if git diff --quiet; then git push --no-verify; fi`,
+    `env bash -lc 'if true; then git commit -n -m x; fi'`,
+    `sudo env git -c core.hooksPath=/dev/null commit -m x`,
+  ]) {
+    assert.match(reasonOf(decide(bash(ws.adopted, command))) ?? "", /skips the git hooks|core\.hooksPath/, command);
+  }
+  for (const command of [`bash -lc 'git commit -m x'`, `env git status`, `if true; then git commit -m x; fi`, `eval 'git log'`]) {
+    assert.equal(decide(bash(ws.adopted, command)), null, command);
+  }
+});
+
 test("a git call that points core.hooksPath elsewhere is denied", (t) => {
   const ws = workspace(t);
   for (const command of ["git -c core.hooksPath=/dev/null commit -m x", "git -c core.hookspath= push"]) {

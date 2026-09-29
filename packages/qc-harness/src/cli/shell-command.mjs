@@ -8,6 +8,8 @@
  */
 
 const BLANK = /[ \t]/;
+/** The words that open a line of a compound command; the command after one is the command the line runs. */
+const LINE_KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "{", "!"]);
 const WORD_END = /[\s;&|<>()]/;
 
 /** Skips each pending heredoc body after a newline. @returns the index after the last body. */
@@ -51,6 +53,7 @@ export function segmentsOf(command, { escape = POSIX_ESCAPE } = {}) {
   };
   const endSegment = () => {
     endWord();
+    while (LINE_KEYWORDS.has(words[0])) words.shift();
     if (words.length > 0 || redirects.length > 0) segments.push({ words, redirects });
     words = [];
     redirects = [];
@@ -147,13 +150,85 @@ export function segmentsOf(command, { escape = POSIX_ESCAPE } = {}) {
   return segments;
 }
 
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
+const baseName = (word) => word.replace(/^.*[\\/]/, "").toLowerCase().replace(/\.exe$/, "");
 
-/** The words after any leading `NAME=value` assignments. */
-export const commandWords = (segment) => {
-  const start = segment.words.findIndex((word) => !ASSIGNMENT.test(word));
-  return start === -1 ? [] : segment.words.slice(start);
-};
+/**
+ * Skips the options of a wrapper, and each `NAME=value` word when `env` is given.
+ * @param letters the short options that take a value, as the next word or the rest of their cluster
+ * @param longs the long options that take the next word as their value
+ * @returns the index of the first word that is no option of the wrapper
+ */
+function skipOptions(words, from, { letters = "", longs = [], env = null } = {}) {
+  let i = from;
+  while (i < words.length) {
+    const word = words[i];
+    const assignment = env && ASSIGNMENT.exec(word);
+    if (assignment) {
+      env[assignment[1]] = assignment[2];
+      i++;
+    } else if (word === "--") {
+      i++;
+    } else if (word.startsWith("--")) {
+      i += longs.includes(word) ? 2 : 1;
+    } else if (word.startsWith("-") && word.length > 1) {
+      const at = [...word.slice(1)].findIndex((char) => letters.includes(char));
+      i += at !== -1 && at === word.length - 2 ? 2 : 1;
+    } else {
+      break;
+    }
+  }
+  return i;
+}
+
+/**
+ * Each program that runs the command after its own options, and where that command starts: `env`, `sudo`,
+ * `command`, `builtin`, `exec`, `doas`, `time`, `nice`, `ionice`, `stdbuf`, `setsid`, `nohup` and `timeout`.
+ * `command -v` only looks a program up, so it returns -1 and is left as written.
+ * `xargs` runs a command too, but the words it appends come from standard input, so no parse can follow it.
+ */
+const WRAPPERS = new Map([
+  ["env", (words, from, env) => skipOptions(words, from, { letters: "uCSPa", longs: ["--unset", "--chdir", "--split-string", "--argv0"], env })],
+  ["sudo", (words, from, env) => skipOptions(words, from, {
+    letters: "ughpCDRTU",
+    longs: ["--user", "--group", "--host", "--prompt", "--close-from", "--chdir", "--chroot", "--command-timeout", "--other-user"],
+    env,
+  })],
+  ["command", (words, from) => {
+    const end = skipOptions(words, from);
+    return words.slice(from, end).some((word) => /^-[A-Za-z]*[vV]/.test(word)) ? -1 : end;
+  }],
+  ["time", (words, from) => skipOptions(words, from, { letters: "fo", longs: ["--format", "--output"] })],
+  ["nohup", (words, from) => skipOptions(words, from)],
+  ["exec", (words, from) => skipOptions(words, from, { letters: "a" })],
+  ["nice", (words, from) => skipOptions(words, from, { letters: "n", longs: ["--adjustment"] })],
+  ["ionice", (words, from) => skipOptions(words, from, { letters: "cnpPu", longs: ["--class", "--classdata", "--pid", "--pgid", "--uid"] })],
+  ["stdbuf", (words, from) => skipOptions(words, from, { letters: "ioe", longs: ["--input", "--output", "--error"] })],
+  ["setsid", (words, from) => skipOptions(words, from)],
+  ["doas", (words, from) => skipOptions(words, from, { letters: "uC" })],
+  ["builtin", (words, from) => skipOptions(words, from)],
+  ["timeout", (words, from) => skipOptions(words, from, { letters: "sk", longs: ["--signal", "--kill-after"] }) + 1],
+]);
+
+/** The words of a command with its wrappers and its `NAME=value` prefixes removed, and the settings those made. */
+function unwrap(words) {
+  const env = {};
+  let at = 0;
+  for (;;) {
+    for (let assignment; (assignment = ASSIGNMENT.exec(words[at] ?? "")); at++) env[assignment[1]] = assignment[2];
+    const wrapper = at < words.length ? WRAPPERS.get(baseName(words[at])) : undefined;
+    const next = wrapper?.(words, at + 1, env) ?? -1;
+    if (next === -1) break;
+    at = next;
+  }
+  return { words: words.slice(at), env };
+}
+
+/** The words of the command a segment runs: after any `NAME=value` assignments, and after each wrapper in `WRAPPERS`. */
+export const commandWords = (segment) => unwrap(segment.words).words;
+
+/** The `NAME=value` settings a segment makes for its command, before it and through `env` or `sudo`. */
+export const commandEnv = (segment) => unwrap(segment.words).env;
 
 const isGit = (word) => /(^|[\\/])git(\.exe)?$/i.test(word ?? "");
 

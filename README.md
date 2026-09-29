@@ -389,7 +389,12 @@ Known limits:
 
 - The ledger guards against forgetting, not against forgery. An agent with a shell can append a line.
 - Shell writes are reported only. The controller guard sees the edit tools, and the shell edit guard reports a `Bash` or `PowerShell` write outside the controller paths.
-- The merge guard reads the command text. A merge in a wrapper, such as `bash -lc`, `env gh`, `eval`, or an `if` block, is not seen. Kit issue #63 tracks the wrapped commands.
+- The merge guard reads the command text. It reads through these wrappers: `env`, `sudo`, `doas`, `command`, `builtin`, `exec`, `time`, `nice`, `ionice`, `stdbuf`, `setsid`, `nohup`, and `timeout`. It also reads `bash`, `sh`, `zsh`, `dash`, and `ksh` with `-c` (`-lc` too), `pwsh -Command`, `eval`, a leading `!`, and `if`, `while`, and `until` blocks. It reads a quoted keyword as a keyword. It does not see a merge behind these:
+  - `xargs`, and `find -exec`
+  - `env -S 'cmd'`
+  - a backtick command substitution, `cmd /c`, and `Start-Process`
+  - a PowerShell `try { }`, a `% { }` block, and a command after the first `{ }` block of one line, as in `else { }`
+  - any other wrapper
 - A merge on the web page passes the merge guard.
 - The merge guard judges a `gh pr merge` against the repository of its working directory. `cd ../other && gh pr merge` in one command is judged against the ledger of the working directory's repository, not the one it merges in.
 - An `--auto` merge that has not merged when the command returns has no record until the issue gate resolves it.

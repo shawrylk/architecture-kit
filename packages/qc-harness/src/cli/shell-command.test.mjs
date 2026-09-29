@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { checkoutDirs, gitCall, isReadOnly, mayWrite, segmentsOf } from "./shell-command.mjs";
+import { checkoutDirs, commandEnv, commandWords, gitCall, isReadOnly, mayWrite, segmentsOf } from "./shell-command.mjs";
 
 const wordsOf = (command) => segmentsOf(command).map((segment) => segment.words);
 
@@ -115,4 +115,104 @@ test("the PowerShell escape keeps a backslash literal and escapes with a backtic
     ],
   );
   assert.deepEqual(segmentsOf("Get-Date > C:\\out\\d.txt", powershell)[0].redirects, ["C:\\out\\d.txt"]);
+});
+
+const unwrapped = (command) => commandWords(segmentsOf(command)[0]);
+
+test("env, sudo, command, time, nohup, and timeout are unwrapped by commandWords", () => {
+  const GH = ["gh", "pr", "merge", "60"];
+  for (const command of [
+    "env gh pr merge 60",
+    "env -i gh pr merge 60",
+    "env -u HOME GH_HOST=x gh pr merge 60",
+    "env -- gh pr merge 60",
+    "FOO=1 env BAR=2 gh pr merge 60",
+    "sudo gh pr merge 60",
+    "sudo -E -u root gh pr merge 60",
+    "sudo -Hu root GH_HOST=x gh pr merge 60",
+    "sudo --user root gh pr merge 60",
+    "command gh pr merge 60",
+    "command -p gh pr merge 60",
+    "time gh pr merge 60",
+    "time -p gh pr merge 60",
+    "nohup gh pr merge 60",
+    "timeout 30 gh pr merge 60",
+    "timeout -k 5 -s KILL 30s gh pr merge 60",
+    "sudo env command timeout 5 nohup gh pr merge 60",
+    "/usr/bin/env gh pr merge 60",
+  ]) {
+    assert.deepEqual(unwrapped(command), GH, command);
+  }
+});
+
+test("a wrapper with no command has no words, and one that only looks a program up is left as written", () => {
+  assert.deepEqual(unwrapped("command -v gh"), ["command", "-v", "gh"]);
+  assert.deepEqual(unwrapped("env"), []);
+  assert.deepEqual(unwrapped("sudo -l"), []);
+  assert.deepEqual(unwrapped("timeout"), []);
+});
+
+test("a git call inside a wrapper is a git call, and a wrapped write is still a write", () => {
+  assert.equal(gitCall(segmentsOf("env git commit -n")[0]).sub, "commit");
+  assert.equal(gitCall(segmentsOf("sudo -u ci git -C repo push")[0]).dirs[0], "repo");
+  assert.equal(mayWrite("env ls -l"), false);
+  assert.equal(mayWrite("env rm -rf x"), true);
+});
+
+test("the settings a wrapper makes are read with the assignments before it", () => {
+  assert.deepEqual(commandEnv(segmentsOf("A=1 env B=2 -u C gh pr merge 60")[0]), { A: "1", B: "2" });
+  assert.deepEqual(commandEnv(segmentsOf("sudo GH_HOST=x gh pr view")[0]), { GH_HOST: "x" });
+  assert.deepEqual(commandEnv(segmentsOf("gh pr merge GH_HOST=x")[0]), {});
+});
+
+test("the keyword that starts a compound command's line is dropped, so the command after it is read", () => {
+  const words = (command) => segmentsOf(command).map((segment) => segment.words);
+  assert.deepEqual(words("if gh pr merge 60; then echo ok; else echo no; fi"), [
+    ["gh", "pr", "merge", "60"],
+    ["echo", "ok"],
+    ["echo", "no"],
+    ["fi"],
+  ]);
+  assert.deepEqual(words("if true\nthen\n  gh pr merge 60\nfi"), [["true"], ["gh", "pr", "merge", "60"], ["fi"]]);
+  assert.deepEqual(words("while true; do gh pr merge 60; done"), [["true"], ["gh", "pr", "merge", "60"], ["done"]]);
+  assert.deepEqual(words("until gh pr merge 60; do sleep 1; done")[0], ["gh", "pr", "merge", "60"]);
+  assert.deepEqual(words("{ gh pr merge 60; }"), [["gh", "pr", "merge", "60"], ["}"]]);
+  assert.deepEqual(words("true; elif gh pr merge 60; then x"), [["true"], ["gh", "pr", "merge", "60"], ["x"]]);
+  // A keyword in a later word is an argument.
+  assert.deepEqual(words("echo if then"), [["echo", "if", "then"]]);
+});
+
+test("exec, nice, ionice, stdbuf, setsid, doas, and builtin are unwrapped by commandWords", () => {
+  const GH = ["gh", "pr", "merge", "5"];
+  for (const command of [
+    "exec gh pr merge 5",
+    "exec -c gh pr merge 5",
+    "exec -l -a name gh pr merge 5",
+    "nice gh pr merge 5",
+    "nice -n 5 gh pr merge 5",
+    "nice -n5 gh pr merge 5",
+    "nice -5 gh pr merge 5",
+    "nice --adjustment=5 gh pr merge 5",
+    "nice --adjustment 5 gh pr merge 5",
+    "ionice gh pr merge 5",
+    "ionice -c 3 gh pr merge 5",
+    "ionice -c2 -n 7 -t gh pr merge 5",
+    "stdbuf -o0 gh pr merge 5",
+    "stdbuf -i L -o L -e 0 gh pr merge 5",
+    "stdbuf --output=L gh pr merge 5",
+    "setsid gh pr merge 5",
+    "setsid -f gh pr merge 5",
+    "doas gh pr merge 5",
+    "doas -u ci gh pr merge 5",
+    "builtin exec gh pr merge 5",
+    "sudo nice -n 5 ionice -c 3 stdbuf -o0 setsid exec gh pr merge 5",
+  ]) {
+    assert.deepEqual(unwrapped(command), GH, command);
+  }
+});
+
+test("a leading ! is dropped, so the negated command is read", () => {
+  assert.deepEqual(segmentsOf("! gh pr merge 5").map((segment) => segment.words), [["gh", "pr", "merge", "5"]]);
+  assert.deepEqual(segmentsOf("if ! git diff --quiet; then x; fi").map((segment) => segment.words)[0], ["git", "diff", "--quiet"]);
+  assert.deepEqual(segmentsOf("echo !").map((segment) => segment.words), [["echo", "!"]]);
 });
