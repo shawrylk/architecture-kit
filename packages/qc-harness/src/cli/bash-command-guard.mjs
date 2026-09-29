@@ -26,11 +26,11 @@ const VALUE_OPTIONS = new Set([
 const COMMIT_VALUE_FLAGS = new Set(["m", "F", "C", "c", "t"]);
 
 /** The parser for each guarded tool. */
-const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments };
+export const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments };
 /** The shells whose `-c` or `-Command` argument is a command line of its own, and the parser that reads it. */
 const NESTED = { bash: segmentsOf, sh: segmentsOf, pwsh: powershellSegments, powershell: powershellSegments };
 
-const programName = (word) => path.basename(word ?? "").toLowerCase().replace(/\.exe$/, "");
+export const programName = (word) => path.basename(word ?? "").toLowerCase().replace(/\.exe$/, "");
 const isNoVerify = (arg) => arg.length >= NO_VERIFY_MIN && NO_VERIFY.startsWith(arg);
 
 /** True when a commit or push names `--no-verify`, or a commit names `-n` alone or in a flag cluster. */
@@ -76,7 +76,7 @@ function runsTests(segment) {
 }
 
 /** @returns the command line a shell runs from `-c` or `-Command`, with its parser, or null. */
-function nestedCommand(segment) {
+export function nestedCommand(segment) {
   const [program, ...args] = commandWords(segment);
   const parse = NESTED[programName(program)];
   const at = args.findIndex((arg) => /^-(c|command)$/i.test(arg));
