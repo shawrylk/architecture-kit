@@ -30,6 +30,7 @@ export const gateDescriptions = Object.freeze({
   "closed-set-writers": "Every key of a closed set has a writer, and every writer writes a key of the set",
   "tenant-isolation-test": "A feature that owns a tenant table has a test in its folder that calls the two-tenant helper",
   "doc-claims": "A state-claim block in a document still matches the file it counts",
+  "contract-idempotency": "Every write of the API contract declares its idempotency key or is listed in the ledger, and a ledger entry fails when it no longer owes the key or is new since the merge base",
 });
 
 /** The gates a consumer can switch on, so a caller need not import the defaults to find out. */

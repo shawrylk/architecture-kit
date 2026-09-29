@@ -15,13 +15,23 @@ test("every lint rule has a switch, and every switch names a rule", () => {
   assert.deepEqual(Object.keys(defaults.rules).sort(), Object.keys(rules).sort());
 });
 
-test("every gate is either switchable or declared a generator", () => {
+// A module under gates/ that no run and no codegen calls: a reader that gates share.
+const libraries = ["contract-operations"];
+
+test("every gate is either switchable, a generator, or a named library", () => {
   const files = readdirSync(path.join(here, "gates"))
     .filter((file) => file.endsWith(".mjs") && !file.endsWith(".test.mjs"))
     .map((file) => file.replace(/\.mjs$/, ""))
     .sort();
-  const accounted = [...Object.keys(defaults.gates), ...defaults.generators].sort();
+  const accounted = [...Object.keys(defaults.gates), ...defaults.generators, ...libraries].sort();
   assert.deepEqual(accounted, files);
+});
+
+test("a library is neither a switch nor a generator", () => {
+  for (const library of libraries) {
+    assert.equal(defaults.gates[library], undefined);
+    assert.ok(!defaults.generators.includes(library));
+  }
 });
 
 // A switch that turns nothing off is worse than no switch: it says the config
