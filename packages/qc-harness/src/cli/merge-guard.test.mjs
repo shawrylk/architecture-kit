@@ -140,16 +140,53 @@ test("after the merge, the record keeps the PR, its head sha, its base, and each
   ]);
 });
 
-test("a merge still pending, a failed read, or a second merge of one PR adds no record", (t) => {
+test("a failed read, or a second merge of one PR, adds no second record", (t) => {
   const ws = workspace(t);
-  const command = `gh pr merge 60 --auto --match-head-commit ${SHA}`;
+  const command = `gh pr merge 60 --match-head-commit ${SHA}`;
   decide(shell(ws.on, command, "PostToolUse"), { gh: fakeGh(JSON.stringify({ ...JSON.parse(MERGED), state: "OPEN" })).gh });
-  assert.equal(existsSync(ws.ledgerOf(ws.on)), false);
+  assert.equal(existsSync(ws.ledgerOf(ws.on)), false, "an immediate merge that is not merged leaves no record");
   assert.match(decide(shell(ws.on, command, "PostToolUse"), { gh: fakeGh(null).gh })?.systemMessage ?? "", /does not record it/);
   assert.equal(decide(shell(ws.on, command, "PostToolUseFailure"), { gh: fakeGh(null).gh }), null);
   decide(shell(ws.on, command, "PostToolUse"), { gh: fakeGh(MERGED).gh });
   decide(shell(ws.on, command, "PostToolUseFailure"), { gh: fakeGh(MERGED).gh });
   assert.equal(readLedger(ws.ledgerOf(ws.on)).length, 1);
+});
+
+test("an --auto merge still open writes a pending record, once, and a later merge adds the real record", (t) => {
+  const ws = workspace(t);
+  const command = `gh pr merge 60 --auto --squash --match-head-commit ${SHA}`;
+  const open = fakeGh(JSON.stringify({ ...JSON.parse(MERGED), state: "OPEN", mergedAt: null })).gh;
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  const [pending, ...rest] = readLedger(ws.ledgerOf(ws.on));
+  assert.equal(rest.length, 0);
+  assert.deepEqual(
+    { type: pending.type, pending: pending.pending, pr: pending.pr, repo: pending.repo, sha: pending.sha, branch: pending.branch, mergedAt: pending.mergedAt },
+    { type: "merge", pending: true, pr: 60, repo: "o/r", sha: SHA, branch: "feat/62-x", mergedAt: null },
+  );
+  assert.deepEqual(pending.issues, [{ repo: "o/r", number: 59 }, { repo: "o/other", number: 3 }, { repo: "o/r", number: 12 }]);
+  decide(shell(ws.on, command, "PostToolUse"), { gh: fakeGh(MERGED).gh });
+  const merged = readLedger(ws.ledgerOf(ws.on)).filter((record) => !record.pending);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].mergedAt, "2026-09-29T04:35:17Z");
+});
+
+test("gh api graphql with a mergePullRequest mutation is refused, and the REST endpoint spellings all match", (t) => {
+  const ws = workspace(t);
+  appendRecord(ws.ledgerOf(ws.on), verdict("branch", "APPROVED"));
+  for (const [command, tool] of [
+    ["gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }'", "Bash"],
+    ['gh api graphql -F query="mutation { mergePullRequest(input: {pullRequestId: 1}) { clientMutationId } }"', "PowerShell"],
+    [`bash -c "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'"`, "Bash"],
+    ["gh api -X PUT repos/o/r/pulls/60/merge/", "Bash"],
+    ["gh api -X PUT /repos/o/r/pulls/60/merge/?x=1", "Bash"],
+    ["gh api -X PUT https://api.github.com/repos/o/r/pulls/60/merge", "Bash"],
+    ["gh api -X PUT https://api.github.com/repos/o/r/pulls/60/merge/", "PowerShell"],
+  ]) {
+    assert.match(denied(decide(shell(ws.on, command, "PreToolUse", tool))) ?? "", /gh pr merge <n> --match-head-commit <sha>/, command);
+  }
+  assert.equal(decide(shell(ws.on, "gh api graphql -f query='query { viewer { login } }'")), null);
+  assert.equal(decide(shell(ws.on, "gh api https://api.github.com/repos/o/r/pulls/60/comments")), null);
 });
 
 test("a command with no gh call never runs gh", (t) => {

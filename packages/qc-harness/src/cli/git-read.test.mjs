@@ -9,10 +9,12 @@ import { branchAt, branchesAt, commitOf, gitOut, gitOutWithin, linkedWorktrees, 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 
 // A timed-out git call can leave a child that holds the folder for a moment, so a removal retries.
+// rmSync's own retries do not cover the EPERM Windows raises while the child still holds the folder, so a
+// failed removal waits and tries again.
 function removeTree(dir) {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
       return;
     } catch (error) {
       if (attempt >= 20) throw error;

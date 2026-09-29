@@ -11,6 +11,7 @@ import { ledgerFileOf } from "./ledger.mjs";
 
 const KEY = "swarm.review";
 const MERGE_KINDS = ["branch", "task"];
+const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes"];
 const STATE_FILE = "state.json";
 
 const isNameList = (value) => Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "");
@@ -24,6 +25,8 @@ export function reviewSettings(swarm = {}) {
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${KEY} in qc.config.json must be an object, got ${JSON.stringify(raw)}`);
   }
+  const unknown = Object.keys(raw).find((key) => !REVIEW_KEYS.includes(key));
+  if (unknown !== undefined) throw new Error(`${KEY}.${unknown} in qc.config.json is not a review setting; the keys are ${REVIEW_KEYS.join(", ")}`);
   const { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes } = merge(reviewDefaults, raw);
   if (!MERGE_KINDS.includes(mergeKind)) throw wrong("merge", mergeKind, `one of ${MERGE_KINDS.join(", ")}`);
   if (!Number.isInteger(maxTaskCalls) || maxTaskCalls < 1) throw wrong("maxTaskCalls", maxTaskCalls, "a positive whole number");

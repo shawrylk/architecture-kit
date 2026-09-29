@@ -67,11 +67,16 @@ function recordMerge(merge, call, workflow, gh) {
     return call.hook_event_name === "PostToolUse" ? "Merge guard: gh pr view could not read the merge, so the ledger does not record it." : null;
   }
   const repo = PR_URL.exec(pr.url ?? "")?.[1] ?? null;
-  if (pr.state !== "MERGED" || !repo) return null;
-  if (readLedger(workflow.ledger).some((record) => record.type === "merge" && record.repo === repo && record.pr === pr.number)) return null;
+  const merged = pr.state === "MERGED";
+  // An `--auto` merge on an open PR is pending: the issue gate reads the PR at Stop to see whether it merged.
+  const pending = !merged && merge.auto && pr.state === "OPEN";
+  if ((!merged && !pending) || !repo) return null;
+  const held = (record) => record.type === "merge" && record.repo === repo && record.pr === pr.number && (pending || !record.pending);
+  if (readLedger(workflow.ledger).some(held)) return null;
   try {
     appendRecord(workflow.ledger, {
       type: "merge",
+      ...(pending ? { pending: true } : {}),
       session: call.session_id ?? "session",
       pr: pr.number,
       repo,

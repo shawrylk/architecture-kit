@@ -7,23 +7,23 @@ import { segmentsOf } from "./shell-command.mjs";
 test("a POSIX merge carries its sha, PR, repository, and GH_* prefix, and never a token", () => {
   assert.deepEqual(
     ghMerges("GH_CONFIG_DIR=~/.config/gh-personal GH_TOKEN=x gh pr merge 60 -R o/r --squash --match-head-commit abc1234", segmentsOf),
-    [{ sha: "abc1234", repo: "o/r", selector: "60", env: { GH_CONFIG_DIR: "~/.config/gh-personal" } }],
+    [{ sha: "abc1234", repo: "o/r", selector: "60", auto: false, env: { GH_CONFIG_DIR: "~/.config/gh-personal" } }],
   );
 });
 
 test("inline flag values, an exported setting, and a merge with no PR named", () => {
   assert.deepEqual(ghMerges("gh pr merge --repo=o/r --match-head-commit=abc1234 61", segmentsOf), [
-    { sha: "abc1234", repo: "o/r", selector: "61", env: {} },
+    { sha: "abc1234", repo: "o/r", selector: "61", auto: false, env: {} },
   ]);
   assert.deepEqual(ghMerges("export GH_HOST=ghe.example.com && gh pr merge --auto -s", segmentsOf), [
-    { sha: null, repo: null, selector: null, env: { GH_HOST: "ghe.example.com" } },
+    { sha: null, repo: null, selector: null, auto: true, env: { GH_HOST: "ghe.example.com" } },
   ]);
   assert.deepEqual(ghMerges('gh pr merge -b "Closes #1" -t subject 62 --match-head-commit abc1234', segmentsOf)[0].selector, "62");
 });
 
 test("a PowerShell merge reads the $env: settings before it", () => {
   assert.deepEqual(ghMerges(String.raw`$env:GH_CONFIG_DIR = "C:\gh"; gh pr merge 63 --match-head-commit abc1234`, powershellSegments), [
-    { sha: "abc1234", repo: null, selector: "63", env: { GH_CONFIG_DIR: String.raw`C:\gh` } },
+    { sha: "abc1234", repo: null, selector: "63", auto: false, env: { GH_CONFIG_DIR: String.raw`C:\gh` } },
   ]);
   assert.deepEqual(ghMerges(String.raw`$env:gh_host="ghe.example.com"; gh.exe pr merge 64`, powershellSegments)[0].env, { GH_HOST: "ghe.example.com" });
 });

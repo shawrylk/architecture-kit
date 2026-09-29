@@ -51,6 +51,8 @@ test("a bad key throws and names it", () => {
     [{ reviewerTypes: { task: [""] } }, /swarm\.review\.reviewerTypes\.task/],
     [{ plannerTypes: [1] }, /swarm\.review\.plannerTypes/],
     ["on", /swarm\.review in qc\.config\.json must be an object/],
+    [{ mergeKind: "task" }, /swarm\.review\.mergeKind/],
+    [{ merge: "task", maxTaskCall: 5 }, /swarm\.review\.maxTaskCall/],
   ]) {
     assert.throws(() => reviewSettings({ dispatch: {}, review }), key);
   }

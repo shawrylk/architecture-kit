@@ -29,7 +29,46 @@ function statusOf(issue, merge, gh, cwd) {
   }
 }
 
-const nameOf = ({ issue }) => `${issue.repo}#${issue.number}`;
+/** The state and merge time of a pending merge's PR, or null when gh cannot read it. */
+function prView(merge, gh, cwd) {
+  const out = gh(["pr", "view", String(merge.pr), "-R", merge.repo, "--json", "state,mergedAt"], { cwd, env: merge.ghEnv ?? {} });
+  try {
+    return out === null ? null : JSON.parse(out);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The merges of this session that count now: each merge record, and each pending one whose PR has since merged,
+ * which gets its own merge record. A pending merge still open, or one gh cannot read, stays pending.
+ */
+function mergesOf(records, session, workflow, gh) {
+  const key = (record) => `${record.repo}#${record.pr}`;
+  const done = new Set(records.filter((record) => record.type === "merge" && !record.pending).map(key));
+  const merges = [];
+  for (const record of records.filter((entry) => entry.type === "merge" && entry.session === session)) {
+    if (!record.pending) {
+      merges.push(record);
+      continue;
+    }
+    if (done.has(key(record))) continue;
+    const view = prView(record, gh, workflow.root);
+    if (view?.state !== "MERGED") continue;
+    done.add(key(record));
+    const resolved = { ...record, mergedAt: view.mergedAt ?? record.mergedAt ?? null };
+    delete resolved.pending;
+    try {
+      appendRecord(workflow.ledger, resolved);
+    } catch {
+      // The merge still counts for this stop; the next stop reads the PR again.
+    }
+    merges.push(resolved);
+  }
+  return merges;
+}
+
+const nameOf =({ issue }) => `${issue.repo}#${issue.number}`;
 
 function refusalOf(open) {
   const lines = open.map(({ issue, merge }) => {
@@ -68,7 +107,7 @@ export function decide(call, { gh = runGh, tmp = os.tmpdir() } = {}) {
   const settled = new Set(records.filter((r) => r.type === "issue-update").map((r) => pairOf(r.prRepo, r.pr, r.repo, r.number)));
   const open = [];
   const unread = [];
-  for (const merge of records.filter((record) => record.type === "merge" && record.session === session)) {
+  for (const merge of mergesOf(records, session, workflow, gh)) {
     for (const issue of merge.issues ?? []) {
       const pair = pairOf(merge.repo, merge.pr, issue.repo, issue.number);
       if (settled.has(pair)) continue;

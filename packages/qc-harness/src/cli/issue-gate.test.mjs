@@ -119,6 +119,26 @@ test("a stop already blocked once by this hook is never blocked again, and the o
   assert.match(output.systemMessage, /o\/r#12/);
 });
 
+test("a pending merge is resolved from the PR's state, and an unmerged one neither blocks nor is dropped", (t) => {
+  const ws = workspace(t);
+  appendRecord(ws.ledger, merge("s", [{ repo: "o/r", number: 12 }], { pending: true, mergedAt: null }));
+  const open = fakeGh({ 60: { state: "OPEN", mergedAt: null } });
+  assert.equal(decide(stopCall(ws.on), { gh: open.gh }), null);
+  assert.deepEqual(open.calls.map((call) => call.args), [["pr", "view", "60", "-R", "o/r", "--json", "state,mergedAt"]]);
+  assert.equal(readLedger(ws.ledger).length, 1, "the pending record stays");
+  assert.equal(decide(stopCall(ws.on), { gh: fakeGh({}).gh }), null, "an unreadable PR blocks nothing");
+  const merged = fakeGh({ 60: { state: "MERGED", mergedAt: MERGED_AT }, 12: { state: "OPEN", comments: [] } });
+  const output = decide(stopCall(ws.on), { gh: merged.gh });
+  assert.equal(output.decision, "block");
+  assert.match(output.reason, /o\/r#12, named by o\/r#60/);
+  const resolved = readLedger(ws.ledger).filter((record) => record.type === "merge" && !record.pending);
+  assert.equal(resolved.length, 1);
+  assert.equal(resolved[0].mergedAt, MERGED_AT);
+  const again = fakeGh({ 12: { state: "CLOSED", comments: [] } });
+  assert.equal(decide(stopCall(ws.on), { gh: again.gh }), null);
+  assert.deepEqual(again.calls.map((call) => call.args[0]), ["issue"], "a resolved PR is not read again");
+});
+
 test("a stop whose cwd holds no config finds the checkout its session remembered", (t) => {
   const ws = workspace(t);
   const tmp = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-issue-gate-tmp-")));

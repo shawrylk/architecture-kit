@@ -1,6 +1,6 @@
 // A fragment that finds each `gh pr merge` in a Bash or PowerShell command line, with the head sha it pins,
 // the PR and repository it names, and the GH_* settings the command makes for gh.
-// It also finds each `gh api` call to a PR's merge endpoint, which merges with no review check.
+// It also finds each `gh api` call to a PR's merge endpoint or with a `mergePullRequest` mutation, which merge with no review check.
 
 import { nestedCommand, programName } from "./bash-command-guard.mjs";
 import { commandWords } from "./shell-command.mjs";
@@ -9,7 +9,8 @@ const GH_SETTINGS = ["GH_CONFIG_DIR", "GH_HOST"];
 const VALUE_FLAGS = new Set(["-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit", "-R", "--repo"]);
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 const POWERSHELL_ENV = /^\$env:([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$/is;
-const MERGE_ENDPOINT = /^\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge(?:\?.*)?$/;
+const MERGE_ENDPOINT = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge\/?(?:\?.*)?$/;
+const MERGE_MUTATION = /\bmergePullRequest\b/;
 
 /** Only the settings that choose gh's account or host; a token is a credential and is never kept. */
 const kept = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => GH_SETTINGS.includes(name)));
@@ -38,12 +39,13 @@ function prefixOf(segment) {
 }
 
 function mergeOf(args) {
-  const merge = { sha: null, repo: null, selector: null };
+  const merge = { sha: null, repo: null, selector: null, auto: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
     const flag = at === -1 ? arg : arg.slice(0, at);
     if (flag === "--disable-auto") return null;
+    if (flag === "--auto") merge.auto = true;
     if (VALUE_FLAGS.has(flag)) {
       const value = at === -1 ? args[++i] : arg.slice(at + 1);
       if (flag === "--match-head-commit") merge.sha = value ?? null;
@@ -84,9 +86,16 @@ export function ghMerges(command, parse) {
   return merges;
 }
 
-/** The endpoint of each `gh api` call to `pulls/<n>/merge`, as written. */
+/**
+ * The endpoint of each `gh api` call to `pulls/<n>/merge`, as written, and `graphql` for each call to the
+ * GraphQL endpoint whose text holds a `mergePullRequest` mutation.
+ */
 export function ghApiMerges(command, parse) {
   return ghCalls(command, parse)
     .filter(({ words }) => words[0] === "api")
-    .flatMap(({ words }) => words.slice(1).filter((word) => MERGE_ENDPOINT.test(word)));
+    .flatMap(({ words }) => {
+      const args = words.slice(1);
+      const rest = args.filter((word) => MERGE_ENDPOINT.test(word));
+      return args.includes("graphql") && args.some((word) => MERGE_MUTATION.test(word)) ? ["graphql", ...rest] : rest;
+    });
 }
