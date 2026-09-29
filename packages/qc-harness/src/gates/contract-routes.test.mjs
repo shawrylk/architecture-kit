@@ -1,5 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { defaults, load } from "../config.mjs";
+import { runCheck } from "../cli/check.mjs";
 import { checkContractRoutes, declaredTriggerRoutes } from "./contract-routes.mjs";
 
 const trigger = {
@@ -83,4 +89,58 @@ test("an exemption for a route the contract now lists is stale too", () => {
 
 test("a trigger with no routes and a contract with no operations agree", () => {
   assert.deepEqual(check(declaredTriggerRoutes([{ path: "t.ts", source: "export {};" }]), []), []);
+});
+
+// The runner reads each feature trigger and the contract from disk.
+const GATE_RULES = new Set(["route-not-in-contract", "operation-not-served", "stale-route-exemption", "unreadable-contract", "contract-reader-unavailable"]);
+
+async function checked({ contract, triggerSource = trigger.source, gates = { "contract-routes": true }, overrides = {} }) {
+  const dir = mkdtempSync(path.join(tmpdir(), "qc-routes-"));
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir });
+    const base = load(dir);
+    mkdirSync(path.join(dir, base.paths.serverFeatures, "photos"), { recursive: true });
+    writeFileSync(path.join(dir, base.paths.serverFeatures, "photos", base.paths.triggerFile), triggerSource);
+    const file = overrides.contract ?? "contracts/openapi.yaml";
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    if (contract !== undefined) writeFileSync(path.join(dir, file), contract);
+    const config = { ...base, ...overrides, gates: { ...base.gates, ...gates } };
+    const { problems, lines } = await runCheck(config);
+    return { problems: problems.filter((problem) => GATE_RULES.has(problem.rule)), lines };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const CONTRACT = ["paths:", "  /v1/photos/{photoId}/derivatives:", "    post: {}", "  /v1/photos:", "    get: {}", ""].join(String.fromCharCode(10));
+
+test("qc check compares the triggers with the contract", async () => {
+  const agreed = await checked({ contract: CONTRACT });
+  assert.deepEqual(agreed.problems, []);
+  assert.ok(agreed.lines.some((line) => line.includes("contract")));
+  const drifted = await checked({ contract: CONTRACT.replace("/v1/photos:", "/v1/pictures:") });
+  assert.deepEqual(drifted.problems.map((problem) => problem.rule).sort(), ["operation-not-served", "route-not-in-contract"]);
+  assert.ok(drifted.problems.some((problem) => problem.path.endsWith("trigger.ts")));
+});
+
+test("the gate ships off, and an absent contract is ordinary", async () => {
+  assert.equal(defaults.gates["contract-routes"], false);
+  assert.deepEqual((await checked({ contract: "paths: {}", gates: {} })).problems, []);
+  assert.deepEqual((await checked({})).problems, []);
+});
+
+test("config.contractRoutes.exempt excuses a route, and a stale one fails", async () => {
+  const extra = { ...trigger, source: trigger.source + ' // { method: "post", path: "/v1/internal/x" }' };
+  const exempt = [{ method: "post", path: "/v1/internal/x", why: "a worker callback" }];
+  const overrides = { contractRoutes: { exempt } };
+  assert.deepEqual((await checked({ contract: CONTRACT, triggerSource: extra.source, overrides })).problems, []);
+  const stale = await checked({ contract: CONTRACT, overrides });
+  assert.deepEqual(stale.problems.map((problem) => problem.rule), ["stale-route-exemption"]);
+});
+
+test("the contract path is the top-level `contract`, and an unreadable contract is a problem", async () => {
+  const moved = await checked({ contract: CONTRACT, overrides: { contract: "api/spec.yaml" } });
+  assert.deepEqual(moved.problems, []);
+  const broken = await checked({ contract: "paths: [unclosed" });
+  assert.deepEqual(broken.problems.map((problem) => problem.rule), ["unreadable-contract"]);
 });

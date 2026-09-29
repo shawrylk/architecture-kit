@@ -627,6 +627,34 @@ a parameter. The gate follows a `$ref` body into `components.schemas`, and each 
 }
 ```
 
+### Serve exactly the operations of the contract
+
+The `contract-routes` gate ships off. It reads the composed contract at `contract`, as
+`contract-idempotency` does, and each route in a feature's `trigger.ts`. A route is a
+`{ method: "post", path: "/v1/boards" }` object, with `method` before `path`.
+
+- A route with no operation of its method and path fails as `route-not-in-contract`.
+- An operation that no trigger serves fails as `operation-not-served`.
+- A route's `:id` and a contract's `{id}` are one segment, whatever the name. The method matches in any case.
+- `contractRoutes.exempt` lists `{ method, path, why }` entries for a route or an operation that
+  has no partner, such as an internal worker route. An entry fails as `stale-route-exemption` when
+  it excuses nothing: no route lacks its operation there, and no operation lacks its route.
+- The `yaml` package reads the contract, as for `contract-idempotency`. An absent contract file is
+  ordinary: the gate reports nothing.
+- The gate does not compare a client's request paths with the contract.
+
+```json
+{
+  "gates": { "contract-routes": true },
+  "contract": "contracts/openapi.yaml",
+  "contractRoutes": {
+    "exempt": [
+      { "method": "post", "path": "/v1/internal/photos/:photoId/derivatives", "why": "a worker callback" }
+    ]
+  }
+}
+```
+
 ### Declare every schema column in a migration
 
 `sql-identifiers` also reads the `paths.schemaFile` of each server feature. Each table that a

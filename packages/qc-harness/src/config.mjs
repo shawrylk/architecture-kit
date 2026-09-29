@@ -70,6 +70,10 @@ export const defaults = {
     exemptDeleteById: true,
   },
 
+  // Every route a feature trigger declares is an operation of `contract`, and the reverse. An
+  // exemption is { method, path, why } and fails once it no longer excuses a disagreement.
+  contractRoutes: { exempt: [] },
+
   // The log that is evidence only while nothing can edit it.
   audit: { table: "audit_log" },
 
@@ -376,6 +380,7 @@ export const defaults = {
     "tenant-isolation-test": false,
     // Needs the composed contract, and the `yaml` peer to read it.
     "contract-idempotency": false,
+    "contract-routes": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and

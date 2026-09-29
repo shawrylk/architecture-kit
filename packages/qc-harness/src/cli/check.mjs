@@ -47,6 +47,7 @@ import { checkDocClaims, parseDocClaims } from "../gates/doc-claims.mjs";
 import { checkContractIdempotency, checkLedgerGrowth } from "../gates/contract-idempotency.mjs";
 import { contractHistory } from "./contract-history.mjs";
 import { contractOperations } from "../gates/contract-operations.mjs";
+import { checkContractRoutes, declaredTriggerRoutes } from "../gates/contract-routes.mjs";
 import { ratchetInputs } from "./registry-history.mjs";
 import { hookDrift } from "./git-hooks.mjs";
 import { repoFiles } from "./repo-files.mjs";
@@ -506,6 +507,23 @@ async function contractIdempotency(config, lines) {
   return problems;
 }
 
+/** A feature serves exactly the operations the composed contract lists. */
+async function contractRouteAgreement(config, routes, lines) {
+  const { contract } = config;
+  const text = await read(path.join(config.root, contract));
+  if (text === null) return [];
+  let operations;
+  try {
+    operations = await contractOperations(text);
+  } catch (error) {
+    const rule = error.code === "CONTRACT_PEER_MISSING" ? "contract-reader-unavailable" : "unreadable-contract";
+    return [{ path: contract, rule, detail: error.message }];
+  }
+  const served = declaredTriggerRoutes(routes);
+  lines.push(`OK  contract     ${served.length} route(s) and ${operations.length} operation(s) agree by method and path`);
+  return checkContractRoutes(served, operations, { contract, exempt: config.contractRoutes.exempt });
+}
+
 /**
  * @param {object} config
  * @param {string | string[]} [only] files to check on the fast path a hook takes; none is the full check
@@ -813,6 +831,10 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
 
   if (enabled(config.gates, "contract-idempotency")) {
     problems.push(...(await contractIdempotency(config, lines)));
+  }
+
+  if (enabled(config.gates, "contract-routes")) {
+    problems.push(...(await contractRouteAgreement(config, routes, lines)));
   }
 
   return { problems, lines };
