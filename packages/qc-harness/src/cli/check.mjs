@@ -577,7 +577,7 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   }
 
   if (enabled(config.gates, "registry-readers")) {
-    const entries = readerEntries(thresholds(config));
+    const entries = literalRegistries(config).list.flatMap((registry) => readerEntries(registry.entries));
     const readers = [...new Set(entries.flatMap((entry) => entry.readers))];
     const sources = new Map(await Promise.all(readers.map(async (reader) => [reader, await read(path.join(config.root, reader))])));
     problems.push(...checkRegistryReaders(entries, sources));

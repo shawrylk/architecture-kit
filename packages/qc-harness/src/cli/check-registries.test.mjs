@@ -136,3 +136,46 @@ test("two registries that share a prefix are a problem", async () => {
   assert.match(problems[0].detail, /'q'/);
   assert.equal(problems[0].path, "qc.config.json");
 });
+
+const READER_RULES = new Set(["missing-reader", "silent-reader"]);
+
+async function readerProblems(files, registryLiteral) {
+  const dir = fixture({ registryLiteral, doc: "Nothing here.", files });
+  try {
+    const { problems } = await runCheck(load(dir));
+    return problems.filter((problem) => READER_RULES.has(problem.rule));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const lifetimes = (readers) => JSON.stringify({ lifetimes: { accesstoken: { value: 15, unit: "minutes", readers } } });
+const thresholdsWith = (readers) => JSON.stringify({ gates: { coverage: { value: 70, unit: "percent", comparator: "min", readers } } });
+
+test("registry-readers: a ttl entry naming a missing reader fails", async () => {
+  const problems = await readerProblems({ "session-lifetimes.json": lifetimes(["src/auth.ts"]) }, { registries: [ttl] });
+  assert.deepEqual(problems.map((problem) => [problem.rule, problem.path]), [["missing-reader", "src/auth.ts"]]);
+  assert.match(problems[0].detail, /accesstoken/);
+});
+
+test("registry-readers: a ttl reader that does not name its entry fails, and one that does passes", async () => {
+  const silent = await readerProblems(
+    { "session-lifetimes.json": lifetimes(["src/auth.ts"]), "src/auth.ts": "export const x = 1;\n" },
+    { registries: [ttl] },
+  );
+  assert.deepEqual(silent.map((problem) => [problem.rule, problem.path]), [["silent-reader", "src/auth.ts"]]);
+  const named = await readerProblems(
+    { "session-lifetimes.json": lifetimes(["src/auth.ts"]), "src/auth.ts": 'export const t = ttl("accesstoken");\n' },
+    { registries: [ttl] },
+  );
+  assert.deepEqual(named, []);
+});
+
+test("registry-readers: the thresholds cases are unchanged", async () => {
+  const missing = await readerProblems({ "quality-thresholds.json": thresholdsWith(["src/cov.ts"]) });
+  assert.deepEqual(missing.map((problem) => [problem.rule, problem.path]), [["missing-reader", "src/cov.ts"]]);
+  const silent = await readerProblems({ "quality-thresholds.json": thresholdsWith(["src/cov.ts"]), "src/cov.ts": "export {};\n" });
+  assert.deepEqual(silent.map((problem) => problem.rule), ["silent-reader"]);
+  const named = await readerProblems({ "quality-thresholds.json": thresholdsWith(["src/cov.ts"]), "src/cov.ts": "gates.coverage\n" });
+  assert.deepEqual(named, []);
+});
