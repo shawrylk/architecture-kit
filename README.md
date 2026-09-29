@@ -45,7 +45,7 @@ repository.
 ```bash
 pnpm add -D github:shawrylk/architecture-kit#path:packages/qc-harness --save-exact
 npx qc init            # decisions, architecture & enforcement docs, config, git hooks, CI
-npx qc install-hooks   # binds .githooks/pre-commit and .githooks/pre-push
+npx qc install-hooks   # binds .githooks/pre-commit, commit-msg and pre-push
 ```
 
 `qc init` is not a convenience. The citations gate reads `docs/decisions.md`; without that file the
@@ -53,7 +53,7 @@ first gate fails on every source file you have.
 
 It writes `qc.config.json`, `quality-thresholds.json`, `.jscpd.json`, `docs/` (decisions,
 architecture, enforcement, guards, performance, glossary, ui), `.githooks/pre-commit`,
-`.githooks/pre-push` and `.github/workflows/ci.yml`, skipping anything that already exists. It also
+`.githooks/commit-msg`, `.githooks/pre-push` and `.github/workflows/ci.yml`, skipping anything that already exists. It also
 adds `spec:check`,
 `gen:feature` and `prepare` to `package.json`.
 
@@ -134,7 +134,8 @@ predicate, route agreement, sagas) — once per push instead of once per commit.
 both go through the same two hooks; neither can commit past the fast tier or push past the full one.
 
 While `commitMessage.conventional` is on, the default `hooks.required` also requires a `commit-msg` hook
-that calls `qc commit-msg`. Setting `conventional` to `false` drops that requirement.
+that calls `qc commit-msg`. Setting `conventional` to `false` drops that requirement. A repository upgrading from an earlier
+kit copies `templates/githooks/commit-msg` into its hooks folder, or sets `conventional` to `false`.
 
 ### 8. Hold a swarm to its own scope
 
