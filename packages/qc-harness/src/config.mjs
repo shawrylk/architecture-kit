@@ -449,6 +449,17 @@ export const dispatchDefaults = {
 // contains, lower-cased, so a new release under an existing family needs no kit change.
 export const MODEL_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
 
+// What each key of `swarm.explore` means when a repository omits it. The kit names no tool; a
+// repository lists its own index, call graph or summarizer in `tools` and `summarizer`.
+export const exploreDefaults = {
+  tools: [],
+  summarizer: null,
+  maxReadLines: 300,
+  maxGrepLines: 80,
+  maxOutputChars: 20000,
+  exempt: [],
+};
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }

@@ -3,10 +3,11 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { CONFIG_FILE, MODEL_FAMILIES, dispatchDefaults, load, merge } from "../config.mjs";
+import { CONFIG_FILE, MODEL_FAMILIES, dispatchDefaults, exploreDefaults, load, merge } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
 const KEY = "swarm.dispatch";
+const EXPLORE_KEY = "swarm.explore";
 const DEFAULT_TYPE = "general-purpose";
 const FORK = "fork";
 const WILDCARD_TYPE = "*";
@@ -55,6 +56,44 @@ export function dispatchSettingsAt(cwd) {
   const root = checkoutRootOf(cwd);
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
   return dispatchSettings(load(root).swarm);
+}
+
+const isToolEntry = (entry) =>
+  isPlainRecord(entry) && ["name", "use", "how"].every((key) => typeof entry[key] === "string" && entry[key] !== "");
+const isPlainRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const wrongExplore = (key, value, want) =>
+  new Error(`${EXPLORE_KEY}.${key} in qc.config.json must be ${want}, got ${JSON.stringify(value)}`);
+
+/** @returns the explore settings, or null when the section is absent; throws naming the key a repository got wrong. */
+export function exploreSettings(swarm = {}) {
+  const raw = swarm.explore;
+  if (raw === undefined || raw === null || raw === false) return null;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`${EXPLORE_KEY} in qc.config.json must be an object, got ${JSON.stringify(raw)}`);
+  }
+  const { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt } = merge(exploreDefaults, raw);
+  if (!Array.isArray(tools) || !tools.every(isToolEntry)) {
+    throw wrongExplore("tools", tools, 'a list of { "name", "use", "how" } strings');
+  }
+  if (summarizer !== null && (typeof summarizer !== "string" || summarizer === "")) {
+    throw wrongExplore("summarizer", summarizer, "a non-empty string or null");
+  }
+  for (const [key, value] of [
+    ["maxReadLines", maxReadLines],
+    ["maxGrepLines", maxGrepLines],
+    ["maxOutputChars", maxOutputChars],
+  ]) {
+    if (!Number.isInteger(value) || value < 1) throw wrongExplore(key, value, "a positive whole number");
+  }
+  if (!isNameList(exempt)) throw wrongExplore("exempt", exempt, "a list of globs");
+  return { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt };
+}
+
+/** @returns the explore settings of the checkout that holds `cwd`, or null when it has no config or no section. */
+export function exploreSettingsAt(cwd) {
+  const root = checkoutRootOf(cwd);
+  if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
+  return exploreSettings(load(root).swarm);
 }
 
 /** The type a dispatch names, trimmed. The Agent tool runs general-purpose when it names none. */
