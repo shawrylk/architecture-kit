@@ -209,3 +209,19 @@ test("a skipped check does not print OK", async () => {
     assert.doesNotMatch(out, /OK\s+prose/);
   });
 });
+
+test("an alert keyed by an absolute path with backslashes maps to its relative file", async () => {
+  const root = mkdtempSync(path.join(tmpdir(), "prose-"));
+  try {
+    writeFileSync(path.join(root, "a.md"), "Please new.\n");
+    const vale = async (args, options) => {
+      const relative = JSON.parse((await fakeVale()(args, options)).stdout);
+      const rekeyed = Object.fromEntries(Object.entries(relative).map(([file, alerts]) => [path.resolve(root, file).replace(/\//g, "\\"), alerts]));
+      return { ok: true, stdout: JSON.stringify(rekeyed) };
+    };
+    const { problems } = await checkProse(config(root), { added: [{ path: "a.md", line: 1, text: "Please new." }], vale, ci: false });
+    assert.equal(problems.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

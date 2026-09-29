@@ -4,7 +4,7 @@
 // missing `gh` fails `qc pr-check`.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +29,15 @@ function run(command, args, cwd) {
 /** @returns the Vale run of `args` from `cwd`, as `{ok, missing?, stdout?, stderr?}`. */
 export const runVale = async (args, { cwd }) => run("vale", args, cwd);
 
-const slashes = (file) => file.replace(/\\/g, "/");
+/** @returns one spelling of `file`, so a key Vale prints matches the path that was passed, short Windows names included. */
+function canonical(root, file) {
+  const absolute = path.resolve(root, file);
+  try {
+    return realpathSync.native(absolute).replace(/\\/g, "/");
+  } catch {
+    return absolute.replace(/\\/g, "/");
+  }
+}
 
 /** @returns the unified diff of the markdown files that `base...HEAD` changed, or null when git cannot read it. */
 function readDiff(root, base) {
@@ -63,9 +71,10 @@ export async function checkProse(config, { added, vale = runVale, ci = false }) 
 
   const files = new Map();
   for (const { path: file, line, label } of added) {
-    const entry = files.get(slashes(file)) ?? { file, label: label ?? file, lines: new Set() };
+    const key = canonical(config.root, file);
+    const entry = files.get(key) ?? { file, label: label ?? file, lines: new Set() };
     entry.lines.add(line);
-    files.set(slashes(file), entry);
+    files.set(key, entry);
   }
   const failure = ci ? result.problems : result.notes;
   const ini = valeConfigOf(config);
@@ -86,7 +95,7 @@ export async function checkProse(config, { added, vale = runVale, ci = false }) 
       return { ...result, complete: false };
     }
     for (const [file, alerts] of Object.entries(report)) {
-      const entry = files.get(slashes(file));
+      const entry = files.get(canonical(config.root, file));
       if (!entry || !Array.isArray(alerts)) continue;
       for (const alert of alerts.filter((each) => entry.lines.has(each.Line))) {
         const text = `${entry.label}:${alert.Line}  ${alert.Check}: ${alert.Message}`;

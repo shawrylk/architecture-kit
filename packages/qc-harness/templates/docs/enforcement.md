@@ -102,7 +102,7 @@ Code carries the meaning. A comment exists only where it cannot.
 - Never write a number or quantity threshold (neither digits nor spelled-out words). Cite the
   registry or the doc that owns it. Citation ids are the exception.
 
-Prose quality is a review concern, deliberately not a rule: a second rule demanding a citation on
+Comment prose quality is a review concern, deliberately not a rule: a second rule demanding a citation on
 every comment would fight the numeric one, and each false positive costs an agent round-trip.
 
 ## Prose in docs
