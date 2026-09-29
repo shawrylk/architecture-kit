@@ -710,15 +710,34 @@ saga on every retry. The gate reads each call of a function in `sagaKey.runners`
 files and not in a test, and fails a call as `minted-saga-key` when the `sagaKey.key` property of its
 object argument is minted.
 
-- A call of a volatile name fails, matched at its tail: `crypto.randomUUID()`, `randomUUID()`,
-  `nanoid()` and `uuid.v4()` all count. The names are `idempotency.volatile` and `uuid.v4`.
-- A bare name, and the shorthand `{ mutationId }`, follow to the `const` that declares it, one
-  indirection. A `const id = crypto.randomUUID()` there fails, and a `const id = state.clientMutationId` passes.
+- A value fails when it holds a call of a volatile name, matched at its tail: `crypto.randomUUID()`,
+  `randomUUID()`, `nanoid()`, `uuid.v4()` and `new Date()` all count. The names are `idempotency.volatile`
+  and `uuid.v4`, and `volatile: []` leaves `uuid.v4` alone.
+- The value is read whole. Parentheses, `await`, `as T` and `!` come off. Each arm of `a ?? b`, `a || b`,
+  `a && b` and `c ? a : b` counts, except a ternary's condition and the guard before `&&`. A mint inside a
+  wrapping call's arguments counts too: `String(Date.now())`, `useRef(randomUUID())`, `useMemo(() => randomUUID(), [])`.
+- A bare name, and the shorthand `{ mutationId }`, follow to the nearest `const` in scope that declares
+  it, and a const that names another const is followed the same way. A `const id = crypto.randomUUID()`
+  there fails, and a `const id = state.clientMutationId` passes.
+- Comments, strings, regular expressions and the text of a template are blanked first, so a call
+  written inside one is not a call.
+- A runner call whose `idempotency.ledgerKey` property (default `ledger`) builds one of
+  `idempotency.throwawayLedgers` is exempt, as the `durable-idempotency-key` lint rule exempts it. The
+  ledger is read directly, or through a const.
 - The finding names the file and the line of the call.
 - A runner is a name, or a dotted name such as `sagas.runPipeline` for a member call.
-- The gate reads an object-literal argument only. A runner that takes the key as a positional
-  argument, a key built inside a helper, and a key inside a template string are not read.
 - An empty `runners` list, or a blank name, throws when the gate is on, so the gate never matches nothing.
+
+The gate reads text, not a syntax tree, so these forms pass unseen:
+
+- A runner that takes the key as a positional argument, or an options object held in a variable.
+- A runner imported under another name (`import { runPipeline as run }`): list the alias in `runners`.
+- A `let` that is assigned again after its declaration: only its first value is read.
+- A key read from a property of an object built elsewhere, such as `mutationId: base.mutationId`.
+- A key built inside a helper the call names, or a name passed through a wrapping call: `hash(id)`
+  where `id` is a minted const.
+- A parameter with a default value, such as `(mutationId = randomUUID()) =>`, and a key set by a spread.
+- A runner call outside a feature folder, or outside a `.ts` or `.tsx` file.
 
 ```json
 {

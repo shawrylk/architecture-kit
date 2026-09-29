@@ -10,7 +10,9 @@ import { checkSagaKey } from "./saga-key.mjs";
 
 const RUNNERS = ["runPipeline"];
 const file = (contents, name = "frontend/src/features/boards/trigger.ts") => [{ path: name, contents }];
-const check = (contents, options = {}) => checkSagaKey(file(contents), { runners: RUNNERS, ...options });
+// The gate has no list of its own: `qc check` passes `idempotency.volatile`, and this is what that holds.
+const VOLATILE = ["Date.now", "Math.random", "crypto.randomUUID", "uuid", "uuidv4", "nanoid", "randomUUID"];
+const check = (contents, options = {}) => checkSagaKey(file(contents), { runners: RUNNERS, volatile: VOLATILE, ...options });
 
 test("runPipeline with mutationId crypto.randomUUID() fails as minted-saga-key", () => {
   const problems = check("await runPipeline({ boardId, mutationId: crypto.randomUUID() });");
@@ -98,6 +100,189 @@ test("a gate with no runner, or a blank one, fails loudly rather than matching n
   assert.throws(() => check("x", { runners: [] }), /sagaKey\.runners/);
   assert.throws(() => check("x", { runners: [""] }), /sagaKey\.runners/);
   assert.throws(() => check("x", { key: "" }), /sagaKey.key/);
+});
+
+const rest = "{ pipeline, mutationId, state }";
+const lines = (...parts) => parts.join("\n");
+
+test("a const minted before a callback arrow is still the one the call reads", () => {
+  const source = lines(
+    "async function retry() {",
+    "  const mutationId = crypto.randomUUID();",
+    "  items.forEach((i) => {",
+    "    log(i);",
+    "  });",
+    `  return runPipeline(${rest});`,
+    "}",
+  );
+  assert.equal(check(source).length, 1);
+});
+
+test("a const minted before a nested function is still the one the call reads", () => {
+  const source = lines(
+    "async function retry() {",
+    "  const mutationId = crypto.randomUUID();",
+    "  function helper() {",
+    "    return 1;",
+    "  }",
+    `  return runPipeline(${rest});`,
+    "}",
+  );
+  assert.equal(check(source).length, 1);
+});
+
+test("a const of a closed sibling block is not in scope of the call", () => {
+  const source = lines(
+    "function first() {",
+    "  const mutationId = crypto.randomUUID();",
+    "  return mutationId;",
+    "}",
+    "function second(state) {",
+    "  const mutationId = state.clientMutationId;",
+    `  return runPipeline(${rest});`,
+    "}",
+  );
+  assert.deepEqual(check(source), []);
+  const bare = lines(
+    "function first() {",
+    "  const mutationId = crypto.randomUUID();",
+    "  return mutationId;",
+    "}",
+    "function second(mutationId) {",
+    `  return runPipeline(${rest});`,
+    "}",
+  );
+  assert.deepEqual(check(bare), []);
+});
+
+test("the nearest const shadows an outer minted one", () => {
+  const source = lines(
+    "const mutationId = randomUUID();",
+    "function go(state) {",
+    "  const mutationId = state.clientMutationId;",
+    `  return runPipeline(${rest});`,
+    "}",
+  );
+  assert.deepEqual(check(source), []);
+});
+
+test("a top-level const minted outside the function is read", () => {
+  const source = lines("const mutationId = nanoid();", "export function go() {", `  return runPipeline(${rest});`, "}");
+  assert.equal(check(source).length, 1);
+});
+
+test("a const chained through another const is followed", () => {
+  const source = lines("function go() {", "  const first = randomUUID();", "  const second = first;", "  return runPipeline({ mutationId: second });", "}");
+  assert.equal(check(source).length, 1);
+  const stored = lines("function go(state) {", "  const first = state.id;", "  const second = first;", "  return runPipeline({ mutationId: second });", "}");
+  assert.deepEqual(check(stored), []);
+  const loop = lines("function go() {", "  const a = b;", "  const b = a;", "  return runPipeline({ mutationId: a });", "}");
+  assert.deepEqual(check(loop), []);
+});
+
+test("a const initialised over several lines is read whole", () => {
+  const source = lines("function go(state) {", "  const id =", "    state.resume", "      ? state.id", "      : randomUUID();", "  return runPipeline({ mutationId: id });", "}");
+  assert.equal(check(source).length, 1);
+  const next = lines("function go(state) {", "  const id = state.id", "  const other = randomUUID()", "  return runPipeline({ mutationId: id, other });", "}");
+  assert.deepEqual(check(next), []);
+});
+
+test("each branch of ??, ||, &&, and ?: is judged", () => {
+  const minted = [
+    "options.mutationId ?? crypto.randomUUID()",
+    "crypto.randomUUID() ?? options.mutationId",
+    "options.mutationId || randomUUID()",
+    "options.ready && randomUUID()",
+    "options.resume ? options.mutationId : nanoid()",
+    "options.resume ? randomUUID() : options.mutationId",
+    "options.a ? options.b : options.c ?? uuid.v4()",
+  ];
+  for (const value of minted) assert.equal(check(`runPipeline({ mutationId: ${value} });`).length, 1, value);
+});
+
+test("the condition of a ternary and the guard of && are not the key", () => {
+  assert.deepEqual(check("runPipeline({ mutationId: Date.now() > limit ? state.a : state.b });"), []);
+  assert.deepEqual(check("runPipeline({ mutationId: nanoid() && state.id });"), []);
+});
+
+test("parentheses, await, a cast and a non-null mark do not hide a mint", () => {
+  for (const value of ["(crypto.randomUUID())", "((randomUUID()))", "(options.id ?? randomUUID())", "await mint(randomUUID())", "randomUUID() as string", "randomUUID()!"]) {
+    assert.equal(check(`runPipeline({ mutationId: ${value} });`).length, 1, value);
+  }
+});
+
+test("a mint inside a wrapping call's arguments fails", () => {
+  for (const value of ["String(Date.now())", "useRef(randomUUID())", "useMemo(() => randomUUID(), [])", "new Date().toISOString()", "hash(state.id, Math.random())"]) {
+    assert.equal(check(`runPipeline({ mutationId: ${value} });`).length, 1, value);
+  }
+});
+
+test("a wrapping call of stored values passes", () => {
+  assert.deepEqual(check("runPipeline({ mutationId: String(state.clientMutationId) });"), []);
+  assert.deepEqual(check("runPipeline({ mutationId: options.mutationId ?? state.clientMutationId });"), []);
+});
+
+test("the outbox key expression of quality-control-mono fails inside a runner call", () => {
+  assert.equal(check("runPipeline({ mutationId: options.mutationId ?? crypto.randomUUID(), failureCode: null });").length, 1);
+});
+
+test("a comment or a string that holds a call is not a call", () => {
+  assert.deepEqual(check('log("runPipeline({ mutationId: randomUUID() })");'), []);
+  assert.deepEqual(check("go(); // runPipeline({ mutationId: randomUUID() })"), []);
+  assert.deepEqual(check("runPipeline({ mutationId: /* randomUUID() */ state.id });"), []);
+  assert.deepEqual(check("runPipeline({ mutationId: state.id, note: 'randomUUID()' });"), []);
+  assert.deepEqual(check("const id = `x ${state.id} randomUUID()`;\nrunPipeline({ mutationId: id });"), []);
+  assert.deepEqual(check("runPipeline({ mutationId: state.id }); /* runPipeline({ mutationId: randomUUID() }) */"), []);
+});
+
+test("a quote inside a comment starts no string", () => {
+  const source = lines("// it's a note", "runPipeline({ mutationId: randomUUID() });");
+  assert.equal(check(source).length, 1);
+});
+
+test("an empty volatile list is allowed, and uuid.v4 always counts", () => {
+  assert.deepEqual(check("runPipeline({ mutationId: randomUUID() });", { volatile: [] }), []);
+  assert.equal(check("runPipeline({ mutationId: uuid.v4() });", { volatile: [] }).length, 1);
+  assert.equal(check("runPipeline({ mutationId: nanoid() });", { volatile: ["nanoid"] }).length, 1);
+  assert.deepEqual(check("runPipeline({ mutationId: nanoid() });", { volatile: undefined }), []);
+  assert.throws(() => check("x", { volatile: "nanoid" }), /idempotency\.volatile/);
+});
+
+test("a throwaway ledger exempts the call", () => {
+  const throwaway = ["InMemoryPipelineLedger"];
+  const call = (ledger) => `runPipeline({ pipeline, mutationId: crypto.randomUUID(), state, ledger: ${ledger} }, signal);`;
+  assert.deepEqual(check(call("new InMemoryPipelineLedger()"), { throwawayLedgers: throwaway }), []);
+  assert.equal(check(call("new PersistentLedger(db)"), { throwawayLedgers: throwaway }).length, 1);
+  assert.equal(check(call("new InMemoryPipelineLedger()")).length, 1);
+  assert.equal(check("runPipeline({ mutationId: randomUUID() });", { throwawayLedgers: throwaway }).length, 1);
+});
+
+test("a throwaway ledger is read through a const and a shorthand", () => {
+  const throwaway = ["InMemoryPipelineLedger"];
+  const source = lines("function go() {", "  const ledger = new InMemoryPipelineLedger();", "  return runPipeline({ mutationId: randomUUID(), ledger });", "}");
+  assert.deepEqual(check(source, { throwawayLedgers: throwaway }), []);
+  const durable = lines("function go() {", "  const ledger = openLedger();", "  return runPipeline({ mutationId: randomUUID(), ledger });", "}");
+  assert.equal(check(durable, { throwawayLedgers: throwaway }).length, 1);
+});
+
+test("the ledger property and the throwaway names come from options", () => {
+  const source = "runPipeline({ mutationId: randomUUID(), store: makeScratch() });";
+  assert.deepEqual(check(source, { ledgerKey: "store", throwawayLedgers: ["makeScratch"] }), []);
+  assert.equal(check(source, { throwawayLedgers: ["makeScratch"] }).length, 1);
+});
+
+test("qc check passes the ledger settings of idempotency", async () => {
+  const feature = "frontend/src/features/boards";
+  const sources = {
+    [`${feature}/runner.ts`]: [
+      "export const a = () => runPipeline({ mutationId: crypto.randomUUID(), ledger: new InMemoryPipelineLedger() });",
+      "export const b = () => runPipeline({ mutationId: crypto.randomUUID(), ledger: new DurableLedger() });",
+      "",
+    ].join("\n"),
+  };
+  const overrides = { sagaKey: { runners: ["runPipeline"], key: "mutationId" } };
+  const result = await checked({ sources, overrides });
+  assert.deepEqual(result.problems.map((problem) => problem.detail.match(/line (\d+)/)[1]), ["2"]);
 });
 
 // The runner reads the feature files from disk and skips the tests.

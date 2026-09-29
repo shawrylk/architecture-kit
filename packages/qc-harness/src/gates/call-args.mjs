@@ -35,29 +35,32 @@ function statementFrom(source, at) {
   return source.slice(at);
 }
 
-/** The arguments of a call, split at the top level so a nested array stays whole. */
-export function callArguments(source, openIndex) {
-  const args = [];
+/** Where each argument of a call starts and ends, split at the top level so a nested array stays whole. */
+export function argumentSpans(source, openIndex) {
+  const spans = [];
   let depth = 0;
-  let current = "";
+  let start = openIndex + 1;
   for (let i = openIndex; i < source.length; i += 1) {
     const ch = source[i];
     if (ch === "(" || ch === "[" || ch === "{") depth += 1;
     if (ch === ")" || ch === "]" || ch === "}") {
       depth -= 1;
       if (depth === 0) {
-        args.push(current);
-        return args;
+        spans.push({ start, end: i });
+        return spans;
       }
     }
     if (ch === "," && depth === 1) {
-      args.push(current);
-      current = "";
-      continue;
+      spans.push({ start, end: i });
+      start = i + 1;
     }
-    if (!(depth === 1 && i === openIndex)) current += ch;
   }
-  return args;
+  return spans;
+}
+
+/** The arguments of a call, split at the top level so a nested array stays whole. */
+export function callArguments(source, openIndex) {
+  return argumentSpans(source, openIndex).map(({ start, end }) => source.slice(start, end));
 }
 
 /** The nearest declaration of `name` inside the enclosing function, else at the top level. */

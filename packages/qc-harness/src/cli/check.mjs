@@ -605,7 +605,8 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   if (enabled(config.gates, "saga-key")) {
     const rel = relativeTo(config.root);
     const sources = contents.filter((file) => !TEST_FILE.test(file.path)).map((file) => ({ ...file, path: rel(file.path) }));
-    problems.push(...checkSagaKey(sources, { runners: config.sagaKey.runners, key: config.sagaKey.key, volatile: config.idempotency.volatile }));
+    const { volatile, ledgerKey, throwawayLedgers } = config.idempotency;
+    problems.push(...checkSagaKey(sources, { runners: config.sagaKey.runners, key: config.sagaKey.key, volatile, ledgerKey, throwawayLedgers }));
   }
   if (enabled(config.gates, "feature-cli") && !perFile) {
     const rel = relativeTo(config.root);
