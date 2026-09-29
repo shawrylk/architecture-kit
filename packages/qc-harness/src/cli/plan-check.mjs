@@ -10,7 +10,7 @@ const TASK_HEADING = /^###[ \t]+Task[ \t]+(\d+)[ \t]*:[ \t]*(.*)$/;
 const SECTION_END = /^#{1,3}[ \t]/;
 const FILE_LINE = /^[ \t]*[-*][ \t]+(?:Create|Modify|Test|Delete|Rename):[ \t]*\S/i;
 const STEP_LINE = /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+\*\*(.+?)\*\*/;
-const ESTIMATE_LINE = /^[ \t]*\*\*Estimate:\*\*[ \t]*(\d+)(?:[ \t]*(?:-|to)[ \t]*(\d+))?/i;
+const ESTIMATE_LINE = /^[ \t]*\*\*Estimate:\*\*[ \t]*(\d+)(?:[ \t]*(?:-|–|—|to)[ \t]*(\d+))?/i;
 const FENCE = /^[ \t]*(`{3,}|~{3,})/;
 const GIT_COMMIT = /\bgit[ \t]+commit\b/;
 const TEST_WORD = /\btests?\b/i;
@@ -19,14 +19,24 @@ const NO_TEST_LINE = /^[ \t]*(?:[-*][ \t]+)?Test:[ \t]*none(?![\w.])(.*)$/i;
 const NO_TEST_DASH = /^[ \t]*(?:—|–|--?)[ \t]*/;
 const NO_TEST_WORDS = 3;
 const PATH_LINE = /^[ \t]*[-*][ \t]+(?:Create|Modify|Test|Delete|Rename)\b/i;
-const SOURCE_FILE = /\.(?:mjs|cjs|js|jsx|ts|tsx|py|sh|ps1|sql|go|rs|java|kt|rb|css|scss|html|vue|svelte)$/i;
+const DOC_FILE = /\.(?:md|mdx|txt|json|ya?ml)$|^(?:CHANGELOG|LICENSE)|^VERSION$/i;
+const BARE_NAME = /^(?:Dockerfile|Makefile|Jenkinsfile|Procfile|Gemfile|Rakefile|Vagrantfile|Brewfile)$/i;
+const NOT_A_PATH = /^(?:v?\d+(?:\.\d+)+|\d+(?:-\d+)?|e\.g|i\.e|etc|vs)$/i;
 const NO_TEST_SPELLING = "`Test: none — <reason>`";
 
-/** The source files a path line names: backticked paths, else the first word after the colon. */
+const tidy = (word) => word.replace(/^[(["']+/, "").replace(/[)\]"',;.]+$/, "").replace(/:\d+(?:-\d+)?$/, "");
+
+/** Every path a Create, Modify, Test, Delete, or Rename line names that is not a document. Fails closed. */
 function sourceFilesOf(line) {
-  const spans = [...line.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-  const words = spans.length > 0 ? spans : [line.replace(/^[^:]*:/, "").trim().split(/\s+/)[0] ?? ""];
-  return words.map((word) => word.replace(/[,;:.)]+$/, "")).filter((word) => SOURCE_FILE.test(word));
+  const rest = line.replace(/^[^:]*:/, "");
+  const found = [/^\s*`([^`\s]+)`/.exec(rest)?.[1]];
+  for (const [, span] of rest.matchAll(/`([^`\s]+)`/g)) found.push(span);
+  for (const token of rest.replace(/`/g, " ").split(/\s+/)) found.push(token);
+  const named = (word) => /[/.]/.test(word) || BARE_NAME.test(word);
+  const paths = found.filter((word) => word).map(tidy).filter((word) => word !== "" && !NOT_A_PATH.test(word));
+  const first = found[0] ? tidy(found[0]) : null;
+  const isPath = (word) => word === first || named(word);
+  return [...new Set(paths.filter(isPath).filter((word) => !DOC_FILE.test(word.split(/[\\/]/).pop())))];
 }
 
 /** The tasks of a plan, with their file lines, step titles, commit evidence, and estimate. Fenced code is not structure. */

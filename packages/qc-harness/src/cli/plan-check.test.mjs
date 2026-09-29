@@ -106,3 +106,38 @@ test("the missing-test-step message names the Test: none line as the way out", (
   assert.match(problem.detail, /no test step/);
   assert.match(problem.detail, /Test: none — <reason>/);
 });
+
+const EXEMPT = "Test: none — the gates cover this cleanup";
+const refusedFor = (fileLines) => checkPlan(plan(task(1, { fileLines, exempt: EXEMPT, testStep: false })));
+
+test("a line range after the path does not hide a source file", () => {
+  const problems = refusedFor(["- Modify: `src/a.ts:12-40`", "- Modify: `src/b.mjs:7`"]);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].detail, /src\/a\.ts/);
+  assert.match(problems[0].detail, /src\/b\.mjs/);
+  assert.deepEqual(refusedFor(["- Modify: `docs/guide.md:3-9`", "- Modify: `package.json:2`"]), []);
+});
+
+test("every path on a Files line is read, not only the first", () => {
+  assert.equal(refusedFor(["- Modify: `README.md`, `src/b.ts`"]).length, 1);
+  assert.equal(refusedFor(["- Modify: README.md and scripts/build.sh"]).length, 1);
+  assert.equal(refusedFor(["- Modify: `README.md`; Test: `backend/tests/cli.test.ts`"]).length, 1);
+});
+
+test("a path that is not a document counts as source, so the exemption fails closed", () => {
+  for (const name of ["Dockerfile", "Makefile", "bin/run", "src/a.mts", "src/a.cts", "api/photo.proto", "infra/main.tf"]) {
+    const problems = refusedFor([`- Modify: \`README.md\`, \`${name}\``]);
+    assert.equal(problems.length, 1, name);
+    assert.match(problems[0].detail, new RegExp(name.replace(/[./]/g, "\\$&")), name);
+  }
+  assert.equal(refusedFor(["- Modify: `Dockerfile`"]).length, 1);
+  const docs = ["- Modify: `CHANGELOG.md`", "- Modify: `LICENSE`", "- Modify: `a/b.yaml`, `c.yml`, `d.json`", "- Modify: `notes.txt`, `page.mdx`"];
+  assert.deepEqual(refusedFor(docs), []);
+});
+
+test("an estimate range accepts a hyphen, an en dash, an em dash, and to", () => {
+  for (const range of ["20-40", "20–40", "20—40", "20 to 40"]) {
+    assert.match(checkPlan(plan(task(1, { estimate: range })))[0].detail, /estimates 40 tool calls, over/, range);
+  }
+  assert.deepEqual(checkPlan(plan(task(1, { estimate: "10–30" }))), []);
+});
