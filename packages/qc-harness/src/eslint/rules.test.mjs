@@ -467,7 +467,8 @@ tester.run("no-supersession-trail", rules["no-supersession-trail"], {
   valid: [
     { code: "// the one place a caller resolves a name\nconst a = 1;" },
     { code: 'const label = "deprecated";' },
-    { code: 'const note = "not yet, for now, the next phase";' },
+    { code: 'const note = "not yet, for now, for the time being, the next phase";' },
+    { code: "// cannot yet, a fork for nowhere\nconst a = 1;" },
     { code: "// an inspection cycle has a next phase per site\nconst a = 1;" },
   ],
   invalid: [

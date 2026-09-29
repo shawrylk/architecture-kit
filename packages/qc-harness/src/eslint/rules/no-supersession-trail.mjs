@@ -1,6 +1,6 @@
 // A change is rewritten in place, as if it had always been that way. No supersession
-// trail, no deprecation note, no "what this replaces" — the repository states what is
-// true now, and git holds the history. docs/decisions.md.
+// trail, no deprecation note, no "what this replaces", no progress phrase — the repository
+// states what is true now, and git holds the history. docs/decisions.md.
 //
 // Comments only. A vocabulary word in a string is someone's data, not this repository
 // narrating its own past.
@@ -35,7 +35,7 @@ export default {
     schema: schemaOf({ phrases: { type: "array", items: { type: "string" } } }),
     messages: {
       trail:
-        "'{{phrase}}' narrates what this used to be. Rewrite in place and delete the trail — git holds the history.",
+        "'{{phrase}}' narrates what this was or will be; state what is true now. Rewrite in place and delete the trail — git holds the history.",
     },
   },
   create(context) {
