@@ -21,7 +21,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { globMatcher } from "../glob.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
-import { exploreSettingsAt } from "./dispatch.mjs";
+import { exploreSettingsAt, exploreToolLines } from "./dispatch.mjs";
 import { slotDirOf } from "./dispatch-slot.mjs";
 
 const BINARY_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "pdf", "ipynb"]);
@@ -149,7 +149,7 @@ function exceedsLineBudget(file, maxLines) {
 }
 
 function refusalMessage(tools) {
-  const lines = tools.map((tool) => `- ${tool.name}: ${tool.use} (${tool.how})`);
+  const lines = exploreToolLines(tools);
   lines.push("Read a range with offset and limit, or read the same file again to read it whole.");
   return lines.join("\n");
 }

@@ -294,7 +294,7 @@ has better tools: a semantic index, a call graph, a local summarizer. A `swarm.e
     "explore": {
       "tools": [
         { "name": "slm-rerank", "use": "find the files for a concept", "how": "slm-rerank -q \"<question>\" --stub -k 5" },
-        { "name": "GitNexus", "use": "callers, callees, and blast radius", "how": "the gitnexus MCP tools" }
+        { "name": "GitNexus", "use": "callers, callees, and blast radius", "how": "gitnexus context <symbol> -r <repo>" }
       ],
       "summarizer": "<command> | lfm-ask \"<question>\"",
       "maxReadLines": 300,
@@ -309,6 +309,9 @@ has better tools: a semantic index, a call graph, a local summarizer. A `swarm.e
 A repository without the section sees no change. The kit names no tool; the repository lists its
 own.
 
+Write each `how` as a shell command. The plugin's four agent types carry no MCP tool, so a subagent
+of those types runs a tool such as `slm-rerank`, `gitnexus`, or `ccc` through `Bash`.
+
 - **Read budget** — a `PreToolUse` hook on `Read` refuses a whole-file read (neither `offset` nor
   `limit`) of a text file over `maxReadLines` lines, and the refusal names the tools. The guard
   judges only a file in the session's own checkout: a file in no checkout, or in another one,
@@ -320,9 +323,9 @@ own.
 - **Output hint** — a `PostToolUse` hook on `Bash` and `PowerShell` adds context naming the
   `summarizer` when the output runs past `maxOutputChars` characters. A `summarizer` of `null`
   turns this one hint off; the read budget and the search hint are unaffected.
-- **Session note** — the tool list reaches the main session at start (section 9's note, even with
-  `swarm.dispatch` off) and each subagent at its own `SubagentStart`, past a compaction included.
-  `swarm.explore` with no `tools` adds nothing.
+- **Session note** — the tool names reach the main session at start (section 9's note, even with
+  `swarm.dispatch` off). Each subagent gets each tool's `use` and `how` at its own `SubagentStart`,
+  past a compaction included. `swarm.explore` with no `tools` adds nothing.
 
 The read budget and the search hint report a bad key in `swarm.explore` as context instead of
 stopping the call they are judging; the session note skips the tool line instead.

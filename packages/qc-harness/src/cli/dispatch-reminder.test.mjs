@@ -143,3 +143,32 @@ test("a limit above 1 adds one line stating it, and a limit of 1 leaves the note
   assert.match(text, /up to 3 implementers at once/);
   assert.equal(decide(start(one, "startup")).hookSpecificOutput.additionalContext, REMINDER);
 });
+
+test("SubagentStart gives each tool's use and command, in config order, since a plugin agent carries no MCP tool", (t) => {
+  const [on] = checkouts(t, [
+    {
+      swarm: {
+        explore: {
+          tools: [
+            { name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' },
+            { name: "GitNexus", use: "callers and callees", how: "gitnexus context <symbol> -r repo" },
+          ],
+        },
+      },
+    },
+  ]);
+  assert.equal(
+    decide(subagentStart(on)).hookSpecificOutput.additionalContext,
+    [
+      "The repository's own explore tools, and how to run each:",
+      '- slm-rerank: find the files for a concept (slm-rerank -q "<question>" --stub -k 5)',
+      "- GitNexus: callers and callees (gitnexus context <symbol> -r repo)",
+    ].join("\n"),
+  );
+});
+
+test("a swarm.explore section that does not parse leaves SubagentStart silent and the session note as REMINDER", (t) => {
+  const [bad] = checkouts(t, [{ swarm: { dispatch: {}, explore: { tools: "slm-rerank" } } }]);
+  assert.equal(decide(subagentStart(bad)), null);
+  assert.equal(decide(start(bad, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+});
