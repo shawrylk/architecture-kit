@@ -505,6 +505,34 @@ tester.run("durable-idempotency-key", rules["durable-idempotency-key"], {
   ],
 });
 
+// The shape check: a uuid column refuses a key built as a string, whether it is sent or bound.
+const UUID = [{ format: "uuid" }];
+const shape = { messageId: "shape" };
+tester.run("durable-idempotency-key", rules["durable-idempotency-key"], {
+  valid: [
+    { code: "send({ mutationId: `${a}:${b}` });" },
+    { code: 'send({ mutationId: a + ":" + b });' },
+    { code: "send({ mutationId: deriveId(a, b) });", options: UUID },
+    { code: "const operation = { mutationId: crypto.randomUUID() };\nqueue.push(operation);", options: UUID },
+    { code: "send({ mutationId: `fixed` });", options: UUID },
+    { code: 'send({ mutationId: "fixed" });', options: UUID },
+    { code: "send({ mutationId: row.id });", options: UUID },
+    { code: "send({ mutationId: a + b });", options: UUID },
+    { code: "send({ note: `${a}:${b}` });", options: UUID },
+    { code: "send({ mutationId: `${a}:${b}` });", options: [{ format: null }] },
+  ],
+  invalid: [
+    { code: "send({ mutationId: `${a}:${b}` });", options: UUID, errors: [shape] },
+    { code: "const body = { mutationId: `${a}:${b}` };", options: UUID, errors: [shape] },
+    { code: 'send({ mutationId: a + ":" + b });', options: UUID, errors: [shape] },
+    { code: 'send({ idempotencyKey: "op-" + id });', options: UUID, errors: [shape] },
+    { code: "send({ mutationId: stored ?? `${a}:${b}` });", options: UUID, errors: [shape] },
+    { code: "send({ mutationId: ok ? `${a}:${b}` : other });", options: UUID, errors: [shape] },
+    // The volatile path still owns an inline mint.
+    { code: "send({ mutationId: crypto.randomUUID() });", options: UUID, errors: [{ messageId: "volatile" }] },
+  ],
+});
+
 // `context.filename` is the OS separator — "\\" on Windows. Every rule that reads it must
 // normalize before matching a forward-slash pattern, or every path-based exemption below
 // silently never fires there. filenameOf() in options.mjs is the one place that normalizes.

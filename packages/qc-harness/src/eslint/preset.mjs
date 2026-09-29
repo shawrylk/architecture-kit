@@ -43,6 +43,7 @@ function ruleOptions(config, registry) {
       volatile: config.idempotency.volatile,
       ledgerKey: config.idempotency.ledgerKey,
       throwawayLedgers: config.idempotency.throwawayLedgers,
+      format: config.idempotency.format,
     },
     "no-supersession-trail": {},
     "signal-last-param": {},

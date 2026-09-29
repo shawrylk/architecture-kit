@@ -36,10 +36,14 @@ export default {
       volatile: { type: "array", items: { type: "string" } },
       ledgerKey: { type: "string" },
       throwawayLedgers: { type: "array", items: { type: "string" } },
+      // null is the configured default: the column takes any string.
+      format: { enum: ["uuid", null] },
     }),
     messages: {
       volatile:
         "'{{key}}' is minted from {{source}} inside a call argument, so a retry cannot reuse it and writes again. Bind it to a name and persist it before sending.",
+      shape:
+        "'{{key}}' is built as a string, and the column expects a uuid. Derive a name-based uuid (RFC 9562 version 5) from the same parts.",
     },
   },
   create(context) {
@@ -48,6 +52,7 @@ export default {
     const volatile = new Set(options.volatile ?? DEFAULT_VOLATILE);
     const ledgerKey = options.ledgerKey ?? DEFAULT_LEDGER_KEY;
     const throwaway = new Set(options.throwawayLedgers ?? DEFAULT_THROWAWAY);
+    const format = options.format ?? null;
 
     /** The value assigned to a key, unwrapped through the shapes a default takes. */
     function sourceOf(node) {
@@ -65,6 +70,22 @@ export default {
       if (node.type === "LogicalExpression") return sourceOf(node.left) ?? sourceOf(node.right);
       if (node.type === "ConditionalExpression") return sourceOf(node.consequent) ?? sourceOf(node.alternate);
       return null;
+    }
+
+    /** True when a value is a string built from parts: a template with holes, or `+` with a string side. */
+    function isBuiltString(node) {
+      if (node === null || node === undefined) return false;
+      if (node.type === "TemplateLiteral") return node.expressions.length > 0;
+      if (node.type === "BinaryExpression") {
+        if (node.operator !== "+") return false;
+        // `a + ":" + b` parses as `(a + ":") + b`, so a side that is itself a built string counts.
+        return [node.left, node.right].some(
+          (side) => side.type === "TemplateLiteral" || (side.type === "Literal" && typeof side.value === "string") || isBuiltString(side),
+        );
+      }
+      if (node.type === "LogicalExpression") return isBuiltString(node.left) || isBuiltString(node.right);
+      if (node.type === "ConditionalExpression") return isBuiltString(node.consequent) || isBuiltString(node.alternate);
+      return false;
     }
 
     /** True when this property is inside an object literal passed straight to a call. */
@@ -109,6 +130,11 @@ export default {
     return {
       Property(node) {
         if (node.key.type !== "Identifier" || !keys.has(node.key.name)) return;
+        // The shape is wrong wherever the key goes: the column, not the retry, rejects it.
+        if (format === "uuid" && isBuiltString(node.value)) {
+          context.report({ node, messageId: "shape", data: { key: node.key.name } });
+          return;
+        }
         const source = sourceOf(node.value);
         if (source === null) return;
         if (!isCallArgument(node)) return;

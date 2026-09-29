@@ -51,6 +51,13 @@ test("a rule switched off in config is not emitted as an error", () => {
   assert.ok(settings.every((s) => s === "off" || (Array.isArray(s) && s[0] !== "error")));
 });
 
+test("the idempotency key format reaches the rule", () => {
+  const set = emitted(preset({ config: config({ idempotency: { format: "uuid" } }) })).get("qc/durable-idempotency-key");
+  assert.equal(set[1].format, "uuid");
+  const off = emitted(preset({ config: config() })).get("qc/durable-idempotency-key");
+  assert.equal(off[1].format, null);
+});
+
 test("a rule's options come from the config, not from its own defaults", () => {
   const blocks = preset({ config: config({ apiClient: "net/http.ts" }) });
   const setting = emitted(blocks).get("qc/no-raw-fetch");
