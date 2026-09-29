@@ -883,7 +883,6 @@ tester.run("registry-literal", rules["registry-literal"], {
     { code: "export const GRACE_DAYS = 7;", filename: "C:\\repo\\frontend\\src\\platform\\auth\\device-session.ts", options: GRACE },
     { code: "const GRACE_DAYS = 8;", filename: "frontend/src/features/login/form.ts", options: GRACE },
     { code: "const first = rows[7]; const map = { 7: 'a' };", filename: "frontend/src/features/login/form.ts", options: GRACE },
-    { code: "type Days = 7;", filename: "frontend/src/features/login/form.ts", options: GRACE },
     { code: "const GRACE_DAYS = 7;", filename: "frontend/src/features/login/form.ts" },
     { code: "const HOLD_DURATION_MS = 400;", filename: READER, options: [{ ...HOLD[0], ...GRACE[0] }] },
   ],

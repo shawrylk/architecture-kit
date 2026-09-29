@@ -464,6 +464,10 @@ An item that is malformed, a listed file that is missing or not JSON, a `key` th
 prefix that two registries share each fail as a `registry-literal` problem at `qc.config.json`. Only a
 built-in registry whose file is absent is silent.
 
+The ESLint rule `qc/registry-literal` reads the same registries. An entry with `names` restricts the
+identifiers, as before. An entry in any registry that lists `readers` and no `names` restricts its
+figure: a numeric literal equal to it fails in code outside those readers.
+
 ```json
 {
   "registryLiteral": {

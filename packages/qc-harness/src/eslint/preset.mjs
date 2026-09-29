@@ -3,9 +3,29 @@
 
 import qc from "./index.mjs";
 import { enabled, load, readerEntries, thresholds } from "../config.mjs";
+import { literalRegistries } from "../registries.mjs";
+
+/**
+ * What `qc/registry-literal` reads from every registry the document gate reads: the entries that name
+ * identifiers, and the figures of the entries that name readers only.
+ */
+function literalOptions(config) {
+  const entries = [];
+  const values = [];
+  for (const { path: registry, entries: source, valueKey = "value" } of literalRegistries(config).list) {
+    entries.push(...readerEntries(source).filter((entry) => entry.names.length > 0));
+    for (const [key, entry] of Object.entries(source)) {
+      const named = entry.names?.length > 0;
+      if (!named && entry.readers?.length > 0 && typeof entry[valueKey] === "number") {
+        values.push({ key, registry, value: entry[valueKey], readers: entry.readers });
+      }
+    }
+  }
+  return { entries, values };
+}
 
 /** Options each rule needs, derived from one config so a name is written once. */
-function ruleOptions(config, registry) {
+function ruleOptions(config) {
   return {
     "no-sql-raw": { allow: config.sqlRaw.allow },
     "ime-safe-key": { components: config.ime.components, guards: config.ime.guards },
@@ -14,7 +34,7 @@ function ruleOptions(config, registry) {
       prop: config.mutationControl.prop,
       handlers: config.mutationControl.handlers,
     },
-    "registry-literal": { entries: readerEntries(registry).filter((entry) => entry.names.length > 0) },
+    "registry-literal": literalOptions(config),
     "no-comment-paragraph": {
       doc: config.enforcement ?? "docs/enforcement.md",
       decisions: config.docs.decisions,
@@ -57,8 +77,8 @@ function ruleOptions(config, registry) {
   };
 }
 
-function entries(config, names, registry = {}) {
-  const options = ruleOptions(config, registry);
+function entries(config, names) {
+  const options = ruleOptions(config);
   const out = {};
   for (const name of names) {
     if (!enabled(config.rules, name)) continue;
@@ -137,7 +157,7 @@ export function preset(options = {}) {
         ? { "max-lines-per-function": ["error", { max: max("funclength"), skipBlankLines: true, skipComments: true }] }
         : {}),
       ...(max("nesting") ? { "max-depth": ["error", max("nesting")] } : {}),
-      ...entries(config, UNIVERSAL, gates),
+      ...entries(config, UNIVERSAL),
     },
   };
   if (options.languageOptions) base.languageOptions = options.languageOptions;

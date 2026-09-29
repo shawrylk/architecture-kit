@@ -144,7 +144,7 @@ test("a session lifetime in code fails outside its reader, through the whole pre
       plugins: { tseslint },
       languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
     });
-    return byRule(new Linter({ configType: "flat" }).verify("export const graceDays = 7;\nexport const drift = 5;\n", blocks, filename), "qc/registry-literal");
+    return byRule(new Linter({ configType: "flat" }).verify("export const graceDays = 7;\nexport const drift = 5;\nexport type Days = 7;\n", blocks, filename), "qc/registry-literal");
   };
   assert.equal(run("frontend/src/features/login/form.ts").length, 1);
   assert.equal(run("frontend/src/platform/auth/device-session.ts").length, 0);
