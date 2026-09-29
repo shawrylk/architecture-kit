@@ -3,7 +3,7 @@
 // and fork, because a rule held only in the conversation is lost to a compaction.
 
 import { fileURLToPath } from "node:url";
-import { dispatchSettingsAt } from "./dispatch.mjs";
+import { dispatchSettingsAt, exploreSettingsAt } from "./dispatch.mjs";
 
 export const REMINDER =
   "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
@@ -15,6 +15,19 @@ export const REMINDER =
 
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } });
 
+/** One added line naming `swarm.explore`'s tools, or "" when the section is off or names none. */
+function exploreLine(cwd) {
+  let settings;
+  try {
+    settings = exploreSettingsAt(cwd);
+  } catch {
+    // The explore guard and hint each report their own config error; the dispatch note stays unaffected.
+    return "";
+  }
+  if (!settings || settings.tools.length === 0) return "";
+  return ` The repository's own explore tools: ${settings.tools.map((tool) => tool.name).join(", ")}.`;
+}
+
 /** @returns the hook output, or null when the checkout does not turn the section on. */
 export function decide(call) {
   let settings;
@@ -23,7 +36,9 @@ export function decide(call) {
   } catch (error) {
     return context(`Dispatch guard is off: ${error.message}`);
   }
-  return settings ? context(REMINDER) : null;
+  if (!settings) return null;
+  const cwd = call.cwd ?? process.cwd();
+  return context(`${REMINDER}${exploreLine(cwd)}`);
 }
 
 async function readStdin() {

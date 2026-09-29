@@ -269,6 +269,58 @@ repeating the rest. A family matches a bare alias (`sonnet`) or a full model id
 existing family needs no kit change. `models` constrains only a dispatch that names a `model`; a
 dispatch with no model still runs its type's frontmatter model, which `models` does not touch.
 
+### 10. Send a wide read or search to the repository's own tools
+
+A session spends most of its tokens on whole-file reads and wide searches, when a repository often
+has better tools: a semantic index, a call graph, a local summarizer. A `swarm.explore` section in
+`qc.config.json` turns on three hooks that hold a session to the repository's own list:
+
+```json
+{
+  "swarm": {
+    "explore": {
+      "tools": [
+        { "name": "slm-rerank", "use": "find the files for a concept", "how": "slm-rerank -q \"<question>\" --stub -k 5" },
+        { "name": "GitNexus", "use": "callers, callees, and blast radius", "how": "the gitnexus MCP tools" }
+      ],
+      "summarizer": "<command> | lfm-ask \"<question>\"",
+      "maxReadLines": 300,
+      "maxGrepLines": 80,
+      "maxOutputChars": 20000,
+      "exempt": []
+    }
+  }
+}
+```
+
+A repository without the section sees no change. The kit names no tool; the repository lists its
+own.
+
+- **Read budget** — a `PreToolUse` hook on `Read` refuses a whole-file read (no `offset` or no
+  `limit`) of a text file over `maxReadLines` lines, and the refusal names the tools. Images, PDFs,
+  notebooks, and `exempt` globs pass with no change, as does a file within the budget. The same
+  file read the same way passes on the very next attempt in the session, so a real need for the
+  whole file costs one retry, never a standing exemption.
+- **Search hint** — a `PostToolUse` hook on `Grep` adds context naming the tools when the answer
+  runs past `maxGrepLines` lines. It never refuses anything.
+- **Output hint** — a `PostToolUse` hook on `Bash` and `PowerShell` adds context naming the
+  `summarizer` when the output runs past `maxOutputChars` characters. A `summarizer` of `null`
+  turns this one hint off; the read budget and the search hint are unaffected.
+- **Session note** — the `SessionStart` note (section 9) adds one sentence naming `tools`, so every
+  subagent sees the list too, even past a compaction. `swarm.explore` with no `tools` adds nothing.
+
+Each hook reports a bad key in `swarm.explore` as context instead of stopping the call it is
+judging.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `tools` | `[]` | each `{ name, use, how }` the read budget and the search hint name |
+| `summarizer` | `null` | the command the output hint names; `null` turns that hint off |
+| `maxReadLines` | `300` | the read budget, in lines |
+| `maxGrepLines` | `80` | the search hint's threshold, in lines |
+| `maxOutputChars` | `20000` | the output hint's threshold, in characters |
+| `exempt` | `[]` | globs the read budget never refuses |
+
 ## What it enforces
 
 **Lint** — `no-cross-feature-internals`, `storage-only-in-resource`, `scoped-repository`,

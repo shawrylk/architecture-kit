@@ -54,6 +54,24 @@ test("the note names the workflow, the four types, the model tiers, and the one-
   assert.ok(REMINDER.length < 800, `${REMINDER.length} characters`);
 });
 
+test("with swarm.explore also on, the note names its tools", (t) => {
+  const [on] = checkouts(t, [
+    { swarm: { dispatch: {}, explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }, { name: "GitNexus", use: "u", how: "h" }] } } },
+  ]);
+  const text = decide(start(on, "startup")).hookSpecificOutput.additionalContext;
+  assert.ok(text.startsWith(REMINDER));
+  assert.match(text, /slm-rerank, GitNexus/);
+});
+
+test("with swarm.explore off, or naming no tools, the note is exactly REMINDER", (t) => {
+  const [off, empty] = checkouts(t, [
+    { swarm: { dispatch: {} } },
+    { swarm: { dispatch: {}, explore: { tools: [] } } },
+  ]);
+  assert.equal(decide(start(off, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+  assert.equal(decide(start(empty, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+});
+
 test("a config error reaches the session as context", (t) => {
   const [bad] = checkouts(t, [{ swarm: { dispatch: { maxPromptChars: "long" } } }]);
   assert.match(decide(start(bad, "startup")).hookSpecificOutput.additionalContext, /Dispatch guard is off/);
