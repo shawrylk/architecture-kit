@@ -58,6 +58,15 @@ export const defaults = {
     format: null,
   },
 
+  // Every write of the composed contract carries one of `idempotency.keys`, as a body property or a
+  // parameter. `legacy` lists the operation ids that predate the gate: a ledger that only shrinks.
+  // A DELETE whose last path segment is a parameter names one row, so it is exempt unless this is off.
+  contractIdempotency: {
+    contract: "contracts/openapi.yaml",
+    legacy: "contracts/idempotency-legacy.json",
+    exemptDeleteById: true,
+  },
+
   // The log that is evidence only while nothing can edit it.
   audit: { table: "audit_log" },
 
@@ -358,6 +367,8 @@ export const defaults = {
     "closed-set-writers": false,
     "doc-claims": false,
     "tenant-isolation-test": false,
+    // Needs the composed contract, and the `yaml` peer to read it.
+    "contract-idempotency": false,
   },
 
   // Modules under gates/ that `qc check` does not run, so they carry no switch — a switch that
