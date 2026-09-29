@@ -144,3 +144,99 @@ test("a mutation search skips a call whose endpoint is a repos/ REST path", (t) 
     assert.equal(found(`gh api ${endpoint} -f query='${mutation}'`).length, 1, endpoint);
   }
 });
+
+test("each wrapper spelling is seen as a merge", () => {
+  for (const command of [
+    `bash -lc 'gh pr merge 60'`,
+    `bash -ic "gh pr merge 60"`,
+    `bash -lic 'gh pr merge 60'`,
+    `sh -c 'gh pr merge 60'`,
+    `zsh -lc 'gh pr merge 60'`,
+    `env gh pr merge 60`,
+    `env -i GH_HOST=x gh pr merge 60`,
+    `sudo gh pr merge 60`,
+    `sudo -u ci gh pr merge 60`,
+    `command gh pr merge 60`,
+    `time gh pr merge 60`,
+    `nohup gh pr merge 60`,
+    `timeout 30 gh pr merge 60`,
+    `env bash -lc 'sudo gh pr merge 60'`,
+    `eval 'gh pr merge 60'`,
+    `eval gh pr merge 60`,
+    `eval "cd x; gh pr merge 60"`,
+    `if true; then gh pr merge 60; fi`,
+    `if gh pr merge 60; then echo ok; fi`,
+    "if true\nthen\n  gh pr merge 60\nfi",
+    `for n in 60; do gh pr merge $n; done`,
+    `{ gh pr merge 60; }`,
+    `bash -c 'if true; then gh pr merge 60; fi'`,
+    `gh pr -R o/r merge 60`,
+    `gh pr --repo o/r merge 60`,
+    `gh -R o/r pr merge 60`,
+  ]) {
+    assert.equal(ghMerges(command, segmentsOf).length, 1, command);
+  }
+  assert.equal(ghMerges(String.raw`pwsh -c "gh pr merge 60"`, powershellSegments).length, 1);
+  assert.equal(ghMerges(String.raw`pwsh -NoProfile -ExecutionPolicy Bypass -Command "gh pr merge 60"`, powershellSegments).length, 1);
+  assert.equal(ghMerges(String.raw`if ($true) { gh pr merge 60 }`, powershellSegments).length, 1);
+});
+
+test("a wrapped gh api merge is seen as one", () => {
+  const endpoints = (command) => ghApiMerges(command, segmentsOf).map((call) => call.endpoint);
+  for (const command of [
+    `bash -lc 'gh api -X PUT repos/o/r/pulls/60/merge'`,
+    `env gh api -X PUT repos/o/r/pulls/60/merge`,
+    `sudo gh api -X PUT repos/o/r/pulls/60/merge`,
+    `eval 'gh api -X PUT repos/o/r/pulls/60/merge'`,
+    `if true; then gh api -X PUT repos/o/r/pulls/60/merge; fi`,
+    `gh -R o/r api -X PUT repos/o/r/pulls/60/merge`,
+  ]) {
+    assert.deepEqual(endpoints(command), ["repos/o/r/pulls/60/merge"], command);
+  }
+});
+
+test("the repo flag before the verb is the merge's repo", () => {
+  const repo = (command) => ghMerges(command, segmentsOf)[0].repo;
+  assert.equal(repo("gh pr -R o/r merge 60"), "o/r");
+  assert.equal(repo("gh pr --repo o/r merge 60"), "o/r");
+  assert.equal(repo("gh pr --repo=o/r merge 60"), "o/r");
+  assert.equal(repo("gh pr -Ro/r merge 60"), "o/r");
+  assert.equal(repo("gh pr -R=o/r merge 60"), "o/r");
+  assert.equal(repo("gh -R o/r pr merge 60"), "o/r");
+  // The flag written last wins, as it does in gh, and a PR URL wins over both.
+  assert.equal(repo("gh pr -R a/b merge 60 -R o/r"), "o/r");
+  assert.equal(repo("gh pr -R a/b merge https://github.com/o/r/pull/60"), "o/r");
+  assert.equal(repo("GH_REPO=x/y gh pr -R o/r merge 60"), "o/r");
+  assert.equal(repo("GH_REPO=o/r gh pr merge 60"), "o/r");
+  assert.equal(repo("env GH_REPO=o/r gh pr merge 60"), "o/r");
+  assert.equal(repo("bash -lc 'gh pr -R o/r merge 60'"), "o/r");
+  assert.equal(ghMerges("gh pr -R o/r merge 60 --match-head-commit abc1234", segmentsOf)[0].sha, "abc1234");
+  assert.equal(ghMerges("gh pr -R o/r merge 60", segmentsOf)[0].selector, "60");
+});
+
+test("the settings a wrapper or a nested shell's prefix makes reach the merge", () => {
+  const env = (command) => ghMerges(command, segmentsOf)[0].env;
+  assert.deepEqual(env("env GH_CONFIG_DIR=/c GH_TOKEN=x gh pr merge 60"), { GH_CONFIG_DIR: "/c" });
+  assert.deepEqual(env("sudo GH_HOST=h gh pr merge 60"), { GH_HOST: "h" });
+  assert.deepEqual(env("GH_CONFIG_DIR=/c bash -lc 'gh pr merge 60'"), { GH_CONFIG_DIR: "/c" });
+  assert.deepEqual(env("GH_CONFIG_DIR=/c eval 'gh pr merge 60'"), { GH_CONFIG_DIR: "/c" });
+});
+
+test("a wrapped gh that is no merge is not a merge", () => {
+  for (const command of [
+    "env gh pr view 60",
+    "sudo gh pr -R o/r view 60",
+    "bash -lc 'gh pr view 60'",
+    "eval 'gh pr merge 60 --disable-auto'",
+    "if true; then gh pr list; fi",
+    "env echo gh pr merge 60",
+    "command -v gh",
+    "bash -lc 'echo gh pr merge 60'",
+    "gh pr -R o/r comment 60",
+    "gh -R o/r pr view merge",
+  ]) {
+    assert.deepEqual(ghMerges(command, segmentsOf), [], command);
+  }
+  // Known gap: `xargs` runs its arguments as a command, and the parser does not follow it.
+  assert.deepEqual(ghMerges("echo 60 | xargs gh pr merge", segmentsOf), []);
+});

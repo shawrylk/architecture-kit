@@ -6,7 +6,7 @@ import { readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { nestedCommand, programName } from "./bash-command-guard.mjs";
-import { commandWords } from "./shell-command.mjs";
+import { commandEnv, commandWords } from "./shell-command.mjs";
 import { nativePath } from "./workflow-place.mjs";
 
 const GH_SETTINGS = ["GH_CONFIG_DIR", "GH_HOST", "GH_REPO"];
@@ -40,15 +40,33 @@ function settingsMadeBy(segment) {
   return value === undefined ? {} : kept({ [powershell[1].toUpperCase()]: value });
 }
 
-/** The `NAME=value` words before a command, which set its environment alone. */
-function prefixOf(segment) {
-  const env = {};
-  for (const word of segment.words) {
-    const match = ASSIGNMENT.exec(word);
-    if (!match) break;
-    env[match[1]] = match[2];
+/** The settings a command makes for gh alone: its `NAME=value` words, before it and after `env` or `sudo`. */
+const prefixOf = (segment) => kept(commandEnv(segment));
+
+/** The repository a `-R` or `--repo` flag names, as `-R o/r`, `-Ro/r`, `-R=o/r`, `--repo o/r` or `--repo=o/r`. */
+const REPO_FLAG = /^(?:-R|--repo)=?(.*)$/s;
+
+/** Skips the flags gh reads before its group and between its group and verb, and keeps the repository they name. */
+function leadingFlags(words) {
+  let repo = null;
+  let i = 0;
+  for (; i < words.length && words[i].startsWith("-") && words[i] !== "-"; i++) {
+    const match = REPO_FLAG.exec(words[i]);
+    if (match) repo = match[1] === "" ? (words[++i] ?? null) : match[1];
   }
-  return kept(env);
+  return { repo, rest: words.slice(i) };
+}
+
+/**
+ * The words after `gh` as a command: its group, its verb, the words after the verb, and the repository a flag before the verb names.
+ * `gh pr -R o/r merge 60` and `gh -R o/r pr merge 60` are `pr merge 60`. `rest` holds every word after the group, flags kept.
+ */
+function ghCommand(words) {
+  const first = leadingFlags(words);
+  const [group, ...rest] = first.rest;
+  const second = leadingFlags(rest);
+  const [verb, ...args] = second.rest;
+  return { group, verb, args, rest, repo: second.repo ?? first.repo };
 }
 
 function mergeOf(args) {
@@ -85,7 +103,7 @@ function ghCalls(command, parse) {
     env = { ...env, ...settingsMadeBy(segment) };
     const nested = nestedCommand(segment);
     if (nested) {
-      calls.push(...ghCalls(nested.command, nested.parse).map((call) => ({ ...call, env: { ...env, ...call.env } })));
+      calls.push(...ghCalls(nested.command, nested.parse).map((call) => ({ ...call, env: { ...env, ...prefixOf(segment), ...call.env } })));
       continue;
     }
     const [program, ...words] = commandWords(segment);
@@ -98,13 +116,13 @@ function ghCalls(command, parse) {
 export function ghMerges(command, parse) {
   const merges = [];
   for (const { words, env } of ghCalls(command, parse)) {
-    const [group, verb, ...args] = words;
+    const { group, verb, args, repo } = ghCommand(words);
     if (group !== "pr" || verb !== "merge") continue;
     const merge = mergeOf(args);
     if (!merge) continue;
-    // The repository comes from a PR URL first, then -R or --repo, then GH_REPO. GH_REPO is no setting to keep.
+    // The repository comes from a PR URL first, then -R or --repo (the one written last), then GH_REPO. GH_REPO is no setting to keep.
     const { GH_REPO: fromEnv, ...settings } = env;
-    merge.repo = PR_URL.exec(merge.selector ?? "")?.[1] ?? merge.repo ?? fromEnv ?? null;
+    merge.repo = PR_URL.exec(merge.selector ?? "")?.[1] ?? merge.repo ?? repo ?? fromEnv ?? null;
     merges.push({ ...merge, env: settings });
   }
   return merges;
@@ -187,9 +205,9 @@ function apiEndpoint(args) {
  */
 export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
   return ghCalls(command, parse)
-    .filter(({ words }) => words[0] === "api")
-    .flatMap(({ words }) => {
-      const args = words.slice(1);
+    .map(({ words }) => ghCommand(words))
+    .filter(({ group }) => group === "api")
+    .flatMap(({ rest: args }) => {
       const found = args.filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
       if (isRestPath(apiEndpoint(args) ?? "")) return found;
       const graphql = args.find((word) => GRAPHQL_ENDPOINT.test(word));

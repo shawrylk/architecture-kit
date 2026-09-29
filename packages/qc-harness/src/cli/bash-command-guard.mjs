@@ -28,8 +28,14 @@ const COMMIT_VALUE_FLAGS = new Set(["m", "F", "C", "c", "t"]);
 
 /** The parser for each guarded tool. */
 export const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments };
-/** The shells whose `-c` or `-Command` argument is a command line of its own, and the parser that reads it. */
-const NESTED = { bash: segmentsOf, sh: segmentsOf, pwsh: powershellSegments, powershell: powershellSegments };
+/** A POSIX shell reads a command line from `-c`, alone or in a cluster of short flags: `-lc`, `-ic`, `-lic`, `-cl`. */
+const POSIX_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
+const POWERSHELL_COMMAND_FLAG = /^-(c|command)$/i;
+/** The shells whose `-c` or `-Command` argument is a command line of its own, the flag that names it, and the parser that reads it. */
+const NESTED = Object.fromEntries([
+  ...["bash", "sh", "zsh", "dash", "ksh"].map((name) => [name, { flag: POSIX_COMMAND_FLAG, parse: segmentsOf }]),
+  ...["pwsh", "powershell"].map((name) => [name, { flag: POWERSHELL_COMMAND_FLAG, parse: powershellSegments }]),
+]);
 
 export const programName = (word) => path.basename(word ?? "").toLowerCase().replace(/\.exe$/, "");
 const isNoVerify = (arg) => arg.length >= NO_VERIFY_MIN && NO_VERIFY.startsWith(arg);
@@ -76,12 +82,20 @@ function runsTests(segment) {
   return [program, ...args].some((word) => programName(word) === "vitest");
 }
 
-/** @returns the command line a shell runs from `-c` or `-Command`, with its parser, or null. */
+/**
+ * @returns the command line a shell runs from `-c` or `-Command`, or that `eval` runs from its words joined with spaces,
+ *   with its parser, or null.
+ */
 export function nestedCommand(segment) {
   const [program, ...args] = commandWords(segment);
-  const parse = NESTED[programName(program)];
-  const at = args.findIndex((arg) => /^-(c|command)$/i.test(arg));
-  return parse && at !== -1 && args[at + 1] !== undefined ? { command: args[at + 1], parse } : null;
+  const name = programName(program);
+  if (name === "eval") return args.length > 0 ? { command: args.join(" "), parse: segmentsOf } : null;
+  const shell = Object.hasOwn(NESTED, name) ? NESTED[name] : null;
+  const at = shell ? args.findIndex((arg) => shell.flag.test(arg)) : -1;
+  if (at === -1) return null;
+  // A POSIX shell takes the first word after its flags as the command line, so `-c -- 'cmd'` and `-c +x 'cmd'` still find it.
+  const command = shell.parse === segmentsOf ? args.slice(at + 1).find((arg) => !/^[-+]/.test(arg)) : args[at + 1];
+  return command === undefined ? null : { command, parse: shell.parse };
 }
 
 const REASONS = {
