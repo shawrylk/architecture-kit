@@ -703,6 +703,30 @@ a parameter. The gate follows a `$ref` body into `components.schemas`, and each 
 }
 ```
 
+### Keep a minted key out of a saga runner
+
+The `saga-key` gate ships off. A saga resumes on its key, so a key minted at the call starts a second
+saga on every retry. The gate reads each call of a function in `sagaKey.runners`, in the feature
+files and not in a test, and fails a call as `minted-saga-key` when the `sagaKey.key` property of its
+object argument is minted.
+
+- A call of a volatile name fails, matched at its tail: `crypto.randomUUID()`, `randomUUID()`,
+  `nanoid()` and `uuid.v4()` all count. The names are `idempotency.volatile` and `uuid.v4`.
+- A bare name, and the shorthand `{ mutationId }`, follow to the `const` that declares it, one
+  indirection. A `const id = crypto.randomUUID()` there fails, and a `const id = state.clientMutationId` passes.
+- The finding names the file and the line of the call.
+- A runner is a name, or a dotted name such as `sagas.runPipeline` for a member call.
+- The gate reads an object-literal argument only. A runner that takes the key as a positional
+  argument, a key built inside a helper, and a key inside a template string are not read.
+- An empty `runners` list, or a blank name, throws when the gate is on, so the gate never matches nothing.
+
+```json
+{
+  "gates": { "saga-key": true },
+  "sagaKey": { "runners": ["runPipeline"], "key": "mutationId" }
+}
+```
+
 ### Serve exactly the operations of the contract
 
 The `contract-routes` gate ships off. It reads the composed contract at `contract`, as
