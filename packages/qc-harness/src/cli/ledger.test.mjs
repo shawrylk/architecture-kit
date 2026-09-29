@@ -113,3 +113,15 @@ test("qc ledger prints one line per record, and a branch keeps only its own", (t
   assert.match(one.stdout, /verdict\s+branch CHANGES_REQUIRED fedcba9 feat\/2-y/);
   assert.doesNotMatch(one.stdout, /feat\/1-x/);
 });
+
+test("an append after a torn last line keeps the new record whole", (t) => {
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-ledger-torn-")));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const file = path.join(base, "ledger.jsonl");
+  appendRecord(file, { type: "stop", role: "implementer" });
+  appendFileSync(file, '{"type":"stop","role":"tor');
+  appendRecord(file, { type: "verdict", verdict: "APPROVED" });
+  assert.deepEqual(readLedger(file).map((record) => record.type), ["stop", "verdict"]);
+  appendRecord(file, { type: "stop", role: "task" });
+  assert.equal(readLedger(file).length, 3, "a file that ends in a newline gets no blank line");
+});

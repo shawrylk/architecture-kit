@@ -1,7 +1,7 @@
 // The resource for the workflow ledger: JSON lines in `<git common dir>/qc/ledger.jsonl`, shared by every
 // worktree. This module is its one writer, and every workflow check reads it through `readLedger`.
 
-import { appendFileSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
@@ -36,11 +36,30 @@ export function ledgerFileOf(root) {
   return common ? path.join(common, "qc", "ledger.jsonl") : null;
 }
 
-/** Appends one record, stamped with its time. An unknown type throws, so no reader meets a shape it does not know. */
+/** True when the file holds bytes and its last one is not a newline, which is a line torn by a crash. */
+function endsTorn(file) {
+  let fd;
+  try {
+    fd = openSync(file, "r");
+    const { size } = statSync(file);
+    if (size === 0) return false;
+    const last = Buffer.alloc(1);
+    readSync(fd, last, 0, 1, size - 1);
+    return last[0] !== 0x0a;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/** Appends one record, stamped with its time, on a line of its own. An unknown type throws, so no reader meets a shape it does not know. */
 export function appendRecord(file, record, now = new Date()) {
   if (!RECORD_TYPES.includes(record?.type)) throw new Error(`ledger: unknown record type ${JSON.stringify(record?.type)}`);
   mkdirSync(path.dirname(file), { recursive: true });
-  appendFileSync(file, `${JSON.stringify({ ...record, at: now.toISOString() })}\n`);
+  const line = `${JSON.stringify({ ...record, at: now.toISOString() })}\n`;
+  // A torn last line ends at this newline, so it never swallows the new record.
+  appendFileSync(file, endsTorn(file) ? `\n${line}` : line);
 }
 
 /** Every record in the file, oldest first. A missing file is an empty ledger, and a torn line is skipped. */

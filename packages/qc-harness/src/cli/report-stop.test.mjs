@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { readLedger } from "./ledger.mjs";
+import { appendRecord, readLedger } from "./ledger.mjs";
 import { decide, verdictOf } from "./report-stop.mjs";
 import { rememberSession } from "./workflow-settings.mjs";
 
@@ -147,4 +147,51 @@ test("the hook process is silent in a checkout without the checks", (t) => {
   });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
+});
+
+/** A linked worktree of `ws.on` on feat/2-y with one commit more; feat/3-z names that commit but is checked out nowhere. */
+function linkedTask(ws, t) {
+  const linked = path.join(path.dirname(ws.on), "linked");
+  git(ws.on, "worktree", "add", "-q", "-b", "feat/2-y", linked);
+  writeFileSync(path.join(linked, "b.txt"), "b\n");
+  git(linked, "add", ".");
+  git(linked, "-c", "user.name=qc", "-c", "user.email=qc@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "b");
+  git(ws.on, "branch", "feat/3-z", "feat/2-y");
+  appendRecord(ws.ledger, {
+    type: "dispatch",
+    session: "s",
+    agentType: "architecture:sdd-implementer",
+    task: true,
+    worktree: linked,
+    branch: "feat/2-y",
+    head: ws.head,
+  });
+  return { linked, head: git(linked, "rev-parse", "HEAD") };
+}
+
+const REPORT = "DONE\nRED: node --test x: 1 fail\nGREEN: node --test x: 1 pass";
+
+test("an implementer stop records the full head and the branch of its dispatch's worktree", (t) => {
+  const ws = workspace(t);
+  const { head } = linkedTask(ws, t);
+  assert.equal(decide(stop(ws.on, "architecture:sdd-implementer", REPORT), ws.tmp), null);
+  const record = readLedger(ws.ledger).find((entry) => entry.type === "stop");
+  assert.equal(record.head, head);
+  assert.equal(record.branch, "feat/2-y");
+});
+
+test("an implementer stop with no dispatch on record writes no head and no branch", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(stop(ws.on, "architecture:sdd-implementer", REPORT), ws.tmp), null);
+  const record = readLedger(ws.ledger).find((entry) => entry.type === "stop");
+  assert.equal(record.head, undefined);
+  assert.equal(record.branch, undefined);
+});
+
+test("a verdict on a commit several branches name takes the branch the dispatch's worktree has checked out", (t) => {
+  const ws = workspace(t);
+  const { head, linked } = linkedTask(ws, t);
+  git(linked, "checkout", "-q", "feat/3-z");
+  assert.equal(decide(stop(ws.on, "architecture:sdd-reviewer", `VERDICT: CHANGES_REQUIRED ${head}\nfix x`), ws.tmp), null);
+  assert.equal(readLedger(ws.ledger).find((entry) => entry.type === "verdict").branch, "feat/3-z");
 });

@@ -267,3 +267,24 @@ test("the guard records an accepted task dispatch", (t) => {
   assert.equal(dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp), null);
   assert.deepEqual(readLedger(ws.ledger).map((record) => [record.type, record.task, record.branch]), [["dispatch", true, "feat/1-x"]]);
 });
+
+test("the ancestry-path branch spawns at most three git processes, with a later review on a descendant", (t) => {
+  const ws = workspace(t);
+  const heads = Array.from({ length: 40 }, (_, index) => commitIn(ws.linked, `g${index}.txt`));
+  implementerStop(ws, heads[10]);
+  for (let index = 0; index < 40; index += 1) verdict(ws, String(index).repeat(40).slice(0, 40).padStart(40, "a"));
+  verdict(ws, heads[20]);
+  for (let index = 0; index < 40; index += 1) verdict(ws, String(index).repeat(40).slice(0, 40).padStart(40, "b"));
+  const records = readLedger(ws.ledger);
+  let spawns = 0;
+  const git = (...args) => {
+    spawns += 1;
+    return gitOut(...args);
+  };
+  assert.equal(gateRefusal({ records, branch: "feat/1-x", head: heads.at(-1), reason: null, type: "sdd-implementer", cwd: ws.linked, git }), null);
+  assert.ok(spawns >= 2 && spawns <= 3, `${spawns} git spawns, and the ancestry-path read must have run`);
+  const unreviewed = [...records.slice(0, records.findIndex((r) => r.sha === heads[20])), ...records.slice(records.findIndex((r) => r.sha === heads[20]) + 1)];
+  spawns = 0;
+  assert.match(gateRefusal({ records: unreviewed, branch: "feat/1-x", head: heads.at(-1), reason: null, type: "sdd-implementer", cwd: ws.linked, git }) ?? "", /no review in the ledger/);
+  assert.ok(spawns >= 2 && spawns <= 3, `${spawns} git spawns`);
+});

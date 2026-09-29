@@ -4,8 +4,8 @@
 
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { branchesAt, commitOf } from "./git-read.mjs";
-import { appendRecord } from "./ledger.mjs";
+import { branchAt, branchesAt, commitOf, gitOut } from "./git-read.mjs";
+import { appendRecord, readLedger } from "./ledger.mjs";
 import { dropReport, keepReport, reportOf } from "./report-stash.mjs";
 import { workflowOf } from "./workflow-settings.mjs";
 
@@ -55,14 +55,39 @@ const refusal = (role, problems) =>
   `Workflow report: the ${role === "implementer" ? "implementer" : `${role} review`} report needs ${problems.join("; and ")}. ` +
   "Add it and send the report again.";
 
-function branchOf(workflow, sha) {
+const bareType = (type) => String(type ?? "").replace(/^.*:/, "");
+
+/** The task dispatches of this session that named a worktree, newest first. */
+const taskDispatches = (records, session) =>
+  records.filter((record) => record.type === "dispatch" && record.task === true && record.session === session && record.worktree).reverse();
+
+/**
+ * The branch a verdict's commit belongs to. When several branches name the commit, the one a dispatched
+ * worktree has checked out wins, so a review of a shared commit lands on the task branch.
+ */
+function branchOf(workflow, sha, dispatches) {
   const branches = branchesAt(workflow.root, sha);
+  for (const dispatch of dispatches) {
+    const checkedOut = branchAt(dispatch.worktree);
+    if (checkedOut && branches.includes(checkedOut)) return checkedOut;
+  }
   return branches.find((branch) => !workflow.protectedBranches.includes(branch)) ?? branches[0] ?? null;
+}
+
+/** The head and branch an implementer left in the worktree of its dispatch, or an empty object when none is on record. */
+function implementerPlace(dispatches, agentType) {
+  const dispatch = dispatches.find((record) => bareType(record.agentType) === bareType(agentType));
+  if (!dispatch) return {};
+  const head = gitOut(dispatch.worktree, "rev-parse", "HEAD");
+  const branch = branchAt(dispatch.worktree);
+  return head && branch ? { head, branch } : {};
 }
 
 function recordStop({ workflow, call, session, agentId, role, verdict, fullSha, text, tmp }) {
   try {
-    appendRecord(workflow.ledger, { type: "stop", session, agentType: call.agent_type, agentId, role });
+    const dispatches = taskDispatches(readLedger(workflow.ledger), session);
+    const place = role === "implementer" ? implementerPlace(dispatches, call.agent_type) : {};
+    appendRecord(workflow.ledger, { type: "stop", session, agentType: call.agent_type, agentId, role, ...place });
     if (verdict) {
       appendRecord(workflow.ledger, {
         type: "verdict",
@@ -71,7 +96,7 @@ function recordStop({ workflow, call, session, agentId, role, verdict, fullSha, 
         kind: role,
         verdict: verdict.verdict,
         sha: fullSha,
-        branch: branchOf(workflow, fullSha),
+        branch: branchOf(workflow, fullSha, dispatches),
         redChecked: RED_CHECKED_LINE.test(text),
       });
     }
