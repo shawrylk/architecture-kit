@@ -775,6 +775,40 @@ default named in either list counts as kept. The detail names the entry by `modu
 }
 ```
 
+### Hold new prose to a style
+
+`qc prose` runs [Vale](https://vale.sh) on the lines a change adds to the docs, and on a pull request body. A
+line that is already in the repository is never judged, so a repository adopts the style without a rewrite.
+Vale is an external binary. Without it, `qc prose` prints a note and exits 0 outside CI, and fails in CI.
+
+```bash
+qc prose                                  # the lines added since the merge base with prose.base
+qc prose --base origin/develop            # another base
+qc prose --pr-body <file>                 # also the body in <file>
+qc prose --pr-body-event                  # also the body of the pull request in $GITHUB_EVENT_PATH
+```
+
+`qc init` copies the style to `.vale/`, and the template workflow installs a pinned Vale release and runs
+`qc prose --pr-body-event` on a pull request. `qc check` does not run it, because a diff needs a base.
+
+| Severity | Rule |
+|---|---|
+| Error | `utilize`, `in order to`, `e.g.`, `i.e.`, `etc.`, `please`, `and/or`, and the progress phrases `not yet`, `for now`, `the next phase`, `for the time being` |
+| Warning | A sentence of more than 25 words, and the passive voice. A warning never fails. |
+
+```json
+{
+  "prose": {
+    "paths": ["docs/**", "README.md"],
+    "exempt": ["**/CHANGELOG*", "**/reports/**"],
+    "base": "origin/main"
+  }
+}
+```
+
+`paths` and `exempt` are globs over markdown files. The ADR log, `adr.root` and `docs.decisions`, is always
+exempt. `valeConfig` names the repository's Vale config and defaults to `.vale/.vale.ini`.
+
 ## Tests
 
 ```bash

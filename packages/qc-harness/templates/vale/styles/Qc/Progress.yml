@@ -1,0 +1,9 @@
+extends: existence
+message: "'%s' narrates progress. State what is true now."
+level: error
+ignorecase: true
+tokens:
+  - not yet
+  - for now
+  - the next phase
+  - for the time being

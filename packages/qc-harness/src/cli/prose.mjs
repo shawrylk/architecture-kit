@@ -55,10 +55,10 @@ const valeConfigOf = (config) => {
  * warning or a suggestion is advice.
  * @param {object} config
  * @param {{added: {path: string, line: number, text: string, label?: string}[], vale?: typeof runVale, ci?: boolean}} options
- * @returns {Promise<{problems: string[], warnings: string[], notes: string[], checked: number}>}
+ * @returns {Promise<{problems: string[], warnings: string[], notes: string[], checked: number, complete: boolean}>}
  */
 export async function checkProse(config, { added, vale = runVale, ci = false }) {
-  const result = { problems: [], warnings: [], notes: [], checked: added.length };
+  const result = { problems: [], warnings: [], notes: [], checked: added.length, complete: true };
   if (added.length === 0) return result;
 
   const files = new Map();
@@ -76,14 +76,14 @@ export async function checkProse(config, { added, vale = runVale, ci = false }) 
     if (!call.ok) {
       const cause = call.missing ? "vale is not installed" : `vale failed: ${(call.stderr ?? "").trim().split("\n")[0]}`;
       failure.push(`${cause}, so the ${added.length} added line(s) were not checked. Install Vale from https://vale.sh to run this check.`);
-      return result;
+      return { ...result, complete: false };
     }
     let report;
     try {
       report = JSON.parse(call.stdout?.trim() || "{}");
     } catch {
       failure.push("vale printed output that is not JSON, so the added lines were not checked");
-      return result;
+      return { ...result, complete: false };
     }
     for (const [file, alerts] of Object.entries(report)) {
       const entry = files.get(slashes(file));
@@ -167,7 +167,7 @@ export async function runProse(config, args, { env = process.env, vale = runVale
     for (const note of notes) console.log(`NOTE  prose     ${note}`);
     for (const warning of result.warnings) console.log(`WARN  prose     ${warning}`);
     for (const problem of problems) console.error(`FAIL  prose     ${problem}`);
-    if (problems.length === 0) console.log(`OK  prose     ${result.checked} added line(s) meet the prose style`);
+    if (problems.length === 0 && result.complete && diff !== null) console.log(`OK  prose     ${result.checked} added line(s) meet the prose style`);
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

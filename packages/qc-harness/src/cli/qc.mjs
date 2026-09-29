@@ -16,6 +16,8 @@ const USAGE = `qc — architecture gates
   qc lease status [path]   who holds this worktree's lease, since when, and when it lapses
   qc lease release [path]  remove it: --session <id> for your own, --force for another's
   qc pr-check              in CI: the pull request names an issue that exists and predates it
+  qc prose [--base <ref>] [--pr-body <file>] [--pr-body-event]
+                           Vale on the lines a diff adds to the docs, and on a PR body; needs the vale binary
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [branch]       the workflow ledger: dispatches, stops, verdicts, merges, issue updates
@@ -78,6 +80,10 @@ async function main() {
     case "pr-check": {
       const { runPrCheck } = await import("./pr-check.mjs");
       process.exit(await runPrCheck());
+    }
+    case "prose": {
+      const { runProse } = await import("./prose.mjs");
+      process.exit(await runProse(config, rest));
     }
     case "commit-msg": {
       const { runCommitMsg } = await import("./commit-msg.mjs");

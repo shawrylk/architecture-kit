@@ -202,3 +202,10 @@ test("checkProse keeps only the alerts on added lines", async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a skipped check does not print OK", async () => {
+  await inRepo({ "docs/a.md": "# A\n" }, { "docs/a.md": "# A\nA clean line.\n" }, async (root) => {
+    const { out } = await run(root, [], { vale: missingVale });
+    assert.doesNotMatch(out, /OK\s+prose/);
+  });
+});

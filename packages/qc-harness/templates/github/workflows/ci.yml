@@ -21,6 +21,13 @@ jobs:
         run: npx qc pr-check
         env: { GH_TOKEN: "${{ github.token }}" }
 
+      # The lines a pull request adds, and its body, meet the prose style. Vale is a pinned release.
+      - if: github.event_name == 'pull_request'
+        run: |
+          curl -sSfL https://github.com/errata-ai/vale/releases/download/v3.9.1/vale_3.9.1_Linux_64-bit.tar.gz | tar -xz -C "$RUNNER_TEMP" vale
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          npx qc prose --pr-body-event
+
       # Uncomment each as the repository grows the thing it checks.
       # - run: pnpm typecheck
       # - run: pnpm lint
