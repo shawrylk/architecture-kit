@@ -1,6 +1,6 @@
 // A change is rewritten in place, as if it had always been that way. No supersession
-// trail, no deprecation note, no "what this replaces" — the repository states what is
-// true now, and git holds the history. docs/decisions.md.
+// trail, no deprecation note, no "what this replaces", no progress phrase — the repository
+// states what is true now, and git holds the history. docs/decisions.md.
 //
 // Comments only. A vocabulary word in a string is someone's data, not this repository
 // narrating its own past.
@@ -22,16 +22,20 @@ const DEFAULT_PHRASES = [
   "backwards compatibility",
   "for backward compat",
   "old implementation",
+  "not yet",
+  "for now",
+  "the next phase",
+  "for the time being",
 ];
 
 export default {
   meta: {
     type: "problem",
-    docs: { description: "no supersession trail in a comment; the repository states what is true now" },
+    docs: { description: "no supersession trail or progress phrase in a comment; the repository states what is true now" },
     schema: schemaOf({ phrases: { type: "array", items: { type: "string" } } }),
     messages: {
       trail:
-        "'{{phrase}}' narrates what this used to be. Rewrite in place and delete the trail — git holds the history.",
+        "'{{phrase}}' narrates what this was or will be; state what is true now. Rewrite in place and delete the trail — git holds the history.",
     },
   },
   create(context) {
