@@ -10,7 +10,7 @@ beside the check that enforces it — and every check ships a case that must fai
 
 | | Install | Holds |
 |---|---|---|
-| Plugin `architecture` | `claude plugin install` | agent hooks, 3 subagent types, 4 skills, 3 slash commands |
+| Plugin `architecture` | `claude plugin install` | agent hooks, 4 subagent types, 4 skills, 3 slash commands |
 | Package `architecture-harness` | `pnpm add -D` | 11 gates, 10 lint rules, the `qc` CLI, doc templates |
 
 The plugin's hooks call the package's CLI. Either half works alone: the package is an ordinary dev
@@ -200,16 +200,21 @@ it. Both commands are idempotent.
 
 ### 9. Hold an orchestrator to the subagent workflow
 
-The plugin ships three subagent types for `superpowers:subagent-driven-development`:
+The plugin ships four subagent types for `superpowers:subagent-driven-development`:
 
 | Type | Model | Effort | Role |
 |---|---|---|---|
 | `architecture:sdd-planner` | `opus` | `high` | writes one plan and edits nothing else |
-| `architecture:sdd-implementer` | `opus` | `medium` | implements one task from a brief file, and writes a report file |
-| `architecture:sdd-reviewer` | `opus` | `high` | reviews one task, read-only |
+| `architecture:sdd-implementer` | `sonnet` | `high` | implements one task from a brief file, and writes a report file |
+| `architecture:sdd-reviewer` | `sonnet` | `high` | reviews one task, read-only |
+| `architecture:sdd-branch-reviewer` | `opus` | `high` | reviews the whole branch before merge, read-only |
 
-None of the three can call the `Agent` tool. The reviewer has no edit tools but keeps the shell for
-`git`, so its prompt holds it read-only.
+Sonnet runs the implementer and the task reviewer. Opus runs only the planner and the branch
+reviewer, whose job a task review cannot do: it judges cross-task interactions, security, and data
+migrations against the plan and the spec, over the whole branch's diff.
+
+None of the four can call the `Agent` tool. The two reviewers have no edit tools but keep the shell
+for `git`, so their prompts hold them read-only.
 
 A prose rule is lost in a long session or a compaction, so hooks hold the orchestrator to the
 workflow. A `swarm.dispatch` section in `qc.config.json` turns them on. An empty section takes every
@@ -221,13 +226,17 @@ default:
 
 A repository without the section sees no change.
 
-A `PreToolUse` hook on the `Agent` tool refuses three kinds of dispatch, and each refusal names its
+A `PreToolUse` hook on the `Agent` tool refuses four kinds of dispatch, and each refusal names its
 fix:
 
 - A dispatch that names no `model` and no type in `allowedTypes`. An omitted type is
   `general-purpose`. A fork ignores `model`, so a fork passes only when `fork` is in `allowedTypes`.
   The hook cannot see `CLAUDE_CODE_SUBAGENT_MODEL_FORCE`: when it is `1`, Claude Code ignores every
   `model`, in the call and in each definition.
+- A dispatch that names a `model` outside its type's families in `models`, or `*`'s families for a
+  type with no entry. The refusal names the type, the model, and the allowed families. A model
+  string carrying none of `models`' known families is refused the same way. A fork keeps the rule
+  above instead, since it ignores `model`.
 - A prompt longer than `maxPromptChars`. The brief goes in a file, and the prompt names its path.
 - A second dispatch of a type in `implementerTypes` while one runs in the session.
 
@@ -241,17 +250,24 @@ the hook can still be denied later, and then no stop comes. So the refusal names
 delete.
 
 A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
-names the workflow, the three types, and the one-implementer rule.
+names the workflow, the four types, the model tiers, and the one-implementer rule.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `allowedTypes` | the three types, bare and with the `architecture:` prefix | the types that may omit `model` |
+| `allowedTypes` | the four types, bare and with the `architecture:` prefix | the types that may omit `model` |
 | `implementerTypes` | `["sdd-implementer", "architecture:sdd-implementer"]` | the types that share the one slot |
 | `maxPromptChars` | `12000` | the longest prompt, in characters |
 | `slotMinutes` | `60` | when a slot with no stop expires |
+| `models` | opus for the planner and the branch reviewer, sonnet for the implementer and the task reviewer, `["sonnet", "haiku"]` for `*` | the model families each type's named `model` may carry |
 
 The bare names cover a copy of the agents in `~/.claude/agents`. A list replaces its default and
-does not extend it. To allow `Explore` with no model, list it beside the six default names.
+does not extend it. To allow `Explore` with no model, list it beside the eight default names.
+
+`models` merges key by key with its default, so a repository can override one type without
+repeating the rest. A family matches a bare alias (`sonnet`) or a full model id
+(`claude-sonnet-...`), whichever it appears in, case-insensitive, so a new release under an
+existing family needs no kit change. `models` constrains only a dispatch that names a `model`; a
+dispatch with no model still runs its type's frontmatter model, which `models` does not touch.
 
 ## What it enforces
 
