@@ -11,6 +11,19 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", en
 const qc = (cwd, ...args) => spawnSync(process.execPath, [QC, "worktree", ...args], { cwd, encoding: "utf8" });
 const lastLine = (out) => out.trim().split(/\r?\n/).at(-1);
 
+// One comparable spelling of a path: real, absolute, and case-folded where the file system folds case.
+const samePath = (p) => {
+  const resolved = existsSync(p) ? realpathSync.native(p) : path.resolve(p);
+  return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
+};
+// The worktree paths git registers. A test compares whole paths, never a substring of the list:
+// the random temp directory name can contain any name a test gives its worktree.
+const listedWorktrees = (cwd) =>
+  git(cwd, "worktree", "list", "--porcelain")
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("worktree "))
+    .map((line) => samePath(line.slice("worktree ".length)));
+
 // The install writes only what git ignores, as pnpm does, so a fresh worktree stays clean.
 const INSTALL = `node -e "require('fs').mkdirSync('node_modules',{recursive:true})"`;
 
@@ -47,12 +60,14 @@ test("add makes a worktree beside the main checkout and installs it; remove dele
   assert.ok(existsSync(path.join(where, "node_modules")), "the install command did not run in the worktree");
   assert.equal(git(where, "branch", "--show-current"), "feat/a");
   assert.equal(added(main, "wt-a", "feat/a"), where, "a second add must find the same worktree");
+  const registered = samePath(where);
+  assert.ok(listedWorktrees(main).includes(registered), "git does not list the added worktree");
 
   const removed = qc(main, "remove", "wt-a");
   assert.equal(removed.status, 0, removed.stderr);
   assert.equal(existsSync(where), false);
   assert.equal(git(main, "branch", "--list", "feat/a"), "");
-  assert.doesNotMatch(git(main, "worktree", "list"), /wt-a/);
+  assert.ok(!listedWorktrees(main).includes(registered), "git still lists the removed worktree");
   const again = qc(main, "remove", "wt-a");
   assert.equal(again.status, 0, again.stderr);
   rmSync(top, { recursive: true, force: true });
@@ -101,10 +116,12 @@ test("remove deletes a worktree that holds a path longer than 260 characters", (
   writeFileSync(path.join(deep, "index.js"), "module.exports = {};\n");
   assert.ok(path.join(deep, "index.js").length > 260, `the fixture path is only ${path.join(deep, "index.js").length} characters`);
   assert.ok(existsSync(path.join(deep, "index.js")));
+  const registered = samePath(where);
+  assert.ok(listedWorktrees(main).includes(registered), "git does not list the added worktree");
 
   const removed = qc(main, "remove", "wt-long");
   assert.equal(removed.status, 0, removed.stderr);
   assert.equal(existsSync(where), false);
-  assert.doesNotMatch(git(main, "worktree", "list"), /wt-long/);
+  assert.ok(!listedWorktrees(main).includes(registered), "git still lists the removed worktree");
   rmSync(top, { recursive: true, force: true });
 });
