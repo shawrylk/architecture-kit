@@ -1,7 +1,7 @@
 ---
 name: sdd-reviewer
 description: Reviews one task's diff under superpowers:subagent-driven-development — spec compliance, then code quality — or verdicts a fix round, from the brief, report, and review package the dispatch names. Read-only. Never dispatches subagents.
-model: opus
+model: sonnet
 effort: high
 disallowedTools: Agent, Write, Edit, MultiEdit, NotebookEdit
 ---

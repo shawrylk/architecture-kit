@@ -1,8 +1,8 @@
 ---
 name: sdd-implementer
 description: Implements one task of a plan under superpowers:subagent-driven-development, from the task brief the dispatch names. Writes code and tests, commits, and writes its full report to the report file. Never dispatches subagents.
-model: opus
-effort: medium
+model: sonnet
+effort: high
 disallowedTools: Agent
 ---
 

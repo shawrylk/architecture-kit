@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { defaults, dispatchDefaults, merge } from "../config.mjs";
-import { dispatchRefusal, dispatchSettings, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
+import { dispatchRefusal, dispatchSettings, familyOf, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
 
 test("a swarm section with no dispatch key keeps the guard off", () => {
   assert.equal(dispatchSettings({}), null);
@@ -28,9 +28,27 @@ test("a wrong value names its key", () => {
     [{ implementerTypes: [""] }, /swarm\.dispatch\.implementerTypes/],
     [{ maxPromptChars: 0 }, /swarm\.dispatch\.maxPromptChars/],
     [{ slotMinutes: -1 }, /swarm\.dispatch\.slotMinutes/],
+    [{ models: "opus" }, /swarm\.dispatch\.models\b/],
+    [{ models: ["opus"] }, /swarm\.dispatch\.models\b/],
+    [{ models: { "sdd-planner": [] } }, /swarm\.dispatch\.models\.sdd-planner/],
+    [{ models: { "sdd-planner": ["gpt"] } }, /swarm\.dispatch\.models\.sdd-planner/],
   ]) {
     assert.throws(() => dispatchSettings({ dispatch }), key, JSON.stringify(dispatch));
   }
+});
+
+test("a repository's models merges key by key with the defaults", () => {
+  const settings = dispatchSettings({ dispatch: { models: { "architecture:sdd-planner": ["sonnet"] } } });
+  assert.deepEqual(settings.models["architecture:sdd-planner"], ["sonnet"]);
+  assert.deepEqual(settings.models["architecture:sdd-implementer"], dispatchDefaults.models["architecture:sdd-implementer"]);
+});
+
+test("familyOf finds the first known family a model string contains, lower-cased", () => {
+  assert.equal(familyOf("sonnet"), "sonnet");
+  assert.equal(familyOf("claude-sonnet-5"), "sonnet");
+  assert.equal(familyOf("opus[1m]"), "opus");
+  assert.equal(familyOf("OPUS"), "opus");
+  assert.equal(familyOf("gpt-4"), null);
 });
 
 const on = dispatchSettings({ dispatch: { maxPromptChars: 20 } });
@@ -66,6 +84,52 @@ test("a prompt over the limit is refused, and a prompt at the limit passes", () 
 
 test("the model rule comes before the length rule", () => {
   assert.match(dispatchRefusal({ prompt: "x".repeat(21) }, on) ?? "", /names no model/);
+});
+
+test("a planner on sonnet is refused, and an implementer on opus is refused", () => {
+  const planner = dispatchRefusal({ subagent_type: "architecture:sdd-planner", model: "sonnet" }, on) ?? "";
+  assert.match(planner, /architecture:sdd-planner/);
+  assert.match(planner, /"sonnet"/);
+  assert.match(planner, /opus/);
+  const implementer = dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "opus" }, on) ?? "";
+  assert.match(implementer, /architecture:sdd-implementer/);
+  assert.match(implementer, /"opus"/);
+  assert.match(implementer, /sonnet/);
+});
+
+test("a general-purpose dispatch on opus is refused, naming the wildcard's families", () => {
+  const reason = dispatchRefusal({ model: "opus" }, on) ?? "";
+  assert.match(reason, /general-purpose/);
+  assert.match(reason, /sonnet, haiku/);
+});
+
+test("a model string with no known family is refused", () => {
+  assert.match(dispatchRefusal({ model: "gpt-4" }, on) ?? "", /general-purpose/);
+});
+
+test("each allowed pair passes, including a full model id that resolves to its family", () => {
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-planner", model: "opus" }, on), null);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-branch-reviewer", model: "opus" }, on), null);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet" }, on), null);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-reviewer", model: "sonnet" }, on), null);
+  assert.equal(dispatchRefusal({ model: "haiku" }, on), null);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5" }, on), null);
+});
+
+test("a fork keeps its current rule and never reaches the tier check", () => {
+  assert.match(
+    dispatchRefusal({ subagent_type: "fork", model: "gpt-4" }, on) ?? "",
+    /`fork` is in swarm\.dispatch\.allowedTypes/,
+  );
+});
+
+test("a repository override replaces one type's families and leaves the rest at default", () => {
+  const withOverride = dispatchSettings({ dispatch: { models: { "architecture:sdd-planner": ["sonnet"] } } });
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-planner", model: "sonnet" }, withOverride), null);
+  assert.match(
+    dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "opus" }, withOverride) ?? "",
+    /architecture:sdd-implementer/,
+  );
 });
 
 test("an omitted type is general-purpose, and only a listed type is an implementer", () => {

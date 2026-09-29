@@ -1,5 +1,5 @@
 {
-  "description": "Architecture gates: a fast per-file pass after every edit, a full pass that refuses to end a red turn, a work-order guard that keeps an edit inside its declared paths and warns on the wrong branch (the installed pre-commit hook is what actually refuses that commit), an edit batch guard that refuses a second edit of one file in one parallel block, a generated-file guard that refuses a hand edit of generated output, a command guard that refuses --no-verify in Bash and PowerShell and a hand-run hook script, a shell edit guard that reports a Bash or PowerShell write outside those paths or on a protected branch, a tool-call budget that makes a subagent hand off, a dispatch guard that holds the Agent tool to a model or an allowed type, a short prompt, and one implementer at a time, and a session note that names the subagent workflow. Each no-ops without its own opt-in file or config section.",
+  "description": "Architecture gates: a fast per-file pass after every edit, a full pass that refuses to end a red turn, a work-order guard that keeps an edit inside its declared paths and warns on the wrong branch (the installed pre-commit hook is what actually refuses that commit), an edit batch guard that refuses a second edit of one file in one parallel block, a generated-file guard that refuses a hand edit of generated output, a command guard that refuses --no-verify in Bash and PowerShell and a hand-run hook script, a shell edit guard that reports a Bash or PowerShell write outside those paths or on a protected branch, a tool-call budget that makes a subagent hand off, a dispatch guard that holds the Agent tool to a model or an allowed type, a short prompt, and one implementer at a time, an explore guard that refuses a whole-file Read past the read budget and names the repository's own tools, an explore hint that flags a long Grep answer or a long command output and names the tools or the summarizer, and a session note that names the subagent workflow and the explore tools. Each no-ops without its own opt-in file or config section.",
   "hooks": {
     "SessionStart": [
       {
@@ -35,6 +35,12 @@
         ]
       },
       {
+        "matcher": "Read",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/explore-guard.mjs\"", "timeout": 10 }
+        ]
+      },
+      {
         "matcher": "Agent",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/dispatch-guard.mjs\"", "timeout": 10 }
@@ -57,7 +63,14 @@
       {
         "matcher": "Bash|PowerShell",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/bash-edit-guard.mjs\"", "timeout": 30 }
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/bash-edit-guard.mjs\"", "timeout": 30 },
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/explore-hint.mjs\"", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Grep",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/explore-hint.mjs\"", "timeout": 10 }
         ]
       }
     ],
@@ -72,6 +85,11 @@
       {
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/dispatch-guard.mjs\"", "timeout": 10 }
+        ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/dispatch-reminder.mjs\"", "timeout": 10 }
         ]
       }
     ],

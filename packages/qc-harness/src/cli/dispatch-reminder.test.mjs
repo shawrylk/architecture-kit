@@ -24,6 +24,7 @@ function checkouts(t, configs) {
 }
 
 const start = (cwd, source) => ({ session_id: "s", cwd, hook_event_name: "SessionStart", source });
+const subagentStart = (cwd) => ({ session_id: "s", cwd, hook_event_name: "SubagentStart", agent_type: "sonnet-implementer" });
 
 test("a checkout with no config, or no dispatch section, gets no note", (t) => {
   const [plain, off] = checkouts(t, [null, { swarm: { toolCallBudget: 50 } }]);
@@ -40,17 +41,58 @@ test("with the section on, every start adds the note, a compaction included", (t
   }
 });
 
-test("the note names the workflow, the three types, and the one-implementer rule, in a short text", () => {
+test("the note names the workflow, the four types, the model tiers, and the one-implementer rule, in a short text", () => {
   for (const word of [
     "superpowers:subagent-driven-development",
     "architecture:sdd-planner",
     "architecture:sdd-implementer",
     "architecture:sdd-reviewer",
+    "architecture:sdd-branch-reviewer",
     "one implementer at a time",
   ]) {
     assert.ok(REMINDER.includes(word), word);
   }
-  assert.ok(REMINDER.length < 600, `${REMINDER.length} characters`);
+  assert.ok(REMINDER.length < 800, `${REMINDER.length} characters`);
+});
+
+test("with swarm.explore also on, the note names its tools", (t) => {
+  const [on] = checkouts(t, [
+    { swarm: { dispatch: {}, explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }, { name: "GitNexus", use: "u", how: "h" }] } } },
+  ]);
+  const text = decide(start(on, "startup")).hookSpecificOutput.additionalContext;
+  assert.ok(text.startsWith(REMINDER));
+  assert.match(text, /slm-rerank, GitNexus/);
+});
+
+test("with swarm.explore off, or naming no tools, the note is exactly REMINDER", (t) => {
+  const [off, empty] = checkouts(t, [
+    { swarm: { dispatch: {} } },
+    { swarm: { dispatch: {}, explore: { tools: [] } } },
+  ]);
+  assert.equal(decide(start(off, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+  assert.equal(decide(start(empty, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+});
+
+test("with swarm.explore on and swarm.dispatch off, the SessionStart note still names the tools", (t) => {
+  const [on] = checkouts(t, [{ swarm: { explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }] } } }]);
+  const output = decide(start(on, "startup"));
+  assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
+  assert.match(output.hookSpecificOutput.additionalContext, /slm-rerank/);
+  assert.ok(!output.hookSpecificOutput.additionalContext.startsWith(" "));
+});
+
+test("SubagentStart names the tools when swarm.explore is on, independent of swarm.dispatch", (t) => {
+  const [on] = checkouts(t, [{ swarm: { explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }] } } }]);
+  const output = decide(subagentStart(on));
+  assert.equal(output.hookSpecificOutput.hookEventName, "SubagentStart");
+  assert.match(output.hookSpecificOutput.additionalContext, /slm-rerank/);
+});
+
+test("SubagentStart with no swarm.explore section, or none naming tools, is a no-op", (t) => {
+  const [plain, off, empty] = checkouts(t, [null, { swarm: { dispatch: {} } }, { swarm: { explore: { tools: [] } } }]);
+  assert.equal(decide(subagentStart(plain)), null);
+  assert.equal(decide(subagentStart(off)), null);
+  assert.equal(decide(subagentStart(empty)), null);
 });
 
 test("a config error reaches the session as context", (t) => {
@@ -75,4 +117,15 @@ test("hooks.json runs the note on every SessionStart source", () => {
     entry.hooks.some((hook) => hook.command.includes("dispatch-reminder.mjs")),
   );
   assert.deepEqual(entries.map((entry) => entry.matcher), [undefined]);
+});
+
+test("hooks.json also runs the note on SubagentStart, all matchers, beside the existing entry", () => {
+  const { hooks } = JSON.parse(readFileSync(HOOKS, "utf8"));
+  const entries = hooks.SubagentStart ?? [];
+  const noteEntries = entries.filter((entry) => entry.hooks.some((hook) => hook.command.includes("dispatch-reminder.mjs")));
+  assert.deepEqual(noteEntries.map((entry) => entry.matcher), [undefined]);
+  assert.ok(
+    entries.some((entry) => entry.hooks.some((hook) => hook.command.includes("dispatch-guard.mjs"))),
+    "the existing dispatch-guard.mjs SubagentStart entry stays",
+  );
 });
