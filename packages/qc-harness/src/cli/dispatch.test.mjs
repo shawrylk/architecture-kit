@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { defaults, dispatchDefaults, merge } from "../config.mjs";
-import { dispatchRefusal, dispatchSettings, familyOf, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
+import { dispatchRefusal, dispatchSettings, exploreToolLines, familyOf, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
 
 test("a swarm section with no dispatch key keeps the guard off", () => {
   assert.equal(dispatchSettings({}), null);
@@ -191,4 +191,18 @@ test("a refusal over a limit above 1 names the limit and each holder, and one at
   });
   assert.match(one, /holds the one implementer slot/);
   assert.doesNotMatch(one, /use-1/);
+});
+
+test("exploreToolLines gives one `- name: use (how)` line per tool, in config order", () => {
+  assert.deepEqual(
+    exploreToolLines([
+      { name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' },
+      { name: "GitNexus", use: "callers and callees", how: "gitnexus context <symbol> -r repo" },
+    ]),
+    [
+      '- slm-rerank: find the files for a concept (slm-rerank -q "<question>" --stub -k 5)',
+      "- GitNexus: callers and callees (gitnexus context <symbol> -r repo)",
+    ],
+  );
+  assert.deepEqual(exploreToolLines([]), []);
 });
