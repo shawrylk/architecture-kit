@@ -82,3 +82,48 @@ test("the table factory and column come from the options", () => {
   assert.equal(checkTenantIsolationTests(files, { ...options, tableFactory: "table", column: "orgId" }).length, 1);
   assert.deepEqual(checkTenantIsolationTests(files, options), []);
 });
+
+const withTest = (contents) => [
+  schema("orders"),
+  { path: "backend/src/features/orders/isolation.test.ts", contents },
+];
+
+test("an import of the helper with no call fails", () => {
+  const files = withTest('import { expectTenantIsolation } from "../../testing/tenancy";');
+  assert.equal(checkTenantIsolationTests(files, options).length, 1);
+});
+
+test("a line comment naming the helper fails", () => {
+  const files = withTest("// TODO: expectTenantIsolation(repo) once the fixture exists");
+  assert.equal(checkTenantIsolationTests(files, options).length, 1);
+});
+
+test("a block comment naming the helper fails", () => {
+  const files = withTest("/*\n * expectTenantIsolation(repo);\n */\ntest('x', () => {});");
+  assert.equal(checkTenantIsolationTests(files, options).length, 1);
+});
+
+test("a call through a namespace passes", () => {
+  const files = withTest("await helpers.expectTenantIsolation(repo);");
+  assert.deepEqual(checkTenantIsolationTests(files, options), []);
+});
+
+test("a call with type arguments passes", () => {
+  const files = withTest("await expectTenantIsolation<Order>(repo);");
+  assert.deepEqual(checkTenantIsolationTests(files, options), []);
+});
+
+test("a call after a comment on an earlier line passes", () => {
+  const files = withTest("// the two-tenant proof\nawait expectTenantIsolation(repo);");
+  assert.deepEqual(checkTenantIsolationTests(files, options), []);
+});
+
+test("a local redefinition of the helper fails", () => {
+  for (const contents of [
+    "function expectTenantIsolation(repo) { return true; }",
+    "async function expectTenantIsolation(repo) {}",
+    "const expectTenantIsolation = (repo) => true;",
+  ]) {
+    assert.equal(checkTenantIsolationTests(withTest(contents), options).length, 1, contents);
+  }
+});
