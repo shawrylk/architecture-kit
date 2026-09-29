@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { decide } from "./controller-guard.mjs";
+import { decide, isControllerPath } from "./controller-guard.mjs";
 
 const HOOK = fileURLToPath(new URL("./controller-guard.mjs", import.meta.url));
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
@@ -104,4 +104,16 @@ test("the hook process prints the deny", (t) => {
   const result = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(edit(ws.main, path.join(ws.main, "src", "a.ts"))), encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, "deny");
+});
+
+test("Windows reads a path with no regard to case, so the other systems do not", (t) => {
+  const ws = workspace(t);
+  const globs = ["docs/**", "*.md", "qc.config.json", "**/.claude/**"];
+  for (const rel of ["Docs/plan.md", "README.MD", "QC.config.json", "pkg/.CLAUDE/a.md"]) {
+    assert.equal(isControllerPath(rel, globs, "win32"), true, rel);
+    assert.equal(isControllerPath(rel, globs, "linux"), false, rel);
+    assert.equal(decide(edit(ws.main, path.join(ws.main, ...rel.split("/")), "Write"), "win32"), null, rel);
+    assert.ok(denied(decide(edit(ws.main, path.join(ws.main, ...rel.split("/")), "Write"), "linux")), rel);
+  }
+  assert.equal(isControllerPath("src/A.ts", globs, "win32"), false);
 });

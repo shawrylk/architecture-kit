@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The PreToolUse trigger that keeps the main session a controller while `swarm.dispatch` is on. In a checkout
-// of its repository it edits only `swarm.review.controllerPaths`, and code goes to an implementer.
+// The PreToolUse trigger that keeps the main session a controller while `swarm.dispatch` is on: it edits only `swarm.review.controllerPaths`.
+// It guards Write, Edit, MultiEdit and NotebookEdit; a shell write is only reported, by `bash-edit-guard.mjs`.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,8 +20,14 @@ function sameRepository(a, b) {
   return left !== null && right !== null && pathKey(left) === pathKey(right);
 }
 
+/** True when `rel` matches a controller glob. Windows paths ignore case, so both sides are lowercased there. */
+export function isControllerPath(rel, controllerPaths, platform = process.platform) {
+  if (platform !== "win32") return globMatcher(controllerPaths)(rel);
+  return globMatcher(controllerPaths.map((glob) => glob.toLowerCase()))(rel.toLowerCase());
+}
+
 /** The verdict on one edit. @returns the hook output, or null to let the edit run with no message. */
-export function decide(call) {
+export function decide(call, platform = process.platform) {
   if (call.hook_event_name !== "PreToolUse" || !EDIT_TOOLS.has(call.tool_name)) return null;
   if (typeof call.agent_id === "string" && call.agent_id !== "") return null;
   const input = call.tool_input ?? {};
@@ -40,7 +46,7 @@ export function decide(call) {
   if (!fileRoot || !sameRepository(fileRoot, workflow.root)) return null;
   const rel = path.relative(fileRoot, file).replaceAll("\\", "/");
   const { controllerPaths } = workflow.review;
-  if (globMatcher(controllerPaths)(rel)) return null;
+  if (isControllerPath(rel, controllerPaths, platform)) return null;
   return deny(
     `Controller guard: while swarm.dispatch is on, the main session edits only swarm.review.controllerPaths (${controllerPaths.join(", ")}), ` +
       `and ${rel} is outside them. Write a brief and dispatch an implementer for this change. ` +

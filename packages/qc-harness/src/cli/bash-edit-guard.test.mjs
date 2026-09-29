@@ -108,6 +108,28 @@ test("a checkout with no isolation and no work order is silent", async (t) => {
   assert.equal(await report(bash(ws.plain, "node x.mjs"), ws.plain), null);
 });
 
+test("while swarm.dispatch is on, a main-session shell write outside the controller paths is reported, and a subagent's is not", async (t) => {
+  const ws = workspace(t);
+  writeFileSync(path.join(ws.plain, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  ws.put(ws.plain, "src/a.ts");
+  ws.put(ws.plain, "docs/b.md");
+  const call = bash(ws.plain, "sed -i 's/a/b/' src/a.ts");
+  const output = await report(call, ws.plain);
+  assert.equal(output.hookSpecificOutput.hookEventName, "PostToolUse");
+  const text = contextOf(output);
+  assert.match(text, /src\/a\.ts: outside the controller paths \(docs\/\*\*, /);
+  assert.doesNotMatch(text, /docs\/b\.md/);
+  assert.equal(await report({ ...call, agent_id: "agent-1" }, ws.plain), null);
+  assert.equal(await report(bash(ws.plain, "cat src/a.ts"), ws.plain), null);
+});
+
+test("with swarm.dispatch off, a shell write breaks no controller rule", async (t) => {
+  const ws = workspace(t);
+  writeFileSync(path.join(ws.plain, "qc.config.json"), JSON.stringify({ swarm: {} }));
+  ws.put(ws.plain, "src/a.ts");
+  assert.equal(await report(bash(ws.plain, "sed -i 's/a/b/' src/a.ts"), ws.plain), null);
+});
+
 test("porcelain output names each changed path, and both sides of a rename", () => {
   const status = [" M src/a.ts", "?? docs/new file.md", "R  lib/new.ts", "lib/old.ts", ""].join("\u0000");
   assert.deepEqual(changedPaths(status), ["src/a.ts", "docs/new file.md", "lib/new.ts", "lib/old.ts"]);

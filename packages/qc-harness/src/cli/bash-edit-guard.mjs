@@ -11,11 +11,13 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { isControllerPath } from "./controller-guard.mjs";
 import { ignoredPaths } from "./ignored-paths.mjs";
 import * as powershell from "./powershell-command.mjs";
 import * as posix from "./shell-command.mjs";
 import { isAllowed } from "./work-order-guard.mjs";
 import { MANIFEST_FILE, readManifest } from "./work-order-manifest.mjs";
+import { workflowAt } from "./workflow-settings.mjs";
 import { OFF, isolationSettings } from "./worktree-isolation.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -73,7 +75,7 @@ async function gitFacts(root) {
 }
 
 /** @returns each changed path in one checkout that breaks a rule, with the rules it breaks. */
-async function findingsIn(root, manifest, projectRoot) {
+async function findingsIn(root, manifest, projectRoot, isMainSession) {
   let settings = null;
   try {
     settings = isolationSettings(load(root).swarm);
@@ -81,7 +83,15 @@ async function findingsIn(root, manifest, projectRoot) {
     // A config error is the edit guard's to name; this guard judges the declaration alone.
   }
   const guardsBranch = settings !== null && settings.require !== OFF;
-  if (!manifest && !guardsBranch) return [];
+  let controllerPaths = null;
+  if (isMainSession) {
+    try {
+      controllerPaths = workflowAt(root)?.review.controllerPaths ?? null;
+    } catch {
+      // A config error is the controller guard's to name.
+    }
+  }
+  if (!manifest && !guardsBranch && !controllerPaths) return [];
 
   let facts;
   try {
@@ -96,6 +106,11 @@ async function findingsIn(root, manifest, projectRoot) {
   for (const rel of facts.changed) {
     if (!isAllowed(slashed(path.relative(projectRoot, path.join(root, rel))), patterns)) {
       add(rel, `outside the work order's declared paths (${MANIFEST_FILE}: ${patterns.join(", ")})`);
+    }
+  }
+  if (controllerPaths) {
+    for (const rel of facts.changed.filter((changed) => !isControllerPath(changed, controllerPaths))) {
+      add(rel, `outside the controller paths (${controllerPaths.join(", ")}), which the main session edits while swarm.dispatch is on`);
     }
   }
   if (guardsBranch && settings.protectedBranches.includes(facts.branch)) {
@@ -126,7 +141,8 @@ export async function report(call, projectRoot) {
     // The edit guard names a manifest that does not parse.
   }
   const findings = [];
-  for (const root of checkoutsOf(cwd, command, dialect)) findings.push(...(await findingsIn(root, manifest, project)));
+  const isMainSession = !(typeof call.agent_id === "string" && call.agent_id !== "");
+  for (const root of checkoutsOf(cwd, command, dialect)) findings.push(...(await findingsIn(root, manifest, project, isMainSession)));
   if (findings.length === 0) return null;
 
   const listed = findings.slice(0, MAX_LISTED).map((line) => `- ${line}`);
