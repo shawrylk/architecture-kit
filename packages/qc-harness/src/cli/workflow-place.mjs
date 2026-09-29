@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { CONFIG_FILE } from "../config.mjs";
+import { pathKey } from "./git-read.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 
@@ -14,12 +15,45 @@ const GIT_TIMEOUT_MS = 10_000;
 const TRANSCRIPT_HEAD_BYTES = 1024 * 1024;
 const TRANSCRIPT_HEAD_LINES = 50;
 
-/** The worktree path a dispatch prompt names on its `Worktree:` line, or null. */
-export const worktreeNamed = (prompt) => WORKTREE_LINE.exec(prompt)?.[1]?.replace(QUOTES, "") ?? null;
+const PAREN_TAIL = /\s+\(.*$/;
+const QUOTED = /^(["'`])(.*?)\1/;
 
 /** A Git Bash drive path, `/c/Users/x`, as Windows spells it, `c:/Users/x`. Every other spelling and platform is unchanged. */
 export function nativePath(spelled, platform = process.platform) {
   return platform === "win32" ? spelled.replace(/^\/([A-Za-z])(?:\/|$)/, "$1:/") : spelled;
+}
+
+/**
+ * The paths a `Worktree:` line might name, best first. A controller often adds a note after the path, as in
+ * `Worktree: C:/x/wt (branch feat/1-y)`, so the first candidate ends at the first whitespace before a `(`.
+ * The rest are the whole line, then each shorter prefix that ends at whitespace, for a path with a space.
+ */
+export function worktreeCandidates(prompt) {
+  const line = WORKTREE_LINE.exec(prompt)?.[1];
+  if (line === undefined) return [];
+  const quoted = QUOTED.exec(line);
+  if (quoted) return [quoted[2]];
+  const whole = line.replace(QUOTES, "");
+  const candidates = [whole.replace(PAREN_TAIL, ""), whole];
+  for (const gap of [...whole.matchAll(/\s+/g)].reverse()) candidates.push(whole.slice(0, gap.index));
+  return [...new Set(candidates.filter((candidate) => candidate !== ""))];
+}
+
+/** The worktree path a dispatch prompt names on its `Worktree:` line, or null. */
+export const worktreeNamed = (prompt) => worktreeCandidates(prompt)[0] ?? null;
+
+/**
+ * Finds the worktree a prompt names: the first candidate that exists on disk, resolved against `base`.
+ * @returns `{ spelled, abs, found }`, or null when the prompt has no `Worktree:` line. When no candidate
+ * exists, `spelled` and `abs` are those of the first candidate and `found` is false.
+ */
+export function resolveNamedWorktree(prompt, base, exists = existsSync) {
+  const candidates = worktreeCandidates(prompt);
+  if (candidates.length === 0) return null;
+  const absOf = (spelled) => path.resolve(base, nativePath(spelled));
+  const hit = candidates.find((candidate) => exists(absOf(candidate)));
+  const spelled = hit ?? candidates[0];
+  return { spelled, abs: absOf(spelled), found: hit !== undefined };
 }
 
 /**
@@ -80,20 +114,30 @@ export const transcriptWorktree = (file) => {
   return text === null ? null : worktreeNamed(text);
 };
 
+const commonDirIn = (root) => {
+  try {
+    return commonDirOf(root);
+  } catch {
+    // A `.git` file that cannot be read names no repository.
+    return null;
+  }
+};
+
 /**
- * The workflow of the repository that holds the checkout at `root`: the config of that checkout, else the
- * config of the repository's primary checkout, but only when the checkout has no config file at all.
- * A checkout whose own config turns the checks off keeps them off.
+ * The workflow of the repository that holds the checkout at `root`. The repository decides, never the
+ * checkout, so a task that edits `qc.config.json` in its worktree cannot turn its own review off.
+ * - A checkout that shares the git common dir of `cwdWorkflow` uses `cwdWorkflow`.
+ * - Another repository uses the config of its primary checkout, and the checkout's own only when the
+ *   primary checkout has none.
  * Throws when the config is wrong, as `workflowAt` does.
  */
-export function workflowOfRepo(root) {
-  const own = workflowAt(root);
-  if (own || existsSync(path.join(root, CONFIG_FILE))) return own;
-  let common = null;
-  try {
-    common = commonDirOf(root);
-  } catch {
-    // A `.git` file that cannot be read leaves the checkout with no workflow.
+export function workflowOfRepo(root, cwdWorkflow = null) {
+  const common = commonDirIn(root);
+  if (cwdWorkflow && common) {
+    const shared = commonDirIn(cwdWorkflow.root);
+    if (shared && pathKey(shared) === pathKey(common)) return cwdWorkflow;
   }
-  return common && path.basename(common) === ".git" ? workflowAt(path.dirname(common)) : null;
+  const primary = common && path.basename(common) === ".git" ? path.dirname(common) : null;
+  if (primary && existsSync(path.join(primary, CONFIG_FILE))) return workflowAt(primary);
+  return workflowAt(root);
 }

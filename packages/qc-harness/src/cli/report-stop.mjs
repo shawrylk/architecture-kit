@@ -2,15 +2,13 @@
 // The trigger that holds an implementer to test first and a reviewer to a verdict a machine can read. The
 // hand-back gate refuses a report without its lines, and the stop records the verdict in the ledger.
 
-import { existsSync } from "node:fs";
 import os from "node:os";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { branchAt, branchesAt, gitOut, pathKey } from "./git-read.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { dropReport, keepReport, reportOf } from "./report-stash.mjs";
-import { commitLookup, nativePath, transcriptWorktree, workflowOfRepo } from "./workflow-place.mjs";
+import { commitLookup, firstUserText, resolveNamedWorktree, workflowOfRepo } from "./workflow-place.mjs";
 import { workflowOf } from "./workflow-settings.mjs";
 
 const HANDBACK = "SubagentHandback";
@@ -117,14 +115,18 @@ function implementerPlace(records, worktree) {
  * @returns `{ workflow, named }`, `{ off }` for a repository with no workflow, or null; throws on a wrong config
  */
 function locate(call, tmp) {
-  const spelled = transcriptWorktree(call.agent_transcript_path);
-  if (spelled !== null) {
-    const abs = path.resolve(call.cwd ?? process.cwd(), nativePath(spelled));
-    const root = existsSync(abs) ? checkoutRootOf(abs) : null;
-    if (root) {
-      const workflow = workflowOfRepo(root);
-      return workflow ? { workflow, named: root } : { off: root };
+  const text = firstUserText(call.agent_transcript_path);
+  const place = text === null ? null : resolveNamedWorktree(text, call.cwd ?? process.cwd());
+  const root = place?.found ? checkoutRootOf(place.abs) : null;
+  if (root) {
+    let own = null;
+    try {
+      own = workflowOf(call, tmp);
+    } catch {
+      // A wrong config in the cwd repository never decides the work of another.
     }
+    const workflow = workflowOfRepo(root, own);
+    return workflow ? { workflow, named: root } : { off: root };
   }
   const workflow = workflowOf(call, tmp);
   return workflow ? { workflow, named: null } : null;

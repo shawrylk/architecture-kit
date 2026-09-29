@@ -1,10 +1,10 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { commitLookup, firstUserText, nativePath, transcriptWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
+import { commitLookup, firstUserText, nativePath, resolveNamedWorktree, transcriptWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 
@@ -92,12 +92,55 @@ test("a linked worktree cut before the config existed takes the workflow of its 
   assert.equal(workflow.ledger, path.join(dir, ".git", "qc", "ledger.jsonl"));
 });
 
-test("a linked worktree whose own config leaves the checks off does not take the primary checkout's workflow", (t) => {
+test("a Worktree line ends its path before a parenthetical", () => {
+  assert.equal(worktreeNamed("Worktree: C:/x/kit-47 (branch feat/47-y)"), "C:/x/kit-47");
+  assert.equal(worktreeNamed('Worktree: "C:/a b/wt" (branch x)'), "C:/a b/wt");
+  assert.equal(worktreeNamed("Worktree: 'C:/a b/wt'  (branch x)\nmore"), "C:/a b/wt");
+  assert.equal(worktreeNamed("Worktree: C:/a b/wt"), "C:/a b/wt");
+});
+
+test("resolveNamedWorktree takes the path that exists: the cut path, the whole line, or the longest prefix", (t) => {
+  const { base } = repo(t);
+  const plain = path.join(base, "kit-47").replaceAll(String.fromCharCode(92), "/");
+  const spaced = path.join(base, "Prog Files (x86)", "wt").replaceAll(String.fromCharCode(92), "/");
+  for (const dir of [plain, spaced]) mkdirSync(dir, { recursive: true });
+  const found = (line) => resolveNamedWorktree(`Read the brief.\nWorktree: ${line}\nGo.`, base);
+  assert.deepEqual([found(`${plain} (branch feat/47-y)`).found, found(`${plain} (branch feat/47-y)`).abs], [true, path.resolve(plain)]);
+  assert.equal(found(spaced).abs, path.resolve(spaced), "a parenthesis inside the path");
+  assert.equal(found(`${plain} on branch feat/47-y`).abs, path.resolve(plain), "the longest prefix that exists");
+  const missing = found(`${path.join(base, "nowhere").replaceAll(String.fromCharCode(92), "/")} (branch x)`);
+  assert.equal(missing.found, false);
+  assert.equal(missing.spelled, path.join(base, "nowhere").replaceAll(String.fromCharCode(92), "/"));
+  assert.equal(resolveNamedWorktree("no worktree line", base), null);
+});
+
+test("the workflow of a repository comes from its primary checkout, whatever a linked worktree's own config says", (t) => {
   const { base, dir } = repo(t);
   writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
   const linked = path.join(base, "linked");
   git(dir, "worktree", "add", "-q", "-b", "feat/x", linked);
   writeFileSync(path.join(linked, "qc.config.json"), JSON.stringify({ swarm: { toolCallBudget: 50 } }));
-  assert.equal(workflowOfRepo(linked), null);
+  assert.equal(workflowOfRepo(linked).root, dir, "an edit of qc.config.json in a worktree cannot turn the checks off");
   assert.equal(workflowOfRepo(dir).root, dir);
+});
+
+test("a worktree's own config decides only when the primary checkout has none", (t) => {
+  const { base, dir } = repo(t);
+  const linked = path.join(base, "linked");
+  git(dir, "worktree", "add", "-q", "-b", "feat/x", linked);
+  writeFileSync(path.join(linked, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  assert.equal(workflowOfRepo(linked).root, linked);
+});
+
+test("a checkout that shares the cwd workflow's git common dir uses the cwd workflow itself", (t) => {
+  const { base, dir } = repo(t);
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  const linked = path.join(base, "linked");
+  git(dir, "worktree", "add", "-q", "-b", "feat/x", linked);
+  const own = workflowOfRepo(dir);
+  assert.equal(workflowOfRepo(linked, own), own);
+  const otherDir = path.join(base, "other");
+  git(base, "init", "-q", "-b", "main", otherDir);
+  writeFileSync(path.join(otherDir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  assert.equal(workflowOfRepo(otherDir, own).root, otherDir);
 });

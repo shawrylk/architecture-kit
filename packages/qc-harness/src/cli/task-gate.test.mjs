@@ -393,3 +393,29 @@ test("a dispatch of a type that is no task type keeps its old behaviour when its
     rmSync(b.linked, { recursive: true, force: true });
   }
 });
+
+test("a Worktree line with a trailing parenthetical names its worktree", (t) => {
+  const ws = workspace(t);
+  const line = `${ws.linked.replaceAll(String.fromCharCode(92), "/")} (branch feat/1-x)`;
+  const implementer = judgeTask(dispatch(ws.main, taskPrompt(line)), ws.tmp);
+  assert.equal(implementer.refusal, null);
+  assert.equal(implementer.record.task, true);
+  assert.equal(implementer.record.branch, "feat/1-x");
+  const reviewer = judgeTask(dispatch(ws.main, taskPrompt(line), "architecture:sdd-reviewer"), ws.tmp);
+  assert.equal(reviewer.record.branch, "feat/1-x");
+  assert.equal(gitOut(reviewer.record.worktree, "branch", "--show-current"), "feat/1-x");
+});
+
+test("the refusal for a worktree that does not exist quotes the path the prompt named", (t) => {
+  const ws = workspace(t);
+  const nowhere = path.join(ws.tmp, "nowhere");
+  const refusal = judgeTask(dispatch(ws.main, taskPrompt(`${nowhere} (branch x)`)), ws.tmp).refusal ?? "";
+  assert.ok(refusal.includes(`worktree "${nowhere}"`), refusal);
+});
+
+test("an implementer that edits qc.config.json in its worktree cannot turn its own review off", (t) => {
+  const ws = workspace(t);
+  writeFileSync(path.join(ws.linked, "qc.config.json"), JSON.stringify({ swarm: { toolCallBudget: 50 } }));
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  assert.match(refusalOf(ws) ?? "", /no review in the ledger/);
+});

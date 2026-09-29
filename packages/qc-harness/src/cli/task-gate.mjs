@@ -1,14 +1,13 @@
 // The branch that holds the main session to the task order: a review before the next implementer on a
 // branch, and a fix round back to the implementer that wrote it. The dispatch guard calls it.
 
-import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { typeOf } from "./dispatch.mjs";
 import { branchAt, gitOut, linkedWorktrees, pathKey } from "./git-read.mjs";
 import { appendRecord, latestVerdictFor, latestVerdictOn, readLedger, shaMatches } from "./ledger.mjs";
-import { nativePath, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
+import { resolveNamedWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
 import { rememberSession, workflowAt } from "./workflow-settings.mjs";
 
 export { worktreeNamed };
@@ -100,17 +99,18 @@ export function judgeTask(call, tmp = os.tmpdir()) {
   const input = call.tool_input ?? {};
   const type = typeOf(input);
   const prompt = String(input.prompt ?? "");
-  const named = worktreeNamed(prompt);
+  const place = resolveNamedWorktree(prompt, own?.root ?? cwd);
+  const named = place?.spelled ?? null;
   const base = { session, agentType: type, task: false, worktree: null, branch: null, head: null, resumeReason: null };
   let workflow = own;
   let abs = null;
   let root = null;
-  if (named !== null && (!own || taskTypeIn(type, own.review))) {
-    abs = path.resolve(own?.root ?? cwd, nativePath(named));
-    root = existsSync(abs) ? checkoutRootOf(abs) : null;
+  if (place !== null && (!own || taskTypeIn(type, own.review))) {
+    abs = place.abs;
+    root = place.found ? checkoutRootOf(abs) : null;
     if (root) {
       try {
-        workflow = workflowOfRepo(root);
+        workflow = workflowOfRepo(root, own);
       } catch (error) {
         return pass(null, null, `Task gate is off: ${error.message}`);
       }
@@ -130,9 +130,9 @@ export function judgeTask(call, tmp = os.tmpdir()) {
   const key = pathKey(abs);
   const worktree = linkedWorktrees(workflow.root).find((entry) => pathKey(entry.path) === key);
   if (!worktree) {
-    return refuse(`Task gate: the prompt names worktree ${named}, which is no linked worktree of this repository. Name the path \`git worktree list\` prints for the task's branch.`);
+    return refuse(`Task gate: the prompt names worktree "${named}", which is no linked worktree of this repository. Name the path \`git worktree list\` prints for the task's branch.`);
   }
-  if (!worktree.branch) return refuse(`Task gate: the worktree ${named} has a detached head. Check out the task's branch there, then dispatch.`);
+  if (!worktree.branch) return refuse(`Task gate: the worktree "${named}" has a detached head. Check out the task's branch there, then dispatch.`);
   let records;
   try {
     records = readLedger(workflow.ledger);

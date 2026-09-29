@@ -413,3 +413,20 @@ test("the cwd is in a repository with the checks on, and the work is in one with
   assert.equal(existsSync(ws.ledger), false);
   assert.equal(existsSync(b.ledger), false);
 });
+
+test("a stop whose prompt ends its Worktree line with a parenthetical binds that worktree", (t) => {
+  const ws = workspace(t);
+  const { head, linked } = linkedTask(ws, t);
+  const spelled = `${linked.replaceAll(String.fromCharCode(92), "/")} (branch feat/2-y)`;
+  assert.equal(decide(stop(ws.on, IMPLEMENTER, REPORT, namesWorktree(ws, "paren", spelled)), ws.tmp), null);
+  const [record] = stopsOf(ws);
+  assert.deepEqual([record.worktree, record.branch, record.head], [linked, "feat/2-y", head]);
+});
+
+test("an implementer that edits qc.config.json in its worktree is still judged", (t) => {
+  const ws = workspace(t);
+  const { linked } = linkedTask(ws, t);
+  writeFileSync(path.join(linked, "qc.config.json"), JSON.stringify({ swarm: { toolCallBudget: 50 } }));
+  const output = decide(stop(ws.on, IMPLEMENTER, "DONE", namesWorktree(ws, "cfg", linked)), ws.tmp);
+  assert.equal(output.decision, "block");
+});
