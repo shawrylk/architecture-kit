@@ -59,7 +59,8 @@ export const defaults = {
   },
 
   // Every write of the composed contract carries one of `idempotency.keys`, as a body property or a
-  // parameter. `legacy` lists the operation ids that predate the gate: a ledger that only shrinks.
+  // parameter. `legacy` lists the operation ids that predate the gate;
+  // an entry whose operation no longer owes the key fails.
   // A DELETE whose last path segment is a parameter names one row, so it is exempt unless this is off.
   contractIdempotency: {
     contract: "contracts/openapi.yaml",

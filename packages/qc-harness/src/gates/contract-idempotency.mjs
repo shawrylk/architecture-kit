@@ -1,6 +1,7 @@
 // A mutating operation names the key that makes a retry a resume: docs/guards.md. The contract
 // carries it, so a client cannot call a write that has no way to say "this is the same attempt".
-// Operations that predate the gate sit in a ledger that can only shrink.
+// Operations that predate the gate sit in a ledger. An entry whose operation no longer owes the key
+// fails, so a stale entry cannot linger. Nothing here stops a new entry: that is the merge-base check.
 
 const MUTATING = new Set(["post", "put", "patch", "delete"]);
 const PARAMETER_SEGMENT = /^(?:\{[^}]+\}|:[^/]+)$/;

@@ -42,12 +42,12 @@ function deref(document, node) {
   return current;
 }
 
-/** The property names of a schema, one level of `$ref` and `allOf` resolved. */
-function schemaProps(document, schema) {
+/** The property names of a schema. A local `$ref` and each `allOf` part are followed, to a bounded depth. */
+function schemaProps(document, schema, depth = 0) {
   const resolved = deref(document, schema);
-  if (!resolved || typeof resolved !== "object") return [];
+  if (depth > MAX_HOPS || !resolved || typeof resolved !== "object") return [];
   const own = Object.keys(resolved.properties ?? {});
-  const composed = (resolved.allOf ?? []).flatMap((part) => schemaProps(document, part));
+  const composed = (resolved.allOf ?? []).flatMap((part) => schemaProps(document, part, depth + 1));
   return [...new Set([...own, ...composed])];
 }
 

@@ -111,3 +111,23 @@ test("a missing yaml peer fails with a message that names it", async () => {
     (error) => error.code === "CONTRACT_PEER_MISSING" && /`yaml`/.test(error.message),
   );
 });
+
+test("a schema that composes itself ends the walk rather than the process", async () => {
+  const found = await contractOperations(`
+paths:
+  /a:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Loop"
+components:
+  schemas:
+    Loop:
+      properties: { name: {} }
+      allOf:
+        - $ref: "#/components/schemas/Loop"
+`);
+  assert.deepEqual(found[0].bodyProps, ["name"]);
+});
