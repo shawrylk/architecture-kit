@@ -22,6 +22,9 @@ const DEFAULT_PHRASES = [
   "backwards compatibility",
   "for backward compat",
   "old implementation",
+  "not yet",
+  "for now",
+  "the next phase",
 ];
 
 export default {

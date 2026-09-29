@@ -467,6 +467,7 @@ tester.run("no-supersession-trail", rules["no-supersession-trail"], {
   valid: [
     { code: "// the one place a caller resolves a name\nconst a = 1;" },
     { code: 'const label = "deprecated";' },
+    { code: 'const note = "not yet, for now, the next phase";' },
   ],
   invalid: [
     { code: "// deprecated, use the new one\nconst a = 1;", errors: [{ messageId: "trail" }] },
@@ -474,6 +475,9 @@ tester.run("no-supersession-trail", rules["no-supersession-trail"], {
     { code: "// legacy path, kept for now\nconst a = 1;", errors: [{ messageId: "trail" }] },
     { code: "// this replaces the old runner\nconst a = 1;", errors: [{ messageId: "trail" }] },
     { code: "// formerly known as the ledger block\nconst a = 1;", errors: [{ messageId: "trail" }] },
+    { code: "// not yet wired to the queue\nconst a = 1;", errors: [{ messageId: "trail" }] },
+    { code: "/* a stub for now */\nconst a = 1;", errors: [{ messageId: "trail" }] },
+    { code: "// the next phase adds the retry\nconst a = 1;", errors: [{ messageId: "trail" }] },
   ],
 });
 
