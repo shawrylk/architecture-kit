@@ -109,6 +109,9 @@ export const defaults = {
     sqlColumn: "tenant_id",
     tableFactory: "pgTable",
     indexFactory: "index",
+    // The function a two-tenant test calls. Null until a repository writes one; the
+    // tenant-isolation-test gate reports a null helper when it is switched on.
+    isolationHelper: null,
   },
 
   storage: {
@@ -347,6 +350,7 @@ export const defaults = {
     "integration-imports": false,
     "closed-set-writers": false,
     "doc-claims": false,
+    "tenant-isolation-test": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and
