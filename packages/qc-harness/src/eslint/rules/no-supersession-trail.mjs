@@ -25,12 +25,13 @@ const DEFAULT_PHRASES = [
   "not yet",
   "for now",
   "the next phase",
+  "for the time being",
 ];
 
 export default {
   meta: {
     type: "problem",
-    docs: { description: "no supersession trail in a comment; the repository states what is true now" },
+    docs: { description: "no supersession trail or progress phrase in a comment; the repository states what is true now" },
     schema: schemaOf({ phrases: { type: "array", items: { type: "string" } } }),
     messages: {
       trail:

@@ -122,7 +122,7 @@ Derived by applying QC-007 to the kit itself: which decisions it ships had no ch
 | `gate-tests` | a repository's own gates each ship a case that must fail |
 | `audit-append-only` | no update, delete or truncate names the audit table |
 | `enforcement-map` | every check the kit runs is named in the map, and every name in the map resolves |
-| `qc/no-supersession-trail` | no deprecation note or "what this replaces" in a comment |
+| `qc/no-supersession-trail` | no deprecation note, "what this replaces" or progress phrase ("not yet", "for now") in a comment |
 | `qc/durable-idempotency-key` | an idempotency key is not minted inline where a retry cannot reuse it |
 
 `enforcement-map` found real staleness on its first run, including two rows written during the

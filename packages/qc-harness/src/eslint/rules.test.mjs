@@ -468,6 +468,7 @@ tester.run("no-supersession-trail", rules["no-supersession-trail"], {
     { code: "// the one place a caller resolves a name\nconst a = 1;" },
     { code: 'const label = "deprecated";' },
     { code: 'const note = "not yet, for now, the next phase";' },
+    { code: "// an inspection cycle has a next phase per site\nconst a = 1;" },
   ],
   invalid: [
     { code: "// deprecated, use the new one\nconst a = 1;", errors: [{ messageId: "trail" }] },
@@ -478,6 +479,7 @@ tester.run("no-supersession-trail", rules["no-supersession-trail"], {
     { code: "// not yet wired to the queue\nconst a = 1;", errors: [{ messageId: "trail" }] },
     { code: "/* a stub for now */\nconst a = 1;", errors: [{ messageId: "trail" }] },
     { code: "// the next phase adds the retry\nconst a = 1;", errors: [{ messageId: "trail" }] },
+    { code: "// a stub for the time being\nconst a = 1;", errors: [{ messageId: "trail" }] },
   ],
 });
 
