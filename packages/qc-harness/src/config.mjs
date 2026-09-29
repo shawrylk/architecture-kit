@@ -304,6 +304,8 @@ export const defaults = {
       { module: "backend/src/application/sql/crud.ts", name: "insertReturning", argument: 2 },
       { module: "backend/src/application/sql/crud.ts", name: "updateVersionedRow", argument: 3 },
     ],
+    // A repository appends its own helpers here. They join `exemptHelpers`; they never replace it.
+    extraExemptHelpers: [],
   },
 
   anatomy: {

@@ -377,7 +377,7 @@ async function sqlAgreement(config, tree, taken, lines) {
     if (declared.length > 0) lines.push(`OK  schema       ${declared.length} table(s), ${columns} column(s) in schema files, each named by a migration`);
   }
   if (enabled(config.gates, "tenant-predicate")) {
-    const helpers = config.tenantPredicate.exemptHelpers;
+    const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers];
     const callers = (await sourceFiles(config, tree)).filter(
       (file) => !TEST_FILE.test(file.path) && helpers.some((helper) => file.contents.includes(helper.name)),
     );
