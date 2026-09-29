@@ -423,24 +423,25 @@ globs to replace it.
 A number may carry its token in an HTML comment: `0 <!-- q:maxwarnings -->`. The comment is invisible
 when the page renders. The gate accepts the number when it equals the entry's current figure. A number
 that differs fails as `stale-annotated-number`, and it names the entry and the current figure. An id
-that no registry holds fails as `unknown-token`. Put the comment right after the number, before its
-unit: `15 <!-- ttl:accesstoken --> minutes`.
+that no registry holds fails as `unknown-token`. An entry that has no figure under its `valueKey`
+fails as `entry-without-value`. Put the comment right after the number, before its unit:
+`15 <!-- ttl:accesstoken --> minutes`. The number and its comment share one line.
 
-`registryLiteral.registries` lists the registries the gate reads. Each item has a `path`, the `key`
-of the object that holds the entries, and a token `prefix` (a string, or a list of strings). An item
-may set `valueKey` for the field that holds the figure (default `value`) and `unitKey` for the field
-that holds its unit (default `unit`). An entry with a numeric figure and a `match` list gets the
-phrase scan. The default list is the two registries above. A list you write replaces both, so repeat
-them. `libraries` from `versions` still feeds the label scan.
+`registryLiteral.registries` adds registries to the two above, which always apply. Each item has a
+`path`, the `key` of the object that holds the entries, and a token `prefix`: a word, or a list of
+words. An item may set `valueKey` for the field that holds the figure (default `value`) and `unitKey`
+for the field that holds its unit (default `unit`). An entry with a numeric figure and a `match` list
+gets the phrase scan. An item with the `path` of `thresholds` or `versions` replaces that registry.
+`libraries` from `versions` still feeds the label scan.
+
+An item that is malformed, a listed file that is missing or not JSON, a `key` that is no object, and a
+prefix that two registries share each fail as a `registry-literal` problem at `qc.config.json`. Only a
+built-in registry whose file is absent is silent.
 
 ```json
 {
   "registryLiteral": {
-    "registries": [
-      { "path": "quality-thresholds.json", "key": "gates", "prefix": "q" },
-      { "path": "versions.json", "key": "libraries", "prefix": ["ver", "v"], "valueKey": "version" },
-      { "path": "session-lifetimes.json", "key": "lifetimes", "prefix": "ttl" }
-    ]
+    "registries": [{ "path": "session-lifetimes.json", "key": "lifetimes", "prefix": "ttl" }]
   }
 }
 ```

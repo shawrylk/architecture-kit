@@ -137,9 +137,12 @@ function annotatedProblems(file, text, list, prefixes) {
       problems.push({ path: at, rule: "unknown-token", detail: `'${prefix}:${id}' names no entry of its registry` });
       return "TOKEN";
     }
-    const value = registry.entries[id]?.[registry.valueKey ?? "value"];
+    const valueKey = registry.valueKey ?? "value";
+    const value = registry.entries[id]?.[valueKey];
     const figure = stated(word, value);
-    if (figure === null) {
+    if (value === undefined || value === null) {
+      problems.push({ path: at, rule: "entry-without-value", detail: `the '${prefix}:${id}' entry has no '${valueKey}'` });
+    } else if (figure === null) {
       problems.push({ path: at, rule: "annotation-without-number", detail: `'${prefix}:${id}' follows '${word}', which is no number` });
     } else if (figure !== value) {
       problems.push({
