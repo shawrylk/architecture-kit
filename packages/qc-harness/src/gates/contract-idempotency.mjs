@@ -1,8 +1,9 @@
 // A mutating operation names the key that makes a retry a resume: docs/guards.md. The contract
 // carries it, so a client cannot call a write that has no way to say "this is the same attempt".
 // Operations that predate the gate sit in a ledger. An entry whose operation no longer owes the key
-// fails, so a stale entry cannot linger. An entry new since the merge base fails unless that same
-// operation lacked its key then, so the ledger cannot absorb a new write.
+// fails, so a stale entry cannot linger. Every ledgered id is also compared with the merge base: the
+// operation must keep its id, method and path, and a new entry must have lacked its key there, so the
+// ledger cannot absorb a new write.
 
 const MUTATING = new Set(["post", "put", "patch", "delete"]);
 const PARAMETER_SEGMENT = /^(?:\{[^}]+\}|:[^/]+)$/;
