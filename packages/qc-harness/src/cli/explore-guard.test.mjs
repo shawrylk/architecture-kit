@@ -173,8 +173,8 @@ test("a respelled path is refused on the first whole read, then a respelled retr
     respelled = path.join(link, path.basename(file));
   }
 
-  assert.notEqual(decide(readCall(ws.on, respelled), ws.tmp), null); // first: refused, marker recorded under the real path
-  assert.equal(decide(readCall(ws.on, respelled), ws.tmp), null); // second, same respelling: passes, marker consumed
+  assert.notEqual(decide(readCall(ws.on, file), ws.tmp), null); // first, as spelled: refused, marker recorded under the real path
+  assert.equal(decide(readCall(ws.on, respelled), ws.tmp), null); // retry, respelled: passes, marker consumed
 
   const dir = slotDirOf("session-aaaa", ws.tmp);
   assert.deepEqual(readdirSync(dir), []); // nothing left behind, real or respelled
