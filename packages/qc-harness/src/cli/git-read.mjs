@@ -5,11 +5,16 @@ import { spawnSync } from "node:child_process";
 
 export { keyOf as pathKey } from "./worktree.mjs";
 
-/** @returns git's trimmed stdout, or null on a non-zero exit. */
-export function gitOut(cwd, ...args) {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
+const GIT_TIMEOUT_MS = 10_000;
+
+/** @returns git's trimmed stdout, or null on a non-zero exit or after `timeoutMs`. */
+export function gitOutWithin(timeoutMs, cwd, ...args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true, timeout: timeoutMs });
   return result.status === 0 ? (result.stdout ?? "").trim() : null;
 }
+
+/** @returns git's trimmed stdout, or null on a non-zero exit or a timeout. */
+export const gitOut = (cwd, ...args) => gitOutWithin(GIT_TIMEOUT_MS, cwd, ...args);
 
 /** @returns the full sha that `ref` names as a commit, or null when the repository holds none. */
 export const commitOf = (cwd, ref) => gitOut(cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`);

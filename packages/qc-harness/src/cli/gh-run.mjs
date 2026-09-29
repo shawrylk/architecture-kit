@@ -7,12 +7,12 @@ import path from "node:path";
 
 const GH_TIMEOUT_MS = 20_000;
 
-/** Expands a leading `~` or `~/` in each value, as a shell does for an assignment. */
+/** Expands a leading `~`, `~/`, or `~\` in each value, as a shell does for an assignment. */
 export function expandHome(env) {
   return Object.fromEntries(
     Object.entries(env ?? {}).map(([name, value]) => [
       name,
-      typeof value === "string" && (value === "~" || value.startsWith("~/")) ? path.join(os.homedir(), value.slice(1)) : value,
+      typeof value === "string" && (value === "~" || value.startsWith("~/") || value.startsWith("~\\")) ? path.join(os.homedir(), value.slice(1)) : value,
     ]),
   );
 }

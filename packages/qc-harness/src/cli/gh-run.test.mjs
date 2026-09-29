@@ -9,6 +9,10 @@ test("expandHome expands a leading ~ the way the shell would, and leaves every o
     GH_CONFIG_DIR: path.join(os.homedir(), "/.config/gh-personal"),
     GH_HOST: "ghe.example.com",
   });
+  assert.deepEqual(expandHome({ A: "~\\.config\\gh", B: "~" }), {
+    A: path.join(os.homedir(), "\\.config\\gh"),
+    B: os.homedir(),
+  });
   assert.deepEqual(expandHome({ A: "~other/x", B: "C:/gh" }), { A: "~other/x", B: "C:/gh" });
   assert.deepEqual(expandHome(undefined), {});
 });
