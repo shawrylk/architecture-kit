@@ -3,7 +3,8 @@
 // long text file and names the repository's own tools. The same file read the same way passes on
 // a second attempt, so a real need for the whole file costs one retry, never a standing exemption.
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,33 +15,62 @@ import { slotDirOf } from "./dispatch-slot.mjs";
 
 const BINARY_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "pdf", "ipynb"]);
 const SNIFF_BYTES = 8192;
-const REFUSED_FILE = "explore-refused.json";
+const REFUSED_SUFFIX = ".refused";
 const MAX_REFUSED = 200;
 
 const output = (fields) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } });
 const deny = (reason) => output({ permissionDecision: "deny", permissionDecisionReason: reason });
 const context = (text) => output({ additionalContext: text });
 
-const refusedFileOf = (dir) => path.join(dir, REFUSED_FILE);
+// One marker file per refused path, named by its hash, never a shared list: two Read hooks of one
+// batch each create their own marker, so neither call can lose the other's write.
+const markerFileOf = (dir, absolute) => path.join(dir, `${createHash("sha256").update(absolute).digest("hex")}${REFUSED_SUFFIX}`);
 
-/** The paths refused so far in one session, oldest first, capped at the last `MAX_REFUSED`. */
-function readRefused(dir) {
+/** Records one refusal. An existing marker (a concurrent refusal of the same path) is left as is. */
+function recordRefusal(dir, absolute) {
   try {
-    const data = JSON.parse(readFileSync(refusedFileOf(dir), "utf8"));
-    return Array.isArray(data) ? data.filter((p) => typeof p === "string") : [];
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(markerFileOf(dir, absolute), "", { flag: "wx" });
+  } catch (error) {
+    if (error.code !== "EEXIST") return; // No memory of this refusal just refuses the next read again too.
+  }
+  capMarkers(dir);
+}
+
+/** True and consumed when `absolute` was refused before: a second attempt passes, a third is refused anew. */
+function consumeRefusal(dir, absolute) {
+  try {
+    unlinkSync(markerFileOf(dir, absolute));
+    return true;
   } catch {
-    return [];
+    return false; // ENOENT (never refused), or a race that already consumed it — either way, not refused now.
   }
 }
 
-/** Records one more refused path, never growing past `MAX_REFUSED`. Silent on a read-only temp folder. */
-function recordRefusal(dir, absolute) {
-  const kept = [...readRefused(dir), absolute].slice(-MAX_REFUSED);
+/** Keeps at most `MAX_REFUSED` markers, dropping the oldest by mtime. Ignores a concurrent unlink of the same file. */
+function capMarkers(dir) {
+  let names;
   try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(refusedFileOf(dir), JSON.stringify(kept));
+    names = readdirSync(dir).filter((name) => name.endsWith(REFUSED_SUFFIX));
   } catch {
-    // No memory of this refusal just means the next read of the same path is refused again too.
+    return;
+  }
+  const dated = names
+    .map((name) => {
+      try {
+        return { name, mtimeMs: statSync(path.join(dir, name)).mtimeMs };
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry) => entry !== null)
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const { name } of dated.slice(0, dated.length - MAX_REFUSED)) {
+    try {
+      unlinkSync(path.join(dir, name));
+    } catch {
+      // Already gone — another call raced this same cleanup, and the cap still holds.
+    }
   }
 }
 
@@ -130,7 +160,7 @@ export function decide(call, tmp = os.tmpdir()) {
   if (!exceedsLineBudget(absolute, settings.maxReadLines)) return null;
 
   const dir = slotDirOf(call.session_id ?? "session", tmp);
-  if (readRefused(dir).includes(absolute)) return null;
+  if (consumeRefusal(dir, absolute)) return null;
 
   recordRefusal(dir, absolute);
   return deny(refusalMessage(settings.tools));

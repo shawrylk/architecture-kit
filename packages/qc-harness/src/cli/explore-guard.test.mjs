@@ -1,10 +1,29 @@
 import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { decide } from "./explore-guard.mjs";
+
+const EXPLORE_GUARD = fileURLToPath(new URL("./explore-guard.mjs", import.meta.url));
+
+/** Runs the guard as its own process, as one Read hook of a batch does, with its state folder pinned to `tmp`. */
+function runGuard(call, tmp) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [EXPLORE_GUARD], {
+      env: { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp },
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", () => resolve(stdout));
+    child.stdin.end(JSON.stringify(call));
+  });
+}
 
 const TOOLS = [{ name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' }];
 
@@ -99,6 +118,16 @@ test("a bad key reports the error as context instead of refusing", (t) => {
   const file = longFile(ws.on);
   const result = decide(readCall(ws.on, file), ws.tmp);
   assert.match(result.hookSpecificOutput.additionalContext, /swarm\.explore\.maxReadLines/);
+});
+
+test("two refusals of different files recorded concurrently both pass on retry", async (t) => {
+  const ws = workspace(t);
+  mkdirSync(ws.tmp, { recursive: true });
+  const fileA = longFile(ws.on, "a.txt");
+  const fileB = longFile(ws.on, "b.txt");
+  await Promise.all([runGuard(readCall(ws.on, fileA), ws.tmp), runGuard(readCall(ws.on, fileB), ws.tmp)]);
+  assert.equal(decide(readCall(ws.on, fileA), ws.tmp), null);
+  assert.equal(decide(readCall(ws.on, fileB), ws.tmp), null);
 });
 
 test("a non-Read call, or a Read with no file_path, sees no change", (t) => {
