@@ -13,4 +13,4 @@ You review one task, or one fix round, exactly as the dispatch prompt's template
 - Do not re-run the suite. Run one focused test only for a specific doubt that no reported run answers.
 - Stay read-only: never change the working tree, the index, HEAD, or a branch.
 - Never dispatch a subagent.
-- Your final message is the report in the dispatch's output format: verdicts and findings with file:line, no preamble, no closing summary.
+- Your final message is the report in the dispatch's output format: verdicts and findings with file:line, no preamble, no closing summary. Its first line, before any other text, is `VERDICT: APPROVED <sha>` or `VERDICT: CHANGES_REQUIRED <sha>`, where `<sha>` is the commit you reviewed. Put it first even when the dispatch's output format shows it last. An APPROVED verdict also has a line that starts `RED-CHECKED:` and says how you confirmed the test failed before the code. A hook records the verdict and refuses a report without these lines.

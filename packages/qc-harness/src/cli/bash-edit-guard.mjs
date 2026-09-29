@@ -11,16 +11,20 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { isControllerPath } from "./controller-guard.mjs";
 import { ignoredPaths } from "./ignored-paths.mjs";
 import * as powershell from "./powershell-command.mjs";
 import * as posix from "./shell-command.mjs";
 import { isAllowed } from "./work-order-guard.mjs";
 import { MANIFEST_FILE, readManifest } from "./work-order-manifest.mjs";
+import { nativePath } from "./workflow-place.mjs";
+import { workflowAt } from "./workflow-settings.mjs";
 import { OFF, isolationSettings } from "./worktree-isolation.mjs";
 
 const execFileAsync = promisify(execFile);
 const slashed = (file) => file.split(path.sep).join("/");
 const MAX_LISTED = 40;
+const CONTROLLER_RULE = "outside the controller paths";
 
 /** The paths `git status --porcelain -z` names, with both sides of a rename. */
 export function changedPaths(porcelain) {
@@ -46,8 +50,7 @@ const native = (dir) => {
 
 /** A directory as the command wrote it, resolved the way the shell would, or null when it does not exist. */
 function resolveDir(cwd, dir) {
-  let spelled = dir.replace(/^~(?=$|[\\/])/, os.homedir());
-  if (process.platform === "win32") spelled = spelled.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:");
+  const spelled = nativePath(dir.replace(/^~(?=$|[\\/])/, os.homedir()));
   const absolute = path.resolve(cwd, spelled);
   return existsSync(absolute) ? absolute : null;
 }
@@ -73,7 +76,7 @@ async function gitFacts(root) {
 }
 
 /** @returns each changed path in one checkout that breaks a rule, with the rules it breaks. */
-async function findingsIn(root, manifest, projectRoot) {
+async function findingsIn(root, manifest, projectRoot, isMainSession) {
   let settings = null;
   try {
     settings = isolationSettings(load(root).swarm);
@@ -81,7 +84,15 @@ async function findingsIn(root, manifest, projectRoot) {
     // A config error is the edit guard's to name; this guard judges the declaration alone.
   }
   const guardsBranch = settings !== null && settings.require !== OFF;
-  if (!manifest && !guardsBranch) return [];
+  let controllerPaths = null;
+  if (isMainSession) {
+    try {
+      controllerPaths = workflowAt(root)?.review.controllerPaths ?? null;
+    } catch {
+      // A config error is the controller guard's to name.
+    }
+  }
+  if (!manifest && !guardsBranch && !controllerPaths) return [];
 
   let facts;
   try {
@@ -96,6 +107,11 @@ async function findingsIn(root, manifest, projectRoot) {
   for (const rel of facts.changed) {
     if (!isAllowed(slashed(path.relative(projectRoot, path.join(root, rel))), patterns)) {
       add(rel, `outside the work order's declared paths (${MANIFEST_FILE}: ${patterns.join(", ")})`);
+    }
+  }
+  if (controllerPaths) {
+    for (const rel of facts.changed.filter((changed) => !isControllerPath(changed, controllerPaths))) {
+      add(rel, `${CONTROLLER_RULE} (${controllerPaths.join(", ")}), which the main session edits while swarm.dispatch is on`);
     }
   }
   if (guardsBranch && settings.protectedBranches.includes(facts.branch)) {
@@ -126,7 +142,8 @@ export async function report(call, projectRoot) {
     // The edit guard names a manifest that does not parse.
   }
   const findings = [];
-  for (const root of checkoutsOf(cwd, command, dialect)) findings.push(...(await findingsIn(root, manifest, project)));
+  const isMainSession = !(typeof call.agent_id === "string" && call.agent_id !== "");
+  for (const root of checkoutsOf(cwd, command, dialect)) findings.push(...(await findingsIn(root, manifest, project, isMainSession)));
   if (findings.length === 0) return null;
 
   const listed = findings.slice(0, MAX_LISTED).map((line) => `- ${line}`);
@@ -137,8 +154,12 @@ export async function report(call, projectRoot) {
       additionalContext: [
         "Bash edit guard: the checkout holds uncommitted changes that the swarm rules do not allow.",
         ...listed,
-        "Revert a change only if your work order made it and should not have. " +
-          "For any other change, stop and tell the orchestrator. The guard does not revert anything.",
+        ...(findings.some((line) => line.includes(CONTROLLER_RULE))
+          ? ["Dispatch an implementer for a change outside the controller paths. Revert a change only if you made it by mistake. The guard does not revert anything."]
+          : [
+              "Revert a change only if your work order made it and should not have. " +
+                "For any other change, stop and tell the orchestrator. The guard does not revert anything.",
+            ]),
       ].join("\n"),
     },
   };

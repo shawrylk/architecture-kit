@@ -18,6 +18,8 @@ const USAGE = `qc — architecture gates
   qc pr-check              in CI: the pull request names an issue that exists and predates it
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
+  qc ledger [branch]       the workflow ledger: dispatches, stops, verdicts, merges, issue updates
+  qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc worktree add <name> <branch> [--from <ref>]
                            fetch, add ../<name> beside the main checkout, install, print the path
   qc worktree remove <name>
@@ -80,6 +82,14 @@ async function main() {
     case "commit-msg": {
       const { runCommitMsg } = await import("./commit-msg.mjs");
       process.exit(await runCommitMsg(config, rest[0]));
+    }
+    case "ledger": {
+      const { runLedger } = await import("./ledger.mjs");
+      process.exit(runLedger(config, rest));
+    }
+    case "plan-check": {
+      const { runPlanCheck } = await import("./plan-check.mjs");
+      process.exit(runPlanCheck(config, rest));
     }
     case "decisions": {
       const { runDecisions } = await import("./decisions.mjs");

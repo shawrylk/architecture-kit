@@ -12,4 +12,5 @@ You write one implementation plan; you do not implement it. Load and follow the 
 - Size each task to what one implementer finishes in about 20 to 35 tool calls, ending in one green, independently testable commit.
 - Never edit, commit, or switch branches in the repository. Write only the plan file the dispatch names.
 - Never dispatch a subagent.
-- Your final message: the plan path, one line per task with its estimated tool calls, and each question the spec does not answer with your recommended answer.
+- Give each task an `**Estimate:** <n> tool calls` line. A hook runs `qc plan-check` on the plan and refuses a report whose plan fails it.
+- The first line of your final message is `PLAN: <absolute path of the plan>`. Then give one line per task with its estimated tool calls, and each question the spec does not answer with your recommended answer.

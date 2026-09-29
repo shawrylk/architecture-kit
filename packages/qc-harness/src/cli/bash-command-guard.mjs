@@ -12,6 +12,7 @@ import { commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
 
 const HOOK_SCRIPTS = [
   "work-order-guard.mjs", "budget-guard.mjs", "bash-edit-guard.mjs", "worktree-isolation.mjs", "pre-edit-guard.sh",
+  "report-stop.mjs", "plan-stop.mjs", "merge-guard.mjs", "issue-gate.mjs", "controller-guard.mjs",
 ];
 const NO_VERIFY = "--no-verify";
 // The shortest prefix git could still expand to `--no-verify`.
@@ -26,11 +27,11 @@ const VALUE_OPTIONS = new Set([
 const COMMIT_VALUE_FLAGS = new Set(["m", "F", "C", "c", "t"]);
 
 /** The parser for each guarded tool. */
-const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments };
+export const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments };
 /** The shells whose `-c` or `-Command` argument is a command line of its own, and the parser that reads it. */
 const NESTED = { bash: segmentsOf, sh: segmentsOf, pwsh: powershellSegments, powershell: powershellSegments };
 
-const programName = (word) => path.basename(word ?? "").toLowerCase().replace(/\.exe$/, "");
+export const programName = (word) => path.basename(word ?? "").toLowerCase().replace(/\.exe$/, "");
 const isNoVerify = (arg) => arg.length >= NO_VERIFY_MIN && NO_VERIFY.startsWith(arg);
 
 /** True when a commit or push names `--no-verify`, or a commit names `-n` alone or in a flag cluster. */
@@ -76,7 +77,7 @@ function runsTests(segment) {
 }
 
 /** @returns the command line a shell runs from `-c` or `-Command`, with its parser, or null. */
-function nestedCommand(segment) {
+export function nestedCommand(segment) {
   const [program, ...args] = commandWords(segment);
   const parse = NESTED[programName(program)];
   const at = args.findIndex((arg) => /^-(c|command)$/i.test(arg));
@@ -90,7 +91,7 @@ const REASONS = {
   hooksPath:
     "`-c core.hooksPath=` points git away from the installed hooks, so the gates never run. Remove it.",
   script:
-    "a hand run of a hook script writes a lease under a made-up session id, and that lease blocks later " +
+    "a hand run of a hook script writes a lease or a ledger record under a made-up session id, and that lease blocks later " +
     "edits in the worktree for hours. Test a hook only through its own suite (`node --test`), in temporary folders.",
 };
 

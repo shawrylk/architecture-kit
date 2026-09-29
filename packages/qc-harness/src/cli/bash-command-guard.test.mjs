@@ -58,6 +58,11 @@ test("a hand run of a hook script is denied, and the reason names the lease", (t
     "node.exe src/cli/worktree-isolation.mjs",
     "bash hooks/pre-edit-guard.sh",
     "./hooks/pre-edit-guard.sh < input.json",
+    "node packages/qc-harness/src/cli/report-stop.mjs < stop.json",
+    "node ./merge-guard.mjs",
+    "node src/cli/issue-gate.mjs",
+    "node src/cli/plan-stop.mjs",
+    "node src/cli/controller-guard.mjs",
   ]) {
     assert.match(reasonOf(decide(bash(ws.adopted, command))) ?? "", /writes a lease/, command);
   }

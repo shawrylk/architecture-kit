@@ -56,6 +56,22 @@ Checks a repository owns rather than the kit:
 | Two features cannot claim one path or schema | codegen, from the `contract-compose` generator |
 | A generated registry is current | your codegen's `--check` |
 
+## Subagent workflow
+
+With `swarm.dispatch` on in `qc.config.json`, hooks hold the subagent workflow. `qc ledger` prints what they
+recorded.
+
+| Rule | Check |
+|---|---|
+| A review states its verdict and the sha it reviewed on its first line | `report-stop.mjs`, on `SubagentHandback` and `SubagentStop` |
+| An implementer reports the failing test before the passing one | `report-stop.mjs` |
+| A task is reviewed before the next implementer starts on its branch | `dispatch-guard.mjs`, through `task-gate.mjs` |
+| A fix round goes back to the implementer that wrote the task | `dispatch-guard.mjs`, through `task-gate.mjs` |
+| A merge pins the head that an APPROVED review named | `merge-guard.mjs` |
+| An issue that a merge names is closed, or has a comment after the merge | `issue-gate.mjs`, on `Stop` |
+| The controller edits only its own paths | `controller-guard.mjs` |
+| A plan task names its files, a test step, and a commit step, within the budget | `qc plan-check`, and `plan-stop.mjs` |
+
 ## File length
 
 A block is one file, and the gate is `filelength` in `quality-thresholds.json`. Blanks and comments
