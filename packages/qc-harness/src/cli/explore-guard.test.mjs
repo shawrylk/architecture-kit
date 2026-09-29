@@ -153,28 +153,31 @@ test("a file outside the checkout passes with no judgment", (t) => {
   assert.equal(decide(readCall(ws.on, file), ws.tmp), null);
 });
 
-test("a refusal is consumed by a retry through a differently spelled path", (t) => {
+test("a respelled path is refused on the first whole read, then a respelled retry consumes the marker", (t) => {
   const ws = workspace(t);
   const file = longFile(ws.on);
-  assert.notEqual(decide(readCall(ws.on, file), ws.tmp), null);
 
+  let respelled;
   if (os.platform() === "win32") {
     const drive = file[0];
-    const respelled = (drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase()) + file.slice(1);
-    assert.equal(decide(readCall(ws.on, respelled), ws.tmp), null);
-    return;
+    respelled = (drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase()) + file.slice(1);
+  } else {
+    const link = path.join(path.dirname(ws.on), "link-to-on");
+    try {
+      symlinkSync(ws.on, link, "dir");
+    } catch (error) {
+      if (error.code === "EPERM") return t.skip("no permission to create a symlink");
+      throw error;
+    }
+    t.after(() => rmSync(link, { force: true }));
+    respelled = path.join(link, path.basename(file));
   }
 
-  const link = path.join(path.dirname(ws.on), "link-to-on");
-  try {
-    symlinkSync(ws.on, link, "dir");
-  } catch (error) {
-    if (error.code === "EPERM") return t.skip("no permission to create a symlink");
-    throw error;
-  }
-  t.after(() => rmSync(link, { force: true }));
-  const respelled = path.join(link, path.basename(file));
-  assert.equal(decide(readCall(ws.on, respelled), ws.tmp), null);
+  assert.notEqual(decide(readCall(ws.on, respelled), ws.tmp), null); // first: refused, marker recorded under the real path
+  assert.equal(decide(readCall(ws.on, respelled), ws.tmp), null); // second, same respelling: passes, marker consumed
+
+  const dir = slotDirOf("session-aaaa", ws.tmp);
+  assert.deepEqual(readdirSync(dir), []); // nothing left behind, real or respelled
 });
 
 test("a file in a different checkout passes even though the session's own checkout turns the guard on", (t) => {

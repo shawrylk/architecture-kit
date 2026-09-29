@@ -33,35 +33,36 @@ const output = (fields) => ({ hookSpecificOutput: { hookEventName: "PreToolUse",
 const deny = (reason) => output({ permissionDecision: "deny", permissionDecisionReason: reason });
 const context = (text) => output({ additionalContext: text });
 
-/** The real path of `absolute`, so two spellings of one file (a `..` segment, a case-folded drive
- * letter) share one marker; falls back to `absolute` itself when the real path cannot be read. */
-function keyOf(absolute) {
+/** The real path of `resolved`, so two spellings of one file or folder (a `..` segment, a
+ * case-folded drive letter, a symlink) resolve to one, everywhere this guard compares or hashes a
+ * path; falls back to `resolved` itself when the real path cannot be read. */
+function realOf(resolved) {
   try {
-    return realpathSync.native(absolute);
+    return realpathSync.native(resolved);
   } catch {
-    return absolute;
+    return resolved;
   }
 }
 
 // One marker file per refused path, named by its hash, never a shared list: two Read hooks of one
 // batch each create their own marker, so neither call can lose the other's write.
-const markerFileOf = (dir, absolute) => path.join(dir, `${createHash("sha256").update(keyOf(absolute)).digest("hex")}${REFUSED_SUFFIX}`);
+const markerFileOf = (dir, realAbsolute) => path.join(dir, `${createHash("sha256").update(realAbsolute).digest("hex")}${REFUSED_SUFFIX}`);
 
 /** Records one refusal. An existing marker (a concurrent refusal of the same path) is left as is. */
-function recordRefusal(dir, absolute) {
+function recordRefusal(dir, realAbsolute) {
   try {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(markerFileOf(dir, absolute), "", { flag: "wx" });
+    writeFileSync(markerFileOf(dir, realAbsolute), "", { flag: "wx" });
   } catch (error) {
     if (error.code !== "EEXIST") return; // No memory of this refusal just refuses the next read again too.
   }
   capMarkers(dir);
 }
 
-/** True and consumed when `absolute` was refused before: a second attempt passes, a third is refused anew. */
-function consumeRefusal(dir, absolute) {
+/** True and consumed when `realAbsolute` was refused before: a second attempt passes, a third is refused anew. */
+function consumeRefusal(dir, realAbsolute) {
   try {
-    unlinkSync(markerFileOf(dir, absolute));
+    unlinkSync(markerFileOf(dir, realAbsolute));
     return true;
   } catch {
     return false; // ENOENT (never refused), or a race that already consumed it — either way, not refused now.
@@ -172,21 +173,22 @@ export function decide(call, tmp = os.tmpdir()) {
   const cwd = call.cwd ?? process.cwd();
   const absolute = path.resolve(cwd, filePath);
   if (!existsSync(absolute)) return null;
+  const realAbsolute = realOf(absolute);
 
-  const root = checkoutRootOf(path.dirname(absolute));
+  const root = checkoutRootOf(path.dirname(realAbsolute));
   // A file in no checkout, or in a checkout other than the session's own, is not this one to judge.
-  if (!root || root !== checkoutRootOf(cwd)) return null;
-  const rel = path.relative(root, absolute).split(path.sep).join("/");
+  if (!root || root !== checkoutRootOf(realOf(cwd))) return null;
+  const rel = path.relative(root, realAbsolute).split(path.sep).join("/");
   if (globMatcher(settings.exempt)(rel)) return null;
 
   if (input.offset !== undefined || input.limit !== undefined) return null;
-  if (isBinaryByExtension(absolute) || isBinaryByContent(absolute)) return null;
-  if (!exceedsLineBudget(absolute, settings.maxReadLines)) return null;
+  if (isBinaryByExtension(realAbsolute) || isBinaryByContent(realAbsolute)) return null;
+  if (!exceedsLineBudget(realAbsolute, settings.maxReadLines)) return null;
 
   const dir = slotDirOf(call.session_id ?? "session", tmp);
-  if (consumeRefusal(dir, absolute)) return null;
+  if (consumeRefusal(dir, realAbsolute)) return null;
 
-  recordRefusal(dir, absolute);
+  recordRefusal(dir, realAbsolute);
   return deny(refusalMessage(settings.tools));
 }
 
