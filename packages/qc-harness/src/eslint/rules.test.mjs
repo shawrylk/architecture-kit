@@ -827,6 +827,7 @@ jsx.run("mutation-control-pending", rules["mutation-control-pending"], {
     { code: "<button aria-busy={m.isPending} onClick={() => m.mutate(id)} />;", errors: [pending] },
     { code: "<div loading={m.isPending} onClick={() => m.mutate(id)} />;", errors: [pending] },
     { code: "<Button loading={false} onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<Button loading=\"false\" onClick={() => m.mutate(id)} />;", errors: [pending] },
     { code: "const save = useCallback(() => { m.mutate(id); }, [m]); <Button onClick={save} />;", errors: [pending] },
     { code: "function save() { m.mutate(id); } <Button onClick={save} />;", errors: [pending] },
     // One report per element, however many handlers start a mutation.
