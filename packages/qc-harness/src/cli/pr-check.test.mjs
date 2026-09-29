@@ -1,6 +1,9 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { checkPullRequest, isCi, issueReferences } from "./pr-check.mjs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkPullRequest, isCi, issueReferences, runPrCheck } from "./pr-check.mjs";
 
 const event = (body) => ({
   repository: { full_name: "acme/app" },
@@ -104,4 +107,34 @@ test("an event that is no pull request is skipped", async () => {
   const result = await checkPullRequest({ repository: { full_name: "acme/app" } }, { gh: ghKnowing({}), hasToken: true });
   assert.deepEqual(result.problems, []);
   assert.match(result.notes.join(), /not a pull request/);
+});
+
+test("runPrCheck reads CI, and a gh that is not on PATH fails only in CI", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pr-check-"));
+  const eventPath = join(dir, "event.json");
+  writeFileSync(eventPath, JSON.stringify(event("Fixes #12")));
+  const run = async (ci) => {
+    const lines = [];
+    const { log, error } = console;
+    console.log = console.error = (...args) => lines.push(args.join(" "));
+    try {
+      return { code: await runPrCheck({ GITHUB_EVENT_PATH: eventPath, GH_TOKEN: "x", CI: ci }), output: lines.join("\n") };
+    } finally {
+      console.log = log;
+      console.error = error;
+    }
+  };
+  const path = process.env.PATH;
+  process.env.PATH = "";
+  try {
+    const inCi = await run("true");
+    assert.equal(inCi.code, 1);
+    assert.match(inCi.output, /gh is not installed/);
+    const notCi = await run("false");
+    assert.equal(notCi.code, 0);
+    assert.match(notCi.output, /could not reach GitHub/);
+  } finally {
+    process.env.PATH = path;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
