@@ -2,8 +2,9 @@
 // names, the path spelling of Git Bash, and a read of one sha that tells a failed git from an unknown commit.
 
 import { spawnSync } from "node:child_process";
-import { closeSync, openSync, readSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import path from "node:path";
+import { CONFIG_FILE } from "../config.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 
@@ -81,12 +82,13 @@ export const transcriptWorktree = (file) => {
 
 /**
  * The workflow of the repository that holds the checkout at `root`: the config of that checkout, else the
- * config of the repository's primary checkout, since a branch cut before the config existed has none.
+ * config of the repository's primary checkout, but only when the checkout has no config file at all.
+ * A checkout whose own config turns the checks off keeps them off.
  * Throws when the config is wrong, as `workflowAt` does.
  */
 export function workflowOfRepo(root) {
   const own = workflowAt(root);
-  if (own) return own;
+  if (own || existsSync(path.join(root, CONFIG_FILE))) return own;
   let common = null;
   try {
     common = commonDirOf(root);

@@ -90,3 +90,13 @@ test("a linked worktree cut before the config existed takes the workflow of its 
   assert.equal(workflow.root, dir);
   assert.equal(workflow.ledger, path.join(dir, ".git", "qc", "ledger.jsonl"));
 });
+
+test("a linked worktree whose own config leaves the checks off does not take the primary checkout's workflow", (t) => {
+  const { base, dir } = repo(t);
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  const linked = path.join(base, "linked");
+  git(dir, "worktree", "add", "-q", "-b", "feat/x", linked);
+  writeFileSync(path.join(linked, "qc.config.json"), JSON.stringify({ swarm: { toolCallBudget: 50 } }));
+  assert.equal(workflowOfRepo(linked), null);
+  assert.equal(workflowOfRepo(dir).root, dir);
+});
