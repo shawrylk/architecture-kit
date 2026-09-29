@@ -57,3 +57,8 @@ test("a repository with no config file loads the reference layout", () => {
   const config = load(here);
   assert.deepEqual(config.featureRoots, defaults.featureRoots);
 });
+
+test("the tenant isolation helper is unset and its gate ships off", () => {
+  assert.equal(defaults.tenant.isolationHelper, null);
+  assert.equal(defaults.gates["tenant-isolation-test"], false);
+});

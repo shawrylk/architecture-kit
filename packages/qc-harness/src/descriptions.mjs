@@ -28,6 +28,7 @@ export const gateDescriptions = Object.freeze({
   parity: "Every server slice has a client slice of its name and the reverse, a divergence is registered, and no slice is a no-op",
   "integration-imports": "An integration test imports the product it integrates with",
   "closed-set-writers": "Every key of a closed set has a writer, and every writer writes a key of the set",
+  "tenant-isolation-test": "A feature that owns a tenant table has a test in its folder that calls the two-tenant helper",
   "doc-claims": "A state-claim block in a document still matches the file it counts",
 });
 

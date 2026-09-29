@@ -22,6 +22,7 @@ import { calledInternalRoutes, checkInternalRoutes, declaredInternalRoutes } fro
 import { checkHeadlessPipelines } from "../gates/headless-sagas.mjs";
 import { checkFeatureCommands, governedFeatures } from "../gates/feature-cli.mjs";
 import { checkSagaTests, declaredSagas } from "../gates/saga-tests.mjs";
+import { checkTenantIsolationTests, tenantFeatures } from "../gates/tenant-isolation-test.mjs";
 import { checkGatesAreTested } from "../gates/gate-tests.mjs";
 import { checkAuditAppendOnly } from "../gates/audit-append-only.mjs";
 import { checkEnforcementMap } from "../gates/enforcement-map.mjs";
@@ -626,6 +627,19 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
       }),
     );
     lines.push(`OK  sagas        ${sagas.length} workflow(s), each named by a test that runs without a view`);
+  }
+
+  if (enabled(config.gates, "tenant-isolation-test")) {
+    const roots = config.featureRoots.map(posix);
+    const features = (await Promise.all(roots.map((root) => sourceFiles(config, tree, root)))).flat();
+    const isolation = {
+      helper: config.tenant.isolationHelper,
+      featureRoots: roots,
+      tableFactory: config.tenant.tableFactory,
+      column: config.tenant.column,
+    };
+    problems.push(...checkTenantIsolationTests(features, isolation));
+    lines.push(`OK  tenancy      ${tenantFeatures(features, isolation).length} feature(s) with tenant tables, each with a two-tenant test`);
   }
 
   if (enabled(config.gates, "gate-tests")) {
