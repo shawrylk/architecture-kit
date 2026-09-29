@@ -703,6 +703,50 @@ a parameter. The gate follows a `$ref` body into `components.schemas`, and each 
 }
 ```
 
+### Keep a minted key out of a saga runner
+
+The `saga-key` gate ships off. A saga resumes on its key, so a key minted at the call starts a second
+saga on every retry. The gate reads each call of a function in `sagaKey.runners`, in the feature
+files and not in a test, and fails a call as `minted-saga-key` when the `sagaKey.key` property of its
+object argument is minted.
+
+- A value fails when it holds a call of a volatile name, matched at its tail: `crypto.randomUUID()`,
+  `randomUUID()`, `nanoid()`, `uuid.v4()` and `new Date()` all count. The names are `idempotency.volatile`
+  and `uuid.v4`. `uuid.v4` counts even when `volatile` is `[]`.
+- The value is read whole. Parentheses, `await`, `as T` and `!` come off. Each arm of `a ?? b`, `a || b`,
+  `a && b` and `c ? a : b` counts, except a ternary's condition and the guard before `&&`. A mint inside a
+  wrapping call's arguments counts too: `String(Date.now())`, `useRef(randomUUID())`, `useMemo(() => randomUUID(), [])`.
+  A volatile call nested in a callback inside those arguments counts as well, so `lookup(list.filter((x) => x.at < Date.now()))` fails, a loud false positive that a stored key avoids. A function parameter that shadows a minted const is reported the same way: `const id = randomUUID(); function f(id) { return runPipeline({ mutationId: id }); }` fails.
+- A bare name, and the shorthand `{ mutationId }`, follow to the nearest `const` in scope that declares
+  it, and a const that names another const is followed the same way. A `const id = crypto.randomUUID()`
+  there fails, and a `const id = state.clientMutationId` passes.
+- Comments, strings, regular expressions and the text of a template are blanked first, so a call
+  written inside one is not a call.
+- A runner call whose `idempotency.ledgerKey` property (default `ledger`) builds one of
+  `idempotency.throwawayLedgers` is exempt, as the `durable-idempotency-key` lint rule exempts it. The
+  ledger is read directly, or through a const.
+- The finding names the file and the line of the call.
+- A runner is a name, or a dotted name such as `sagas.runPipeline` for a member call.
+- An empty `runners` list, or a blank name, throws when the gate is on, so the gate never matches nothing.
+
+The gate reads text, not a syntax tree, so these forms pass unseen:
+
+- A runner that takes the key as a positional argument, or an options object held in a variable.
+- A runner imported under another name (`import { runPipeline as run }`): list the alias in `runners`.
+- A `let` that is assigned again after its declaration: only its first value is read.
+- A key read from a property of an object built elsewhere, such as `mutationId: base.mutationId`.
+- A key built inside a helper the call names.
+- A name passed through a wrapping call, such as `hash(id)` where `id` is a minted const.
+- A parameter with a default value, such as `(mutationId = randomUUID()) =>`, and a key set by a spread.
+- A runner call outside a feature folder, or outside a `.ts` or `.tsx` file.
+
+```json
+{
+  "gates": { "saga-key": true },
+  "sagaKey": { "runners": ["runPipeline"], "key": "mutationId" }
+}
+```
+
 ### Serve exactly the operations of the contract
 
 The `contract-routes` gate ships off. It reads the composed contract at `contract`, as

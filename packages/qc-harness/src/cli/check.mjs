@@ -27,6 +27,7 @@ import { checkClaimedRequirements } from "../gates/claimed-requirements.mjs";
 import { allowedPublicRoutes, checkPublicRoutes, declaredPublicRoutes } from "../gates/public-routes.mjs";
 import { calledInternalRoutes, checkInternalRoutes, declaredInternalRoutes } from "../gates/internal-routes.mjs";
 import { checkHeadlessPipelines } from "../gates/headless-sagas.mjs";
+import { checkSagaKey } from "../gates/saga-key.mjs";
 import { checkFeatureCommands, governedFeatures } from "../gates/feature-cli.mjs";
 import { checkSagaTests, declaredSagas } from "../gates/saga-tests.mjs";
 import { checkTenantIsolationTests, tenantFeatures } from "../gates/tenant-isolation-test.mjs";
@@ -601,6 +602,12 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   if (enabled(config.gates, "headless-sagas")) {
     problems.push(...checkHeadlessPipelines(contents, { block: config.saga.headlessBlock, viewModules: config.saga.viewModules }));
   }
+  if (enabled(config.gates, "saga-key")) {
+    const rel = relativeTo(config.root);
+    const sources = contents.filter((file) => !TEST_FILE.test(file.path)).map((file) => ({ ...file, path: rel(file.path) }));
+    const { volatile, ledgerKey, throwawayLedgers } = config.idempotency;
+    problems.push(...checkSagaKey(sources, { runners: config.sagaKey.runners, key: config.sagaKey.key, volatile, ledgerKey, throwawayLedgers }));
+  }
   if (enabled(config.gates, "feature-cli") && !perFile) {
     const rel = relativeTo(config.root);
     const relativeFeatures = features.map((feature) => ({ ...feature, feature: rel(feature.feature) }));
@@ -771,6 +778,9 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   }
   if (enabled(config.gates, "headless-sagas")) {
     lines.push("OK  headless     pipelines are headless and triggers remain thin presenters");
+  }
+  if (enabled(config.gates, "saga-key")) {
+    lines.push("OK  saga-key     no saga runner takes a key minted at the call");
   }
   if (enabled(config.gates, "frontend-boundaries")) {
     const platform = await platformFiles(config, tree);

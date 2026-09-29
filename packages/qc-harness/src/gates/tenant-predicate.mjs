@@ -8,13 +8,11 @@
 // structural; that it is correct is what the two-tenant test is for.
 
 import { posix } from "node:path";
+import { callArguments, callPattern, escape, resolved } from "./call-args.mjs";
+import { scrub } from "./scrub.mjs";
 
 const DEFAULT_TENANT_COLUMN = "tenant_id";
 const DEFAULT_TENANT_IDENTIFIER = "tenantId";
-
-function escape(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 // Naming the column is not scoping by it: a select list mentioning the tenant
 // column reads every tenant's rows just as happily. The predicate is what counts.
@@ -72,90 +70,9 @@ export function checkTenantPredicate(resources, owned, options = {}) {
 // because the tenant is not readable inside it. The tenant is readable at each call, so each
 // call is checked instead, or moving a statement into a shared helper buys a weaker gate.
 
-/**
- * A call, not the declaration: the helper's own parameters are not a tenant argument. A `prefix`,
- * a list of names, makes it a member call, `ns.inner.name(`, for a namespace import.
- */
-function callPattern(name, prefix = []) {
-  const member = prefix.map((segment) => `${escape(segment)}\\s*\\.\\s*`).join("");
-  return new RegExp(`(?<![\\w$.]|function\\s)${member}${escape(name)}\\s*(?:<[^>]*>)?\\s*\\(`, "g");
-}
-
 /** The tenant as a quoted column, as a row key, or as the tenant identifier. */
 function tenantPattern(column, identifier) {
   return new RegExp(`["'\`]${escape(column)}["'\`]|\\b${escape(column)}\\s*:|\\b${escape(identifier)}\\b`);
-}
-
-/** The index just past the bracket that closes the one at `open`. */
-function closeOf(source, open) {
-  let depth = 0;
-  for (let i = open; i < source.length; i += 1) {
-    if ("([{".includes(source[i])) depth += 1;
-    else if (")]}".includes(source[i]) && (depth -= 1) === 0) return i + 1;
-  }
-  return source.length;
-}
-
-/** From `at` to the semicolon that ends its statement, outside any bracket. */
-function statementFrom(source, at) {
-  let depth = 0;
-  for (let i = at; i < source.length; i += 1) {
-    if ("([{".includes(source[i])) depth += 1;
-    else if (")]}".includes(source[i])) depth -= 1;
-    if (depth < 0 || (depth === 0 && source[i] === ";")) return source.slice(at, i);
-  }
-  return source.slice(at);
-}
-
-/** The arguments of a call, split at the top level so a nested array stays whole. */
-function callArguments(source, openIndex) {
-  const args = [];
-  let depth = 0;
-  let current = "";
-  for (let i = openIndex; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
-    if (ch === ")" || ch === "]" || ch === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        args.push(current);
-        return args;
-      }
-    }
-    if (ch === "," && depth === 1) {
-      args.push(current);
-      current = "";
-      continue;
-    }
-    if (!(depth === 1 && i === openIndex)) current += ch;
-  }
-  return args;
-}
-
-/** The nearest declaration of `name` inside the enclosing function, else at the top level. */
-function declarationOf(source, name, from, callAt) {
-  const id = escape(name);
-  const declares = `\\b(?:const|let|var)\\s+(?:\\{[^}]*\\b${id}\\b[^}]*\\}|\\[[^\\]]*\\b${id}\\b[^\\]]*\\]|${id}\\b)`;
-  const local = [...source.slice(from, callAt).matchAll(new RegExp(declares, "g"))].at(-1);
-  if (local) return statementFrom(source, from + local.index);
-  const top = new RegExp(`^(?:export\\s+)?${declares}`, "m").exec(source);
-  return top ? statementFrom(source, top.index) : "";
-}
-
-/**
- * The text an argument stands for. A call `f()` is followed to the body of `function f`, one
- * indirection. A bare name is followed to its own declaration only, so a neighbour's local of
- * the same name, or a values list beside it, cannot vouch for it.
- */
-function resolved(source, argument, from, callAt) {
-  const called = /^([A-Za-z_$][\w$]*)\s*\(/.exec(argument);
-  if (called) {
-    const declared = new RegExp(`function\\s+${escape(called[1])}\\s*(?:<[^>]*>)?\\s*\\(`).exec(source);
-    if (declared === null) return declarationOf(source, called[1], from, callAt);
-    const open = source.indexOf("{", closeOf(source, declared.index + declared[0].length - 1));
-    return open === -1 ? "" : source.slice(open, closeOf(source, open));
-  }
-  return /^[A-Za-z_$][\w$]*$/.test(argument) ? declarationOf(source, argument, from, callAt) : "";
 }
 
 /** A path without its extension, and without a trailing `index`, so a folder and its index file are one. */
@@ -278,112 +195,6 @@ const STATEMENTS = {
   defaults: new RegExp(String.raw`${LEAD}export\s+default\s+(${CHAIN})${TAIL}`, "gm"),
 };
 const STRINGS = /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
-
-// A small lexer, so a quote inside a comment, a template or a regular expression starts nothing. It blanks
-// what is not code, keeps every newline and offset, and leaves a string alone when `keepStrings` is set,
-// because a specifier is one. A template's text goes, and the code in its `${}` stays. A `/` starts a
-// regular expression after an operator or a keyword, and divides after a name or a closing bracket.
-const TOKENS = /\/[/*]|["'`/]/g;
-const TOKENS_IN_TEMPLATE = /\/[/*]|["'`/{}]/g;
-const REGEX_AFTER = /(?:(?<![+-])[+-]|[(,=:[!&|?{};*%~^]|=>|(?<![\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|else|do|yield|await))\s*$/;
-
-/** The index past the string that opens at `from`, or -1 when the line ends first. */
-function stringEnd(source, from) {
-  for (let i = from + 1; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === "\\") i += 1;
-    else if (ch === source[from]) return i + 1;
-    else if (ch === "\n") return -1;
-  }
-  return -1;
-}
-
-/** The index past the regular expression that opens at `from`, or -1 when it is not one. */
-function regexEnd(source, from) {
-  let inClass = false;
-  for (let i = from + 1; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === "\n") return -1;
-    if (ch === "\\") i += 1;
-    else if (ch === "[") inClass = true;
-    else if (ch === "]") inClass = false;
-    else if (ch === "/" && !inClass) {
-      let end = i + 1;
-      while (end < source.length && /[a-z]/.test(source[end])) end += 1;
-      return end;
-    }
-  }
-  return -1;
-}
-
-/** The end of a template's text from `from`, and whether a `${` opened an expression there. */
-function templateEnd(source, from) {
-  for (let i = from; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === "\\") i += 1;
-    else if (ch === "`") return [i + 1, false];
-    else if (ch === "$" && source[i + 1] === "{") return [i + 2, true];
-  }
-  return [source.length, false];
-}
-
-function scrub(source, keepStrings) {
-  const pieces = [];
-  let copied = 0;
-  const blank = (from, to) => {
-    pieces.push(source.slice(copied, from));
-    const dead = source.slice(from, to);
-    pieces.push(dead.includes("\n") ? dead.replace(/[^\n]/g, " ") : " ".repeat(to - from));
-    copied = to;
-  };
-  const expressions = [];
-  let depth = 0;
-  let pattern = TOKENS;
-  let at = 0;
-  for (;;) {
-    pattern.lastIndex = at;
-    const match = pattern.exec(source);
-    if (match === null) break;
-    const start = match.index;
-    const token = match[0];
-    at = start + token.length;
-    if (token === "//") {
-      const end = source.indexOf("\n", at);
-      at = end === -1 ? source.length : end;
-      blank(start, at);
-    } else if (token === "/*") {
-      const close = source.indexOf("*/", at);
-      at = close === -1 ? source.length : close + 2;
-      blank(start, at);
-    } else if (token === "/") {
-      const end = start === 0 || REGEX_AFTER.test(source.slice(Math.max(0, start - 20), start)) ? regexEnd(source, start) : -1;
-      if (end !== -1) {
-        blank(start, end);
-        at = end;
-      }
-    } else if (token === "{") {
-      depth += 1;
-    } else if (token === "}" && !(expressions.length > 0 && depth === expressions.at(-1))) {
-      depth -= 1;
-    } else if (token === "`" || token === "}") {
-      if (token === "}") expressions.pop();
-      const [end, opened] = templateEnd(source, at);
-      blank(start, end);
-      at = end;
-      if (opened) expressions.push(depth);
-      pattern = expressions.length > 0 ? TOKENS_IN_TEMPLATE : TOKENS;
-    } else {
-      const end = stringEnd(source, start);
-      if (end !== -1) {
-        if (!keepStrings) blank(start, end);
-        at = end;
-      }
-    }
-  }
-  if (pieces.length === 0) return source;
-  pieces.push(source.slice(copied));
-  return pieces.join("");
-}
 
 /** The parts of `a, b as c`, without a type-only part. */
 const partsOf = (list) =>

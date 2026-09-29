@@ -16,7 +16,7 @@ test("every lint rule has a switch, and every switch names a rule", () => {
 });
 
 // A module under gates/ that no run and no codegen calls: a reader that gates share.
-const libraries = ["contract-operations"];
+const libraries = ["call-args", "contract-operations", "scrub"];
 
 test("every gate is either switchable, a generator, or a named library", () => {
   const files = readdirSync(path.join(here, "gates"))

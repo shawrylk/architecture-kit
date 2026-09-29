@@ -58,6 +58,10 @@ export const defaults = {
     format: null,
   },
 
+  // A saga runner takes its key from stored state. `runners` are the function names to read, and `key` is
+  // the property of the object argument that carries the key. The volatile names are `idempotency.volatile`.
+  sagaKey: { runners: [], key: "mutationId" },
+
   // The composed API description. Every gate that judges the contract reads this one path.
   contract: "contracts/openapi.yaml",
 
@@ -396,6 +400,8 @@ export const defaults = {
     // Needs the composed contract, and the `yaml` peer to read it.
     "contract-idempotency": false,
     "contract-routes": false,
+    // Needs `sagaKey.runners`, the names of a repository's saga runners.
+    "saga-key": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and
