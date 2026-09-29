@@ -261,6 +261,10 @@ export const defaults = {
   // inputs. `guards` name the one guard function; empty accepts an inline isComposing or keyCode check.
   ime: { components: [], guards: [] },
 
+  // A control whose handler calls mutate or mutateAsync shows it is pending: `prop` on `button`, or
+  // disabled with aria-busy. `handlers` are the props that run the handler.
+  mutationControl: { button: "Button", prop: "loading", handlers: ["onClick", "onSelect", "onConfirm"] },
+
   // Files a person reviewed that may call sql.raw. Each one is a decision, so the list stays short.
   sqlRaw: { allow: [] },
 
@@ -371,6 +375,8 @@ export const defaults = {
     "no-raw-fetch": true,
     "no-sql-raw": true,
     "ime-safe-key": true,
+    // A policy rule: a repository turns it on once its controls carry the pending prop.
+    "mutation-control-pending": false,
     "registry-literal": true,
     "durable-idempotency-key": true,
     "no-supersession-trail": true,
