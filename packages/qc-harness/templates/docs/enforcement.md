@@ -102,8 +102,16 @@ Code carries the meaning. A comment exists only where it cannot.
 - Never write a number or quantity threshold (neither digits nor spelled-out words). Cite the
   registry or the doc that owns it. Citation ids are the exception.
 
-Prose quality is a review concern, deliberately not a rule: a second rule demanding a citation on
+Comment prose quality is a review concern, deliberately not a rule: a second rule demanding a citation on
 every comment would fight the numeric one, and each false positive costs an agent round-trip.
+
+## Prose in docs
+
+`qc prose` holds the lines a change adds to the docs, and a pull request body, to the Vale style in
+`.vale/`. It runs in CI and not in `qc check`, because a diff needs a base. An error fails: `utilize`,
+`in order to`, `e.g.`, `i.e.`, `etc.`, `please`, `and/or`, and a progress phrase. A sentence over
+25 words and the passive voice are warnings. The ADR log, the changelog, and session reports are exempt.
+An alert lands on the line where the sentence or phrase starts, so an edit to a later line of it is not judged.
 
 ## Gates are proven
 

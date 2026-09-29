@@ -4,7 +4,7 @@
 
 import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { withEnforcementMap } from "../enforcement-map.mjs";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -30,6 +30,9 @@ const FILES = [
   ["githooks/commit-msg", ".githooks/commit-msg"],
   ["githooks/pre-push", ".githooks/pre-push"],
   ["github/workflows/ci.yml", ".github/workflows/ci.yml"],
+  // The prose style `qc prose` hands to Vale: one config and one file per rule.
+  ["vale/.vale.ini", ".vale/.vale.ini"],
+  ...readdirSync(path.join(templates, "vale/styles/Qc")).map((rule) => [`vale/styles/Qc/${rule}`, `.vale/styles/Qc/${rule}`]),
 ];
 
 // The enforcement map is filled in on the way out, so a rule added to the kit cannot ship a

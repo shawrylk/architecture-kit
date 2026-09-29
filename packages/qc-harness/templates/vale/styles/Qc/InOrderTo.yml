@@ -1,0 +1,6 @@
+extends: existence
+message: "Write 'to' instead of '%s'."
+level: error
+ignorecase: true
+tokens:
+  - 'in\s+order\s+to'

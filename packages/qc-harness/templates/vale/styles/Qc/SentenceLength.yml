@@ -1,0 +1,6 @@
+extends: occurrence
+message: "Write 25 words or fewer in a sentence."
+level: warning
+scope: sentence
+max: 25
+token: '\b(\w[\w''-]*)\b'

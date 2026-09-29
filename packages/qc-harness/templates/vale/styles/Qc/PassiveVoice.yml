@@ -1,0 +1,21 @@
+extends: existence
+message: "Use the active voice instead of '%s'."
+level: warning
+ignorecase: true
+raw:
+  - '\b(am|are|were|being|is|been|was|be)\b\s+'
+tokens:
+  - '\w+ed'
+  - '\w+en'
+  - built
+  - done
+  - made
+  - sent
+  - kept
+  - held
+  - run
+  - shown
+  - written
+  - known
+  - given
+  - taken

@@ -1,0 +1,9 @@
+extends: existence
+message: "Write 'for example', 'that is', or 'and so on' instead of '%s'."
+level: error
+ignorecase: true
+nonword: true
+tokens:
+  - '\be\.g\.'
+  - '\bi\.e\.'
+  - '\betc\b\.?'

@@ -1,0 +1,7 @@
+extends: existence
+message: "Write 'and' or 'or', not '%s'."
+level: error
+ignorecase: true
+nonword: true
+tokens:
+  - '\band/or\b'
