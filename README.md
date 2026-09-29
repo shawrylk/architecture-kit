@@ -780,6 +780,7 @@ default named in either list counts as kept. The detail names the entry by `modu
 `qc prose` runs [Vale](https://vale.sh) on the lines a change adds to the docs, and on a pull request body. A
 line that is already in the repository is never judged, so a repository adopts the style without a rewrite.
 Vale is an external binary. Without it, `qc prose` prints a note and exits 0 outside CI, and fails in CI.
+An alert lands on the line where the sentence or phrase starts, so an edit to a later line of it is not judged.
 
 ```bash
 qc prose                                  # the lines added since the merge base with prose.base

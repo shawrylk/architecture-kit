@@ -3,4 +3,4 @@ message: "Write 'to' instead of '%s'."
 level: error
 ignorecase: true
 tokens:
-  - in order to
+  - 'in\s+order\s+to'

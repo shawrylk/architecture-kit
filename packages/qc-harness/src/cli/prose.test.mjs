@@ -210,18 +210,39 @@ test("a skipped check does not print OK", async () => {
   });
 });
 
-test("an alert keyed by an absolute path with backslashes maps to its relative file", async () => {
+/** Every spelling of `a.md` that Vale may print for the file: as passed, absolute, and on Windows the other separator and the other case. */
+function spellings(root) {
+  const absolute = path.resolve(root, "a.md");
+  const list = ["a.md", absolute];
+  if (process.platform === "win32") list.push(absolute.replaceAll("\\", "/"), absolute.toLowerCase(), absolute.toUpperCase());
+  return list;
+}
+
+test("an alert keyed by any spelling of the file's path maps to that file", async () => {
   const root = mkdtempSync(path.join(tmpdir(), "prose-"));
   try {
     writeFileSync(path.join(root, "a.md"), "Please new.\n");
-    const vale = async (args, options) => {
-      const relative = JSON.parse((await fakeVale()(args, options)).stdout);
-      const rekeyed = Object.fromEntries(Object.entries(relative).map(([file, alerts]) => [path.resolve(root, file).replace(/\//g, "\\"), alerts]));
-      return { ok: true, stdout: JSON.stringify(rekeyed) };
-    };
-    const { problems } = await checkProse(config(root), { added: [{ path: "a.md", line: 1, text: "Please new." }], vale, ci: false });
-    assert.equal(problems.length, 1);
+    for (const key of spellings(root)) {
+      const vale = async (args, options) => {
+        const relative = JSON.parse((await fakeVale()(args, options)).stdout);
+        return { ok: true, stdout: JSON.stringify(Object.fromEntries(Object.entries(relative).map(([, alerts]) => [key, alerts]))) };
+      };
+      const { problems } = await checkProse(config(root), { added: [{ path: "a.md", line: 1, text: "Please new." }], vale, ci: false });
+      assert.equal(problems.length, 1, key);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("--pr-body and --pr-body-event together check both bodies", async () => {
+  await inRepo({ "README.md": "# R\n" }, { "README.md": "# R\n" }, async (root) => {
+    writeFileSync(path.join(root, "body.md"), "Please read.\n");
+    const eventPath = path.join(root, "event.json");
+    writeFileSync(eventPath, JSON.stringify({ pull_request: { number: 3, body: "\nUtilize it." } }));
+    const { code, err } = await run(root, ["--pr-body", "body.md", "--pr-body-event"], { env: { GITHUB_EVENT_PATH: eventPath } });
+    assert.equal(code, 1);
+    assert.match(err, /PR body \(file\):1.*Qc\.Please/);
+    assert.match(err, /PR body \(event\):2.*Qc\.Utilize/);
+  });
 });

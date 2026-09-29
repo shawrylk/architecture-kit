@@ -4,7 +4,7 @@
 // missing `gh` fails `qc pr-check`.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,11 +17,12 @@ const KIT_VALE_CONFIG = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 const MARKDOWN = /\.mdx?$/i;
 const FILES_PER_CALL = 100;
 const BUFFER_BYTES = 64 * 1024 * 1024;
+const TIMEOUT_MS = 60_000;
 const USAGE = "usage: qc prose [--base <ref>] [--pr-body <file>] [--pr-body-event]";
 
 /** Runs one process, and never throws: a missing binary is a failed call like any other. */
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", windowsHide: true, maxBuffer: BUFFER_BYTES });
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", windowsHide: true, maxBuffer: BUFFER_BYTES, timeout: TIMEOUT_MS });
   if (result.error) return { ok: false, missing: result.error.code === "ENOENT", stderr: result.error.message };
   return result.status === 0 ? { ok: true, stdout: result.stdout ?? "" } : { ok: false, stderr: `${result.stderr || result.stdout || ""}` };
 }
@@ -29,14 +30,13 @@ function run(command, args, cwd) {
 /** @returns the Vale run of `args` from `cwd`, as `{ok, missing?, stdout?, stderr?}`. */
 export const runVale = async (args, { cwd }) => run("vale", args, cwd);
 
-/** @returns one spelling of `file`, so a key Vale prints matches the path that was passed, short Windows names included. */
+/**
+ * @returns one spelling of `file`, so a key Vale prints matches the path that was passed. `path.resolve`
+ * gives the platform's own separator. Windows paths ignore case. On POSIX a backslash is part of a name.
+ */
 function canonical(root, file) {
   const absolute = path.resolve(root, file);
-  try {
-    return realpathSync.native(absolute).replace(/\\/g, "/");
-  } catch {
-    return absolute.replace(/\\/g, "/");
-  }
+  return process.platform === "win32" ? absolute.toLowerCase() : absolute;
 }
 
 /** @returns the unified diff of the markdown files that `base...HEAD` changed, or null when git cannot read it. */
@@ -118,22 +118,31 @@ function parseArgs(args) {
   return parsed;
 }
 
-/** @returns the pull request body the options name, or null with a note or a problem for why there is none. */
-function readBody(root, parsed, env, notes, problems) {
-  try {
-    if (parsed.prBodyFile) return readFileSync(path.resolve(root, parsed.prBodyFile), "utf8");
-    if (!parsed.prBodyEvent) return null;
+/** @returns the pull request bodies the options name, each as `{label, text}`. A reason for none goes to `notes` or `problems`. */
+function readBodies(root, parsed, env, notes, problems) {
+  const bodies = [];
+  if (parsed.prBodyFile) {
+    try {
+      bodies.push({ label: "PR body (file)", text: readFileSync(path.resolve(root, parsed.prBodyFile), "utf8") });
+    } catch (error) {
+      problems.push(`cannot read the pull request body: ${error.message}`);
+    }
+  }
+  if (parsed.prBodyEvent) {
     if (!env.GITHUB_EVENT_PATH) {
       notes.push("no GITHUB_EVENT_PATH, so there is no pull request body to read");
-      return null;
+    } else {
+      try {
+        const pr = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"))?.pull_request;
+        if (pr) bodies.push({ label: "PR body (event)", text: pr.body ?? "" });
+        else notes.push("the event is not a pull request, so there is no body to read");
+      } catch (error) {
+        problems.push(`cannot read the pull request body: ${error.message}`);
+      }
     }
-    const pr = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"))?.pull_request;
-    if (!pr) notes.push("the event is not a pull request, so there is no body to read");
-    return pr ? (pr.body ?? "") : null;
-  } catch (error) {
-    problems.push(`cannot read the pull request body: ${error.message}`);
-    return null;
   }
+  // One body keeps the plain label. Two need a label that tells their lines apart.
+  return bodies.length === 1 ? [{ ...bodies[0], label: "PR body" }] : bodies;
 }
 
 /**
@@ -163,12 +172,11 @@ export async function runProse(config, args, { env = process.env, vale = runVale
 
   const scratch = mkdtempSync(path.join(os.tmpdir(), "qc-prose-"));
   try {
-    const body = readBody(config.root, parsed, env, notes, problems);
-    if (body !== null) {
-      const file = path.join(scratch, "pr-body.md");
-      const text = body.replace(/\r\n/g, "\n");
+    for (const [index, body] of readBodies(config.root, parsed, env, notes, problems).entries()) {
+      const file = path.join(scratch, `pr-body-${index + 1}.md`);
+      const text = body.text.replace(/\r\n/g, "\n");
       writeFileSync(file, text);
-      added.push(...text.split("\n").map((line, index) => ({ path: file, line: index + 1, text: line, label: "PR body" })));
+      added.push(...text.split("\n").map((line, at) => ({ path: file, line: at + 1, text: line, label: body.label })));
     }
     const result = await checkProse(config, { added, vale, ci });
     problems.push(...result.problems);
