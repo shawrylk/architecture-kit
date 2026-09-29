@@ -29,31 +29,40 @@ const unreviewedRefusal = (branch, stopHead, head) =>
   `Dispatch the task reviewer on ${short(head)} first; its first line \`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>\` records the review. ` +
   `\`qc ledger ${branch}\` lists what is recorded.`;
 
-/** The newest implementer-stop head on `branch` that is in `head`'s history and that no verdict covers, or null. */
-function unreviewedImplementerHead({ records, branch, head, cwd }) {
-  const isAncestor = (older, newer) =>
-    shaMatches(older, newer) || (cwd !== undefined && gitOut(cwd, "merge-base", "--is-ancestor", older, newer) !== null);
-  const verdicts = records.filter((record) => record.type === "verdict" && typeof record.sha === "string");
-  const heads = new Set();
-  for (const record of records.toReversed()) {
-    const named = record.branch ?? branch;
-    if (record.type !== "stop" || record.role !== "implementer" || typeof record.head !== "string" || named !== branch) continue;
-    if (heads.has(record.head)) continue;
-    heads.add(record.head);
-    if (!isAncestor(record.head, head)) continue;
-    if (!verdicts.some((verdict) => isAncestor(record.head, verdict.sha))) return record.head;
-  }
-  return null;
+const HISTORY_LIMIT = 5000;
+
+/**
+ * The head of the newest implementer stop in this branch's history that no later verdict on the branch covers,
+ * or null. Older stops are ancestors of it, so its verdict covers them. Two git calls at most; a git error passes.
+ */
+function unreviewedImplementerHead({ records, branch, head, cwd, git }) {
+  if (cwd === undefined) return null;
+  const history = git(cwd, "rev-list", `--max-count=${HISTORY_LIMIT}`, head);
+  if (history === null) return null;
+  const inHistory = new Set(history.split(/\r?\n/).map((sha) => sha.toLowerCase()));
+  const stopAt = records.findLastIndex(
+    (record) =>
+      record.type === "stop" && record.role === "implementer" && record.branch === branch && typeof record.head === "string" && inHistory.has(record.head.toLowerCase()),
+  );
+  if (stopAt < 0) return null;
+  const stopHead = records[stopAt].head;
+  const later = records.slice(stopAt + 1).filter((record) => record.type === "verdict" && record.branch === branch && typeof record.sha === "string");
+  if (later.some((verdict) => shaMatches(verdict.sha, stopHead))) return null;
+  if (later.length === 0 || shaMatches(stopHead, head)) return stopHead;
+  const below = git(cwd, "rev-list", "--ancestry-path", `${stopHead}..${head}`);
+  if (below === null) return null;
+  const descendants = below.split(/\r?\n/).filter(Boolean);
+  return later.some((verdict) => descendants.some((sha) => shaMatches(verdict.sha, sha))) ? null : stopHead;
 }
 
 /**
  * @returns the reason an implementer may not start on `branch` now, or null. Only implementer commits need a
- * review, so a controller commit after a reviewed head passes. `cwd` is any checkout of the repository.
+ * review, so a controller commit after a reviewed head passes. `cwd` is any checkout; `git` reads it.
  */
-export function gateRefusal({ records, branch, head, reason, type, cwd }) {
+export function gateRefusal({ records, branch, head, reason, type, cwd, git = gitOut }) {
   const last = latestVerdictOn(records, branch);
   if (last?.verdict === "CHANGES_REQUIRED" && reason === null) return fixRoundRefusal(branch, last.sha, type);
-  const unreviewed = unreviewedImplementerHead({ records, branch, head, cwd });
+  const unreviewed = unreviewedImplementerHead({ records, branch, head, cwd, git });
   if (unreviewed) return unreviewedRefusal(branch, unreviewed, head);
   const current = latestVerdictFor(records, head, ["task", "branch"]);
   if (current?.verdict === "CHANGES_REQUIRED" && reason === null) return fixRoundRefusal(branch, current.sha, type);

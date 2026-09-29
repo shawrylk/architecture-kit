@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { decide as dispatchDecide } from "./dispatch-guard.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
+import { gitOut } from "./git-read.mjs";
 import { gateRefusal, judgeTask, noResumeReason, recordDispatch, worktreeNamed } from "./task-gate.mjs";
 import { sessionDirOf } from "./workflow-settings.mjs";
 
@@ -182,6 +183,53 @@ test("a NO-RESUME line does not excuse an unreviewed implementer commit", (t) =>
   const ws = workspace(t);
   implementerStop(ws, commitIn(ws.linked, "b.txt"));
   assert.match(refusalOf(ws, "NO-RESUME: the resume ran out of context") ?? "", /no review in the ledger/);
+});
+
+test("an implementer stop with no branch counts for no branch", (t) => {
+  const ws = workspace(t);
+  implementerStop(ws, commitIn(ws.linked, "b.txt"), null);
+  assert.equal(refusalOf(ws), null);
+});
+
+test("a review before the stop, or on another branch, does not cover it", (t) => {
+  const ws = workspace(t);
+  const moved = commitIn(ws.linked, "b.txt");
+  verdict(ws, moved);
+  implementerStop(ws, moved);
+  assert.match(refusalOf(ws) ?? "", /no review in the ledger/);
+  appendRecord(ws.ledger, { type: "verdict", kind: "task", verdict: "APPROVED", sha: moved, branch: "feat/2-y" });
+  assert.match(refusalOf(ws) ?? "", /no review in the ledger/);
+  verdict(ws, moved);
+  assert.equal(refusalOf(ws), null);
+});
+
+test("the gate spawns at most three git processes however long the ledger is", (t) => {
+  const ws = workspace(t);
+  const heads = Array.from({ length: 40 }, (_, index) => commitIn(ws.linked, `f${index}.txt`));
+  for (const head of heads) implementerStop(ws, head);
+  for (const head of heads.slice(0, 39)) verdict(ws, head);
+  for (let index = 0; index < 40; index += 1) verdict(ws, String(index).repeat(40).slice(0, 40).padStart(40, "a"));
+  const records = readLedger(ws.ledger);
+  let spawns = 0;
+  const git = (...args) => {
+    spawns += 1;
+    return gitOut(...args);
+  };
+  const call = () => gateRefusal({ records, branch: "feat/1-x", head: heads.at(-1), reason: null, type: "sdd-implementer", cwd: ws.linked, git });
+  assert.match(call() ?? "", /no review in the ledger/);
+  assert.ok(spawns >= 1 && spawns <= 3, `${spawns} git spawns`);
+  verdict(ws, heads.at(-1));
+  spawns = 0;
+  assert.equal(gateRefusal({ records: readLedger(ws.ledger), branch: "feat/1-x", head: heads.at(-1), reason: null, type: "sdd-implementer", cwd: ws.linked, git }), null);
+  assert.ok(spawns >= 1 && spawns <= 3, `${spawns} git spawns`);
+});
+
+test("a git error lets the dispatch pass", (t) => {
+  const ws = workspace(t);
+  const moved = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, moved);
+  const records = readLedger(ws.ledger);
+  assert.equal(gateRefusal({ records, branch: "feat/1-x", head: moved, reason: null, type: "sdd-implementer", cwd: ws.linked, git: () => null }), null);
 });
 
 test("gateRefusal passes when the ledger holds no implementer stop and no review asks for a fix", () => {
