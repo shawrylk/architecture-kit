@@ -138,7 +138,20 @@ test("valueKey and unitKey name the fields of a registry", () => {
   assert.match(checkLifetimes("The offline grace is 8 <!-- ttl:grace --> days.", [renamed])[0].detail, /\b7\b/);
 });
 
-test("a listed registry replaces the two defaults, and every listed prefix is a token", () => {
-  assert.deepEqual(checkLifetimes("A coverage threshold of 70% and 0 <!-- q:x --> more."), []);
-  assert.deepEqual(checkLifetimes("Offline grace of {{ttl:offlinegrace}} and {{q:coverage}}."), []);
+test("every listed prefix is a token and an annotation", () => {
+  const list = [lifetimeRegistry, { prefixes: ["q", "t"], entries: thresholds }];
+  const text = "Offline grace 7 <!-- ttl:offlinegrace --> days, coverage threshold 70 <!-- q:coverage -->% and 70 <!-- t:coverage -->%.";
+  assert.deepEqual(checkLifetimes(text, list), []);
+  assert.deepEqual(checkLifetimes("Offline grace {{ttl:offlinegrace}}, coverage threshold {{t:coverage}}.", list), []);
+  const stale = checkLifetimes("Offline grace 8 <!-- ttl:offlinegrace --> days, coverage threshold 71 <!-- t:coverage -->%.", list);
+  assert.deepEqual(stale.map((problem) => problem.rule), ["stale-annotated-number", "stale-annotated-number"]);
+});
+
+test("an entry with no figure under the valueKey is its own problem", () => {
+  const bare = { prefixes: ["ttl"], entries: { grace: { label: "Grace" } } };
+  const problems = checkLifetimes("Grace is 7 <!-- ttl:grace --> days.", [bare]);
+  assert.deepEqual(problems.map((problem) => problem.rule), ["entry-without-value"]);
+  assert.match(problems[0].detail, /no 'value'/);
+  const renamed = { ...bare, entries: { grace: { value: 7 } }, valueKey: "span" };
+  assert.match(checkLifetimes("Grace is 7 <!-- ttl:grace --> days.", [renamed])[0].detail, /no 'span'/);
 });
