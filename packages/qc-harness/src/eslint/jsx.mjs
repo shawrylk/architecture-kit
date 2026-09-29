@@ -24,17 +24,21 @@ export function unwrap(node) {
   return node && FUNCTIONS.has(node.type) ? node : null;
 }
 
-export function resolve(sourceCode, expression) {
-  if (expression.type !== "Identifier") return unwrap(expression);
-  for (let scope = sourceCode.getScope(expression); scope; scope = scope.upper) {
-    const variable = scope.set.get(expression.name);
-    if (!variable) continue;
-    // Branch on the definition kind: for a parameter, `def.node` is the enclosing function, not the handler.
-    const def = variable.defs[0];
-    if (def?.type === "FunctionName") return def.node;
-    return def?.type === "Variable" ? unwrap(def.node.init) : null;
+/** The variable an identifier reads, from the nearest scope that declares it. */
+export function lookup(sourceCode, identifier) {
+  for (let scope = sourceCode.getScope(identifier); scope; scope = scope.upper) {
+    const variable = scope.set.get(identifier.name);
+    if (variable) return variable;
   }
   return null;
+}
+
+export function resolve(sourceCode, expression) {
+  if (expression.type !== "Identifier") return unwrap(expression);
+  // Branch on the definition kind: for a parameter, `def.node` is the enclosing function, not the handler.
+  const def = lookup(sourceCode, expression)?.defs[0];
+  if (def?.type === "FunctionName") return def.node;
+  return def?.type === "Variable" ? unwrap(def.node.init) : null;
 }
 
 export function propertyName(node) {
