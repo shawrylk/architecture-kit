@@ -22,10 +22,18 @@ function textOf(response) {
   }
   if (typeof response.output === "string") return response.output;
   try {
-    return JSON.stringify(response);
+    return JSON.stringify(response, null, 1);
   } catch {
     return "";
   }
+}
+
+/** Real newlines plus escaped `\n` sequences, the way a pretty-printed fallback hides them. */
+function lineCountOf(text) {
+  if (text === "") return 0;
+  const realNewlines = (text.match(/\n/g) ?? []).length;
+  const escapedNewlines = (text.match(/\\n/g) ?? []).length;
+  return realNewlines + escapedNewlines + 1;
 }
 
 const grepHint = (tools) =>
@@ -51,8 +59,7 @@ export function decide(call) {
 
   const text = textOf(call.tool_response);
   if (tool === "Grep") {
-    const lineCount = text === "" ? 0 : text.split("\n").length;
-    return lineCount > settings.maxGrepLines ? context(grepHint(settings.tools)) : null;
+    return lineCountOf(text) > settings.maxGrepLines ? context(grepHint(settings.tools)) : null;
   }
 
   if (settings.summarizer === null) return null;

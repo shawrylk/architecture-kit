@@ -88,6 +88,43 @@ test("a bad key reports the error as context instead of a hint", (t) => {
   assert.match(text, /swarm\.explore\.maxGrepLines/);
 });
 
+test("a Grep { content } shaped answer over maxGrepLines adds context naming the tools", (t) => {
+  const ws = workspace(t);
+  const text = contextOf(decide(call(ws.on, "Grep", { content: lines(10) })));
+  assert.match(text, /slm-rerank/);
+});
+
+test("a Grep { matches } shaped answer over maxGrepLines adds context naming the tools", (t) => {
+  const ws = workspace(t);
+  const matches = Array.from({ length: 10 }, (_, i) => `match ${i}`);
+  const text = contextOf(decide(call(ws.on, "Grep", { matches })));
+  assert.match(text, /slm-rerank/);
+});
+
+test("a Grep answer of unknown shape counts real newlines and escaped \\n sequences", (t) => {
+  const ws = workspace(t);
+  const text = contextOf(decide(call(ws.on, "Grep", { blob: lines(10) })));
+  assert.match(text, /slm-rerank/);
+});
+
+test("a Bash { stdout, stderr } shaped answer over maxOutputChars adds context naming the summarizer", (t) => {
+  const ws = workspace(t);
+  const text = contextOf(decide(call(ws.on, "Bash", { stdout: "x".repeat(15), stderr: "y".repeat(15) })));
+  assert.match(text, /lfm-ask/);
+});
+
+test("a Bash answer of unknown shape over maxOutputChars adds context naming the summarizer", (t) => {
+  const ws = workspace(t);
+  const text = contextOf(decide(call(ws.on, "Bash", { info: "x".repeat(30) })));
+  assert.match(text, /lfm-ask/);
+});
+
+test("a null tool_response sees no change", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(call(ws.on, "Grep", null)), null);
+  assert.equal(decide(call(ws.on, "Bash", null)), null);
+});
+
 test("hooks.json runs the hint on PostToolUse Grep and Bash|PowerShell", () => {
   const { hooks } = JSON.parse(readFileSync(HOOKS, "utf8"));
   const matchers = (hooks.PostToolUse ?? [])
