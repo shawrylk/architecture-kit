@@ -115,6 +115,41 @@ test("a registry entry with names reaches qc/registry-literal, and one without s
   assert.deepEqual(setting[1].entries, [{ key: "holdpress", names: holdpress.names, readers: holdpress.readers }]);
 });
 
+const LIFETIMES = {
+  lifetimes: {
+    offlinegrace: { value: 7, unit: "days", readers: ["frontend/src/platform/auth/device-session.ts"], match: ["offline grace"] },
+    clockdrift: { value: 5, unit: "minutes", match: ["clock drift"] },
+  },
+};
+
+test("a listed registry reaches qc/registry-literal: an entry that names readers restricts its number", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-preset-"));
+  writeFileSync(path.join(root, "quality-thresholds.json"), JSON.stringify({ gates: {} }));
+  writeFileSync(path.join(root, "session-lifetimes.json"), JSON.stringify(LIFETIMES));
+  const registries = [{ path: "session-lifetimes.json", key: "lifetimes", prefix: "ttl" }];
+  const setting = emitted(preset({ config: { ...config({ registryLiteral: { registries } }), root } })).get("qc/registry-literal");
+  assert.deepEqual(setting[1].values, [
+    { key: "offlinegrace", registry: "session-lifetimes.json", value: 7, readers: ["frontend/src/platform/auth/device-session.ts"] },
+  ]);
+});
+
+test("a session lifetime in code fails outside its reader, through the whole preset", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-preset-"));
+  writeFileSync(path.join(root, "quality-thresholds.json"), JSON.stringify({ gates: {} }));
+  writeFileSync(path.join(root, "session-lifetimes.json"), JSON.stringify(LIFETIMES));
+  const registries = [{ path: "session-lifetimes.json", key: "lifetimes", prefix: "ttl" }];
+  const run = (filename) => {
+    const blocks = preset({
+      config: { ...config({ registryLiteral: { registries } }), root },
+      plugins: { tseslint },
+      languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
+    });
+    return byRule(new Linter({ configType: "flat" }).verify("export const graceDays = 7;\nexport const drift = 5;\nexport type Days = 7;\n", blocks, filename), "qc/registry-literal");
+  };
+  assert.equal(run("frontend/src/features/login/form.ts").length, 1);
+  assert.equal(run("frontend/src/platform/auth/device-session.ts").length, 0);
+});
+
 test("the ime config reaches qc/ime-safe-key", () => {
   const setting = emitted(preset({ config: config({ ime: { guards: ["isImeComposing"] } }) })).get("qc/ime-safe-key");
   assert.deepEqual(setting[1], { components: [], guards: ["isImeComposing"] });

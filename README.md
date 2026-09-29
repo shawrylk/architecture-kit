@@ -413,7 +413,7 @@ like every `qc/*` rule.
 
 ### Name who may hold a registry number
 
-An entry in `quality-thresholds.json` can carry two more keys:
+An entry in `quality-thresholds.json`, or in any registry the `registry-literal` gate reads, can carry two more keys:
 
 | Key | What it holds |
 | --- | --- |
@@ -426,7 +426,7 @@ An entry in `quality-thresholds.json` can carry two more keys:
 
 `qc/registry-literal` reports a numeric literal bound to a matching name, in a variable, a property
 or a class field, in any file that is not a reader. The `registry-readers` gate fails when a reader
-does not exist, or never names the entry key, as a string or through the registry accessor.
+does not exist, or never names the entry key, as a string or through the registry accessor. Both the rule and the gate read every registry the `registry-literal` gate reads, not only the thresholds.
 
 ### Keep registry figures out of the docs
 
@@ -463,6 +463,10 @@ gets the phrase scan. An item with the `path` of `thresholds` or `versions` repl
 An item that is malformed, a listed file that is missing or not JSON, a `key` that is no object, and a
 prefix that two registries share each fail as a `registry-literal` problem at `qc.config.json`. Only a
 built-in registry whose file is absent is silent.
+
+The ESLint rule `qc/registry-literal` reads the same registries. An entry with `names` restricts the
+identifiers, as before. An entry in any registry that lists `readers` and no `names` restricts its
+figure: a numeric literal equal to it fails in code outside those readers.
 
 ```json
 {

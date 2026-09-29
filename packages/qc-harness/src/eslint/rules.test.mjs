@@ -1,4 +1,5 @@
 import { RuleTester } from "eslint";
+import tsparser from "@typescript-eslint/parser";
 import { rules } from "./index.mjs";
 
 const tester = new RuleTester({
@@ -873,5 +874,58 @@ jsx.run("mutation-control-pending", rules["mutation-control-pending"], {
       options: [{ button: "Cell", prop: "busy" }],
       errors: [{ messageId: "pending", data: { button: "Cell", prop: "busy" } }],
     },
+  ],
+});
+
+// A number another registry owns, such as a session lifetime, is held only by the readers its entry names.
+const GRACE = [{ values: [{ key: "offlinegrace", registry: "session-lifetimes.json", value: 7, readers: ["frontend/src/platform/auth/device-session.ts"] }] }];
+
+console.log("→", "registry-literal (values)");
+tester.run("registry-literal", rules["registry-literal"], {
+  valid: [
+    { code: "export const GRACE_DAYS = 7;", filename: "frontend/src/platform/auth/device-session.ts", options: GRACE },
+    { code: "export const GRACE_DAYS = 7;", filename: "C:\\repo\\frontend\\src\\platform\\auth\\device-session.ts", options: GRACE },
+    { code: "const GRACE_DAYS = 8;", filename: "frontend/src/features/login/form.ts", options: GRACE },
+    { code: "const first = rows[7]; const map = { 7: 'a' };", filename: "frontend/src/features/login/form.ts", options: GRACE },
+    { code: "const GRACE_DAYS = 7;", filename: "frontend/src/features/login/form.ts" },
+    { code: "const HOLD_DURATION_MS = 400;", filename: READER, options: [{ ...HOLD[0], ...GRACE[0] }] },
+  ],
+  invalid: [
+    {
+      code: "const GRACE_DAYS = 7;",
+      filename: "frontend/src/features/login/form.ts",
+      options: GRACE,
+      errors: [
+        {
+          messageId: "restatedValue",
+          data: { value: "7", key: "offlinegrace", registry: "session-lifetimes.json", readers: "frontend/src/platform/auth/device-session.ts" },
+        },
+      ],
+    },
+    { code: "if (age > 7 * 86400) expire();", filename: "frontend/src/features/login/form.ts", options: GRACE, errors: [{ messageId: "restatedValue" }] },
+    {
+      code: "const HOLD_DURATION_MS = 400; const days = 7;",
+      filename: "frontend/src/features/pins/drag.ts",
+      options: [{ ...HOLD[0], ...GRACE[0] }],
+      errors: [{ messageId: "restated" }, { messageId: "restatedValue" }],
+    },
+  ],
+});
+
+// A figure in a type or a key position is no number a reader would import.
+console.log("→", "registry-literal (values, TypeScript positions)");
+new RuleTester({ languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" } }).run("registry-literal", rules["registry-literal"], {
+  valid: [
+    "type D = 7;",
+    "type D = -7;",
+    "interface I { 7: string }",
+    "type T = { 7: string };",
+    "type T = { 7(): void };",
+    "interface I { 7(): void }",
+    "class A { 7() {} }",
+    "class A { 7 = 'x'; }",
+  ].map((code) => ({ code, filename: "frontend/src/features/login/form.ts", options: GRACE })),
+  invalid: [
+    { code: "const days = -7;", filename: "frontend/src/features/login/form.ts", options: GRACE, errors: [{ messageId: "restatedValue" }] },
   ],
 });

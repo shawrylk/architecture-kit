@@ -1,4 +1,4 @@
-// A number the registry owns has one home. Only the readers an entry names may hold it in code.
+// A number a registry owns has one home. Only the readers an entry names may hold it in code.
 
 import { filenameOf, optionsOf, pathSuffix, schemaOf } from "../options.mjs";
 
@@ -31,9 +31,19 @@ export default {
           additionalProperties: false,
         },
       },
+      values: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: { key: { type: "string" }, registry: { type: "string" }, value: { type: "number" }, readers: strings },
+          required: ["key", "registry", "value", "readers"],
+          additionalProperties: false,
+        },
+      },
     }),
     messages: {
       restated: "'{{name}}' restates the registry entry '{{key}}': import the number from {{readers}}.",
+      restatedValue: "{{value}} is the figure of the '{{key}}' entry of {{registry}}: import it from {{readers}}.",
       unread: "'{{name}}' restates the registry entry '{{key}}', which names no reader: read the number from the registry.",
     },
   },
@@ -43,7 +53,8 @@ export default {
       .map((entry) => ({ ...entry, readers: entry.readers ?? [] }))
       .filter((entry) => !entry.readers.some((reader) => pathSuffix(reader).test(filename)))
       .map((entry) => ({ ...entry, patterns: entry.names.map((name) => new RegExp(`^(?:${name})$`, "i")) }));
-    if (entries.length === 0) return {};
+    const values = (optionsOf(context).values ?? []).filter((entry) => !entry.readers.some((reader) => pathSuffix(reader).test(filename)));
+    if (entries.length === 0 && values.length === 0) return {};
     function check(node, name, value) {
       if (!name || !isNumber(value)) return;
       const entry = entries.find((candidate) => candidate.patterns.some((pattern) => pattern.test(name)));
@@ -51,7 +62,30 @@ export default {
       const data = { name, key: entry.key, readers: entry.readers.join(", ") };
       context.report({ node, messageId: entry.readers.length > 0 ? "restated" : "unread", data });
     }
+    // A key or a type position is no figure a reader would import. A sign stands before the figure.
+    const KEY_OWNERS = new Set([
+      "Property",
+      "PropertyDefinition",
+      "MethodDefinition",
+      "AccessorProperty",
+      "TSAbstractPropertyDefinition",
+      "TSAbstractMethodDefinition",
+      "TSPropertySignature",
+      "TSMethodSignature",
+    ]);
+    const isFigure = (literal) => {
+      const signed = literal.parent.type === "UnaryExpression" ? literal.parent : literal;
+      const { parent } = signed;
+      return !(KEY_OWNERS.has(parent.type) && parent.key === signed) && parent.type !== "TSLiteralType" && parent.type !== "MemberExpression";
+    };
     return {
+      Literal(node) {
+        if (typeof node.value !== "number" || !isFigure(node)) return;
+        const entry = values.find((candidate) => candidate.value === node.value);
+        if (!entry) return;
+        const data = { value: String(node.value), key: entry.key, registry: entry.registry, readers: entry.readers.join(", ") };
+        context.report({ node, messageId: "restatedValue", data });
+      },
       VariableDeclarator(node) {
         if (node.id.type === "Identifier") check(node, node.id.name, node.init);
       },
