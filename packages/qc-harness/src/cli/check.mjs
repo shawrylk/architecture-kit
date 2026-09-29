@@ -524,8 +524,11 @@ async function contractRouteAgreement(config, routes, lines) {
     return [{ path: "qc.config.json", rule: "malformed-exemption", detail: "contractRoutes.exempt must be an array of { method, path, why }" }];
   }
   const served = declaredTriggerRoutes(routes);
-  lines.push(`OK  contract     ${served.length} route(s) and ${operations.length} operation(s) agree by method and path`);
-  return checkContractRoutes(served, operations, { contract, exempt });
+  const problems = checkContractRoutes(served, operations, { contract, exempt });
+  if (problems.length === 0) {
+    lines.push(`OK  contract     ${served.length} route(s) and ${operations.length} operation(s) agree by method and path`);
+  }
+  return problems;
 }
 
 /**

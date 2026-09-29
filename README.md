@@ -643,6 +643,7 @@ The `contract-routes` gate ships off. It reads the composed contract at `contrac
   fails as `exemption-without-reason`. An entry that is not an object with a string method and path,
   and an `exempt` that is not an array, fail as `malformed-exemption`. A bad entry excuses nothing.
 - A route inside a `//` or `/* */` comment is not served.
+  The comment stripper does not read regex literals, so a quote inside one can make a later commented route count.
 - The `yaml` package reads the contract, as for `contract-idempotency`. An absent contract file is
   ordinary: the gate reports nothing.
 - The gate does not compare a client's request paths with the contract.

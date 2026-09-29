@@ -194,3 +194,17 @@ test("qc check reports a non-array exempt and a bad entry instead of throwing", 
   const noReason = await checked({ contract: CONTRACT, overrides: { contractRoutes: { exempt: [{ method: "get", path: "/x" }] } } });
   assert.deepEqual(rulesOf(noReason.problems), ["exemption-without-reason"]);
 });
+
+// Known limit: the comment stripper pairs quotes and does not read regex literals, so a quote inside
+// one flips the pairing and a commented route after it is still read. This pins today's behaviour.
+test("known limit: a quote inside a regex literal lets a later commented route count", () => {
+  const source = 'const re = /"/;\n// { method: "get", path: "/v1/photos" },';
+  assert.deepEqual(declaredTriggerRoutes([{ path: "t.ts", source }]).map(({ path: route }) => route), ["/v1/photos"]);
+});
+
+test("the agreement line is printed only when the gate finds no problem", async () => {
+  const agreed = await checked({ contract: CONTRACT });
+  assert.ok(agreed.lines.some((line) => line.startsWith("OK  contract ")));
+  const drifted = await checked({ contract: CONTRACT.replace("/v1/photos:", "/v1/pictures:") });
+  assert.equal(drifted.lines.some((line) => line.startsWith("OK  contract ")), false);
+});
