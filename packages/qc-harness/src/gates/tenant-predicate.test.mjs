@@ -682,3 +682,44 @@ test("the three checks share one resolution of a file list, so no file is parsed
   assert.equal(gate.resolveHelpers(files, helpers, options), gate.resolveHelpers(files, helpers, options));
   assert.notEqual(gate.resolveHelpers(files, helpers, options), gate.resolveHelpers([...files], helpers, options));
 });
+
+/** A chain of `count` barrels with a rename at every level: r1 from index, r2 from n2, and so on down to the helper. */
+function renameChain(count) {
+  const modules = {};
+  for (let i = 1; i <= count; i += 1) {
+    const name = i === 1 ? "index" : `n${i}`;
+    const next = i === count ? "crud" : `n${i + 1}`;
+    modules[name] = `export { ${i === count ? "insertReturning" : `r${i + 1}`} as r${i} } from "./${next}.js";\n`;
+  }
+  return modules;
+}
+
+test("a rename at every level of a chain is followed, whatever the order of the importers", () => {
+  for (const count of [1, 2, 8, 9, 40]) {
+    assert.deepEqual(found(renameChain(count), `import { r1 } from "${specifierOf("index")}";\n${badCall("r1")}`), UNSCOPED, `${count} barrels`);
+  }
+  const modules = renameChain(9);
+  const deep = `import { r1 } from "${specifierOf("index")}";\n${badCall("r1")}`;
+  const middle = `import { r5 } from "${specifierOf("n5")}";\n${badCall("r5")}`;
+  const files = (callers) => [...Object.entries(modulesAt(modules)).map(([path, contents]) => ({ path, contents })), ...callers];
+  const at5 = { path: "backend/src/features/b/shared/y.ts", contents: middle };
+  const at1 = { path: FILE, contents: deep };
+  for (const order of [[at1, at5], [at5, at1]]) {
+    assert.equal(checkExemptHelperCalls(files(order), helpers).length, 2);
+    assert.deepEqual(unresolvedHelperImports(files(order), helpers), []);
+  }
+});
+
+test("a diamond of stars, a namespace import of a renaming barrel, and a re-exported namespace are followed", () => {
+  const diamond = {
+    index: 'export * from "./l.js";\nexport * from "./r.js";\n',
+    l: 'export * from "./base.js";\n',
+    r: 'export * from "./base.js";\n',
+    base: 'export { insertReturning as put } from "./crud.js";\n',
+  };
+  assert.deepEqual(found(diamond, `import { put } from "${specifierOf("index")}";\n${badCall("put")}`), UNSCOPED);
+  const renaming = { index: 'export { insertReturning as put } from "./crud.js";\n' };
+  assert.deepEqual(found(renaming, `import * as b from "${specifierOf("index")}";\n${badCall("b.put")}`), UNSCOPED);
+  const listed = { index: 'import * as crud from "./crud.js";\nexport { crud };\n' };
+  assert.deepEqual(found(listed, `import * as b from "${specifierOf("index")}";\n${badCall("b.crud.insertReturning")}`), UNSCOPED);
+});
