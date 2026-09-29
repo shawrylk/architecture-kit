@@ -27,6 +27,7 @@ const FILES = [
   ["docs/glossary.md", "docs/glossary.md"],
   ["docs/ui.md", "docs/ui.md"],
   ["githooks/pre-commit", ".githooks/pre-commit"],
+  ["githooks/commit-msg", ".githooks/commit-msg"],
   ["githooks/pre-push", ".githooks/pre-push"],
   ["github/workflows/ci.yml", ".github/workflows/ci.yml"],
 ];
@@ -71,7 +72,7 @@ export async function runInit(config, args = []) {
     results.push(await copyTemplate(path.join(templates, source), path.join(config.root, target), force, config));
   }
 
-  for (const name of ["pre-commit", "pre-push"]) {
+  for (const name of ["pre-commit", "commit-msg", "pre-push"]) {
     const hook = path.join(config.root, ".githooks", name);
     if (existsSync(hook)) await writeFile(hook, await readFile(hook, "utf8"), { mode: 0o755 });
   }
@@ -93,6 +94,6 @@ Next:
   2. Edit docs/glossary.md and the per-surface table in docs/performance.md.
   3. Point qc.config.json at your layout if it differs from the reference. \`qc config\`
      prints what is in force — featureRoots matching nothing is a failed check, not a pass.
-  4. \`qc install-hooks\` to bind the pre-commit and pre-push hooks.
+  4. \`qc install-hooks\` to bind the pre-commit, commit-msg and pre-push hooks.
   5. \`qc feature <domain-name>\` to scaffold the first slice, then \`qc check\`.`);
 }

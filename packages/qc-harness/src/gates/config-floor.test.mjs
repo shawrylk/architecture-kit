@@ -60,3 +60,12 @@ test("a weakened hooks.required entry is an opt-out, held to the same floor", ()
   assert.deepEqual(checkConfigFloor(shipped, weakened, { exemptions: { "hooks.pre-push": "off-by-design" } }), []);
   assert.deepEqual(checkConfigFloor(shipped, shipped, { exemptions: { "hooks.pre-push": "off-by-design" } }).map((p) => p.rule), ["stale-exemption"]);
 });
+
+test("conventional false does not report hooks.commit-msg as weakened; emptying it while conventional is on does", () => {
+  const hooks = { required: { "pre-push": ["qc check"], "commit-msg": ["qc commit-msg"] } };
+  const shipped = { gates: {}, rules: {}, hooks, commitMessage: { conventional: true } };
+  const emptied = { gates: {}, rules: {}, hooks: { required: { "pre-push": ["qc check"], "commit-msg": [] } } };
+  assert.deepEqual(checkConfigFloor(shipped, { ...emptied, commitMessage: { conventional: false } }), []);
+  const [problem] = checkConfigFloor(shipped, { ...emptied, commitMessage: { conventional: true } });
+  assert.match(problem.detail, /^hooks\.commit-msg is switched off/);
+});

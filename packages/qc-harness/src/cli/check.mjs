@@ -34,7 +34,7 @@ import { checkAdrFormat } from "../gates/adr-format.mjs";
 import { checkConfigFloor } from "../gates/config-floor.mjs";
 import { defaults } from "../config.mjs";
 import { rules as lintRules } from "../eslint/index.mjs";
-import { adrLog, enabled, readerEntries, thresholds } from "../config.mjs";
+import { adrLog, enabled, readerEntries, requiredHooks, thresholds } from "../config.mjs";
 import { checkRegistryReaders } from "../gates/registry-readers.mjs";
 import { checkMigrationNumbers } from "../gates/migration-numbers.mjs";
 import { checkRegistryLiteral } from "../gates/registry-literal.mjs";
@@ -788,7 +788,7 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   if (enabled(config.gates, "config-floor")) {
     problems.push(...checkConfigFloor(defaults, config, { exemptions: config.floor.exemptions }));
     lines.push("OK  floor        every check the kit ships on is in force, or names the decision that switched it off");
-    const hooks = hookDrift(config.root, config.hooks.required);
+    const hooks = hookDrift(config.root, requiredHooks(config));
     problems.push(...hooks.problems);
     lines.push("OK  hooks        each git hook makes the calls hooks.required names");
     for (const note of hooks.notes) lines.push(`NOTE  hooks      ${note}`);

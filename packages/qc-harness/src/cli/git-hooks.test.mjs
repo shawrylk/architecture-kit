@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { defaults, requiredHooks } from "../config.mjs";
 import { hookDrift } from "./git-hooks.mjs";
 
 const TEMPLATES = fileURLToPath(new URL("../../templates/githooks/", import.meta.url));
@@ -82,4 +83,31 @@ test("qc doctor fails on hook drift, and passes the kit's template", async (t) =
   assert.match(quiet.mock.calls.map((call) => call.arguments[0]).join("\n"), /pre-commit never calls `qc work-order-check`/);
   copyFileSync(path.join(TEMPLATES, "pre-commit"), path.join(r.root, ".githooks", "pre-commit"));
   assert.equal(await runDoctor({ root: r.root, hooks: { required: REQUIRED } }), 0);
+});
+
+const withConventional = (conventional) => ({ ...defaults, commitMessage: { ...defaults.commitMessage, conventional } });
+
+function strictFolder(t, names) {
+  const r = repo(t);
+  mkdirSync(path.join(r.root, ".githooks"));
+  for (const name of names) copyFileSync(path.join(TEMPLATES, name), path.join(r.root, ".githooks", name));
+  return r;
+}
+
+test("conventional on and no commit-msg hook fails hooks (strict folder)", (t) => {
+  const r = strictFolder(t, ["pre-commit", "pre-push"]);
+  const { problems } = hookDrift(r.root, requiredHooks(withConventional(true)));
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].path, ".githooks/commit-msg");
+  assert.match(problems[0].detail, /commit-msg is missing/);
+});
+
+test("conventional on and the template commit-msg hook passes", (t) => {
+  const r = strictFolder(t, ["pre-commit", "pre-push", "commit-msg"]);
+  assert.deepEqual(hookDrift(r.root, requiredHooks(withConventional(true))).problems, []);
+});
+
+test("conventional false and no commit-msg hook passes", (t) => {
+  const r = strictFolder(t, ["pre-commit", "pre-push"]);
+  assert.deepEqual(hookDrift(r.root, requiredHooks(withConventional(false))).problems, []);
 });

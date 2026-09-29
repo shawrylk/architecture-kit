@@ -4,7 +4,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { load } from "../config.mjs";
+import { load, requiredHooks } from "../config.mjs";
+import { hookDrift } from "./git-hooks.mjs";
 import { runInit } from "./init.mjs";
 import { installHooks } from "./install-hooks.mjs";
 import { runCheck } from "./check.mjs";
@@ -29,7 +30,7 @@ const quiet = (run) => {
 test("init writes the documents the gates read", async () => {
   const dir = repo();
   await quiet(() => runInit(load(dir)));
-  for (const file of ["qc.config.json", "docs/decisions.md", "docs/enforcement.md", "docs/pagination.md", ".githooks/pre-commit", ".githooks/pre-push"]) {
+  for (const file of ["qc.config.json", "docs/decisions.md", "docs/enforcement.md", "docs/pagination.md", ".githooks/pre-commit", ".githooks/commit-msg", ".githooks/pre-push"]) {
     assert.ok(existsSync(path.join(dir, file)), `${file} is missing`);
   }
   rmSync(dir, { recursive: true, force: true });
@@ -239,5 +240,13 @@ test("a clean mirror run names every root it judged", async () => {
   const { lines } = await runCheck(load(dir));
   const line = lines.find((entry) => entry.startsWith("OK  mirror"));
   assert.ok(line?.includes("frontend/tests") && line.includes("backend/tests"), `mirror line: ${line}`);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a fresh init repository with the default config passes the hooks check", async () => {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  const config = load(dir);
+  assert.deepEqual(hookDrift(dir, requiredHooks(config)).problems, []);
   rmSync(dir, { recursive: true, force: true });
 });
