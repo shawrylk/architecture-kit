@@ -49,6 +49,9 @@ test("the note names the workflow, the four types, the model tiers, and the one-
     "architecture:sdd-reviewer",
     "architecture:sdd-branch-reviewer",
     "one implementer at a time",
+    "Worktree: <path>",
+    "VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>",
+    "--match-head-commit <sha>",
   ]) {
     assert.ok(REMINDER.includes(word), word);
   }

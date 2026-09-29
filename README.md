@@ -332,6 +332,63 @@ stopping the call they are judging; the session note skips the tool line instead
 | `maxOutputChars` | `20000` | the output hint's threshold, in characters |
 | `exempt` | `[]` | globs the read budget never refuses |
 
+### 11. Hold the workflow to its reviews
+
+With `swarm.dispatch` on, more hooks hold the subagent workflow to its conventions. Each one reads or
+writes one ledger: JSON lines in `<git common dir>/qc/ledger.jsonl`, shared by every worktree. The
+record types are `dispatch`, `stop`, `verdict`, `merge`, and `issue-update`. `qc ledger [branch]`
+prints them. Each check does nothing when `swarm.dispatch` is off.
+
+| Check | Hook | What it refuses |
+|---|---|---|
+| Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha the repository lacks, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha |
+| Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:` |
+| Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review |
+| Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line. The ledger records the reason. A resume through `SendMessage` passes |
+| Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names. A `gh api` call to a merge endpoint and the `mergePullRequest` mutation are refused outright. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names |
+| Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
+| Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths` |
+| Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
+
+The hooks read these markers:
+
+| Marker | Where | Meaning |
+|---|---|---|
+| `Worktree: <absolute path>` | one line of an implementer prompt | the worktree the task gate judges. A prompt without it is no task, and the gate lets it pass |
+| `NO-RESUME: <reason>` | one line of an implementer prompt | a fresh implementer after CHANGES_REQUIRED. The reason goes in the ledger |
+| `PLAN: <absolute path>` | the first line of a planner report | the plan the plan check reads |
+| `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>` | the first line of a reviewer report | the verdict and the head it judged. A short or upper-case sha resolves to the full one |
+| `RED:` and `GREEN:` | one line each of an implementer report | the failing run, then the passing run |
+| `RED-CHECKED:` | a line of a task reviewer's APPROVED report | the reviewer saw the test fail before the code |
+| `Test: none — <reason>` | a line of a plan task | a task with no test step, such as a docs task. It needs a reason of three words or more, and it does not cover a task that changes a source file |
+| `**Estimate:** <n> tool calls` | a line of a plan task | the size the plan check compares with `maxTaskCalls` |
+
+In auto mode, a subagent reports through `SubagentHandback`, and its stop then carries only closing
+text. So each report check judges the hand-back first, and the stop reads the hand-back it kept. A
+subagent with no hand-back is judged at its stop, on its last message.
+
+A `gh` identity set in the command, such as `GH_CONFIG_DIR=~/.config/gh-personal gh pr merge ...`, applies
+to the `gh` calls that the merge record and the issue gate make. They also replay the same `-R` repository
+and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a token.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `merge` | `"branch"` | the review kind whose APPROVED verdict lets a merge run; `"task"` fits a one-task PR |
+| `maxTaskCalls` | `35` | the largest estimate one plan task may carry |
+| `controllerPaths` | `["docs/**", "*.md", "qc.config.json", "**/.claude/**"]` | the globs the main session may edit; a path outside every checkout of the repository always passes |
+| `reviewerTypes` | `{ task: [...], branch: [...] }`, the plugin's two reviewers, bare and scoped | the agent types whose stop records a verdict of each kind |
+| `plannerTypes` | the plugin's planner, bare and scoped | the agent types whose report runs the plan check |
+
+The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
+
+Known limits:
+
+- The ledger guards against forgetting, not against forgery. An agent with a shell can append a line.
+- Shell writes are reported only. The controller guard sees the edit tools, and the shell edit guard reports a `Bash` or `PowerShell` write outside the controller paths.
+- The merge guard reads the command text. A merge in a wrapper, such as `bash -lc`, `env gh`, `eval`, or an `if` block, is not seen. Kit issue #63 tracks the wrapped commands.
+- A merge on the web page passes the merge guard.
+- An `--auto` merge that has not merged when the command returns has no record until the issue gate resolves it.
+
 ## What it enforces
 
 **Lint** — `no-cross-feature-internals`, `storage-only-in-resource`, `scoped-repository`,

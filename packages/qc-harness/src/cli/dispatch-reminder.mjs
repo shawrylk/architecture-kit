@@ -11,7 +11,8 @@ export const REMINDER =
   "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
   "whole branch. The planner and the branch reviewer run on opus, the implementer and the task reviewer on sonnet. " +
   "Run one implementer at a time: a hook refuses a second while one runs. Name a model on any other dispatch, and " +
-  "pass each brief as a file path.";
+  "pass each brief as a file path. Name the worktree on a prompt line `Worktree: <path>`. A reviewer starts with " +
+  "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`.";
 
 const context = (eventName, text) => ({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
 

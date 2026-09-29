@@ -12,6 +12,7 @@ import { commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
 
 const HOOK_SCRIPTS = [
   "work-order-guard.mjs", "budget-guard.mjs", "bash-edit-guard.mjs", "worktree-isolation.mjs", "pre-edit-guard.sh",
+  "report-stop.mjs", "plan-stop.mjs", "merge-guard.mjs", "issue-gate.mjs", "controller-guard.mjs",
 ];
 const NO_VERIFY = "--no-verify";
 // The shortest prefix git could still expand to `--no-verify`.
@@ -90,7 +91,7 @@ const REASONS = {
   hooksPath:
     "`-c core.hooksPath=` points git away from the installed hooks, so the gates never run. Remove it.",
   script:
-    "a hand run of a hook script writes a lease under a made-up session id, and that lease blocks later " +
+    "a hand run of a hook script writes a lease or a ledger record under a made-up session id, and that lease blocks later " +
     "edits in the worktree for hours. Test a hook only through its own suite (`node --test`), in temporary folders.",
 };
 
