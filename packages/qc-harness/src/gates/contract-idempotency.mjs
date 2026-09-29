@@ -37,7 +37,15 @@ function staleReason(operation, fields, exemptDeleteById) {
 export function checkContractIdempotency(operations, legacy, { fields, exemptDeleteById, contract, ledger }) {
   const owed = new Set(legacy);
   const byId = new Map(operations.map((operation) => [operation.id, operation]));
-  const problems = [];
+  const counts = new Map();
+  for (const { id } of operations) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const problems = [...counts]
+    .filter(([, count]) => count > 1)
+    .map(([id]) => ({
+      path: contract,
+      rule: "duplicate-operation-id",
+      detail: "'" + id + "' names more than one operation, so the ledger cannot say which one it excuses",
+    }));
   for (const operation of operations) {
     if (!MUTATING.has(operation.method)) continue;
     if (exemptDeleteById && isDeleteById(operation)) continue;
@@ -56,9 +64,10 @@ export function checkContractIdempotency(operations, legacy, { fields, exemptDel
 }
 
 /**
- * An id added to the ledger since the merge base fails unless the base contract held an operation with
- * the same id, method and path that lacked its key. A reused id, a key dropped since, or a moved path
- * cannot pass as an older write. An id the contract no longer holds is `legacy-now-declares`'s to report.
+ * Every ledgered id is compared with the merge base, listed there or not, so a listed id cannot be
+ * reused for a new write. Each current operation that carries the id must match a base operation with
+ * the same id, method and path, and an id new to the ledger must also have been owed its key there. An
+ * id the contract no longer holds is `legacy-now-declares`'s to report.
  * @param {string[]} legacy the ledger now
  * @param {{ledger: string[], operations: {id: string, method: string, path: string, owed: boolean}[]}} before
  *   the ledger and the operations at the merge base, `owed` marking one that lacked its key
@@ -68,14 +77,26 @@ export function checkContractIdempotency(operations, legacy, { fields, exemptDel
  */
 export function checkLedgerGrowth(legacy, before, operations, { ledger }) {
   const listed = new Set(before.ledger);
-  const current = new Map(operations.map((operation) => [operation.id, operation]));
-  const wasOwed = (now) =>
-    before.operations.some((then) => then.owed && then.id === now.id && then.method === now.method && then.path === now.path);
-  return [...new Set(legacy)]
-    .filter((id) => !listed.has(id) && current.has(id) && !wasOwed(current.get(id)))
-    .map((id) => ({
-      path: ledger,
-      rule: "legacy-grew",
-      detail: "'" + id + "' was added to the ledger, and the merge base held no operation with its id, method and path that lacked its key; declare its idempotency field instead",
-    }));
+  const heldThen = (now) =>
+    before.operations.filter((then) => then.id === now.id && then.method === now.method && then.path === now.path);
+  const whyNot = (now) => {
+    const then = heldThen(now);
+    if (then.length === 0) return "the merge base held no operation with its id, method and path";
+    if (!listed.has(now.id) && !then.some((held) => held.owed)) return "that operation had its key at the merge base";
+    return null;
+  };
+  const problems = [];
+  for (const id of new Set(legacy)) {
+    for (const now of operations.filter((operation) => operation.id === id)) {
+      const reason = whyNot(now);
+      if (reason === null) continue;
+      problems.push({
+        path: ledger,
+        rule: "legacy-grew",
+        detail: "'" + id + "' is ledgered for " + now.method.toUpperCase() + " " + now.path + ", but " + reason + "; declare its idempotency field instead",
+      });
+      break;
+    }
+  }
+  return problems;
 }

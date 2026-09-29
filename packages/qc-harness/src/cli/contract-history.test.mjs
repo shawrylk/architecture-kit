@@ -83,3 +83,36 @@ test("no ref, and no repository, skip with a reason", async () => {
     rmSync(bare, { recursive: true, force: true });
   }
 });
+
+test("a keyed POST and an exempt DELETE by id are not owed", async () => {
+  const contract = [
+    "paths:",
+    "  /v1/a:",
+    "    post:",
+    "      operationId: createA",
+    "      requestBody:",
+    "        content:",
+    "          application/json:",
+    "            schema:",
+    "              properties: { mutationId: {} }",
+    "  /v1/a/{id}:",
+    "    delete:",
+    "      operationId: deleteA",
+    "",
+  ].join("\n");
+  const repo = committed({ "contracts/openapi.yaml": contract });
+  const found = await contractHistory(repo.root, options);
+  const judged = await contractHistory(repo.root, { ...options, exemptDeleteById: false });
+  repo.done();
+  assert.deepEqual(found.operations.map(({ id, owed }) => [id, owed]), [["createA", false], ["deleteA", false]]);
+  assert.deepEqual(judged.operations.map(({ id, owed }) => [id, owed]), [["createA", false], ["deleteA", true]]);
+});
+
+test("a base ref that resolves but shares no history with HEAD skips as having no merge base", async () => {
+  const repo = committed({ "README.md": "x\n" });
+  git(repo.root, "checkout", "-q", "--orphan", "other");
+  git(repo.root, "commit", "-q", "--allow-empty", "-m", "unrelated");
+  const found = await contractHistory(repo.root, options);
+  repo.done();
+  assert.match(found.skip, /no merge base with 'main'/);
+});

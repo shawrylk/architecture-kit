@@ -596,9 +596,11 @@ a parameter. The gate follows a `$ref` body into `components.schemas`, and each 
   `operationId` is named `METHOD /path`, as in `POST /v1/boards`. A listed operation passes.
 - A ledger entry fails as `legacy-now-declares` when its operation now declares the key, no longer
   exists, or needs no key.
-- A ledger entry added since the merge base with `ratchet.base` fails as `legacy-grew`, unless the
-  base contract held an operation with the same id, method and path that lacked its key. A reused id, a
-  dropped key and a moved path all fail. The ledger cannot absorb a new write. A base contract that does
+- A ledger id fails as `legacy-grew` unless every operation that
+  carries it matches an operation at the merge base with `ratchet.base`: the same id, method and path.
+  An id new to the ledger also needs that base operation to have lacked its key. A reused id, a dropped
+  key and a moved path all fail, and so does an id the base ledger already listed. Two operations with
+  one `operationId` fail as `duplicate-operation-id`. The ledger cannot absorb a new write. A base contract that does
   not parse fails as `unreadable-base-contract`. With no merge base, as in a shallow clone or with no
   git, the check is skipped and `qc check` prints a `NOTE` line.
 - A `DELETE` whose last path segment is a parameter is exempt. Set `exemptDeleteById` to `false` to

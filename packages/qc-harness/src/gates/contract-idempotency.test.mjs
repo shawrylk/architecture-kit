@@ -211,7 +211,7 @@ const opAt = (id, extra) => ({ id, params: [], bodyProps: [], ...extra });
 const growth = { ledger: "contracts/idempotency-legacy.json", fields: ["mutationId"], exemptDeleteById: true };
 
 test("an id added to the ledger fails unless the operation was owed at the merge base", () => {
-  const before = { ledger: ["oldOne"], operations: [{ id: "owedThen", method: "post", path: "/v1/a", owed: true }] };
+  const before = { ledger: ["oldOne"], operations: [{ id: "oldOne", method: "post", path: "/v1/a", owed: true }, { id: "owedThen", method: "post", path: "/v1/a", owed: true }] };
   const now = [opAt("oldOne", bare), opAt("owedThen", bare), opAt("brandNew", { ...bare, path: "/v1/b" })];
   const found = checkLedgerGrowth(["oldOne", "owedThen", "brandNew"], before, now, growth);
   assert.deepEqual(found.map((problem) => problem.rule), ["legacy-grew"]);
@@ -254,4 +254,23 @@ test("the skip line for a missing ref is a note, not an OK", async () => {
     base: "no-such-ref",
   });
   assert.ok(found.lines.some((line) => /^NOTE\s+idempotency\s+ledger growth skipped/.test(line)));
+});
+
+test("a ledgered POST that is deleted, then a new unkeyed POST reusing its id, fails even though the base ledger lists the id", () => {
+  const before = { ledger: ["createA"], operations: [{ id: "createA", method: "post", path: "/v1/a", owed: true }] };
+  const found = checkLedgerGrowth(["createA"], before, [opAt("createA", { ...bare, path: "/v1/other" })], growth);
+  assert.deepEqual(found.map((problem) => problem.rule), ["legacy-grew"]);
+  assert.match(found[0].detail, /POST \/v1\/other/);
+});
+
+test("a duplicate operation id fails, whichever order the old and the new operation come in", () => {
+  const before = { ledger: ["createA"], operations: [{ id: "createA", method: "post", path: "/v1/a", owed: true }] };
+  const old = opAt("createA", bare);
+  const added = opAt("createA", { ...bare, path: "/v1/other" });
+  for (const operations of [[old, added], [added, old]]) {
+    const rules = checkContractIdempotency(operations, ["createA"], options).map((problem) => problem.rule);
+    assert.deepEqual(rules, ["duplicate-operation-id"]);
+    const grew = checkLedgerGrowth(["createA"], before, operations, growth);
+    assert.deepEqual(grew.map((problem) => problem.rule), ["legacy-grew"]);
+  }
 });
