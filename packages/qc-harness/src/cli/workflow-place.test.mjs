@@ -38,7 +38,8 @@ test("commitLookup tells a found commit from an unknown sha from a git failure",
   assert.deepEqual(commitLookup(dir, head.slice(0, 8)), { sha: head });
   assert.deepEqual(commitLookup(dir, "deadbee"), { unknown: true });
   assert.match(commitLookup(path.join(dir, "..", "no-such-dir"), head).error ?? "", /./);
-  assert.match(commitLookup(dir, head, { timeoutMs: 1 }).error ?? "", /timed out|ETIMEDOUT/i);
+  const timedOut = () => ({ status: null, error: Object.assign(new Error("x"), { code: "ETIMEDOUT" }) });
+  assert.match(commitLookup(dir, head, { timeoutMs: 5, run: timedOut }).error ?? "", /timed out/);
 });
 
 test("commitLookup reports a spawn error, a signal, and a fatal exit as a failure", () => {

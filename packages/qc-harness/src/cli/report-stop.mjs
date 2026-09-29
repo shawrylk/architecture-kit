@@ -95,7 +95,7 @@ export function branchOf(workflow, sha, { worktree = null, dispatches = [] } = {
 
 const dispatchHeadOf = (records, worktree) =>
   records.findLast(
-    (record) => record.type === "dispatch" && record.task === true && typeof record.worktree === "string" && pathKey(record.worktree) === pathKey(worktree),
+    (record) => record.type === "dispatch" && record.task === true && typeof record.worktree === "string" && (record.worktree === worktree || pathKey(record.worktree) === pathKey(worktree)),
   )?.head ?? null;
 
 /**

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { nestedCommand, programName } from "./bash-command-guard.mjs";
 import { commandWords } from "./shell-command.mjs";
+import { nativePath } from "./workflow-place.mjs";
 
 const GH_SETTINGS = ["GH_CONFIG_DIR", "GH_HOST"];
 const VALUE_FLAGS = new Set(["-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit", "-R", "--repo"]);
@@ -94,8 +95,7 @@ export function ghMerges(command, parse) {
 
 /** A file path as the command wrote it: `~` and a Git Bash `/c/...` spelling resolve the way the shell would. */
 function fileOf(cwd, spelled) {
-  let file = spelled.replace(/^~(?=$|[\\/])/, os.homedir());
-  if (process.platform === "win32") file = file.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:");
+  const file = nativePath(spelled.replace(/^~(?=$|[\\/])/, os.homedir()));
   return path.resolve(cwd, file);
 }
 

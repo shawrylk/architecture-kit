@@ -378,3 +378,18 @@ test("a worktree spelled as a Git Bash drive path resolves on Windows", { skip: 
   assert.equal(task.refusal, null);
   assert.equal(task.record.branch, "feat/1-x");
 });
+
+test("a dispatch of a type that is no task type keeps its old behaviour when its prompt carries a Worktree line", (t) => {
+  const ws = workspace(t);
+  for (const on of [false, true]) {
+    const b = otherRepo(ws, on);
+    const task = judgeTask(dispatch(ws.main, taskPrompt(b.linked), "Explore"), ws.tmp);
+    assert.equal(task.refusal, null);
+    assert.equal(task.note, null);
+    assert.equal(task.record.task, false);
+    assert.equal(task.record.worktree, null);
+    assert.equal(task.workflow.root, ws.main, "the cwd repository records it");
+    rmSync(b.other, { recursive: true, force: true });
+    rmSync(b.linked, { recursive: true, force: true });
+  }
+});

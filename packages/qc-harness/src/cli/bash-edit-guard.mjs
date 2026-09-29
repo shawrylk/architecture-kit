@@ -17,6 +17,7 @@ import * as powershell from "./powershell-command.mjs";
 import * as posix from "./shell-command.mjs";
 import { isAllowed } from "./work-order-guard.mjs";
 import { MANIFEST_FILE, readManifest } from "./work-order-manifest.mjs";
+import { nativePath } from "./workflow-place.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { OFF, isolationSettings } from "./worktree-isolation.mjs";
 
@@ -49,8 +50,7 @@ const native = (dir) => {
 
 /** A directory as the command wrote it, resolved the way the shell would, or null when it does not exist. */
 function resolveDir(cwd, dir) {
-  let spelled = dir.replace(/^~(?=$|[\\/])/, os.homedir());
-  if (process.platform === "win32") spelled = spelled.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:");
+  const spelled = nativePath(dir.replace(/^~(?=$|[\\/])/, os.homedir()));
   const absolute = path.resolve(cwd, spelled);
   return existsSync(absolute) ? absolute : null;
 }

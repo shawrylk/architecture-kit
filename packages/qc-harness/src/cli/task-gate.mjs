@@ -105,7 +105,7 @@ export function judgeTask(call, tmp = os.tmpdir()) {
   let workflow = own;
   let abs = null;
   let root = null;
-  if (named !== null) {
+  if (named !== null && (!own || taskTypeIn(type, own.review))) {
     abs = path.resolve(own?.root ?? cwd, nativePath(named));
     root = existsSync(abs) ? checkoutRootOf(abs) : null;
     if (root) {
