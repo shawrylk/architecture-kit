@@ -285,7 +285,7 @@ const STRINGS = /"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g;
 // regular expression after an operator or a keyword, and divides after a name or a closing bracket.
 const TOKENS = /\/[/*]|["'`/]/g;
 const TOKENS_IN_TEMPLATE = /\/[/*]|["'`/{}]/g;
-const REGEX_AFTER = /(?:(?<![+-])[+-]|[(,=:[!&|?{};*%~^]|(?<![\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|else|do|yield|await))\s*$/;
+const REGEX_AFTER = /(?:(?<![+-])[+-]|[(,=:[!&|?{};*%~^]|=>|(?<![\w$.])(?:return|typeof|case|in|of|delete|void|throw|new|else|do|yield|await))\s*$/;
 
 /** The index past the string that opens at `from`, or -1 when the line ends first. */
 function stringEnd(source, from) {

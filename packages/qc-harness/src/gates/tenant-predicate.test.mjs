@@ -836,3 +836,9 @@ test("what the gate still does not read passes unseen: an import-equals require,
   const head = `import { insertReturning } from "${specifierOf("crud")}";\n`;
   assert.deepEqual(withFiles({}, `${head}if (x) /'/.test(y); const f = insertReturning; const g = '';\n${badCall("f")}`), []);
 });
+
+test("a regular expression after an arrow is read as one, so a backtick in it hides nothing", () => {
+  const head = `import { insertReturning } from "${specifierOf("crud")}";\n`;
+  const shape = "xs.filter((s) => /`/.test(s)); const f = insertReturning;";
+  assert.deepEqual(withFiles({}, `${head}${shape}\n${badCall("f")}`), UNRESOLVED);
+});

@@ -795,11 +795,12 @@ The gate passes each of these unseen:
 - a renamed name imported from an unscanned local file: `import { put } from "../outside"` passes
   unseen, and `import { insertReturning } from "../outside"` fails
 - `import x = require("./crud")`
-- a quote in code the lexer misreads, which can hide a later `const f = insertReturning` from the
-  use check. The lexer reads comments, strings, templates with `${}`, and regular expressions. It
-  takes a `/` after `)`, `]`, `}`, or a name as a division, so `if (x) /'/.test(y)` and a regular
-  expression at the start of a line after an expression with no semicolon are not seen. An
-  apostrophe in JSX text can do the same.
+- a backtick inside a regular expression that the lexer misreads, which starts a template that can
+  hide a later `const f = insertReturning` from the use check. The lexer reads comments, strings,
+  templates with `${}`, and regular expressions. It takes a `/` after `)`, `]`, `}`, or a name as a
+  division, so ``if (x) /`/.test(y)`` and a regular expression at the start of a line after an
+  expression with no semicolon are not seen. A quote in JSX text can do the same.
+- an `import` after a `}` on the same line
 
 The kit ships these two defaults in `tenantPredicate.exemptHelpers`:
 
