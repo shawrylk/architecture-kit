@@ -2,6 +2,9 @@
 // the PR and repository it names, and the GH_* settings the command makes for gh.
 // It also finds each `gh api` call to a PR's merge endpoint or with a `mergePullRequest` mutation, which merge with no review check.
 
+import { readFileSync, statSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { nestedCommand, programName } from "./bash-command-guard.mjs";
 import { commandWords } from "./shell-command.mjs";
 
@@ -11,6 +14,9 @@ const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 const POWERSHELL_ENV = /^\$env:([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$/is;
 const MERGE_ENDPOINT = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge\/?(?:\?.*)?$/;
 const MERGE_MUTATION = /\bmergePullRequest\b/;
+const GRAPHQL_ENDPOINT = /(?:^|\/)graphql\/?(?:\?.*)?$/;
+const FIELD_FLAGS = new Set(["--field"]);
+const MAX_QUERY_BYTES = 1024 * 1024;
 
 /** Only the settings that choose gh's account or host; a token is a credential and is never kept. */
 const kept = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => GH_SETTINGS.includes(name)));
@@ -86,16 +92,77 @@ export function ghMerges(command, parse) {
   return merges;
 }
 
+/** A file path as the command wrote it: `~` and a Git Bash `/c/...` spelling resolve the way the shell would. */
+function fileOf(cwd, spelled) {
+  let file = spelled.replace(/^~(?=$|[\\/])/, os.homedir());
+  if (process.platform === "win32") file = file.replace(/^\/([A-Za-z])(?=\/|$)/, "$1:");
+  return path.resolve(cwd, file);
+}
+
 /**
- * The endpoint of each `gh api` call to `pulls/<n>/merge`, as written, and `graphql` for each call to the
- * GraphQL endpoint whose text holds a `mergePullRequest` mutation.
+ * The files a `gh api` call reads its body from: each `-F key=@file`, and `--input file`. `-` is standard input.
+ * pflag reads a short flag with its value attached (`-Fkey=@file`, `-F=key=@file`) and a cluster of short flags
+ * that ends in `-F` (`-iFkey=@file`, `-iF key=@file`). A letter that takes a value ends a cluster, so it hides an `F` after it.
  */
-export function ghApiMerges(command, parse) {
+function bodyFiles(args) {
+  const files = [];
+  const add = (field) => {
+    if (/^[^=]*=@/.test(field)) files.push(field.slice(field.indexOf("@") + 1));
+  };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const cluster = /^-([A-Za-z]*)F(.*)$/s.exec(arg);
+    if (cluster && !/[fFHXqt]/.test(cluster[1])) {
+      const value = cluster[2] === "" ? args[++i] : cluster[2].replace(/^=/, "");
+      if (value !== undefined) add(value);
+      continue;
+    }
+    const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
+    const flag = at === -1 ? arg : arg.slice(0, at);
+    if (flag !== "--input" && !FIELD_FLAGS.has(flag)) continue;
+    const value = at === -1 ? args[++i] : arg.slice(at + 1);
+    if (value === undefined) continue;
+    if (flag === "--input") files.push(value);
+    else add(value);
+  }
+  return files;
+}
+
+/** The text of a query file, or null when it is standard input, too large, or unreadable. */
+function queryText(cwd, spelled) {
+  if (spelled === "-") return null;
+  try {
+    const file = fileOf(cwd, spelled);
+    if (statSync(file).size > MAX_QUERY_BYTES) return null;
+    return readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Each `gh api` call that merges with no review check, as `{ endpoint, unreadable }`. `endpoint` is the PR merge
+ * endpoint as written, or the GraphQL URL as written (`graphql` when the call spells none). A call holds a
+ * `mergePullRequest` mutation when any argument, or any query file it reads, names it, whatever the URL spelling.
+ * A GraphQL call whose query file the guard cannot read fails closed, and `unreadable` names that file.
+ * @param options.cwd the folder a relative query file resolves against
+ */
+export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
   return ghCalls(command, parse)
     .filter(({ words }) => words[0] === "api")
     .flatMap(({ words }) => {
       const args = words.slice(1);
-      const rest = args.filter((word) => MERGE_ENDPOINT.test(word));
-      return args.includes("graphql") && args.some((word) => MERGE_MUTATION.test(word)) ? ["graphql", ...rest] : rest;
+      const found = args.filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
+      const graphql = args.find((word) => GRAPHQL_ENDPOINT.test(word));
+      let mutation = args.some((word) => MERGE_MUTATION.test(word));
+      let unreadable;
+      for (const file of bodyFiles(args)) {
+        const text = queryText(cwd, file);
+        if (text === null) unreadable ??= file;
+        else if (MERGE_MUTATION.test(text)) mutation = true;
+      }
+      if (mutation) found.push({ endpoint: graphql ?? "graphql" });
+      else if (graphql !== undefined && unreadable !== undefined) found.push({ endpoint: graphql, unreadable });
+      return found;
     });
 }

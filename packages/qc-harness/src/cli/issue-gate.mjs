@@ -9,7 +9,6 @@ import { appendRecord, readLedger } from "./ledger.mjs";
 import { workflowOf } from "./workflow-settings.mjs";
 
 const pairOf = (prRepo, pr, repo, number) => `${prRepo}#${pr}>${repo}#${number}`;
-const prefixOf = (env = {}) => Object.entries(env).map(([name, value]) => `${name}=${value} `).join("");
 
 /** @returns "closed", "commented" after `mergedAt`, "open", or null when the view says neither. */
 export function issueStatus(view, mergedAt) {
@@ -42,41 +41,58 @@ function prView(merge, gh, cwd) {
 /**
  * The merges of this session that count now: each merge record, and each pending one whose PR has since merged,
  * which gets its own merge record. A pending merge still open, or one gh cannot read, stays pending.
+ * A pending merge whose PR closed unmerged gets one `closed` record, which counts as no merge and ends the reads.
  */
-function mergesOf(records, session, workflow, gh) {
+function mergesOf(records, session, workflow, gh, append) {
   const key = (record) => `${record.repo}#${record.pr}`;
-  const done = new Set(records.filter((record) => record.type === "merge" && !record.pending).map(key));
+  const done = new Set(records.filter((record) => record.type === "merge" && !record.pending && !record.closed).map(key));
+  const closedAt = new Map();
+  records.forEach((record, index) => record.type === "merge" && record.closed && closedAt.set(key(record), index));
+  const write = (record) => {
+    try {
+      append(workflow.ledger, record);
+    } catch {
+      // The record only saves a later read; the next stop reads the PR again.
+    }
+  };
   const merges = [];
-  for (const record of records.filter((entry) => entry.type === "merge" && entry.session === session)) {
+  records.forEach((record, index) => {
+    if (record.type !== "merge" || record.session !== session || record.closed) return;
     if (!record.pending) {
       merges.push(record);
-      continue;
+      return;
     }
-    if (done.has(key(record))) continue;
+    if (done.has(key(record)) || closedAt.get(key(record)) > index) return;
     const view = prView(record, gh, workflow.root);
-    if (view?.state !== "MERGED") continue;
+    if (view?.state === "CLOSED") {
+      closedAt.set(key(record), Infinity);
+      write({ ...record, pending: undefined, closed: true, mergedAt: null });
+    }
+    if (view?.state !== "MERGED") return;
     done.add(key(record));
     const resolved = { ...record, mergedAt: view.mergedAt ?? record.mergedAt ?? null };
     delete resolved.pending;
-    try {
-      appendRecord(workflow.ledger, resolved);
-    } catch {
-      // The merge still counts for this stop; the next stop reads the PR again.
-    }
+    write(resolved);
     merges.push(resolved);
-  }
+  });
   return merges;
 }
 
-const nameOf =({ issue }) => `${issue.repo}#${issue.number}`;
+const nameOf = ({ issue }) => `${issue.repo}#${issue.number}`;
+
+/** The GH_* settings of a merge in words, so the sentence holds in Bash and in PowerShell alike. */
+function settingsOf(env = {}) {
+  const names = Object.entries(env);
+  return names.length === 0 ? "" : ` Set ${names.map(([name, value]) => `${name} to \`${value}\``).join(" and ")} for these gh calls.`;
+}
 
 function refusalOf(open) {
   const lines = open.map(({ issue, merge }) => {
-    const gh = `${prefixOf(merge.ghEnv)}gh`;
     return (
       `- ${issue.repo}#${issue.number}, named by ${merge.repo}#${merge.pr} (merged into ${merge.base ?? "its base"}). ` +
-      `Close it: \`${gh} issue close ${issue.number} -R ${issue.repo} --comment "<what the merge finished>"\`. ` +
-      `Or comment on what is left: \`${gh} issue comment ${issue.number} -R ${issue.repo} --body "<what is left>"\`.`
+      `Close it: \`gh issue close ${issue.number} -R ${issue.repo} --comment "<what the merge finished>"\`. ` +
+      `Or comment on what is left: \`gh issue comment ${issue.number} -R ${issue.repo} --body "<what is left>"\`.` +
+      settingsOf(merge.ghEnv)
     );
   });
   return [
@@ -87,8 +103,10 @@ function refusalOf(open) {
 }
 
 /** The verdict on one Stop. @returns the hook output, or null to let the turn end with no message. */
-export function decide(call, { gh = runGh, tmp = os.tmpdir() } = {}) {
+export function decide(call, { gh = runGh, tmp = os.tmpdir(), append: appendTo = appendRecord } = {}) {
   if (call.hook_event_name !== "Stop") return null;
+  // A stop this hook already blocked once records nothing new, so the ledger holds one state for the retry.
+  const append = call.stop_hook_active ? () => {} : appendTo;
   let workflow;
   try {
     workflow = workflowOf(call, tmp);
@@ -107,7 +125,7 @@ export function decide(call, { gh = runGh, tmp = os.tmpdir() } = {}) {
   const settled = new Set(records.filter((r) => r.type === "issue-update").map((r) => pairOf(r.prRepo, r.pr, r.repo, r.number)));
   const open = [];
   const unread = [];
-  for (const merge of mergesOf(records, session, workflow, gh)) {
+  for (const merge of mergesOf(records, session, workflow, gh, append)) {
     for (const issue of merge.issues ?? []) {
       const pair = pairOf(merge.repo, merge.pr, issue.repo, issue.number);
       if (settled.has(pair)) continue;
@@ -115,7 +133,13 @@ export function decide(call, { gh = runGh, tmp = os.tmpdir() } = {}) {
       const status = statusOf(issue, merge, gh, workflow.root);
       if (status === null) unread.push(`${issue.repo}#${issue.number}`);
       else if (status === "open") open.push({ issue, merge });
-      else appendRecord(workflow.ledger, { type: "issue-update", session, pr: merge.pr, prRepo: merge.repo, repo: issue.repo, number: issue.number, how: status });
+      else {
+        try {
+          append(workflow.ledger, { type: "issue-update", session, pr: merge.pr, prRepo: merge.repo, repo: issue.repo, number: issue.number, how: status });
+        } catch {
+          // The issue is settled on GitHub; without the record the next stop reads it once more. The open list stays.
+        }
+      }
     }
   }
   if (open.length > 0) {

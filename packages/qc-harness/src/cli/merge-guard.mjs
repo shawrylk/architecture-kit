@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // The trigger that holds `gh pr merge` to its review. Before the call it needs `--match-head-commit` and an
 // APPROVED review of `swarm.review.merge` for that sha. After the call it records the merge and its issues.
+// A merge that names another repository than the checkout's `origin` is that repository's own, so it passes.
 
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { PARSERS } from "./bash-command-guard.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
@@ -12,6 +14,8 @@ import { workflowAt } from "./workflow-settings.mjs";
 const VIEW_FIELDS = "number,url,state,mergedAt,baseRefName,headRefName,body,closingIssuesReferences";
 const MAYBE_GH = /\bgh(?:\.exe)?\b/i;
 const BODY_REF = /(?<![\w/#])#(\d+)\b/g;
+const REF_LINE = /^\s*(?:[-*]\s+)?(?:refs|closes|fixes|resolves)\b/i;
+const ORIGIN_TIMEOUT_MS = 5_000;
 const PR_URL = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/;
 const POST_EVENTS = new Set(["PostToolUse", "PostToolUseFailure"]);
 const REVIEWER = { branch: "the branch reviewer (sdd-branch-reviewer)", task: "the task reviewer (sdd-reviewer)" };
@@ -38,7 +42,10 @@ export function mergeRefusal(merges, records, kind) {
   return null;
 }
 
-/** The issues a PR names: its closing references, then each `#n` in its body, less its own number and each repeat. */
+/**
+ * The issues a PR names: its closing references, then each `#n` on a body line that starts with `Refs`, `Closes`,
+ * `Fixes`, or `Resolves`, less its own number and each repeat. A number elsewhere in the body is context.
+ */
 export function namedIssues(pr, repo) {
   const found = new Map();
   const add = (issueRepo, number) => {
@@ -49,8 +56,29 @@ export function namedIssues(pr, repo) {
     const name = ref.repository?.name;
     add(owner && name ? `${owner}/${name}` : repo, ref.number);
   }
-  for (const match of String(pr.body ?? "").matchAll(BODY_REF)) add(repo, Number(match[1]));
+  for (const line of String(pr.body ?? "").split(/\r?\n/)) {
+    if (REF_LINE.test(line)) for (const match of line.matchAll(BODY_REF)) add(repo, Number(match[1]));
+  }
   return [...found.values()];
+}
+
+/** `owner/repo` from a git remote URL in the https, ssh, or scp spelling, or from gh's `[HOST/]OWNER/REPO`; lower case. */
+function repoOfSpelling(spelled) {
+  const parts = String(spelled).trim().replace(/\/+$/, "").replace(/\.git$/i, "").split(/[/:]/).filter(Boolean);
+  return parts.length >= 2 ? parts.slice(-2).join("/").toLowerCase() : null;
+}
+
+/** The repository of the checkout's `origin` remote, or null when git cannot say. */
+function originOf(root) {
+  const result = spawnSync("git", ["remote", "get-url", "origin"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: ORIGIN_TIMEOUT_MS });
+  return result.status === 0 ? repoOfSpelling(result.stdout) : null;
+}
+
+/** Splits the merges into those of this checkout's repository and those that name another repository. */
+function partition(merges, root) {
+  const origin = merges.some((merge) => merge.repo) ? originOf(root) : null;
+  const foreign = (merge) => origin !== null && merge.repo && repoOfSpelling(merge.repo) !== origin;
+  return { origin, own: merges.filter((merge) => !foreign(merge)), other: merges.filter(foreign) };
 }
 
 function recordMerge(merge, call, workflow, gh) {
@@ -69,11 +97,15 @@ function recordMerge(merge, call, workflow, gh) {
   const repo = PR_URL.exec(pr.url ?? "")?.[1] ?? null;
   const merged = pr.state === "MERGED";
   // An `--auto` merge on an open PR is pending: the issue gate reads the PR at Stop to see whether it merged.
-  const pending = !merged && merge.auto && pr.state === "OPEN";
+  // A failed call is no proof of a queued merge: `gh pr merge --auto` may have been refused on the open PR.
+  const pending = call.hook_event_name === "PostToolUse" && !merged && merge.auto && pr.state === "OPEN";
   if ((!merged && !pending) || !repo) return null;
-  const held = (record) => record.type === "merge" && record.repo === repo && record.pr === pr.number && (pending || !record.pending);
-  if (readLedger(workflow.ledger).some(held)) return null;
+  const ofPr = (record) => record.type === "merge" && record.repo === repo && record.pr === pr.number;
   try {
+    // A closed record ends what came before it: a PR reopened after it gets its own record.
+    const records = readLedger(workflow.ledger);
+    const closedAt = records.findLastIndex((record) => ofPr(record) && record.closed);
+    if (records.slice(closedAt + 1).some((record) => ofPr(record) && (pending || !record.pending))) return null;
     appendRecord(workflow.ledger, {
       type: "merge",
       ...(pending ? { pending: true } : {}),
@@ -88,7 +120,7 @@ function recordMerge(merge, call, workflow, gh) {
       ghEnv: merge.env,
     });
   } catch (error) {
-    return `Merge guard: the ledger write failed (${error.message}), so this merge is not recorded.`;
+    return `Merge guard: the ledger failed (${error.message}), so this merge is not recorded.`;
   }
   return null;
 }
@@ -108,21 +140,37 @@ export function decide(call, { gh = runGh } = {}) {
   }
   if (!workflow) return null;
   if (event === "PreToolUse") {
-    const [endpoint] = ghApiMerges(command, parse);
-    if (endpoint) {
+    const [found] = ghApiMerges(command, parse, { cwd: call.cwd ?? process.cwd() });
+    if (found) {
+      const use = "Run `gh pr merge <n> --match-head-commit <sha>` with the head an APPROVED review named.";
       return deny(
-        `Merge guard: \`gh api ${endpoint}\` merges with no review check and no head pin. ` +
-          "Run `gh pr merge <n> --match-head-commit <sha>` with the head an APPROVED review named.",
+        found.unreadable === undefined
+          ? `Merge guard: \`gh api ${found.endpoint}\` merges with no review check and no head pin. ${use}`
+          : `Merge guard: \`gh api ${found.endpoint}\` reads \`${found.unreadable}\`, which the guard cannot read, so it may merge with no review check and no head pin. ${use}`,
       );
     }
   }
   const merges = ghMerges(command, parse);
   if (merges.length === 0) return null;
+  const { origin, own, other } = partition(merges, workflow.root);
   if (event === "PreToolUse") {
-    const refusal = mergeRefusal(merges, readLedger(workflow.ledger), workflow.review.merge);
-    return refusal ? deny(refusal) : null;
+    let refusal = null;
+    if (own.length > 0) {
+      try {
+        refusal = mergeRefusal(own, readLedger(workflow.ledger), workflow.review.merge);
+      } catch (error) {
+        refusal = `Merge guard: the ledger cannot be read (${error.message}), so no review can be checked. Fix the ledger file, and merge again.`;
+      }
+    }
+    if (refusal) return deny(refusal);
+    return other.length > 0
+      ? context(
+          `Merge guard passes ${[...new Set(other.map((merge) => merge.repo))].join(", ")}: it is not this checkout's repository (${origin}), ` +
+            "so its reviews are not in this ledger. The guard records nothing for it.",
+        )
+      : null;
   }
-  const notes = merges.map((merge) => recordMerge(merge, call, workflow, gh)).filter(Boolean);
+  const notes = own.map((merge) => recordMerge(merge, call, workflow, gh)).filter(Boolean);
   return notes.length > 0 ? { systemMessage: notes.join(" ") } : null;
 }
 

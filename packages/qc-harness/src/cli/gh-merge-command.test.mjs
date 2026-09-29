@@ -1,4 +1,7 @@
 import { strict as assert } from "node:assert";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { powershellSegments } from "./powershell-command.mjs";
@@ -37,7 +40,7 @@ test("a nested shell's merge is found, and what is no merge is left alone", () =
 });
 
 test("a gh api call to a PR's merge endpoint is found, in each spelling, and no other gh api call is", () => {
-  const endpoints = (command, parse = segmentsOf) => ghApiMerges(command, parse);
+  const endpoints = (command, parse = segmentsOf) => ghApiMerges(command, parse).map((call) => call.endpoint);
   assert.deepEqual(endpoints("gh api -X PUT repos/o/r/pulls/60/merge -f merge_method=squash"), ["repos/o/r/pulls/60/merge"]);
   assert.deepEqual(endpoints("gh api --method=PUT /repos/{owner}/{repo}/pulls/61/merge"), ["/repos/{owner}/{repo}/pulls/61/merge"]);
   assert.deepEqual(endpoints(`bash -c "gh api repos/o/r/pulls/62/merge -X PUT"`), ["repos/o/r/pulls/62/merge"]);
@@ -51,4 +54,52 @@ test("a gh api call to a PR's merge endpoint is found, in each spelling, and no 
   ]) {
     assert.deepEqual(endpoints(command), [], command);
   }
+});
+
+const MUTATION = "mutation { mergePullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }";
+
+test("a mutation word in any argument is found, whatever the spelling of the GraphQL URL", () => {
+  for (const url of ["graphql", "/graphql", "https://api.github.com/graphql", "https://ghe.example.com/api/graphql", "graphql/"]) {
+    assert.deepEqual(ghApiMerges(`gh api ${url} -f query='${MUTATION}'`, segmentsOf).map((call) => call.endpoint), [url], url);
+  }
+  assert.equal(ghApiMerges(`gh api -X POST graphql -F query='${MUTATION}'`, segmentsOf).length, 1);
+  assert.equal(ghApiMerges(`gh api graphql -f query='${MUTATION}'`, powershellSegments).length, 1);
+  assert.equal(ghApiMerges(`gh api graphql -f query='query { viewer { login } }'`, segmentsOf).length, 0);
+  assert.equal(ghApiMerges("gh api https://api.github.com/graphql -f query='query { viewer { login } }'", segmentsOf).length, 0);
+});
+
+test("a query file the call reads is searched for the mutation, and a file the guard cannot read fails closed", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-gh-api-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(path.join(dir, "merge.graphql"), MUTATION);
+  writeFileSync(path.join(dir, "viewer.graphql"), "query { viewer { login } }");
+  writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query: MUTATION }));
+  const found = (command) => ghApiMerges(command, segmentsOf, { cwd: dir });
+  assert.equal(found("gh api https://api.github.com/graphql -F query=@merge.graphql").length, 1);
+  assert.equal(found("gh api graphql --field=query=@merge.graphql").length, 1);
+  assert.equal(found("gh api graphql --input body.json").length, 1);
+  assert.equal(found(`gh api graphql -F query=@${path.join(dir, "merge.graphql").replaceAll("\\", "/")}`).length, 1);
+  assert.equal(found("gh api graphql -Fquery=@merge.graphql").length, 1, "an attached short flag carries its value");
+  assert.equal(found("gh api graphql -F=query=@merge.graphql").length, 1);
+  assert.equal(found("gh api graphql -fquery=@merge.graphql").length, 0, "-f reads no file");
+  assert.equal(found("gh api graphql -Fquery=@missing.graphql")[0].unreadable, "missing.graphql");
+  assert.equal(found("gh api graphql -iFquery=@merge.graphql").length, 1, "a cluster of short flags ends in -F");
+  assert.equal(found("gh api graphql -i -F query=@merge.graphql").length, 1);
+  assert.equal(found("gh api graphql -iF query=@merge.graphql").length, 1, "a cluster that ends in -F takes the next argument");
+  assert.equal(found("gh api graphql -fFquery=@merge.graphql").length, 0, "-f takes the rest of the word as its value");
+  assert.equal(found("gh api graphql -iFquery=@viewer.graphql").length, 0);
+  assert.equal(found("gh api graphql --field=query=@missing.graphql")[0].unreadable, "missing.graphql");
+  assert.equal(found("gh api graphql -Fquery=@-")[0].unreadable, "-");
+  assert.equal(found("gh api graphql -iFquery=@missing.graphql")[0].unreadable, "missing.graphql");
+  assert.equal(found("gh api graphql -Fquery=@viewer.graphql").length, 0);
+  assert.equal(found("gh api graphql -F query=@viewer.graphql").length, 0);
+  assert.equal(found("gh api graphql -f query=@merge.graphql").length, 0, "-f sends the text as written and reads no file");
+  const [unreadable] = found("gh api graphql -F query=@missing.graphql");
+  assert.equal(unreadable.endpoint, "graphql");
+  assert.equal(unreadable.unreadable, "missing.graphql");
+  assert.equal(found("gh api graphql -F query=@-")[0].unreadable, "-");
+  assert.equal(found("gh api graphql --input -")[0].unreadable, "-");
+  // A call to another endpoint never fails closed on a file it cannot read.
+  assert.equal(found("gh api repos/o/r/issues/1/comments -F body=@notes.txt").length, 0);
+  assert.equal(found("gh api repos/o/r/issues/1/comments -F body=@-").length, 0);
 });

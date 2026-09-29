@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -22,6 +22,7 @@ function workspace(t) {
     return dir;
   };
   const on = make("on", { swarm: { dispatch: {} } });
+  execFileSync("git", ["remote", "add", "origin", "git@github.com-personal:o/r.git"], { cwd: on, stdio: "pipe" });
   const task = make("task", { swarm: { dispatch: {}, review: { merge: "task" } } });
   const off = make("off", { swarm: {} });
   return { on, task, off, ledgerOf: (dir) => path.join(dir, ".git", "qc", "ledger.jsonl") };
@@ -182,6 +183,8 @@ test("gh api graphql with a mergePullRequest mutation is refused, and the REST e
     ["gh api -X PUT /repos/o/r/pulls/60/merge/?x=1", "Bash"],
     ["gh api -X PUT https://api.github.com/repos/o/r/pulls/60/merge", "Bash"],
     ["gh api -X PUT https://api.github.com/repos/o/r/pulls/60/merge/", "PowerShell"],
+    ["gh api https://api.github.com/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'", "Bash"],
+    ["gh api https://ghe.example.com/api/graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'", "PowerShell"],
   ]) {
     assert.match(denied(decide(shell(ws.on, command, "PreToolUse", tool))) ?? "", /gh pr merge <n> --match-head-commit <sha>/, command);
   }
@@ -206,4 +209,87 @@ test("the hook process prints the deny", (t) => {
   const result = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(shell(ws.on, "gh pr merge 60")), encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, "deny");
+});
+
+test("a merge that names another repository than the checkout's origin passes with a note and records nothing", (t) => {
+  const ws = workspace(t);
+  const other = `gh pr merge 64 -R shawrylk/architecture-kit --squash --match-head-commit ${SHA}`;
+  const output = decide(shell(ws.on, other));
+  assert.equal(denied(output), null);
+  assert.match(output.hookSpecificOutput.additionalContext, /shawrylk\/architecture-kit/);
+  assert.match(output.hookSpecificOutput.additionalContext, /o\/r/);
+  const { gh, calls } = fakeGh(MERGED);
+  assert.equal(decide(shell(ws.on, other, "PostToolUse"), { gh }), null);
+  assert.equal(calls.length, 0);
+  assert.equal(existsSync(ws.ledgerOf(ws.on)), false);
+  // The same call with no sha pin still passes for another repository, --repo included.
+  assert.equal(denied(decide(shell(ws.on, "gh pr merge 64 --repo=shawrylk/architecture-kit"))), null);
+  // The checkout's own repository, in any spelling, is still judged.
+  for (const named of ["-R o/r", "--repo O/R", "-R github.com/o/r"]) {
+    assert.match(denied(decide(shell(ws.on, `gh pr merge 60 ${named} --match-head-commit ${SHA}`))) ?? "", /no APPROVED branch review/, named);
+  }
+  // A merge of the own repository next to a merge of another one is still refused.
+  assert.match(denied(decide(shell(ws.on, `${other} && gh pr merge 60 -R o/r`))) ?? "", /--match-head-commit <sha>/);
+});
+
+test("a checkout with no readable origin judges a merge that names a repository", (t) => {
+  const ws = workspace(t);
+  assert.match(denied(decide(shell(ws.task, `gh pr merge 60 -R o/r --match-head-commit ${SHA}`))) ?? "", /no APPROVED task review/);
+});
+
+test("a failed --auto merge of an open PR writes no pending record", (t) => {
+  const ws = workspace(t);
+  const command = `gh pr merge 60 --auto --squash --match-head-commit ${SHA}`;
+  const open = fakeGh(JSON.stringify({ ...JSON.parse(MERGED), state: "OPEN", mergedAt: null })).gh;
+  assert.equal(decide(shell(ws.on, command, "PostToolUseFailure"), { gh: open }), null);
+  assert.equal(existsSync(ws.ledgerOf(ws.on)), false);
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  assert.equal(readLedger(ws.ledgerOf(ws.on)).length, 1, "a call that succeeded still records the pending merge");
+});
+
+test("a ledger that cannot be read or written never throws out of the guard", (t) => {
+  const ws = workspace(t);
+  const ledger = ws.ledgerOf(ws.on);
+  mkdirSync(ledger, { recursive: true }); // a directory where the file belongs: read and write both fail
+  const command = `gh pr merge 60 --squash --match-head-commit ${SHA}`;
+  const after = decide(shell(ws.on, command, "PostToolUse"), { gh: fakeGh(MERGED).gh });
+  assert.match(after?.systemMessage ?? "", /ledger/);
+  assert.match(denied(decide(shell(ws.on, command))) ?? "", /ledger/);
+});
+
+test("namedIssues takes body numbers only from Refs, Closes, Fixes, and Resolves lines", () => {
+  const pr = {
+    number: 61,
+    body: ["Adds the guard, as PR #61 and #40 did.", "Related to #41 and #42.", "  refs #12, #13", "Resolves: #14", "- Fixes #15", "Closes #16 and o/r#17", "Not a Fixes line #18"].join("\r\n"),
+  };
+  assert.deepEqual(
+    namedIssues(pr, "o/r").map((issue) => issue.number),
+    [12, 13, 14, 15, 16],
+  );
+  assert.deepEqual(namedIssues({ number: 1, body: "See #5 and #6" }, "o/r"), []);
+});
+
+test("a graphql call with a query file holding the mutation, or a file it cannot read, is refused", (t) => {
+  const ws = workspace(t);
+  writeFileSync(path.join(ws.on, "merge.graphql"), "mutation { mergePullRequest(input: {}) { clientMutationId } }");
+  writeFileSync(path.join(ws.on, "viewer.graphql"), "query { viewer { login } }");
+  const refusal = (command) => denied(decide(shell(ws.on, command)));
+  assert.match(refusal("gh api https://api.github.com/graphql -F query=@merge.graphql") ?? "", /gh pr merge <n> --match-head-commit <sha>/);
+  assert.match(refusal("gh api graphql -F query=@missing.graphql") ?? "", /missing\.graphql/);
+  assert.equal(refusal("gh api graphql -F query=@viewer.graphql"), null);
+});
+
+test("an --auto merge on a PR reopened after a closed pending record is tracked again", (t) => {
+  const ws = workspace(t);
+  const command = `gh pr merge 60 --auto --squash --match-head-commit ${SHA}`;
+  const open = fakeGh(JSON.stringify({ ...JSON.parse(MERGED), state: "OPEN", mergedAt: null })).gh;
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  const [pending] = readLedger(ws.ledgerOf(ws.on));
+  appendRecord(ws.ledgerOf(ws.on), { ...pending, pending: undefined, closed: true, mergedAt: null });
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  const records = readLedger(ws.ledgerOf(ws.on));
+  assert.equal(records.length, 3);
+  assert.equal(records[2].pending, true);
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  assert.equal(readLedger(ws.ledgerOf(ws.on)).length, 3, "and a repeat adds no fourth record");
 });

@@ -23,6 +23,7 @@ import { OFF, isolationSettings } from "./worktree-isolation.mjs";
 const execFileAsync = promisify(execFile);
 const slashed = (file) => file.split(path.sep).join("/");
 const MAX_LISTED = 40;
+const CONTROLLER_RULE = "outside the controller paths";
 
 /** The paths `git status --porcelain -z` names, with both sides of a rename. */
 export function changedPaths(porcelain) {
@@ -110,7 +111,7 @@ async function findingsIn(root, manifest, projectRoot, isMainSession) {
   }
   if (controllerPaths) {
     for (const rel of facts.changed.filter((changed) => !isControllerPath(changed, controllerPaths))) {
-      add(rel, `outside the controller paths (${controllerPaths.join(", ")}), which the main session edits while swarm.dispatch is on`);
+      add(rel, `${CONTROLLER_RULE} (${controllerPaths.join(", ")}), which the main session edits while swarm.dispatch is on`);
     }
   }
   if (guardsBranch && settings.protectedBranches.includes(facts.branch)) {
@@ -153,8 +154,12 @@ export async function report(call, projectRoot) {
       additionalContext: [
         "Bash edit guard: the checkout holds uncommitted changes that the swarm rules do not allow.",
         ...listed,
-        "Revert a change only if your work order made it and should not have. " +
-          "For any other change, stop and tell the orchestrator. The guard does not revert anything.",
+        ...(findings.some((line) => line.includes(CONTROLLER_RULE))
+          ? ["Dispatch an implementer for a change outside the controller paths. Revert a change only if you made it by mistake. The guard does not revert anything."]
+          : [
+              "Revert a change only if your work order made it and should not have. " +
+                "For any other change, stop and tell the orchestrator. The guard does not revert anything.",
+            ]),
       ].join("\n"),
     },
   };
