@@ -3,6 +3,8 @@
 // the register. Turning a rule off becomes a reviewed act with a reason attached, which is the
 // difference between adopting a standard and negotiating with it.
 
+import { requiredHooks } from "../config.mjs";
+
 const OFF_BY_DESIGN = "off-by-design";
 
 /** @returns every check the kit ships that this repository has switched off. */
@@ -25,7 +27,7 @@ function offByKind(shipped, configured) {
   return {
     gates: switchedOff(shipped.gates ?? {}, configured.gates ?? {}),
     rules: switchedOff(shipped.rules ?? {}, configured.rules ?? {}),
-    hooks: weakenedHooks(shipped.hooks?.required, configured.hooks?.required).map((name) => `hooks.${name}`),
+    hooks: weakenedHooks(requiredHooks({ ...shipped, commitMessage: configured.commitMessage }), configured.hooks?.required).map((name) => `hooks.${name}`),
   };
 }
 
