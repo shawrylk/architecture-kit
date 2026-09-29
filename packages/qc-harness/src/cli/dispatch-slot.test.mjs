@@ -1,15 +1,15 @@
 import { strict as assert } from "node:assert";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { dispatchDefaults } from "../config.mjs";
 import { claimSlot, reclaimSlot, releaseSlot, slotDirOf } from "./dispatch-slot.mjs";
 
-function sessionDir(t) {
+function sessionDir(t, session = "s") {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "qc-dispatch-slot-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
-  return slotDirOf("s", tmp);
+  return slotDirOf(session, tmp);
 }
 
 const settings = { ...dispatchDefaults, slotMinutes: 1 };
@@ -18,6 +18,8 @@ const IMPLEMENTER = "sdd-implementer";
 
 /** The claim files of one session folder, sorted, with no path. */
 const claimFiles = (dir) => (existsSync(dir) ? readdirSync(dir).filter((name) => name.endsWith(".claim")).sort() : []);
+/** What each claim file holds, sorted. */
+const heldIn = (dir) => claimFiles(dir).map((name) => readFileSync(path.join(dir, name), "utf8")).sort();
 const ageClaim = (dir, name, ms) => {
   const old = new Date(Date.now() - ms);
   utimesSync(path.join(dir, name), old, old);
@@ -116,7 +118,7 @@ test("a stop frees its own holder's claim only, so one slot opens and the others
   assert.equal(claimFiles(dir).length, 3);
   assert.equal(releaseSlot(dir, IMPLEMENTER, "agent-b"), true);
   assert.equal(claimFiles(dir).length, 2);
-  assert.equal(claimFiles(dir).some((name) => name.includes("agent-b")), false);
+  assert.deepEqual(heldIn(dir), ["agent:agent-a", "agent:agent-c"]);
   assert.equal(claimSlot(dir, three, Date.now(), "use-4"), null);
   assert.notEqual(claimSlot(dir, three, Date.now(), "use-5"), null);
 });
@@ -155,9 +157,9 @@ test("the refusal names the holder that expires first", (t) => {
   const two = withSlots(2);
   claimSlot(dir, two, Date.now(), "use-1");
   claimSlot(dir, two, Date.now(), "use-2");
-  ageClaim(dir, claimFiles(dir).find((name) => name.includes("use-2")), 30_000);
+  ageClaim(dir, claimFiles(dir).find((name) => readFileSync(path.join(dir, name), "utf8") === "pending:use-2"), 30_000);
   const refused = claimSlot(dir, two, Date.now(), "use-3");
-  assert.ok(refused.slotFile.includes("use-2"), refused.slotFile);
+  assert.ok(readFileSync(refused.slotFile, "utf8"), "pending:use-2");
   assert.equal(refused.expiresAt.getTime() - refused.claimedAt.getTime(), 60_000);
 });
 
@@ -177,20 +179,41 @@ test("a resumed implementer takes its own slot again while one is free, and neve
   assert.equal(claimFiles(dir).length, 2);
 });
 
-test("two claims at once both hold a slot, and a repeat of one holder's claim leaves its file alone", (t) => {
+test("a claim lands in the first slot it creates: a pre-created slot-0 sends it to slot-1 at 2, and refuses it at 1", (t) => {
+  const dir = sessionDir(t);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "slot-0.claim"), "pending:other");
+  assert.equal(claimSlot(dir, withSlots(2), Date.now(), "use-1"), null);
+  assert.deepEqual(claimFiles(dir), ["slot-0.claim", "slot-1.claim"]);
+  assert.equal(readFileSync(path.join(dir, "slot-0.claim"), "utf8"), "pending:other");
+  assert.equal(readFileSync(path.join(dir, "slot-1.claim"), "utf8"), "pending:use-1");
+
+  const one = sessionDir(t, "one");
+  mkdirSync(one, { recursive: true });
+  writeFileSync(path.join(one, "slot-0.claim"), "pending:other");
+  const refused = claimSlot(one, withSlots(1), Date.now(), "use-1");
+  assert.deepEqual(refused.holders.map((holder) => holder.id), ["other"]);
+  assert.deepEqual(claimFiles(one), ["slot-0.claim"]);
+});
+
+test("every slot pre-created means the claim is refused and no file changes", (t) => {
+  const dir = sessionDir(t);
+  mkdirSync(dir, { recursive: true });
+  for (const index of [0, 1, 2]) writeFileSync(path.join(dir, `slot-${index}.claim`), `agent:a${index}`);
+  const refused = claimSlot(dir, withSlots(3), Date.now(), "use-1");
+  assert.equal(refused.limit, 3);
+  assert.deepEqual(heldIn(dir), ["agent:a0", "agent:a1", "agent:a2"]);
+});
+
+test("a repeat of one holder's claim leaves its slot alone and takes no second slot", (t) => {
   const dir = sessionDir(t);
   const three = withSlots(3);
   assert.equal(claimSlot(dir, three, Date.now(), "use-1"), null);
-  assert.equal(claimSlot(dir, three, Date.now(), "use-2"), null);
-  assert.equal(claimFiles(dir).length, 2);
-  const file = path.join(dir, claimFiles(dir)[0]);
-  const before = statSync(file).mtimeMs;
-  ageClaim(dir, claimFiles(dir)[0], 10_000);
-  const aged = statSync(file).mtimeMs;
-  assert.notEqual(before, aged);
+  ageClaim(dir, "slot-0.claim", 10_000);
+  const aged = statSync(path.join(dir, "slot-0.claim")).mtimeMs;
   assert.equal(claimSlot(dir, three, Date.now(), "use-1"), null);
-  assert.equal(statSync(file).mtimeMs, aged);
-  assert.equal(claimFiles(dir).length, 2);
+  assert.equal(statSync(path.join(dir, "slot-0.claim")).mtimeMs, aged);
+  assert.deepEqual(claimFiles(dir), ["slot-0.claim"]);
 });
 
 test("the stop and the start read the limit recorded at the claim, and a record with no limit means 1", (t) => {

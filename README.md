@@ -241,20 +241,21 @@ fix:
 - A dispatch of a type in `implementerTypes` while `implementerSlots` of them run in the session. The default is one.
 
 The hook judges the dispatches of the main session only. A subagent's dispatch follows that
-subagent's own definition, which is often another plugin's. The hook keeps up to `implementerSlots`
-claim files per session under the OS temp folder, one per holder. Each claim is an exclusive create,
-so two dispatches in one block never lose a claim. The `Agent` call does not know the new agent's id,
-so a dispatch claims under its own `tool_use_id`. A `SubagentStart` of an implementer type renames
-one such claim to the new agent's id, so a dispatch and its start count once. A `SubagentStop` frees
-its own agent's claim, and a stop that finds none frees one waiting claim. A `SubagentStart` with no
-waiting claim claims a free slot, so an implementer resumed through `SendMessage` holds one too, and
-it never takes a slot over the limit. A claim with no stop expires after `slotMinutes`. A dispatch
-that passes the hook can still be denied later, and then no stop comes. So the refusal names the
-holders, the limit, and a claim file to delete.
+subagent's own definition, which is often another plugin's. The hook keeps `implementerSlots` fixed slot files per session under the OS temp folder, `slot-0.claim`
+and up. A claim tries each slot in order with an exclusive create and takes the first one it makes, so
+no group of dispatches in one parallel block passes the limit. Each file holds its holder's id. The
+`Agent` call does not know the new agent's id, so a dispatch holds its own `tool_use_id`. A
+`SubagentStart` of an implementer type rewrites one waiting slot to the new agent's id, so a dispatch
+and its start count once. A `SubagentStop` removes the slot that holds its own agent's id. A stop
+that finds none removes one waiting slot, as the single slot did. A `SubagentStart` with no waiting
+slot takes a free one, so an implementer resumed through `SendMessage` holds one too, and it never
+takes a slot over the limit. A slot with no stop expires after `slotMinutes`. A dispatch that passes
+the hook can still be denied later, and then no stop comes. So the refusal names a slot file to
+delete. At a limit of 1 it names the claim's time and file. Above 1 it also names each holder and the
+limit.
 
 A limit over 1 fits a repository whose work orders own disjoint paths. Each implementer then runs in
-its own worktree. Claims that arrive at the same moment, with fewer free slots than claims, can all
-pass, so the limit is exact for dispatches in sequence and a simultaneous block can pass it.
+its own worktree.
 
 A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
 names the workflow, the four types, the model tiers, and the one-implementer rule. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule.

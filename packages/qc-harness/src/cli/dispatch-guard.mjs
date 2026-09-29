@@ -20,7 +20,7 @@ function onSubagent(call, dir, now) {
   if (!existsSync(dir)) return;
   try {
     if (call.hook_event_name === "SubagentStart") reclaimSlot(dir, call.agent_type, now, idOf(call.agent_id));
-    else releaseSlot(dir, call.agent_type, idOf(call.agent_id));
+    else releaseSlot(dir, call.agent_type, idOf(call.agent_id) ?? "", now);
   } catch {
     // A busy or read-only temp folder is the hook's own problem, and the slot still expires.
   }
