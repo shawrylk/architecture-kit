@@ -191,6 +191,25 @@ function sourceFiles(config, tree, only) {
   return readEach(config.root, rels);
 }
 
+/** The registries the doc check reads: `registryLiteral.registries`, else the thresholds and the versions. */
+async function literalRegistries(config) {
+  const listed = config.registryLiteral.registries ?? [
+    { path: config.thresholds, key: "gates", prefix: "q" },
+    { path: config.versions, key: "libraries", prefix: ["ver", "v"], valueKey: "version" },
+  ];
+  const list = [];
+  const problems = [];
+  for (const { path: file, key, prefix, valueKey, unitKey } of listed) {
+    if (typeof file !== "string" || typeof key !== "string" || [prefix].flat().length === 0) {
+      problems.push({ path: "qc.config.json", rule: "registry-literal", detail: "a registryLiteral.registries entry needs a path, a key and a prefix" });
+      continue;
+    }
+    const entries = parsedJson(await read(path.join(config.root, file)))?.[key] ?? {};
+    list.push({ entries, prefixes: [prefix].flat(), valueKey, unitKey });
+  }
+  return { list, problems };
+}
+
 function parsedJson(source) {
   if (source === null) return null;
   try {
@@ -583,7 +602,9 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     const docs = await readEach(config.root, tree.under(config.docs.root).filter((file) => file.endsWith(".md")));
     const libraries = parsedJson(await read(path.join(config.root, config.versions)))?.libraries ?? {};
     const exempt = config.registryLiteral.exempt ?? adrLog(config);
-    problems.push(...checkRegistryLiteral(docs, { thresholds: thresholds(config), libraries, exempt }));
+    const registries = await literalRegistries(config);
+    problems.push(...checkRegistryLiteral(docs, { thresholds: thresholds(config), libraries, exempt, registries: registries.list }));
+    problems.push(...registries.problems);
     if (docs.length > 0) lines.push(`OK  literals     ${docs.length} doc(s) carry a token, never a figure a registry owns`);
   }
 

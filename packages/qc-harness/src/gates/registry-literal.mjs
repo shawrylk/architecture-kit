@@ -137,7 +137,7 @@ function annotatedProblems(file, text, list, prefixes) {
       problems.push({ path: at, rule: "unknown-token", detail: `'${prefix}:${id}' names no entry of its registry` });
       return "TOKEN";
     }
-    const value = registry.entries[id][registry.valueKey ?? "value"];
+    const value = registry.entries[id]?.[registry.valueKey ?? "value"];
     const figure = stated(word, value);
     if (figure === null) {
       problems.push({ path: at, rule: "annotation-without-number", detail: `'${prefix}:${id}' follows '${word}', which is no number` });
