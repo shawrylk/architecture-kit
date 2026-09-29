@@ -99,13 +99,20 @@ function fileOf(cwd, spelled) {
   return path.resolve(cwd, file);
 }
 
-/** The files a `gh api` call reads its body from: each `-F key=@file`, and `--input file`. `-` is standard input. */
+/** The files a `gh api` call reads its body from: each `-F key=@file` (also `-Fkey=@file`), and `--input file`. `-` is standard input. */
 function bodyFiles(args) {
   const files = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
     const flag = at === -1 ? arg : arg.slice(0, at);
+    const attached = /^-F(.+)$/s.exec(arg);
+    if (attached) {
+      // pflag reads `-Fvalue` and `-F=value` alike.
+      const value = attached[1].replace(/^=/, "");
+      if (/^[^=]*=@/.test(value)) files.push(value.slice(value.indexOf("@") + 1));
+      continue;
+    }
     if (flag !== "--input" && !FIELD_FLAGS.has(flag)) continue;
     const value = at === -1 ? args[++i] : arg.slice(at + 1);
     if (value === undefined) continue;

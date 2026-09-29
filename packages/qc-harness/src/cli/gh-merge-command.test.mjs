@@ -79,6 +79,11 @@ test("a query file the call reads is searched for the mutation, and a file the g
   assert.equal(found("gh api graphql --field=query=@merge.graphql").length, 1);
   assert.equal(found("gh api graphql --input body.json").length, 1);
   assert.equal(found(`gh api graphql -F query=@${path.join(dir, "merge.graphql").replaceAll("\\", "/")}`).length, 1);
+  assert.equal(found("gh api graphql -Fquery=@merge.graphql").length, 1, "an attached short flag carries its value");
+  assert.equal(found("gh api graphql -F=query=@merge.graphql").length, 1);
+  assert.equal(found("gh api graphql -fquery=@merge.graphql").length, 0, "-f reads no file");
+  assert.equal(found("gh api graphql -Fquery=@missing.graphql")[0].unreadable, "missing.graphql");
+  assert.equal(found("gh api graphql -Fquery=@viewer.graphql").length, 0);
   assert.equal(found("gh api graphql -F query=@viewer.graphql").length, 0);
   assert.equal(found("gh api graphql -f query=@merge.graphql").length, 0, "-f sends the text as written and reads no file");
   const [unreadable] = found("gh api graphql -F query=@missing.graphql");
