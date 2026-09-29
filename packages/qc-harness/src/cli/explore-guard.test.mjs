@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -157,12 +157,30 @@ test("a refusal is consumed by a retry through a differently spelled path", (t) 
   const ws = workspace(t);
   const file = longFile(ws.on);
   assert.notEqual(decide(readCall(ws.on, file), ws.tmp), null);
-  const drive = /^[a-zA-Z]:/.test(file) ? file[0] : null;
-  const respelled =
-    drive !== null
-      ? (drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase()) + file.slice(1)
-      : path.join(ws.on, "..", path.basename(ws.on), path.basename(file));
+
+  if (os.platform() === "win32") {
+    const drive = file[0];
+    const respelled = (drive === drive.toUpperCase() ? drive.toLowerCase() : drive.toUpperCase()) + file.slice(1);
+    assert.equal(decide(readCall(ws.on, respelled), ws.tmp), null);
+    return;
+  }
+
+  const link = path.join(path.dirname(ws.on), "link-to-on");
+  try {
+    symlinkSync(ws.on, link, "dir");
+  } catch (error) {
+    if (error.code === "EPERM") return t.skip("no permission to create a symlink");
+    throw error;
+  }
+  t.after(() => rmSync(link, { force: true }));
+  const respelled = path.join(link, path.basename(file));
   assert.equal(decide(readCall(ws.on, respelled), ws.tmp), null);
+});
+
+test("a file in a different checkout passes even though the session's own checkout turns the guard on", (t) => {
+  const ws = workspace(t);
+  const file = longFile(ws.plain);
+  assert.equal(decide(readCall(ws.on, file), ws.tmp), null);
 });
 
 test("a non-Read call, or a Read with no file_path, sees no change", (t) => {

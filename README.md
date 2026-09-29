@@ -297,8 +297,9 @@ A repository without the section sees no change. The kit names no tool; the repo
 own.
 
 - **Read budget** — a `PreToolUse` hook on `Read` refuses a whole-file read (neither `offset` nor
-  `limit`) of a text file over `maxReadLines` lines, and the refusal names the tools. A file
-  outside any checkout, images, PDFs, notebooks, and `exempt` globs pass with no change, as does a
+  `limit`) of a text file over `maxReadLines` lines, and the refusal names the tools. The guard
+  judges only a file in the session's own checkout: a file in no checkout, or in another one,
+  images, PDFs, notebooks, and `exempt` globs pass with no change, as does a
   file within the budget. The same file read the same way passes on the very next attempt in the
   session, so a real need for the whole file costs one retry, never a standing exemption.
 - **Search hint** — a `PostToolUse` hook on `Grep` adds context naming the tools when the answer

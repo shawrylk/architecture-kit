@@ -169,11 +169,13 @@ export function decide(call, tmp = os.tmpdir()) {
   }
   if (!settings) return null;
 
-  const absolute = path.resolve(call.cwd ?? process.cwd(), filePath);
+  const cwd = call.cwd ?? process.cwd();
+  const absolute = path.resolve(cwd, filePath);
   if (!existsSync(absolute)) return null;
 
   const root = checkoutRootOf(path.dirname(absolute));
-  if (!root) return null; // A file outside any checkout is not this checkout's to judge.
+  // A file in no checkout, or in a checkout other than the session's own, is not this one to judge.
+  if (!root || root !== checkoutRootOf(cwd)) return null;
   const rel = path.relative(root, absolute).split(path.sep).join("/");
   if (globMatcher(settings.exempt)(rel)) return null;
 
