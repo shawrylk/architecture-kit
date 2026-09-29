@@ -93,16 +93,20 @@ function paramNames(document, ...lists) {
  * @param {string} text the API description, YAML or JSON
  * @param {{load?: () => Promise<{parse: (text: string) => unknown}>}} [options] how the parser is loaded
  * @returns {Promise<{method: string, path: string, id: string, params: string[], bodyProps: string[]}[]>}
+ *   a path item that is a local `$ref` yields its target's operations, and a method key matches in any case;
  *   method is lower-case; id is the operationId, or `METHOD /path` when the operation has none
  */
 export async function contractOperations(text, { load = loadYaml } = {}) {
   const { parse } = await parser(load);
   const document = parse(text) ?? {};
   const operations = [];
-  for (const [path, item] of Object.entries(document.paths ?? {})) {
-    for (const method of Object.keys(item ?? {}).filter((key) => METHODS.includes(key))) {
-      const operation = item[method];
+  for (const [path, entry] of Object.entries(document.paths ?? {})) {
+    const item = deref(document, entry);
+    if (!item || typeof item !== "object") continue;
+    for (const key of Object.keys(item).filter((name) => METHODS.includes(name.toLowerCase()))) {
+      const operation = item[key];
       if (!operation || typeof operation !== "object") continue;
+      const method = key.toLowerCase();
       operations.push({
         method,
         path,
