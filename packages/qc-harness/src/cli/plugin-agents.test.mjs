@@ -37,8 +37,9 @@ const SUBAGENT_TOOLS = new Set([
 ]);
 // Tools every platform has, so no list can resolve to nothing and refuse to launch.
 const ALWAYS_PRESENT = ["Read", "Bash"];
-const READ_TOOLS = ["Read", "Grep", "Glob", "Bash", "PowerShell", "Skill"];
-const EDIT_TOOLS = [...READ_TOOLS, "Edit", "Write"];
+// A reviewer has no Skill tool: it brings the whole skill listing, so a review brief states its criteria.
+const READ_TOOLS = ["Read", "Grep", "Glob", "Bash", "PowerShell"];
+const EDIT_TOOLS = [...READ_TOOLS, "Skill", "Edit", "Write"];
 const EXPECTED = {
   "sdd-implementer": { model: "sonnet", effort: "high", tools: EDIT_TOOLS },
   "sdd-planner": { model: "opus", effort: "high", tools: EDIT_TOOLS },

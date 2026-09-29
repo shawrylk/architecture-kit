@@ -210,8 +210,8 @@ The plugin ships four subagent types for `superpowers:subagent-driven-developmen
 |---|---|---|---|---|
 | `architecture:sdd-planner` | `opus` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | writes one plan and edits nothing else |
 | `architecture:sdd-implementer` | `sonnet` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
-| `architecture:sdd-reviewer` | `sonnet` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill` | reviews one task, read-only |
-| `architecture:sdd-branch-reviewer` | `opus` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill` | reviews the whole branch before merge, read-only |
+| `architecture:sdd-reviewer` | `sonnet` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
+| `architecture:sdd-branch-reviewer` | `opus` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
 
 Sonnet runs the implementer and the task reviewer. Opus runs only the planner and the branch
 reviewer, whose job a task review cannot do: it judges cross-task interactions, security, and data
@@ -222,6 +222,8 @@ that no type uses: `Artifact`, the web tools, `Monitor`, `SendMessage`, the work
 MCP tool of every connector. A repository's explore tools reach the agents through the shell, as
 section 10 says. None of the four has the `Agent` tool. The two reviewers have no edit tools but keep
 the shell for `git`, so their prompts hold them read-only. The planner writes and edits only its plan.
+The reviewer types carry no `Skill` tool, because it brings the whole skill listing, so a review
+brief states the criteria it needs.
 
 Claude Code drops a listed tool that the session lacks, such as `PowerShell` on Linux, and launches
 the agent with the rest. In auto mode it adds `SubagentHandback` to each type, listed or not. Each
