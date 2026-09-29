@@ -40,17 +40,18 @@ test("with the section on, every start adds the note, a compaction included", (t
   }
 });
 
-test("the note names the workflow, the three types, and the one-implementer rule, in a short text", () => {
+test("the note names the workflow, the four types, the model tiers, and the one-implementer rule, in a short text", () => {
   for (const word of [
     "superpowers:subagent-driven-development",
     "architecture:sdd-planner",
     "architecture:sdd-implementer",
     "architecture:sdd-reviewer",
+    "architecture:sdd-branch-reviewer",
     "one implementer at a time",
   ]) {
     assert.ok(REMINDER.includes(word), word);
   }
-  assert.ok(REMINDER.length < 600, `${REMINDER.length} characters`);
+  assert.ok(REMINDER.length < 800, `${REMINDER.length} characters`);
 });
 
 test("a config error reaches the session as context", (t) => {

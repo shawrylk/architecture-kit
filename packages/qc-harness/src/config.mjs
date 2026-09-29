@@ -414,14 +414,16 @@ export const defaults = {
 
 // What each key of `swarm.dispatch` means when a repository omits it. A list replaces its default.
 export const dispatchDefaults = {
-  // Types that may omit `model`: the plugin's three, and the bare names of a user-level copy.
+  // Types that may omit `model`: the plugin's four, and the bare names of a user-level copy.
   allowedTypes: [
     "sdd-implementer",
     "sdd-planner",
     "sdd-reviewer",
+    "sdd-branch-reviewer",
     "architecture:sdd-implementer",
     "architecture:sdd-planner",
     "architecture:sdd-reviewer",
+    "architecture:sdd-branch-reviewer",
   ],
   // Types that share one slot per session.
   implementerTypes: ["sdd-implementer", "architecture:sdd-implementer"],
@@ -429,7 +431,23 @@ export const dispatchDefaults = {
   maxPromptChars: 12000,
   // A slot with no stop expires after this many minutes.
   slotMinutes: 60,
+  // The model families each type's named `model` may carry. `"*"` covers every other type.
+  models: {
+    "sdd-planner": ["opus"],
+    "architecture:sdd-planner": ["opus"],
+    "sdd-branch-reviewer": ["opus"],
+    "architecture:sdd-branch-reviewer": ["opus"],
+    "sdd-implementer": ["sonnet"],
+    "architecture:sdd-implementer": ["sonnet"],
+    "sdd-reviewer": ["sonnet"],
+    "architecture:sdd-reviewer": ["sonnet"],
+    "*": ["sonnet", "haiku"],
+  },
 };
+
+// The model families the guard knows. A model string's family is the first of these it
+// contains, lower-cased, so a new release under an existing family needs no kit change.
+export const MODEL_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);

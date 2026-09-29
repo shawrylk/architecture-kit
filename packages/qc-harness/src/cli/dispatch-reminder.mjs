@@ -8,8 +8,10 @@ import { dispatchSettingsAt } from "./dispatch.mjs";
 export const REMINDER =
   "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
   "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
-  "architecture:sdd-reviewer to review it. Run one implementer at a time: a hook refuses a second while one runs. " +
-  "Name a model on any other dispatch, and pass each brief as a file path.";
+  "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
+  "whole branch. The planner and the branch reviewer run on opus, the implementer and the task reviewer on sonnet. " +
+  "Run one implementer at a time: a hook refuses a second while one runs. Name a model on any other dispatch, and " +
+  "pass each brief as a file path.";
 
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } });
 

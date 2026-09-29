@@ -117,6 +117,52 @@ test("a planner and a reviewer run beside an implementer", (t) => {
   assert.equal(decide(agentCall(ws.on, { subagent_type: "architecture:sdd-planner", prompt: "p" }), ws.tmp), null);
 });
 
+test("the tier guard refuses a type on the wrong family, naming the type, the model and the allowed families", (t) => {
+  const ws = workspace(t);
+  const refused = (input) => reasonOf(decide(agentCall(ws.on, input), ws.tmp)) ?? "";
+  assert.match(refused({ subagent_type: "architecture:sdd-planner", model: "sonnet", prompt: "p" }), /architecture:sdd-planner/);
+  assert.match(refused({ subagent_type: "architecture:sdd-implementer", model: "opus", prompt: "p" }), /architecture:sdd-implementer/);
+  assert.match(refused({ model: "opus", prompt: "p" }), /general-purpose/);
+});
+
+test("each allowed pair passes, including a full model id and a branch reviewer on opus", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(agentCall(ws.on, { subagent_type: "architecture:sdd-planner", model: "opus", prompt: "p" }), ws.tmp), null);
+  assert.equal(
+    decide(agentCall(ws.on, { subagent_type: "architecture:sdd-branch-reviewer", model: "opus", prompt: "p" }), ws.tmp),
+    null,
+  );
+  assert.equal(
+    decide(agentCall(ws.on, { subagent_type: "architecture:sdd-reviewer", model: "sonnet", prompt: "p" }), ws.tmp),
+    null,
+  );
+  assert.equal(decide(agentCall(ws.on, { model: "haiku", prompt: "p" }), ws.tmp), null);
+  assert.equal(
+    decide(agentCall(ws.on, { subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "p" }), ws.tmp),
+    null,
+  );
+  decide(subagentEvent(ws.on, "architecture:sdd-implementer"), ws.tmp);
+  assert.equal(
+    decide(
+      agentCall(ws.on, { subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5", prompt: "p" }),
+      ws.tmp,
+    ),
+    null,
+  );
+});
+
+test("a repository's models override replaces one type's families and leaves the rest at default", (t) => {
+  const ws = workspace(t, { maxPromptChars: 80, models: { "architecture:sdd-planner": ["sonnet"] } });
+  assert.equal(
+    decide(agentCall(ws.on, { subagent_type: "architecture:sdd-planner", model: "sonnet", prompt: "p" }), ws.tmp),
+    null,
+  );
+  assert.match(
+    reasonOf(decide(agentCall(ws.on, { subagent_type: "architecture:sdd-implementer", model: "opus", prompt: "p" }), ws.tmp)) ?? "",
+    /architecture:sdd-implementer/,
+  );
+});
+
 test("a slot with no stop expires after slotMinutes", (t) => {
   const ws = workspace(t);
   decide(agentCall(ws.on, implementer), ws.tmp);

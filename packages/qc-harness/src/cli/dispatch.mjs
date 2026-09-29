@@ -3,16 +3,34 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { CONFIG_FILE, dispatchDefaults, load, merge } from "../config.mjs";
+import { CONFIG_FILE, MODEL_FAMILIES, dispatchDefaults, load, merge } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
 const KEY = "swarm.dispatch";
 const DEFAULT_TYPE = "general-purpose";
 const FORK = "fork";
+const WILDCARD_TYPE = "*";
 
 const isNameList = (value) => Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "");
+const isFamilyList = (value) => Array.isArray(value) && value.length > 0 && value.every((name) => MODEL_FAMILIES.includes(name));
 const wrong = (key, value, want) =>
   new Error(`${KEY}.${key} in qc.config.json must be ${want}, got ${JSON.stringify(value)}`);
+
+function checkModels(models) {
+  const wantFamilies = `a non-empty list of known families (${MODEL_FAMILIES.join(", ")})`;
+  if (typeof models !== "object" || models === null || Array.isArray(models)) {
+    throw wrong("models", models, "an object mapping an agent type to its model families");
+  }
+  for (const [type, families] of Object.entries(models)) {
+    if (!isFamilyList(families)) throw wrong(`models.${type}`, families, wantFamilies);
+  }
+}
+
+/** The first family name a model string contains, lower-cased. Null when it names none the guard knows. */
+export function familyOf(model) {
+  const lower = model.toLowerCase();
+  return MODEL_FAMILIES.find((family) => lower.includes(family)) ?? null;
+}
 
 /** @returns the dispatch settings, or null when the section is absent; throws naming the key a repository got wrong. */
 export function dispatchSettings(swarm = {}) {
@@ -21,14 +39,15 @@ export function dispatchSettings(swarm = {}) {
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${KEY} in qc.config.json must be an object, got ${JSON.stringify(raw)}`);
   }
-  const { allowedTypes, implementerTypes, maxPromptChars, slotMinutes } = merge(dispatchDefaults, raw);
+  const { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, models } = merge(dispatchDefaults, raw);
   if (!isNameList(allowedTypes)) throw wrong("allowedTypes", allowedTypes, "a list of agent types");
   if (!isNameList(implementerTypes)) throw wrong("implementerTypes", implementerTypes, "a list of agent types");
   if (!Number.isInteger(maxPromptChars) || maxPromptChars < 1) {
     throw wrong("maxPromptChars", maxPromptChars, "a positive whole number");
   }
   if (typeof slotMinutes !== "number" || !(slotMinutes > 0)) throw wrong("slotMinutes", slotMinutes, "a positive number");
-  return { allowedTypes, implementerTypes, maxPromptChars, slotMinutes };
+  checkModels(models);
+  return { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, models };
 }
 
 /** @returns the settings of the checkout that holds `cwd`, or null when it has no config or no section. */
@@ -63,12 +82,31 @@ const promptRefusal = (length, max) =>
   `Dispatch guard: the prompt has ${length} characters, over ${KEY}.maxPromptChars (${max}) in qc.config.json. ` +
   "Write the brief to a file, and send a short prompt that names the brief and the report file.";
 
+function tierRefusal(type, model, families) {
+  return (
+    `Dispatch guard: ${type} may run only on ${families.join(", ")}, so it refuses model "${model}". ` +
+    `Name a model of one of those families, or dispatch a type in ${KEY}.models with one that fits.`
+  );
+}
+
+/** @returns the reason a named model breaks its type's tier, or null when it fits. */
+function tierRefusalFor(type, model, settings) {
+  const families = settings.models[type] ?? settings.models[WILDCARD_TYPE];
+  const family = familyOf(model);
+  if (family && families.includes(family)) return null;
+  return tierRefusal(type, model, families);
+}
+
 /** @returns the reason the dispatch breaks a rule that needs no state, or null to let it through. */
 export function dispatchRefusal(input, settings) {
   const type = typeOf(input);
   const model = typeof input.model === "string" ? input.model.trim() : "";
   const allowed = settings.allowedTypes.includes(type);
   if (!allowed && (type === FORK || model === "")) return modelRefusal(type, settings);
+  if (model !== "" && type !== FORK) {
+    const refusal = tierRefusalFor(type, model, settings);
+    if (refusal) return refusal;
+  }
   const length = typeof input.prompt === "string" ? input.prompt.length : 0;
   if (length > settings.maxPromptChars) return promptRefusal(length, settings.maxPromptChars);
   return null;
