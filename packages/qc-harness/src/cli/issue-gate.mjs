@@ -103,8 +103,10 @@ function refusalOf(open) {
 }
 
 /** The verdict on one Stop. @returns the hook output, or null to let the turn end with no message. */
-export function decide(call, { gh = runGh, tmp = os.tmpdir(), append = appendRecord } = {}) {
+export function decide(call, { gh = runGh, tmp = os.tmpdir(), append: appendTo = appendRecord } = {}) {
   if (call.hook_event_name !== "Stop") return null;
+  // A stop this hook already blocked once records nothing new, so the ledger holds one state for the retry.
+  const append = call.stop_hook_active ? () => {} : appendTo;
   let workflow;
   try {
     workflow = workflowOf(call, tmp);

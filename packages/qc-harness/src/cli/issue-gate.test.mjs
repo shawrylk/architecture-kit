@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -174,11 +174,16 @@ test("a merge with no gh settings adds no settings sentence", (t) => {
 test("a ledger write that fails keeps the block for the issues still open", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledger, merge("s", [{ repo: "o/r", number: 59 }, { repo: "o/r", number: 12 }]));
+  chmodSync(ws.ledger, 0o444); // reads work, and every append throws
+  t.after(() => {
+    try {
+      chmodSync(ws.ledger, 0o666);
+    } catch {
+      // The workspace cleanup already removed the file.
+    }
+  });
   const { gh } = fakeGh({ 59: { state: "CLOSED", comments: [] }, 12: { state: "OPEN", comments: [] } });
-  const append = () => {
-    throw new Error("EACCES");
-  };
-  const output = decide(stopCall(ws.on), { gh, append });
+  const output = decide(stopCall(ws.on), { gh });
   assert.equal(output.decision, "block");
   assert.match(output.reason, /o\/r#12/);
   assert.doesNotMatch(output.reason, /o\/r#59/);
@@ -207,4 +212,23 @@ test("a PR closed unmerged names no issue, and one merged after a later pending 
   appendRecord(ws.ledger, merge("s", [{ repo: "o/r", number: 12 }], { pending: true, mergedAt: null }));
   const merged = fakeGh({ 60: { state: "MERGED", mergedAt: MERGED_AT }, 12: { state: "OPEN", comments: [] } });
   assert.equal(decide(stopCall(ws.on), { gh: merged.gh }).decision, "block");
+});
+
+test("a stop the hook already blocked writes nothing to the ledger", (t) => {
+  const ws = workspace(t);
+  appendRecord(ws.ledger, merge("s", [{ repo: "o/r", number: 59 }, { repo: "o/r", number: 12 }]));
+  appendRecord(ws.ledger, { ...merge("s", [{ repo: "o/r", number: 70 }], { pending: true, mergedAt: null }), pr: 61 });
+  appendRecord(ws.ledger, { ...merge("s", [], { pending: true, mergedAt: null }), pr: 62 });
+  const before = readLedger(ws.ledger).length;
+  const { gh } = fakeGh({
+    59: { state: "CLOSED", comments: [] },
+    12: { state: "OPEN", comments: [] },
+    70: { state: "OPEN", comments: [] },
+    61: { state: "MERGED", mergedAt: MERGED_AT },
+    62: { state: "CLOSED", mergedAt: null },
+  });
+  const output = decide({ ...stopCall(ws.on), stop_hook_active: true }, { gh });
+  assert.equal(output.decision, undefined);
+  assert.match(output.systemMessage, /o\/r#12/);
+  assert.equal(readLedger(ws.ledger).length, before, "a stop with the flag set records nothing new");
 });

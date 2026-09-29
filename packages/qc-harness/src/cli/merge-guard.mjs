@@ -100,9 +100,12 @@ function recordMerge(merge, call, workflow, gh) {
   // A failed call is no proof of a queued merge: `gh pr merge --auto` may have been refused on the open PR.
   const pending = call.hook_event_name === "PostToolUse" && !merged && merge.auto && pr.state === "OPEN";
   if ((!merged && !pending) || !repo) return null;
-  const held = (record) => record.type === "merge" && record.repo === repo && record.pr === pr.number && !record.closed && (pending || !record.pending);
+  const ofPr = (record) => record.type === "merge" && record.repo === repo && record.pr === pr.number;
   try {
-    if (readLedger(workflow.ledger).some(held)) return null;
+    // A closed record ends what came before it: a PR reopened after it gets its own record.
+    const records = readLedger(workflow.ledger);
+    const closedAt = records.findLastIndex((record) => ofPr(record) && record.closed);
+    if (records.slice(closedAt + 1).some((record) => ofPr(record) && (pending || !record.pending))) return null;
     appendRecord(workflow.ledger, {
       type: "merge",
       ...(pending ? { pending: true } : {}),

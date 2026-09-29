@@ -278,3 +278,18 @@ test("a graphql call with a query file holding the mutation, or a file it cannot
   assert.match(refusal("gh api graphql -F query=@missing.graphql") ?? "", /missing\.graphql/);
   assert.equal(refusal("gh api graphql -F query=@viewer.graphql"), null);
 });
+
+test("an --auto merge on a PR reopened after a closed pending record is tracked again", (t) => {
+  const ws = workspace(t);
+  const command = `gh pr merge 60 --auto --squash --match-head-commit ${SHA}`;
+  const open = fakeGh(JSON.stringify({ ...JSON.parse(MERGED), state: "OPEN", mergedAt: null })).gh;
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  const [pending] = readLedger(ws.ledgerOf(ws.on));
+  appendRecord(ws.ledgerOf(ws.on), { ...pending, pending: undefined, closed: true, mergedAt: null });
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  const records = readLedger(ws.ledgerOf(ws.on));
+  assert.equal(records.length, 3);
+  assert.equal(records[2].pending, true);
+  decide(shell(ws.on, command, "PostToolUse"), { gh: open });
+  assert.equal(readLedger(ws.ledgerOf(ws.on)).length, 3, "and a repeat adds no fourth record");
+});
