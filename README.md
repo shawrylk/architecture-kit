@@ -345,7 +345,7 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 
 | Check | Hook | What it refuses |
 |---|---|---|
-| Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha that git reports as unknown in the repository of the named worktree, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha. A git failure or a timeout passes with a note. A sha with no named worktree that the working directory's repository lacks passes with a note |
+| Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha that git reports as unknown in the repository of the named worktree, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha. A git failure or a timeout passes with a note, and the stop records the sha as written, with no branch. A sha with no named worktree that the working directory's repository lacks passes with a note, and the stop records no verdict |
 | Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:` |
 | Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review |
 | Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line. The ledger records the reason. A resume through `SendMessage` passes |
@@ -358,7 +358,7 @@ The hooks read these markers:
 
 | Marker | Where | Meaning |
 |---|---|---|
-| `Worktree: <absolute path>` | one line of an implementer prompt | the worktree the task gate judges, in an implementer prompt and in a reviewer prompt, where it sets the branch of the verdict. A prompt without it is no task, and the gate lets it pass. An implementer stop records a head only from the line of its own prompt |
+| `Worktree: <absolute path>` | one line of an implementer or reviewer prompt | the worktree the task gate judges, in an implementer prompt and in a reviewer prompt, where it sets the branch of the verdict. A prompt without it is no task, and the gate lets it pass. An implementer stop records a head only from the line of its own prompt |
 | `NO-RESUME: <reason>` | one line of an implementer prompt | a fresh implementer after CHANGES_REQUIRED. The reason goes in the ledger |
 | `PLAN: <absolute path>` | the first line of a planner report | the plan the plan check reads |
 | `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>` | the first line of a reviewer report | the verdict and the head it judged. A short or upper-case sha resolves to the full one |

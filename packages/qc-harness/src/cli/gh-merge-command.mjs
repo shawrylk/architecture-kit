@@ -157,6 +157,9 @@ function queryText(cwd, spelled) {
   }
 }
 
+/** True for a `repos/` path that stays inside `repos/`: no `..` segment, spelled or percent-encoded, and no end at `graphql`. */
+const isRestPath = (endpoint) => REST_PATH.test(endpoint) && !/(?:^|\/)(?:\.|%2e){2}(?:\/|$)/i.test(endpoint) && !GRAPHQL_ENDPOINT.test(endpoint);
+
 /** The endpoint of a `gh api` call: its first word that is no flag and no flag's value, or null. */
 function apiEndpoint(args) {
   for (let i = 0; i < args.length; i++) {
@@ -179,7 +182,7 @@ function apiEndpoint(args) {
  * endpoint as written, or the GraphQL URL as written (`graphql` when the call spells none). A call holds a
  * `mergePullRequest` mutation when any argument, or any query file it reads, names it, whatever the URL spelling.
  * A GraphQL call whose query file the guard cannot read fails closed, and `unreadable` names that file.
- * A call whose endpoint is a `repos/` REST path holds no mutation, so its arguments and files are not searched.
+ * A call whose endpoint is a `repos/` REST path that stays inside it holds no mutation, so its arguments and files are not searched.
  * @param options.cwd the folder a relative query file resolves against
  */
 export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
@@ -188,7 +191,7 @@ export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
     .flatMap(({ words }) => {
       const args = words.slice(1);
       const found = args.filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
-      if (REST_PATH.test(apiEndpoint(args) ?? "")) return found;
+      if (isRestPath(apiEndpoint(args) ?? "")) return found;
       const graphql = args.find((word) => GRAPHQL_ENDPOINT.test(word));
       let mutation = args.some((word) => MERGE_MUTATION.test(word));
       let unreadable;

@@ -138,4 +138,9 @@ test("a mutation search skips a call whose endpoint is a repos/ REST path", (t) 
   assert.equal(found("gh api -H repos/x graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'").length, 1);
   assert.equal(found("gh api graphql -F query=@review.md -f x=repos/o/r").length, 1);
   assert.equal(found("gh api -q repos/x graphql -F query=@review.md").length, 1);
+  // A path that climbs out of repos/ or ends at graphql is searched.
+  const mutation = "mutation { mergePullRequest }";
+  for (const endpoint of ["repos/../graphql", "/repos/o/r/../../graphql", "repos/o/r/%2e%2e/graphql", "https://api.github.com/repos/../graphql", "repos/o/r/graphql", "repos/o/r/../x"]) {
+    assert.equal(found(`gh api ${endpoint} -f query='${mutation}'`).length, 1, endpoint);
+  }
 });
