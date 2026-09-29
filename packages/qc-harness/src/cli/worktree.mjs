@@ -20,7 +20,7 @@ function git(cwd, ...args) {
 }
 
 /** One spelling per folder: Windows hands out short 8.3 names, and git prints the long ones. */
-function keyOf(file) {
+export function keyOf(file) {
   let real;
   try {
     real = realpathSync.native(file);
