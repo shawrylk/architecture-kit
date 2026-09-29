@@ -240,3 +240,34 @@ test("a wrapped gh that is no merge is not a merge", () => {
   // Known gap: `xargs` runs its arguments as a command, and the parser does not follow it.
   assert.deepEqual(ghMerges("echo 60 | xargs gh pr merge", segmentsOf), []);
 });
+
+test("exec, nice, ionice, stdbuf, setsid, doas, builtin, and ! wrap a merge that is still seen", () => {
+  for (const command of [
+    "exec gh pr merge 5",
+    "nice -n 5 gh pr merge 5",
+    "ionice -c 3 gh pr merge 5",
+    "stdbuf -o0 gh pr merge 5",
+    "setsid gh pr merge 5",
+    "doas gh pr merge 5",
+    "builtin exec gh pr merge 5",
+    "bash -c 'exec gh pr merge 5'",
+    "! gh pr merge 5",
+    "if ! gh pr merge 5; then echo failed; fi",
+    "nice -n 5 gh api -X PUT repos/o/r/pulls/5/merge",
+  ]) {
+    assert.equal(ghMerges(command, segmentsOf).length + ghApiMerges(command, segmentsOf).length, 1, command);
+  }
+  assert.deepEqual(ghMerges("nice -n 5 gh pr view 5", segmentsOf), []);
+});
+
+test("only -R and --repo name the repository before the verb, not a longer flag that starts with them", () => {
+  const repo = (command) => ghMerges(command, segmentsOf)[0]?.repo;
+  assert.equal(repo("gh pr --repoX o/r merge 60"), undefined);
+  assert.equal(repo("gh pr --repoX merge 60"), null);
+  assert.equal(repo("gh pr --repository merge 60"), null);
+  assert.equal(repo("gh pr --repo o/r merge 60"), "o/r");
+  assert.equal(repo("gh pr --repo=o/r merge 60"), "o/r");
+  assert.equal(repo("gh pr -R o/r merge 60"), "o/r");
+  assert.equal(repo("gh pr -Ro/r merge 60"), "o/r");
+  assert.equal(repo("gh pr -R=o/r merge 60"), "o/r");
+});

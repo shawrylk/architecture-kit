@@ -9,7 +9,7 @@
 
 const BLANK = /[ \t]/;
 /** The words that open a line of a compound command; the command after one is the command the line runs. */
-const LINE_KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "{"]);
+const LINE_KEYWORDS = new Set(["if", "then", "else", "elif", "do", "while", "until", "{", "!"]);
 const WORD_END = /[\s;&|<>()]/;
 
 /** Skips each pending heredoc body after a newline. @returns the index after the last body. */
@@ -183,7 +183,8 @@ function skipOptions(words, from, { letters = "", longs = [], env = null } = {})
 
 /**
  * Each program that runs the command after its own options, and where that command starts: `env`, `sudo`,
- * `command`, `time`, `nohup` and `timeout`. `command -v` only looks a program up, so it returns -1 and is left as written.
+ * `command`, `builtin`, `exec`, `doas`, `time`, `nice`, `ionice`, `stdbuf`, `setsid`, `nohup` and `timeout`.
+ * `command -v` only looks a program up, so it returns -1 and is left as written.
  * `xargs` runs a command too, but the words it appends come from standard input, so no parse can follow it.
  */
 const WRAPPERS = new Map([
@@ -199,6 +200,13 @@ const WRAPPERS = new Map([
   }],
   ["time", (words, from) => skipOptions(words, from, { letters: "fo", longs: ["--format", "--output"] })],
   ["nohup", (words, from) => skipOptions(words, from)],
+  ["exec", (words, from) => skipOptions(words, from, { letters: "a" })],
+  ["nice", (words, from) => skipOptions(words, from, { letters: "n", longs: ["--adjustment"] })],
+  ["ionice", (words, from) => skipOptions(words, from, { letters: "cnpPu", longs: ["--class", "--classdata", "--pid", "--pgid", "--uid"] })],
+  ["stdbuf", (words, from) => skipOptions(words, from, { letters: "ioe", longs: ["--input", "--output", "--error"] })],
+  ["setsid", (words, from) => skipOptions(words, from)],
+  ["doas", (words, from) => skipOptions(words, from, { letters: "uC" })],
+  ["builtin", (words, from) => skipOptions(words, from)],
   ["timeout", (words, from) => skipOptions(words, from, { letters: "sk", longs: ["--signal", "--kill-after"] }) + 1],
 ]);
 
@@ -216,7 +224,7 @@ function unwrap(words) {
   return { words: words.slice(at), env };
 }
 
-/** The words of the command a segment runs: after any `NAME=value` assignments, and after `env`, `sudo`, `command`, `time`, `nohup` and `timeout`. */
+/** The words of the command a segment runs: after any `NAME=value` assignments, and after each wrapper in `WRAPPERS`. */
 export const commandWords = (segment) => unwrap(segment.words).words;
 
 /** The `NAME=value` settings a segment makes for its command, before it and through `env` or `sudo`. */

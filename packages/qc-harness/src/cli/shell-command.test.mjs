@@ -181,3 +181,38 @@ test("the keyword that starts a compound command's line is dropped, so the comma
   // A keyword in a later word is an argument.
   assert.deepEqual(words("echo if then"), [["echo", "if", "then"]]);
 });
+
+test("exec, nice, ionice, stdbuf, setsid, doas, and builtin are unwrapped by commandWords", () => {
+  const GH = ["gh", "pr", "merge", "5"];
+  for (const command of [
+    "exec gh pr merge 5",
+    "exec -c gh pr merge 5",
+    "exec -l -a name gh pr merge 5",
+    "nice gh pr merge 5",
+    "nice -n 5 gh pr merge 5",
+    "nice -n5 gh pr merge 5",
+    "nice -5 gh pr merge 5",
+    "nice --adjustment=5 gh pr merge 5",
+    "nice --adjustment 5 gh pr merge 5",
+    "ionice gh pr merge 5",
+    "ionice -c 3 gh pr merge 5",
+    "ionice -c2 -n 7 -t gh pr merge 5",
+    "stdbuf -o0 gh pr merge 5",
+    "stdbuf -i L -o L -e 0 gh pr merge 5",
+    "stdbuf --output=L gh pr merge 5",
+    "setsid gh pr merge 5",
+    "setsid -f gh pr merge 5",
+    "doas gh pr merge 5",
+    "doas -u ci gh pr merge 5",
+    "builtin exec gh pr merge 5",
+    "sudo nice -n 5 ionice -c 3 stdbuf -o0 setsid exec gh pr merge 5",
+  ]) {
+    assert.deepEqual(unwrapped(command), GH, command);
+  }
+});
+
+test("a leading ! is dropped, so the negated command is read", () => {
+  assert.deepEqual(segmentsOf("! gh pr merge 5").map((segment) => segment.words), [["gh", "pr", "merge", "5"]]);
+  assert.deepEqual(segmentsOf("if ! git diff --quiet; then x; fi").map((segment) => segment.words)[0], ["git", "diff", "--quiet"]);
+  assert.deepEqual(segmentsOf("echo !").map((segment) => segment.words), [["echo", "!"]]);
+});

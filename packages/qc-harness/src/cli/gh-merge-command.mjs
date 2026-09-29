@@ -44,7 +44,7 @@ function settingsMadeBy(segment) {
 const prefixOf = (segment) => kept(commandEnv(segment));
 
 /** The repository a `-R` or `--repo` flag names, as `-R o/r`, `-Ro/r`, `-R=o/r`, `--repo o/r` or `--repo=o/r`. */
-const REPO_FLAG = /^(?:-R|--repo)=?(.*)$/s;
+const REPO_FLAG = /^(?:-R(.+)|-R|--repo(?:=(.*))?)$/s;
 
 /** Skips the flags gh reads before its group and between its group and verb, and keeps the repository they name. */
 function leadingFlags(words) {
@@ -52,7 +52,10 @@ function leadingFlags(words) {
   let i = 0;
   for (; i < words.length && words[i].startsWith("-") && words[i] !== "-"; i++) {
     const match = REPO_FLAG.exec(words[i]);
-    if (match) repo = match[1] === "" ? (words[++i] ?? null) : match[1];
+    if (!match) continue;
+    // `-R=o/r` keeps its `=` in the first group; `--repo=` with nothing after it names no repository.
+    const attached = match[1]?.replace(/^=/, "") ?? match[2];
+    repo = attached === undefined ? (words[++i] ?? null) : attached || null;
   }
   return { repo, rest: words.slice(i) };
 }
