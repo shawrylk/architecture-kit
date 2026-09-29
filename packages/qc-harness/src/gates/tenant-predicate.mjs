@@ -8,13 +8,10 @@
 // structural; that it is correct is what the two-tenant test is for.
 
 import { posix } from "node:path";
+import { callArguments, callPattern, escape, resolved } from "./call-args.mjs";
 
 const DEFAULT_TENANT_COLUMN = "tenant_id";
 const DEFAULT_TENANT_IDENTIFIER = "tenantId";
-
-function escape(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 // Naming the column is not scoping by it: a select list mentioning the tenant
 // column reads every tenant's rows just as happily. The predicate is what counts.
@@ -72,90 +69,9 @@ export function checkTenantPredicate(resources, owned, options = {}) {
 // because the tenant is not readable inside it. The tenant is readable at each call, so each
 // call is checked instead, or moving a statement into a shared helper buys a weaker gate.
 
-/**
- * A call, not the declaration: the helper's own parameters are not a tenant argument. A `prefix`,
- * a list of names, makes it a member call, `ns.inner.name(`, for a namespace import.
- */
-function callPattern(name, prefix = []) {
-  const member = prefix.map((segment) => `${escape(segment)}\\s*\\.\\s*`).join("");
-  return new RegExp(`(?<![\\w$.]|function\\s)${member}${escape(name)}\\s*(?:<[^>]*>)?\\s*\\(`, "g");
-}
-
 /** The tenant as a quoted column, as a row key, or as the tenant identifier. */
 function tenantPattern(column, identifier) {
   return new RegExp(`["'\`]${escape(column)}["'\`]|\\b${escape(column)}\\s*:|\\b${escape(identifier)}\\b`);
-}
-
-/** The index just past the bracket that closes the one at `open`. */
-function closeOf(source, open) {
-  let depth = 0;
-  for (let i = open; i < source.length; i += 1) {
-    if ("([{".includes(source[i])) depth += 1;
-    else if (")]}".includes(source[i]) && (depth -= 1) === 0) return i + 1;
-  }
-  return source.length;
-}
-
-/** From `at` to the semicolon that ends its statement, outside any bracket. */
-function statementFrom(source, at) {
-  let depth = 0;
-  for (let i = at; i < source.length; i += 1) {
-    if ("([{".includes(source[i])) depth += 1;
-    else if (")]}".includes(source[i])) depth -= 1;
-    if (depth < 0 || (depth === 0 && source[i] === ";")) return source.slice(at, i);
-  }
-  return source.slice(at);
-}
-
-/** The arguments of a call, split at the top level so a nested array stays whole. */
-function callArguments(source, openIndex) {
-  const args = [];
-  let depth = 0;
-  let current = "";
-  for (let i = openIndex; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
-    if (ch === ")" || ch === "]" || ch === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        args.push(current);
-        return args;
-      }
-    }
-    if (ch === "," && depth === 1) {
-      args.push(current);
-      current = "";
-      continue;
-    }
-    if (!(depth === 1 && i === openIndex)) current += ch;
-  }
-  return args;
-}
-
-/** The nearest declaration of `name` inside the enclosing function, else at the top level. */
-function declarationOf(source, name, from, callAt) {
-  const id = escape(name);
-  const declares = `\\b(?:const|let|var)\\s+(?:\\{[^}]*\\b${id}\\b[^}]*\\}|\\[[^\\]]*\\b${id}\\b[^\\]]*\\]|${id}\\b)`;
-  const local = [...source.slice(from, callAt).matchAll(new RegExp(declares, "g"))].at(-1);
-  if (local) return statementFrom(source, from + local.index);
-  const top = new RegExp(`^(?:export\\s+)?${declares}`, "m").exec(source);
-  return top ? statementFrom(source, top.index) : "";
-}
-
-/**
- * The text an argument stands for. A call `f()` is followed to the body of `function f`, one
- * indirection. A bare name is followed to its own declaration only, so a neighbour's local of
- * the same name, or a values list beside it, cannot vouch for it.
- */
-function resolved(source, argument, from, callAt) {
-  const called = /^([A-Za-z_$][\w$]*)\s*\(/.exec(argument);
-  if (called) {
-    const declared = new RegExp(`function\\s+${escape(called[1])}\\s*(?:<[^>]*>)?\\s*\\(`).exec(source);
-    if (declared === null) return declarationOf(source, called[1], from, callAt);
-    const open = source.indexOf("{", closeOf(source, declared.index + declared[0].length - 1));
-    return open === -1 ? "" : source.slice(open, closeOf(source, open));
-  }
-  return /^[A-Za-z_$][\w$]*$/.test(argument) ? declarationOf(source, argument, from, callAt) : "";
 }
 
 /** A path without its extension, and without a trailing `index`, so a folder and its index file are one. */
