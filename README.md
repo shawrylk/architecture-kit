@@ -206,19 +206,27 @@ it. Both commands are idempotent.
 
 The plugin ships four subagent types for `superpowers:subagent-driven-development`:
 
-| Type | Model | Effort | Role |
-|---|---|---|---|
-| `architecture:sdd-planner` | `opus` | `high` | writes one plan and edits nothing else |
-| `architecture:sdd-implementer` | `sonnet` | `high` | implements one task from a brief file, and writes a report file |
-| `architecture:sdd-reviewer` | `sonnet` | `high` | reviews one task, read-only |
-| `architecture:sdd-branch-reviewer` | `opus` | `high` | reviews the whole branch before merge, read-only |
+| Type | Model | Effort | Tools | Role |
+|---|---|---|---|---|
+| `architecture:sdd-planner` | `opus` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | writes one plan and edits nothing else |
+| `architecture:sdd-implementer` | `sonnet` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
+| `architecture:sdd-reviewer` | `sonnet` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill` | reviews one task, read-only |
+| `architecture:sdd-branch-reviewer` | `opus` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill` | reviews the whole branch before merge, read-only |
 
 Sonnet runs the implementer and the task reviewer. Opus runs only the planner and the branch
 reviewer, whose job a task review cannot do: it judges cross-task interactions, security, and data
 migrations against the plan and the spec, over the whole branch's diff.
 
-None of the four can call the `Agent` tool. The two reviewers have no edit tools but keep the shell
-for `git`, so their prompts hold them read-only.
+Each type lists its tools in a `tools:` allow-list. A subagent then starts without the tool schemas
+that no type uses: `Artifact`, the web tools, `Monitor`, `SendMessage`, the worktree tools, and every
+MCP tool of every connector. A repository's explore tools reach the agents through the shell, as
+section 10 says. None of the four has the `Agent` tool. The two reviewers have no edit tools but keep
+the shell for `git`, so their prompts hold them read-only. The planner writes and edits only its plan.
+
+Claude Code drops a listed tool that the session lacks, such as `PowerShell` on Linux, and launches
+the agent with the rest. In auto mode it adds `SubagentHandback` to each type, listed or not. Each
+type loads the CLAUDE.md files and the project rules, so a repository's own rules reach every
+implementer and reviewer.
 
 A prose rule is lost in a long session or a compaction, so hooks hold the orchestrator to the
 workflow. A `swarm.dispatch` section in `qc.config.json` turns them on. An empty section takes every
