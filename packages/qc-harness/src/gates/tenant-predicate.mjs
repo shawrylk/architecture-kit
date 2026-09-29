@@ -72,9 +72,13 @@ export function checkTenantPredicate(resources, owned, options = {}) {
 // because the tenant is not readable inside it. The tenant is readable at each call, so each
 // call is checked instead, or moving a statement into a shared helper buys a weaker gate.
 
-/** A call, not the declaration: the helper's own parameters are not a tenant argument. */
-function callPattern(name) {
-  return new RegExp(`(?<![\\w$.]|function\\s)${escape(name)}\\s*(?:<[^>]*>)?\\s*\\(`, "g");
+/**
+ * A call, not the declaration: the helper's own parameters are not a tenant argument. A `prefix`
+ * makes it a member call, `ns.name(`, for a namespace import.
+ */
+function callPattern(name, prefix = "") {
+  const member = prefix ? `${escape(prefix)}\\s*\\.\\s*` : "";
+  return new RegExp(`(?<![\\w$.]|function\\s)${member}${escape(name)}\\s*(?:<[^>]*>)?\\s*\\(`, "g");
 }
 
 /** The tenant as a quoted column, as a row key, or as the tenant identifier. */
@@ -154,19 +158,99 @@ function resolved(source, argument, from, callAt) {
   return /^[A-Za-z_$][\w$]*$/.test(argument) ? declarationOf(source, argument, from, callAt) : "";
 }
 
-/** The local names a file imports `helper.name` under from `helper.module`. */
-function importedNames(file, source, helper) {
-  const stem = (spec) => spec.replace(/\.[cm]?[jt]sx?$/, "");
-  const folder = posix.dirname(file);
-  const names = [];
-  for (const [, list, specifier] of source.matchAll(/\bimport\s+\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
-    if (!specifier.startsWith(".") || stem(posix.join(folder, specifier)) !== stem(helper.module)) continue;
-    for (const part of list.split(",")) {
-      const [imported, local] = part.trim().split(/\s+as\s+/);
-      if (imported === helper.name) names.push(local ?? imported);
+/** A path without its extension, and without a trailing `index`, so a folder and its index file are one. */
+const stem = (spec) => spec.replace(/\.[cm]?[jt]sx?$/, "").replace(/\/index$/, "");
+
+/** JSONC to JSON: comments and trailing commas go, and a `/*` inside a string stays. */
+function stripJsonc(text) {
+  let out = "";
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j;
+    } else if (ch === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+      out += "\n";
+    } else if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end === -1 ? text.length : end + 1;
+    } else {
+      out += ch;
     }
   }
-  return names;
+  return out.replace(/,(\s*[}\]])/g, "$1");
+}
+
+/**
+ * The path aliases of one tsconfig, as root-relative targets. Only that file is read: an `extends`
+ * chain is not followed, so its aliases must be repeated there, or the import fails as unresolved.
+ * @param {string} tsconfigText the file's contents; comments and trailing commas are allowed
+ * @param {string} [dir] the folder of the tsconfig, relative to the repository root
+ * @returns {{prefix: string, wildcard: boolean, targets: string[]}[]}
+ */
+export function aliasMap(tsconfigText, dir = "") {
+  let options;
+  try {
+    options = JSON.parse(stripJsonc(tsconfigText))?.compilerOptions ?? {};
+  } catch (error) {
+    throw new Error(`the tsconfig is not valid JSON: ${error.message}`);
+  }
+  const base = posix.join(dir || ".", options.baseUrl ?? ".");
+  const map = [];
+  for (const [pattern, targets] of Object.entries(options.paths ?? {})) {
+    const star = pattern.indexOf("*");
+    if (star !== -1 && star !== pattern.length - 1) continue;
+    const resolvedTargets = [].concat(targets).map((target) => posix.join(base, target));
+    map.push({ prefix: star === -1 ? pattern : pattern.slice(0, star), wildcard: star !== -1, targets: resolvedTargets });
+  }
+  // A `baseUrl` also makes every bare specifier a path under it.
+  if (options.baseUrl !== undefined) map.push({ prefix: "", wildcard: true, targets: [posix.join(base, "*")] });
+  return map;
+}
+
+/** Where a specifier may point, from the root: a relative one directly, any other through the aliases. */
+function candidatesOf(file, specifier, aliases) {
+  if (specifier.startsWith(".")) return [posix.join(posix.dirname(file), specifier)];
+  const found = [];
+  for (const { prefix, wildcard, targets } of aliases) {
+    if (!(wildcard ? specifier.startsWith(prefix) : specifier === prefix)) continue;
+    for (const target of targets) found.push(wildcard ? target.replace("*", specifier.slice(prefix.length)) : target);
+  }
+  return found;
+}
+
+/** A namespace import carries no name to match, so it counts only when its specifier points at the module or its folder. */
+function namesModule(file, specifier, target, aliases) {
+  if (posix.basename(stem(specifier)) === posix.basename(target)) return true;
+  return candidatesOf(file, specifier, aliases).some((candidate) => target.startsWith(`${stem(candidate)}/`));
+}
+
+/**
+ * How a file imports `helper.name` from `helper.module`: the local names, the namespaces whose
+ * members are the helper, and the specifiers the gate cannot resolve to the module. A barrel
+ * re-export is one of those: following it needs a module graph, so it fails closed.
+ * @returns {{names: string[], namespaces: string[], unresolved: {specifier: string, name: string}[]}}
+ */
+function helperImports(file, source, helper, aliases = []) {
+  const target = stem(helper.module);
+  const resolves = (specifier) => candidatesOf(file, specifier, aliases).some((candidate) => stem(candidate) === target);
+  const result = { names: [], namespaces: [], unresolved: [] };
+  for (const [, list, specifier] of source.matchAll(/\bimport\s+(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
+    for (const part of list.split(",")) {
+      const [imported, local] = part.trim().split(/\s+as\s+/);
+      if (imported !== helper.name) continue;
+      if (resolves(specifier)) result.names.push(local ?? imported);
+      else result.unresolved.push({ specifier, name: helper.name });
+    }
+  }
+  for (const [, local, specifier] of source.matchAll(/\bimport\s+(?:[\w$]+\s*,\s*)?\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']/g)) {
+    if (resolves(specifier)) result.namespaces.push(local);
+    else if (namesModule(file, specifier, target, aliases)) result.unresolved.push({ specifier, name: "*" });
+  }
+  return result;
 }
 
 /**
@@ -174,7 +258,7 @@ function importedNames(file, source, helper) {
  * that carries the tenant and whether that argument names it.
  * @param {{path: string, contents: string}[]} files
  * @param {{module: string, name: string, argument: number}[]} helpers
- * @param {{column?: string, identifier?: string}} [options]
+ * @param {{column?: string, identifier?: string, aliases?: ReturnType<typeof aliasMap>}} [options]
  * @returns {{path: string, line: number, name: string, index: number, argument: string, scoped: boolean}[]}
  */
 export function exemptHelperCalls(files, helpers, options = {}) {
@@ -182,8 +266,10 @@ export function exemptHelperCalls(files, helpers, options = {}) {
   const calls = [];
   for (const { path, contents: source } of files) {
     for (const helper of helpers) {
-      for (const local of importedNames(path, source, helper)) {
-        for (const match of source.matchAll(callPattern(local))) {
+      const { names, namespaces } = helperImports(path, source, helper, options.aliases);
+      const patterns = [...names.map((local) => callPattern(local)), ...namespaces.map((ns) => callPattern(helper.name, ns))];
+      for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) {
           // The enclosing function starts the window, so a neighbour cannot vouch for this call.
           const before = source.slice(0, match.index);
           const from = Math.max(0, before.lastIndexOf("function "), before.lastIndexOf("=> {"), before.lastIndexOf("\n}"));
@@ -200,7 +286,7 @@ export function exemptHelperCalls(files, helpers, options = {}) {
 /**
  * @param {{path: string, contents: string}[]} files
  * @param {{module: string, name: string, argument: number}[]} helpers
- * @param {{column?: string, identifier?: string}} [options]
+ * @param {{column?: string, identifier?: string, aliases?: ReturnType<typeof aliasMap>}} [options]
  * @returns {{path: string, rule: string, detail: string}[]}
  */
 export function checkExemptHelperCalls(files, helpers, options = {}) {
@@ -211,6 +297,36 @@ export function checkExemptHelperCalls(files, helpers, options = {}) {
       rule: "unscoped-helper-call",
       detail: `line ${call.line}: ${call.name} is exempt from the statement scan, and its argument ${call.index + 1} (${call.argument}) names no tenant — the caller is what carries it`,
     }));
+}
+
+/**
+ * A file that imports an exempt helper by a specifier the gate cannot resolve to the helper's
+ * module, an alias no tsconfig maps or a barrel that re-exports it, has calls the gate cannot see.
+ * That is a finding, not a pass.
+ * @param {{path: string, contents: string}[]} files
+ * @param {{module: string, name: string, argument: number}[]} helpers
+ * @param {{aliases?: ReturnType<typeof aliasMap>}} [options]
+ * @returns {{path: string, rule: string, detail: string}[]}
+ */
+export function unresolvedHelperImports(files, helpers, options = {}) {
+  const problems = [];
+  for (const { path, contents: source } of files) {
+    const bySpecifier = new Map();
+    for (const helper of helpers) {
+      for (const { specifier, name } of helperImports(path, source, helper, options.aliases).unresolved) {
+        const label = name === "*" ? `a namespace of ${helper.module}` : name;
+        bySpecifier.set(specifier, new Set([...(bySpecifier.get(specifier) ?? []), label]));
+      }
+    }
+    for (const [specifier, labels] of bySpecifier) {
+      problems.push({
+        path,
+        rule: "unresolved-helper-import",
+        detail: `imports ${[...labels].join(", ")} from '${specifier}', which the gate cannot resolve to the exempt helper's module, so its calls are not checked. Import it from the module by a relative path, or map the alias in the tsconfig that tenantPredicate.tsconfig names`,
+      });
+    }
+  }
+  return problems.sort((a, b) => a.path.localeCompare(b.path) || a.detail.localeCompare(b.detail));
 }
 
 /** Every statement whose exemption was taken, so a reviewer can count them. */

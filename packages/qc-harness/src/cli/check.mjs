@@ -15,7 +15,14 @@ import {
   sqlStatements,
   tableOwners,
 } from "../gates/sql-identifiers.mjs";
-import { checkExemptHelperCalls, checkTenantPredicate, exemptHelperCalls, exemptions } from "../gates/tenant-predicate.mjs";
+import {
+  aliasMap,
+  checkExemptHelperCalls,
+  checkTenantPredicate,
+  exemptHelperCalls,
+  exemptions,
+  unresolvedHelperImports,
+} from "../gates/tenant-predicate.mjs";
 import { checkClaimedRequirements } from "../gates/claimed-requirements.mjs";
 import { allowedPublicRoutes, checkPublicRoutes, declaredPublicRoutes } from "../gates/public-routes.mjs";
 import { calledInternalRoutes, checkInternalRoutes, declaredInternalRoutes } from "../gates/internal-routes.mjs";
@@ -318,12 +325,20 @@ async function sqlAgreement(config, tree, taken, lines) {
     const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers].filter(
       (helper, at, all) => all.findIndex((first) => first.module === helper.module && first.name === helper.name) === at,
     );
-    const callers = (await sourceFiles(config, tree)).filter(
-      (file) => !TEST_FILE.test(file.path) && helpers.some((helper) => file.contents.includes(helper.name)),
-    );
-    const helperOptions = { column: config.tenant.sqlColumn, identifier: config.tenant.column };
+    // Every source file is read for its imports: a namespace or barrel import may not contain the helper's name.
+    const callers = (await sourceFiles(config, tree)).filter((file) => !TEST_FILE.test(file.path));
+    const tsconfig = posix(config.tenantPredicate.tsconfig);
+    const tsconfigText = tsconfig && tree.isFile(tsconfig) ? await read(path.join(config.root, tsconfig)) : null;
+    let aliases = [];
+    try {
+      aliases = tsconfigText === null ? [] : aliasMap(tsconfigText, path.posix.dirname(tsconfig).replace(/^\.$/, ""));
+    } catch (error) {
+      problems.push({ path: tsconfig, rule: "unresolved-helper-import", detail: `${error.message}, so no alias resolves` });
+    }
+    const helperOptions = { column: config.tenant.sqlColumn, identifier: config.tenant.column, aliases };
     problems.push(
       ...checkTenantPredicate(scoped, owned, tenantOptions),
+      ...unresolvedHelperImports(callers, helpers, helperOptions),
       ...checkExemptHelperCalls(callers, helpers, helperOptions),
     );
     const calls = exemptHelperCalls(callers, helpers, helperOptions).length;

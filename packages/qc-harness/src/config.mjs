@@ -318,6 +318,9 @@ export const defaults = {
   // A helper exempt from the statement scan because its caller supplies the table or the columns.
   // Each call names the tenant in the argument at index `argument`, so its callers are checked instead.
   tenantPredicate: {
+    // The tsconfig whose `paths` and `baseUrl` resolve an aliased import of an exempt helper. Only
+    // that file is read; `extends` is not followed. A missing file means there are no aliases.
+    tsconfig: "tsconfig.json",
     exemptHelpers: [
       { module: "backend/src/application/sql/crud.ts", name: "insertReturning", argument: 2 },
       { module: "backend/src/application/sql/crud.ts", name: "updateVersionedRow", argument: 3 },

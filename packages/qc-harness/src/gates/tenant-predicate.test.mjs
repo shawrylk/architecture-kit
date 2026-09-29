@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { checkExemptHelperCalls, checkTenantPredicate, exemptHelperCalls } from "./tenant-predicate.mjs";
+import { aliasMap, checkExemptHelperCalls, checkTenantPredicate, exemptHelperCalls, unresolvedHelperImports } from "./tenant-predicate.mjs";
 
 const owned = new Set(["projects", "pin_annotations"]);
 const one = (sql, bound = new Set()) => [{ path: "r.ts", statements: [{ sql, bound }] }];
@@ -180,4 +180,115 @@ test("the tenant column comes from options", () => {
   const problems = checkTenantPredicate(resources, owned, { column: "tenant_id" });
   assert.equal(problems.length, 1);
   assert.ok(problems[0].detail.includes("tenant_id"));
+});
+
+// An exempt helper imported in a form the gate cannot read skipped the check silently. A path alias
+// resolves through the tsconfig, a namespace member call counts, and what the gate cannot read fails.
+
+const TSCONFIG = `{
+  // comments and trailing commas are legal in a tsconfig
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": { "@/*": ["backend/src/*"], "@crud": ["backend/src/application/sql/crud.ts"], },
+  },
+}`;
+const aliases = aliasMap(TSCONFIG);
+const ALIAS_IMPORT = 'import { insertReturning } from "@/application/sql/crud.js";\n';
+const at = (contents, path = FILE) => [{ path, contents }];
+const both = (contents, options = {}) => [
+  ...checkExemptHelperCalls(at(contents), helpers, options),
+  ...unresolvedHelperImports(at(contents), helpers, options),
+];
+
+test("an alias import resolves through tsconfig paths and its call is checked", () => {
+  const bad = `${ALIAS_IMPORT}insertReturning(tx, "a", ["id"], v, C, f);`;
+  const problems = both(bad, { aliases });
+  assert.deepEqual(problems.map((problem) => problem.rule), ["unscoped-helper-call"]);
+  assert.deepEqual(both(`${ALIAS_IMPORT}insertReturning(tx, "a", ["tenant_id"], v, C, f);`, { aliases }), []);
+});
+
+test("an exact alias, and a baseUrl-relative specifier, resolve too", () => {
+  const exact = 'import { insertReturning } from "@crud";\ninsertReturning(tx, "a", ["id"], v, C, f);';
+  assert.equal(both(exact, { aliases }).length, 1);
+  const based = aliasMap('{"compilerOptions":{"baseUrl":"backend/src"}}');
+  const bare = 'import { insertReturning } from "application/sql/crud";\ninsertReturning(tx, "a", ["id"], v, C, f);';
+  assert.deepEqual(both(bare, { aliases: based }).map((problem) => problem.rule), ["unscoped-helper-call"]);
+});
+
+test("a tsconfig in a folder resolves its targets from that folder", () => {
+  const nested = aliasMap('{"compilerOptions":{"paths":{"@/*":["src/*"]}}}', "backend");
+  const source = `${ALIAS_IMPORT}insertReturning(tx, "a", ["id"], v, C, f);`;
+  assert.deepEqual(both(source, { aliases: nested }).map((problem) => problem.rule), ["unscoped-helper-call"]);
+});
+
+test("a tsconfig with no paths yields no aliases, and one that does not parse is an error", () => {
+  assert.deepEqual(aliasMap('{"compilerOptions":{}}'), []);
+  assert.throws(() => aliasMap("{ not json"), /tsconfig/);
+});
+
+test("a namespace member call is checked", () => {
+  const head = 'import * as crud from "../../../application/sql/crud.js";\n';
+  assert.deepEqual(both(`${head}crud.insertReturning(tx, "a", ["id", "tenant_id"], v, C, f);`), []);
+  const found = exemptHelperCalls(at(`${head}crud.insertReturning(tx, "a", ["tenant_id"], v, C, f);\ncrud.updateVersionedRow(tx, "b", f, id, id, 1, C);`), helpers);
+  assert.deepEqual(found.map((call) => [call.name, call.line, call.scoped]), [["insertReturning", 2, true], ["updateVersionedRow", 3, false]]);
+});
+
+test("an unscoped namespace call fails as unscoped-helper-call", () => {
+  const source = 'import * as crud from "../../../application/sql/crud.js";\ncrud.insertReturning(tx, "a", ["id"], v, C, f);';
+  const problems = both(source);
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].rule, "unscoped-helper-call");
+  assert.match(problems[0].detail, /line 2:/);
+});
+
+test("a namespace call through an alias is checked, and another object's method of that name is not", () => {
+  const source = 'import * as crud from "@/application/sql/crud.js";\ncrud.insertReturning(tx, "a", ["id"], v, C, f);\nother.insertReturning(tx, "a", ["id"], v, C, f);';
+  assert.equal(both(source, { aliases }).length, 1);
+});
+
+test("a barrel re-export import fails as unresolved-helper-import, naming file and specifier", () => {
+  const source = 'import { insertReturning } from "../../../application/sql/index.js";\ninsertReturning(tx, "a", ["id"], v, C, f);';
+  const problems = unresolvedHelperImports(at(source), helpers);
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].rule, "unresolved-helper-import");
+  assert.equal(problems[0].path, FILE);
+  assert.match(problems[0].detail, /\.\.\/\.\.\/\.\.\/application\/sql\/index\.js/);
+  assert.match(problems[0].detail, /insertReturning/);
+});
+
+test("a namespace import of a barrel folder fails, and an unrelated namespace import does not", () => {
+  const barrel = 'import * as sql from "../../../application/sql";\nsql.insertReturning(tx, "a", ["id"], v, C, f);';
+  assert.deepEqual(unresolvedHelperImports(at(barrel), helpers).map((problem) => problem.rule), ["unresolved-helper-import"]);
+  const unrelated = 'import * as z from "zod";\nimport * as path from "node:path";\nimport * as ui from "./ui.js";';
+  assert.deepEqual(unresolvedHelperImports(at(unrelated), helpers), []);
+});
+
+test("an alias with no tsconfig fails as unresolved-helper-import", () => {
+  const source = `${ALIAS_IMPORT}insertReturning(tx, "a", ["id"], v, C, f);`;
+  const problems = unresolvedHelperImports(at(source), helpers);
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].rule, "unresolved-helper-import");
+  assert.match(problems[0].detail, /@\/application\/sql\/crud\.js/);
+  assert.match(problems[0].detail, /tsconfig/);
+  assert.equal(unresolvedHelperImports(at(source), helpers, { aliases: [] }).length, 1);
+});
+
+test("an alias no path pattern covers fails even with a tsconfig", () => {
+  const source = 'import { insertReturning } from "~/sql/crud.js";';
+  assert.equal(unresolvedHelperImports(at(source), helpers, { aliases }).length, 1);
+});
+
+test("a relative named import still behaves as before", () => {
+  const direct = `${IMPORT}insertReturning(tx, "a", ["id"], v, C, f);`;
+  assert.deepEqual(both(direct).map((problem) => problem.rule), ["unscoped-helper-call"]);
+  const renamed = 'import { insertReturning as insert } from "../../../application/sql/crud.js";\ninsert(tx, "a", ["id"], v, C, f);';
+  assert.deepEqual(both(renamed).map((problem) => problem.rule), ["unscoped-helper-call"]);
+  const multiline = 'import {\n  updateVersionedRow,\n  insertReturning,\n} from "../../../application/sql/crud.js";\ninsertReturning(tx, "a", ["tenant_id"], v, C, f);';
+  assert.deepEqual(both(multiline), []);
+  assert.deepEqual(unresolvedHelperImports(at(IMPORT), helpers), []);
+});
+
+test("a file that imports neither helper, nor anything like them, reports nothing", () => {
+  assert.deepEqual(both('import { other } from "@/x/y.js";\nother(1);', { aliases }), []);
+  assert.deepEqual(both("const insertReturning = 1;"), []);
 });
