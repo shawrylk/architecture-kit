@@ -15,7 +15,14 @@ import {
   sqlStatements,
   tableOwners,
 } from "../gates/sql-identifiers.mjs";
-import { checkExemptHelperCalls, checkTenantPredicate, exemptHelperCalls, exemptions } from "../gates/tenant-predicate.mjs";
+import {
+  aliasMap,
+  checkExemptHelperCalls,
+  checkTenantPredicate,
+  exemptHelperCalls,
+  exemptions,
+  unresolvedHelperImports,
+} from "../gates/tenant-predicate.mjs";
 import { checkClaimedRequirements } from "../gates/claimed-requirements.mjs";
 import { allowedPublicRoutes, checkPublicRoutes, declaredPublicRoutes } from "../gates/public-routes.mjs";
 import { calledInternalRoutes, checkInternalRoutes, declaredInternalRoutes } from "../gates/internal-routes.mjs";
@@ -56,6 +63,8 @@ import { repoFiles } from "./repo-files.mjs";
 const SKIP = /node_modules|\/dist\/|\.test\.[cm]?[jt]sx?$/;
 const BUILD_OUTPUT = /node_modules|\/dist\//;
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
+// A file with none of these cannot import an exempt helper, alias it, or re-export it.
+const MODULE_LINKS = /\bimport\b|\bexport\s*(?:\{|\*|default\b|(?:const|let|var)\b)/;
 const SOURCE_EXTENSION = /\.([cm]?[jt]sx?)$/;
 const CITABLE_EXTENSION = /\.(tsx?|mjs|md)$/;
 const INFRA_EXTENSIONS = [".tf", ".sh", ".tfvars", ".tfvars.example", ".hcl", ".hcl.example"];
@@ -318,12 +327,26 @@ async function sqlAgreement(config, tree, taken, lines) {
     const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers].filter(
       (helper, at, all) => all.findIndex((first) => first.module === helper.module && first.name === helper.name) === at,
     );
-    const callers = (await sourceFiles(config, tree)).filter(
-      (file) => !TEST_FILE.test(file.path) && helpers.some((helper) => file.contents.includes(helper.name)),
-    );
-    const helperOptions = { column: config.tenant.sqlColumn, identifier: config.tenant.column };
+    // A file with no import and no export list cannot reach a helper, and cannot be a barrel: the gate
+    // treats it as read, so a barrel that re-exports it is not an untraceable one. A helper's own
+    // module is always parsed, since it may export its helper under another name, or as its default.
+    const scanned = await sourceFiles(config, tree);
+    const isCaller = (file) =>
+      !TEST_FILE.test(file.path) && (MODULE_LINKS.test(file.contents) || helpers.some((helper) => helper.module === file.path));
+    const callers = scanned.filter(isCaller);
+    const leaves = new Set(scanned.filter((file) => !isCaller(file)).map((file) => file.path));
+    const tsconfig = posix(config.tenantPredicate.tsconfig);
+    const tsconfigText = tsconfig && tree.isFile(tsconfig) ? await read(path.join(config.root, tsconfig)) : null;
+    let aliases = [];
+    try {
+      aliases = tsconfigText === null ? [] : aliasMap(tsconfigText, path.posix.dirname(tsconfig).replace(/^\.$/, ""));
+    } catch (error) {
+      problems.push({ path: tsconfig, rule: "unresolved-helper-import", detail: `${error.message}, so no alias resolves` });
+    }
+    const helperOptions = { column: config.tenant.sqlColumn, identifier: config.tenant.column, aliases, leaves };
     problems.push(
       ...checkTenantPredicate(scoped, owned, tenantOptions),
+      ...unresolvedHelperImports(callers, helpers, helperOptions),
       ...checkExemptHelperCalls(callers, helpers, helperOptions),
     );
     const calls = exemptHelperCalls(callers, helpers, helperOptions).length;

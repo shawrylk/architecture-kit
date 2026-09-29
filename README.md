@@ -739,6 +739,69 @@ must name the tenant: the `tenant.sqlColumn` as a quoted string or an object key
 `tenant.column` identifier. A bare name is followed to its own declaration, and a call to a local
 function to that function's body. A call that names no tenant fails as `unscoped-helper-call`.
 
+The gate reads a named import, a namespace import whose member call is the helper
+(`crud.insertReturning(`), and a path alias that `tenantPredicate.tsconfig` resolves. Point that
+setting at the file that holds `paths`: it defaults to `tsconfig.json` at the root, and a
+repository whose `paths` live in `backend/tsconfig.json` must say so. That file is read alone:
+`compilerOptions.baseUrl` and `paths` count, and an `extends` chain is not followed. A file with no
+such tsconfig has no aliases.
+
+The gate parses each scanned file once into a record of its imports and exports. It then finds
+every name that denotes the helper by a fixed point over those records. These forms all map back to
+the helper, through any number of barrels and around any cycle:
+
+- `export { insertReturning as insertRow } from "./crud"`
+- `export * from "./crud"`, and `export * as crud from "./crud"`, also nested as `db.crud`
+- `export const insertRow = insertReturning`, and `export { insertReturning as insertRow }`
+- a default export of the helper, and a default import of it. The forms are
+  `export default insertReturning` and `export { insertReturning as default }`. In the helper's
+  own module they are also `export default function insertReturning` and its `async` form.
+- a local alias in the helper's own module: `const alias = insertReturning; export { alias as put }`.
+  Any other use of the helper there, such as `wrap(insertReturning)`, makes that module opaque.
+
+The gate checks the calls `insertRow(`, `crud.insertReturning(`, and `db.crud.insertReturning(`. It
+reads `import{x}from"y"` with no whitespace, and a comment or a byte-order mark anywhere in a
+statement. It reads no statement in a comment, a template, or a regular expression.
+
+The work is bounded. After 50,000 worklist steps over all helpers, the gate stops and reports one
+`unresolved-helper-import` that names the budget. A module that holds more than 64 member paths for
+one helper, as a set of namespaces that alias each other does, is opaque.
+
+A file fails as `unresolved-helper-import` when it reaches the helper in a form the gate cannot
+follow:
+
+- It imports the helper's name, or a namespace of its module, by a specifier the gate cannot
+  resolve to that module, such as an alias with no matching path. A default import by such a
+  specifier, `import put from "@/sql/crud"`, fails the same way.
+- It imports any name from an opaque module.
+- It imports the helper and uses the local name other than by a call, an import, or an export. That
+  covers `const f = insertReturning`, a destructure, and `wrap(insertReturning)`. `typeof` and an
+  object key are not uses. This file is opaque too.
+
+A module is opaque when it does the third, or when it has an `export *` from a local-looking
+specifier that resolves to nothing. A local-looking specifier is a `paths` prefix, `@/`, `~/`, `#`,
+or a relative path outside `paths.citable`. A named re-export from such a specifier makes that name
+opaque. Opacity travels through re-exports and cycles. A package specifier such as `zod` is never
+opaque. A namespace nested more than four names deep makes its module opaque as well. Import the
+helper from its own module, add the folder to `paths.citable`, or map the alias.
+
+The gate passes each of these unseen:
+
+- `require()`
+- a dynamic `import()`
+- an `import type`
+- a `*` that is not at the end of a `paths` pattern: a renamed import through that alias passes
+  unseen, and an `export *` through it is opaque
+- a renamed name imported from an unscanned local file: `import { put } from "../outside"` passes
+  unseen, and `import { insertReturning } from "../outside"` fails
+- `import x = require("./crud")`
+- a backtick inside a regular expression that the lexer misreads, which starts a template that can
+  hide a later `const f = insertReturning` from the use check. The lexer reads comments, strings,
+  templates with `${}`, and regular expressions. It takes a `/` after `)`, `]`, `}`, or a name as a
+  division, so ``if (x) /`/.test(y)`` and a regular expression at the start of a line after an
+  expression with no semicolon are not seen. A quote in JSX text can do the same.
+- an `import` after a `}` on the same line
+
 The kit ships these two defaults in `tenantPredicate.exemptHelpers`:
 
 ```json
