@@ -1,20 +1,20 @@
 // The branch that holds the main session to the task order: a review before the next implementer on a
 // branch, and a fix round back to the implementer that wrote it. The dispatch guard calls it.
 
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { checkoutRootOf } from "./checkout-root.mjs";
 import { typeOf } from "./dispatch.mjs";
-import { gitOut, linkedWorktrees, pathKey } from "./git-read.mjs";
+import { branchAt, gitOut, linkedWorktrees, pathKey } from "./git-read.mjs";
 import { appendRecord, latestVerdictFor, latestVerdictOn, readLedger, shaMatches } from "./ledger.mjs";
+import { nativePath, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
 import { rememberSession, workflowAt } from "./workflow-settings.mjs";
 
-const WORKTREE_LINE = /^[ \t]*Worktree:[ \t]*(\S.*?)[ \t]*$/im;
-const NO_RESUME_LINE = /^[ \t]*NO-RESUME:[ \t]*(\S.*?)[ \t]*$/im;
-const QUOTES = /^["'`]|["'`]$/g;
-const short = (sha) => (typeof sha === "string" ? sha.slice(0, 7) : "(none)");
+export { worktreeNamed };
 
-/** The worktree path a dispatch prompt names on its `Worktree:` line, or null. */
-export const worktreeNamed = (prompt) => WORKTREE_LINE.exec(prompt)?.[1]?.replace(QUOTES, "") ?? null;
+const NO_RESUME_LINE = /^[ \t]*NO-RESUME:[ \t]*(\S.*?)[ \t]*$/im;
+const short = (sha) => (typeof sha === "string" ? sha.slice(0, 7) : "(none)");
 
 /** The reason on a prompt's `NO-RESUME:` line, or null. */
 export const noResumeReason = (prompt) => NO_RESUME_LINE.exec(prompt)?.[1] ?? null;
@@ -46,8 +46,9 @@ function unreviewedImplementerHead({ records, branch, head, cwd, git }) {
   );
   if (stopAt < 0) return null;
   const stopHead = records[stopAt].head;
+  // A commit is reviewed once, wherever and whenever the verdict on it was written.
+  if (records.some((record) => record.type === "verdict" && shaMatches(record.sha, stopHead))) return null;
   const later = records.slice(stopAt + 1).filter((record) => record.type === "verdict" && record.branch === branch && typeof record.sha === "string");
-  if (later.some((verdict) => shaMatches(verdict.sha, stopHead))) return null;
   if (later.length === 0 || shaMatches(stopHead, head)) return stopHead;
   const below = git(cwd, "rev-list", "--ancestry-path", `${stopHead}..${head}`);
   if (below === null) return null;
@@ -72,28 +73,61 @@ export function gateRefusal({ records, branch, head, reason, type, cwd, git = gi
 const pass = (workflow, record, note = null) => ({ refusal: null, workflow, record, note });
 const refuse = (refusal) => ({ refusal, workflow: null, record: null, note: null });
 
-/** Judges one main-session Agent call. @returns the refusal, or the record to write once the dispatch runs. */
+const taskTypeIn = (type, review) =>
+  review.implementerTypes.includes(type) || review.reviewerTypes.task.includes(type) || review.reviewerTypes.branch.includes(type);
+
+/**
+ * Judges one main-session Agent call. The repository of the worktree the prompt names decides, and the
+ * repository of the cwd decides only when the prompt names none.
+ * @returns the refusal, or the record to write once the dispatch runs.
+ */
 export function judgeTask(call, tmp = os.tmpdir()) {
-  let workflow;
+  const cwd = call.cwd ?? process.cwd();
+  let own;
   try {
-    workflow = workflowAt(call.cwd ?? process.cwd());
+    own = workflowAt(cwd);
   } catch (error) {
     return pass(null, null, `Task gate is off: ${error.message}`);
   }
-  if (!workflow) return pass(null, null);
   const session = call.session_id ?? "session";
-  try {
-    rememberSession(session, workflow.root, tmp);
-  } catch {
-    // A busy temp folder costs only the fallback of a stop whose cwd holds no config.
+  if (own) {
+    try {
+      rememberSession(session, own.root, tmp);
+    } catch {
+      // A busy temp folder costs only the fallback of a stop whose cwd holds no config.
+    }
   }
   const input = call.tool_input ?? {};
   const type = typeOf(input);
   const prompt = String(input.prompt ?? "");
-  const named = workflow.review.implementerTypes.includes(type) ? worktreeNamed(prompt) : null;
+  const named = worktreeNamed(prompt);
   const base = { session, agentType: type, task: false, worktree: null, branch: null, head: null, resumeReason: null };
-  if (named === null) return pass(workflow, base);
-  const key = pathKey(path.resolve(workflow.root, named));
+  let workflow = own;
+  let abs = null;
+  let root = null;
+  if (named !== null) {
+    abs = path.resolve(own?.root ?? cwd, nativePath(named));
+    root = existsSync(abs) ? checkoutRootOf(abs) : null;
+    if (root) {
+      try {
+        workflow = workflowOfRepo(root);
+      } catch (error) {
+        return pass(null, null, `Task gate is off: ${error.message}`);
+      }
+      if (!workflow) {
+        const note = `Task gate is off for ${root}: the repository has no swarm workflow, so this dispatch is not judged.`;
+        return own && taskTypeIn(type, own.review) ? pass(null, null, note) : pass(null, null);
+      }
+    }
+  }
+  if (!workflow) return pass(null, null);
+  if (named === null || !taskTypeIn(type, workflow.review)) return pass(workflow, base);
+  if (!workflow.review.implementerTypes.includes(type)) {
+    // A reviewer is never gated. Its worktree tells the stop which branch the verdict belongs to.
+    if (!root) return pass(workflow, base);
+    return pass(workflow, { ...base, worktree: root, branch: branchAt(root), head: gitOut(root, "rev-parse", "HEAD") });
+  }
+  const key = pathKey(abs);
   const worktree = linkedWorktrees(workflow.root).find((entry) => pathKey(entry.path) === key);
   if (!worktree) {
     return refuse(`Task gate: the prompt names worktree ${named}, which is no linked worktree of this repository. Name the path \`git worktree list\` prints for the task's branch.`);

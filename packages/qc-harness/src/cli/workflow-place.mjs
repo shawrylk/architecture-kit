@@ -3,6 +3,9 @@
 
 import { spawnSync } from "node:child_process";
 import { closeSync, openSync, readSync } from "node:fs";
+import path from "node:path";
+import { commonDirOf } from "./ledger.mjs";
+import { workflowAt } from "./workflow-settings.mjs";
 
 const WORKTREE_LINE = /^[ \t]*Worktree:[ \t]*(\S.*?)[ \t]*$/im;
 const QUOTES = /^["'`]|["'`]$/g;
@@ -75,3 +78,20 @@ export const transcriptWorktree = (file) => {
   const text = firstUserText(file);
   return text === null ? null : worktreeNamed(text);
 };
+
+/**
+ * The workflow of the repository that holds the checkout at `root`: the config of that checkout, else the
+ * config of the repository's primary checkout, since a branch cut before the config existed has none.
+ * Throws when the config is wrong, as `workflowAt` does.
+ */
+export function workflowOfRepo(root) {
+  const own = workflowAt(root);
+  if (own) return own;
+  let common = null;
+  try {
+    common = commonDirOf(root);
+  } catch {
+    // A `.git` file that cannot be read leaves the checkout with no workflow.
+  }
+  return common && path.basename(common) === ".git" ? workflowAt(path.dirname(common)) : null;
+}

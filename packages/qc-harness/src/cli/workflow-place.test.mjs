@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { commitLookup, firstUserText, nativePath, transcriptWorktree, worktreeNamed } from "./workflow-place.mjs";
+import { commitLookup, firstUserText, nativePath, transcriptWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 
@@ -78,4 +78,15 @@ test("a transcript's first message is read even when the file is large", (t) => 
   const first = { type: "user", message: { role: "user", content: "Worktree: C:/big/wt" } };
   writeFileSync(file, `${JSON.stringify(first)}\n${"x".repeat(2 * 1024 * 1024)}\n`);
   assert.equal(transcriptWorktree(file), "C:/big/wt");
+});
+
+test("a linked worktree cut before the config existed takes the workflow of its primary checkout", (t) => {
+  const { base, dir } = repo(t);
+  const linked = path.join(base, "linked");
+  git(dir, "worktree", "add", "-q", "-b", "feat/x", linked);
+  assert.equal(workflowOfRepo(linked), null, "no config anywhere, so the checks are off");
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  const workflow = workflowOfRepo(linked);
+  assert.equal(workflow.root, dir);
+  assert.equal(workflow.ledger, path.join(dir, ".git", "qc", "ledger.jsonl"));
 });

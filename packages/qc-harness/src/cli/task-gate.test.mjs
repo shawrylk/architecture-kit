@@ -191,16 +191,28 @@ test("an implementer stop with no branch counts for no branch", (t) => {
   assert.equal(refusalOf(ws), null);
 });
 
-test("a review before the stop, or on another branch, does not cover it", (t) => {
+test("a review that names another commit, before or after the stop, does not cover it", (t) => {
+  const ws = workspace(t);
+  const moved = commitIn(ws.linked, "b.txt");
+  verdict(ws, "e".repeat(40));
+  implementerStop(ws, moved);
+  assert.match(refusalOf(ws) ?? "", /no review in the ledger/);
+  verdict(ws, "d".repeat(40));
+  assert.match(refusalOf(ws) ?? "", /no review in the ledger/);
+  verdict(ws, moved);
+  assert.equal(refusalOf(ws), null);
+});
+
+test("a review that names the stop head covers it wherever the ledger holds it", (t) => {
   const ws = workspace(t);
   const moved = commitIn(ws.linked, "b.txt");
   verdict(ws, moved);
   implementerStop(ws, moved);
-  assert.match(refusalOf(ws) ?? "", /no review in the ledger/);
-  appendRecord(ws.ledger, { type: "verdict", kind: "task", verdict: "APPROVED", sha: moved, branch: "feat/2-y" });
-  assert.match(refusalOf(ws) ?? "", /no review in the ledger/);
-  verdict(ws, moved);
-  assert.equal(refusalOf(ws), null);
+  assert.equal(refusalOf(ws), null, "a verdict written before the stop");
+  const other = commitIn(ws.linked, "c.txt");
+  appendRecord(ws.ledger, { type: "verdict", kind: "task", verdict: "APPROVED", sha: other, branch: "feat/2-y" });
+  implementerStop(ws, other);
+  assert.equal(refusalOf(ws), null, "a verdict recorded under another branch name");
 });
 
 test("the gate spawns at most three git processes however long the ledger is", (t) => {
@@ -287,4 +299,82 @@ test("the ancestry-path branch spawns at most three git processes, with a later 
   spawns = 0;
   assert.match(gateRefusal({ records: unreviewed, branch: "feat/1-x", head: heads.at(-1), reason: null, type: "sdd-implementer", cwd: ws.linked, git }) ?? "", /no review in the ledger/);
   assert.ok(spawns >= 2 && spawns <= 3, `${spawns} git spawns`);
+});
+
+/** A second repository with a linked worktree on feat/9-o. `on` turns its checks on. The primary checkout is the "cwd" repository. */
+function otherRepo(ws, on) {
+  const base = path.dirname(ws.main);
+  const other = path.join(base, "other");
+  git(base, "init", "-q", "-b", "main", other);
+  for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"]]) {
+    git(other, "config", key, value);
+  }
+  writeFileSync(path.join(other, "a.txt"), "a\n");
+  if (on) writeFileSync(path.join(other, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  git(other, "add", ".");
+  git(other, "commit", "-q", "-m", "init");
+  const linked = path.join(base, "other-linked");
+  git(other, "worktree", "add", "-q", "-b", "feat/9-o", linked);
+  return { other, linked, ledger: path.join(other, ".git", "qc", "ledger.jsonl") };
+}
+
+test("a worktree in another repository is judged by that repository's workflow and ledger", (t) => {
+  const ws = workspace(t);
+  const b = otherRepo(ws, true);
+  const task = judgeTask(dispatch(ws.main, taskPrompt(b.linked)), ws.tmp);
+  assert.equal(task.refusal, null);
+  assert.equal(recordDispatch(task), null);
+  assert.deepEqual(readLedger(b.ledger).map((record) => [record.type, record.task, record.branch]), [["dispatch", true, "feat/9-o"]]);
+  assert.equal(existsSync(ws.ledger), false, "the cwd repository's ledger stays untouched");
+  appendRecord(b.ledger, { type: "stop", session: "s", agentType: "architecture:sdd-implementer", agentId: "a9", role: "implementer", branch: "feat/9-o", head: commitIn(b.linked, "b.txt") });
+  assert.match(judgeTask(dispatch(ws.main, taskPrompt(b.linked)), ws.tmp).refusal ?? "", /no review in the ledger/);
+});
+
+test("a worktree in a repository with no swarm workflow passes with a note and writes nothing", (t) => {
+  const ws = workspace(t);
+  const b = otherRepo(ws, false);
+  const task = judgeTask(dispatch(ws.main, taskPrompt(b.linked)), ws.tmp);
+  assert.equal(task.refusal, null);
+  assert.match(task.note ?? "", /no swarm workflow/);
+  assert.equal(task.record, null);
+  assert.equal(recordDispatch(task), task.note);
+  assert.equal(existsSync(b.ledger), false);
+  assert.equal(existsSync(ws.ledger), false);
+});
+
+test("a reviewer dispatch records the worktree its prompt names, and is never refused", (t) => {
+  const ws = workspace(t);
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  const task = judgeTask(dispatch(ws.main, taskPrompt(ws.linked), "architecture:sdd-reviewer"), ws.tmp);
+  assert.equal(task.refusal, null);
+  recordDispatch(task);
+  const record = readLedger(ws.ledger).find((entry) => entry.type === "dispatch");
+  assert.equal(record.task, false, "only an implementer dispatch is a task");
+  assert.equal(record.agentType, "architecture:sdd-reviewer");
+  assert.equal(record.branch, "feat/1-x");
+  assert.equal(record.head, git(ws.linked, "rev-parse", "HEAD"));
+  assert.equal(gitOut(record.worktree, "branch", "--show-current"), "feat/1-x");
+});
+
+test("a reviewer dispatch in another repository lands in that repository's ledger", (t) => {
+  const ws = workspace(t);
+  const b = otherRepo(ws, true);
+  recordDispatch(judgeTask(dispatch(ws.main, taskPrompt(b.linked), "architecture:sdd-branch-reviewer"), ws.tmp));
+  assert.deepEqual(readLedger(b.ledger).map((record) => [record.type, record.task, record.branch]), [["dispatch", false, "feat/9-o"]]);
+  assert.equal(existsSync(ws.ledger), false);
+});
+
+test("a reviewer dispatch whose worktree does not exist passes and records no worktree", (t) => {
+  const ws = workspace(t);
+  const task = judgeTask(dispatch(ws.main, taskPrompt(path.join(ws.tmp, "nowhere")), "architecture:sdd-reviewer"), ws.tmp);
+  assert.equal(task.refusal, null);
+  assert.equal(task.record.worktree, null);
+});
+
+test("a worktree spelled as a Git Bash drive path resolves on Windows", { skip: process.platform !== "win32" }, (t) => {
+  const ws = workspace(t);
+  const gitBash = "/" + ws.linked.replace(/^([A-Za-z]):/, (_, drive) => drive.toLowerCase()).replaceAll("\\", "/");
+  const task = judgeTask(dispatch(ws.main, taskPrompt(gitBash)), ws.tmp);
+  assert.equal(task.refusal, null);
+  assert.equal(task.record.branch, "feat/1-x");
 });
