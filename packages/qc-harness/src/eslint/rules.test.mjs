@@ -1,4 +1,5 @@
 import { RuleTester } from "eslint";
+import tsparser from "@typescript-eslint/parser";
 import { rules } from "./index.mjs";
 
 const tester = new RuleTester({
@@ -908,5 +909,23 @@ tester.run("registry-literal", rules["registry-literal"], {
       options: [{ ...HOLD[0], ...GRACE[0] }],
       errors: [{ messageId: "restated" }, { messageId: "restatedValue" }],
     },
+  ],
+});
+
+// A figure in a type or a key position is no number a reader would import.
+console.log("→", "registry-literal (values, TypeScript positions)");
+new RuleTester({ languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" } }).run("registry-literal", rules["registry-literal"], {
+  valid: [
+    "type D = 7;",
+    "type D = -7;",
+    "interface I { 7: string }",
+    "type T = { 7: string };",
+    "type T = { 7(): void };",
+    "interface I { 7(): void }",
+    "class A { 7() {} }",
+    "class A { 7 = 'x'; }",
+  ].map((code) => ({ code, filename: "frontend/src/features/login/form.ts", options: GRACE })),
+  invalid: [
+    { code: "const days = -7;", filename: "frontend/src/features/login/form.ts", options: GRACE, errors: [{ messageId: "restatedValue" }] },
   ],
 });

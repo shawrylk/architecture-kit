@@ -38,14 +38,14 @@ function unusable(item) {
 
 /** The entries of one registry file. A built-in registry whose file or key is absent has none. */
 function registryEntries(config, { path: file, key, builtIn }) {
-  const source = readText(path.join(config.root, file));
+  const source = readText(path.join(config.root ?? process.cwd(), file));
   if (source === null) return builtIn ? { entries: {} } : { problem: `${file} is missing` };
   const parsed = parsedJson(source);
   if (parsed === null || typeof parsed !== "object") return { problem: `${file} is not a JSON object` };
   const entries = parsed[key];
   if (entries === undefined && builtIn) return { entries: {} };
   if (entries === null || typeof entries !== "object" || Array.isArray(entries)) return { problem: `${file} holds no object under '${key}'` };
-  return { entries };
+  return { entries: Object.fromEntries(Object.entries(entries).filter(([, entry]) => entry !== null && typeof entry === "object" && !Array.isArray(entry))) };
 }
 
 /**

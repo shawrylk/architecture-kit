@@ -62,14 +62,25 @@ export default {
       const data = { name, key: entry.key, readers: entry.readers.join(", ") };
       context.report({ node, messageId: entry.readers.length > 0 ? "restated" : "unread", data });
     }
-    // A key or a type position is no figure a reader would import.
-    const isFigure = ({ parent }, node) =>
-      !((parent.type === "Property" || parent.type === "PropertyDefinition") && parent.key === node) &&
-      parent.type !== "TSLiteralType" &&
-      parent.type !== "MemberExpression";
+    // A key or a type position is no figure a reader would import. A sign stands before the figure.
+    const KEY_OWNERS = new Set([
+      "Property",
+      "PropertyDefinition",
+      "MethodDefinition",
+      "AccessorProperty",
+      "TSAbstractPropertyDefinition",
+      "TSAbstractMethodDefinition",
+      "TSPropertySignature",
+      "TSMethodSignature",
+    ]);
+    const isFigure = (literal) => {
+      const signed = literal.parent.type === "UnaryExpression" ? literal.parent : literal;
+      const { parent } = signed;
+      return !(KEY_OWNERS.has(parent.type) && parent.key === signed) && parent.type !== "TSLiteralType" && parent.type !== "MemberExpression";
+    };
     return {
       Literal(node) {
-        if (typeof node.value !== "number" || !isFigure(node, node)) return;
+        if (typeof node.value !== "number" || !isFigure(node)) return;
         const entry = values.find((candidate) => candidate.value === node.value);
         if (!entry) return;
         const data = { value: String(node.value), key: entry.key, registry: entry.registry, readers: entry.readers.join(", ") };
