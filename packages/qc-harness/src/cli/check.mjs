@@ -44,6 +44,10 @@ import { checkParity, placeholderSlices } from "../gates/parity.mjs";
 import { checkIntegrationImports } from "../gates/integration-imports.mjs";
 import { checkClosedSetWriters, matchedKeys } from "../gates/closed-set-writers.mjs";
 import { checkDocClaims, parseDocClaims } from "../gates/doc-claims.mjs";
+import { checkContractIdempotency, checkLedgerGrowth } from "../gates/contract-idempotency.mjs";
+import { contractHistory } from "./contract-history.mjs";
+import { contractOperations } from "../gates/contract-operations.mjs";
+import { checkContractRoutes, declaredTriggerRoutes } from "../gates/contract-routes.mjs";
 import { ratchetInputs } from "./registry-history.mjs";
 import { hookDrift } from "./git-hooks.mjs";
 import { repoFiles } from "./repo-files.mjs";
@@ -471,6 +475,62 @@ async function docClaims(config, lines) {
   return problems;
 }
 
+/** Every write of the composed contract names its idempotency key, or sits in the ledger. */
+async function contractIdempotency(config, lines) {
+  const { contract } = config;
+  const { legacy, exemptDeleteById } = config.contractIdempotency;
+  const text = await read(path.join(config.root, contract));
+  if (text === null) return [];
+  let operations;
+  try {
+    operations = await contractOperations(text);
+  } catch (error) {
+    const rule = error.code === "CONTRACT_PEER_MISSING" ? "contract-reader-unavailable" : "unreadable-contract";
+    return [{ path: contract, rule, detail: error.message }];
+  }
+  const ledgerText = await read(path.join(config.root, legacy));
+  const ledger = parsedJson(ledgerText);
+  if (ledgerText !== null && !(Array.isArray(ledger) && ledger.every((id) => typeof id === "string"))) {
+    return [{ path: legacy, rule: "unreadable-ledger", detail: "the ledger is not a JSON array of operation-id strings" }];
+  }
+  const fields = config.idempotency.keys;
+  const problems = checkContractIdempotency(operations, ledger ?? [], { fields, exemptDeleteById, contract, ledger: legacy });
+  lines.push(`OK  idempotency  ${operations.length} operation(s), each write names its key or sits in the ${(ledger ?? []).length}-entry ledger`);
+  const history = await contractHistory(config.root, { base: config.ratchet.base, contract, legacy, fields, exemptDeleteById });
+  if (history.skip) {
+    lines.push("NOTE  idempotency  ledger growth skipped: " + history.skip);
+  } else if (history.unreadable) {
+    problems.push({ path: contract, rule: "unreadable-base-contract", detail: history.unreadable });
+  } else {
+    problems.push(...checkLedgerGrowth(ledger ?? [], history, operations, { ledger: legacy }));
+  }
+  return problems;
+}
+
+/** A feature serves exactly the operations the composed contract lists. */
+async function contractRouteAgreement(config, routes, lines) {
+  const { contract } = config;
+  const text = await read(path.join(config.root, contract));
+  if (text === null) return [];
+  let operations;
+  try {
+    operations = await contractOperations(text);
+  } catch (error) {
+    const rule = error.code === "CONTRACT_PEER_MISSING" ? "contract-reader-unavailable" : "unreadable-contract";
+    return [{ path: contract, rule, detail: error.message }];
+  }
+  const { exempt } = config.contractRoutes;
+  if (!Array.isArray(exempt)) {
+    return [{ path: "qc.config.json", rule: "malformed-exemption", detail: "contractRoutes.exempt must be an array of { method, path, why }" }];
+  }
+  const served = declaredTriggerRoutes(routes);
+  const problems = checkContractRoutes(served, operations, { contract, exempt });
+  if (problems.length === 0) {
+    lines.push(`OK  contract     ${served.length} route(s) and ${operations.length} operation(s) agree by method and path`);
+  }
+  return problems;
+}
+
 /**
  * @param {object} config
  * @param {string | string[]} [only] files to check on the fast path a hook takes; none is the full check
@@ -774,6 +834,14 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
 
   if (enabled(config.gates, "doc-claims")) {
     problems.push(...(await docClaims(config, lines)));
+  }
+
+  if (enabled(config.gates, "contract-idempotency")) {
+    problems.push(...(await contractIdempotency(config, lines)));
+  }
+
+  if (enabled(config.gates, "contract-routes")) {
+    problems.push(...(await contractRouteAgreement(config, routes, lines)));
   }
 
   return { problems, lines };

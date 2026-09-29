@@ -58,6 +58,22 @@ export const defaults = {
     format: null,
   },
 
+  // The composed API description. Every gate that judges the contract reads this one path.
+  contract: "contracts/openapi.yaml",
+
+  // Every write of the contract carries one of `idempotency.keys`, as a body property or a
+  // parameter. `legacy` lists the operation ids that predate the gate; an entry that no longer owes
+  // the key fails, and so does one added since the merge base with `ratchet.base`.
+  // A DELETE whose last path segment is a parameter names one row, so it is exempt unless this is off.
+  contractIdempotency: {
+    legacy: "contracts/idempotency-legacy.json",
+    exemptDeleteById: true,
+  },
+
+  // Every route a feature trigger declares is an operation of `contract`, and the reverse. An
+  // exemption is { method, path, why } and fails once it no longer excuses a disagreement.
+  contractRoutes: { exempt: [] },
+
   // The log that is evidence only while nothing can edit it.
   audit: { table: "audit_log" },
 
@@ -364,6 +380,9 @@ export const defaults = {
     "closed-set-writers": false,
     "doc-claims": false,
     "tenant-isolation-test": false,
+    // Needs the composed contract, and the `yaml` peer to read it.
+    "contract-idempotency": false,
+    "contract-routes": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and

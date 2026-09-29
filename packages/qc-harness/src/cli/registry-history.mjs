@@ -7,7 +7,7 @@ import path from "node:path";
 import { globMatcher } from "../glob.mjs";
 
 /** @returns {string|null} stdout, or null when git is absent or the command fails. */
-function git(root, ...args) {
+export function git(root, ...args) {
   const result = spawnSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   return result.status === 0 ? result.stdout : null;
 }

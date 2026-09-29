@@ -649,6 +649,75 @@ lines: 412
 ```
 ````
 
+### Require an idempotency key on every write
+
+The `contract-idempotency` gate ships off. It reads the composed contract at `contract`, the one path every contract gate shares. Every
+`POST`, `PUT`, `PATCH` and `DELETE` must carry one of `idempotency.keys` as a request-body property or
+a parameter. The gate follows a `$ref` body into `components.schemas`, and each `allOf` part, once each.
+
+- The `yaml` package reads the contract. It is an optional peer dependency: run `pnpm add -D yaml`. A
+  repository that turns the gate on without it fails as `contract-reader-unavailable`.
+- A write without the key fails as `missing-idempotency-field`.
+- The ledger at `contractIdempotency.legacy` is a JSON array of operation-id strings. An operation with no
+  `operationId` is named `METHOD /path`, as in `POST /v1/boards`. A listed operation passes.
+- A ledger entry fails as `legacy-now-declares` when its operation now declares the key, no longer
+  exists, or needs no key.
+- A ledger id fails as `legacy-grew` unless every operation that carries it matches an operation at the
+  merge base with `ratchet.base`: the same id, method and path. An id new to the ledger also needs that
+  base operation to have lacked its key. A reused id, a dropped key and a moved path all fail. Renaming
+  a path parameter on a ledgered operation changes its path, so it fails as a moved path. An id the base
+  ledger already listed fails too. Two operations with one `operationId` fail as
+  `duplicate-operation-id`. The ledger cannot absorb a new write. A base contract that does not parse
+  fails as `unreadable-base-contract`. With no merge base, as in a shallow clone or with no git, the
+  check is skipped and `qc check` prints a `NOTE` line.
+- A `DELETE` whose last path segment is a parameter is exempt. Set `exemptDeleteById` to `false` to
+  judge it too.
+- An absent contract file is ordinary: the gate reports nothing.
+
+```json
+{
+  "gates": { "contract-idempotency": true },
+  "contract": "contracts/openapi.yaml",
+  "contractIdempotency": {
+    "legacy": "contracts/idempotency-legacy.json",
+    "exemptDeleteById": true
+  }
+}
+```
+
+### Serve exactly the operations of the contract
+
+The `contract-routes` gate ships off. It reads the composed contract at `contract`, as
+`contract-idempotency` does, and each route in a feature's `trigger.ts`. A route is a
+`{ method: "post", path: "/v1/boards" }` object, with `method` before `path`.
+
+- A route with no operation of its method and path fails as `route-not-in-contract`.
+- An operation that no trigger serves fails as `operation-not-served`.
+- A route's `:id` and a contract's `{id}` are one segment, whatever the name. The method matches in any case.
+- `contractRoutes.exempt` lists `{ method, path, why }` entries for a route or an operation that
+  has no partner, such as an internal worker route. An entry fails as `stale-route-exemption` when
+  it excuses nothing: no route lacks its operation there, and no operation lacks its route.
+- Every entry needs a string `method`, a string `path` and a non-empty `why`. An entry without a `why`
+  fails as `exemption-without-reason`. An entry that is not an object with a string method and path,
+  and an `exempt` that is not an array, fail as `malformed-exemption`. A bad entry excuses nothing.
+- A route inside a `//` or `/* */` comment is not served.
+  The comment stripper does not read regex literals, so a quote inside one can make a later commented route count.
+- The `yaml` package reads the contract, as for `contract-idempotency`. An absent contract file is
+  ordinary: the gate reports nothing.
+- The gate does not compare a client's request paths with the contract.
+
+```json
+{
+  "gates": { "contract-routes": true },
+  "contract": "contracts/openapi.yaml",
+  "contractRoutes": {
+    "exempt": [
+      { "method": "post", "path": "/v1/internal/photos/:photoId/derivatives", "why": "a worker callback" }
+    ]
+  }
+}
+```
+
 ### Declare every schema column in a migration
 
 `sql-identifiers` also reads the `paths.schemaFile` of each server feature. Each table that a
