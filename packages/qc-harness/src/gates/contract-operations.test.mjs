@@ -237,3 +237,39 @@ test("a ref keeps its shallowest reach: one first met near the cap is walked aga
 `);
   assert.deepEqual(found[0].bodyProps, ["mutationId"]);
 });
+
+test("a path item that is a $ref yields the operations of its target", async () => {
+  const found = await contractOperations(`
+paths:
+  /v1/z:
+    $ref: "#/components/pathItems/Z"
+components:
+  pathItems:
+    Z:
+      parameters:
+        - name: zid
+          in: query
+      get:
+        operationId: getZ
+      post:
+        operationId: postZ
+`);
+  assert.deepEqual(
+    found.map(({ method, path, id }) => `${method} ${path} ${id}`),
+    ["get /v1/z getZ", "post /v1/z postZ"],
+  );
+  assert.deepEqual(found[0].params, ["zid"]);
+});
+
+test("a path item $ref that does not resolve holds no operations", async () => {
+  const found = await contractOperations('paths:\n  /v1/z:\n    $ref: "#/components/pathItems/Missing"\n  /v1/y:\n    $ref: "other.yaml#/Y"\n');
+  assert.deepEqual(found, []);
+});
+
+test("a method key matches in any case, and the method is reported in lower case", async () => {
+  const found = await contractOperations("paths:\n  /a:\n    GET: {}\n    Post:\n      operationId: makeA\n");
+  assert.deepEqual(
+    found.map(({ method, id }) => `${method} ${id}`),
+    ["get GET /a", "post makeA"],
+  );
+});
