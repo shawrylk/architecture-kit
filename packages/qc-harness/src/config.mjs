@@ -40,8 +40,9 @@ export const defaults = {
   versions: "versions.json",
 
   // Globs of docs that may state a registry figure. Null is the ADR log, from adrLog(): a decision
-  // states the number as of its date.
-  registryLiteral: { exempt: null },
+  // states the number as of its date. `registries` adds `{ path, key, prefix, valueKey?, unitKey? }` to the
+  // thresholds and the versions, which always apply; an item with the path of one of them replaces it.
+  registryLiteral: { exempt: null, registries: [] },
 
   // A threshold loosens only with an ADR. `base` is the ref whose merge base the registry is compared with.
   ratchet: { base: "origin/main" },
