@@ -326,8 +326,12 @@ async function sqlAgreement(config, tree, taken, lines) {
     const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers].filter(
       (helper, at, all) => all.findIndex((first) => first.module === helper.module && first.name === helper.name) === at,
     );
-    // A file with no import and no re-export cannot reach a helper. A barrel stays in, since the gate reads it.
-    const callers = (await sourceFiles(config, tree)).filter((file) => !TEST_FILE.test(file.path) && MODULE_LINKS.test(file.contents));
+    // A file with no import and no re-export cannot reach a helper, and cannot be a barrel: the gate
+    // treats it as read, so a barrel that re-exports it is not an untraceable one.
+    const scanned = await sourceFiles(config, tree);
+    const isCaller = (file) => !TEST_FILE.test(file.path) && MODULE_LINKS.test(file.contents);
+    const callers = scanned.filter(isCaller);
+    const leaves = new Set(scanned.filter((file) => !isCaller(file)).map((file) => file.path));
     const tsconfig = posix(config.tenantPredicate.tsconfig);
     const tsconfigText = tsconfig && tree.isFile(tsconfig) ? await read(path.join(config.root, tsconfig)) : null;
     let aliases = [];
@@ -336,7 +340,7 @@ async function sqlAgreement(config, tree, taken, lines) {
     } catch (error) {
       problems.push({ path: tsconfig, rule: "unresolved-helper-import", detail: `${error.message}, so no alias resolves` });
     }
-    const helperOptions = { column: config.tenant.sqlColumn, identifier: config.tenant.column, aliases };
+    const helperOptions = { column: config.tenant.sqlColumn, identifier: config.tenant.column, aliases, leaves };
     problems.push(
       ...checkTenantPredicate(scoped, owned, tenantOptions),
       ...unresolvedHelperImports(callers, helpers, helperOptions),

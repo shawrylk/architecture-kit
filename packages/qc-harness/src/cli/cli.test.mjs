@@ -401,3 +401,28 @@ test("with the default tsconfig absent, an alias import fails closed", async () 
   assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/x.ts", rule: "unresolved-helper-import" }]);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("check follows a helper renamed through two barrels", async () => {
+  const dir = await helperRepo({
+    "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+    "backend/src/application/sql/inner.ts": 'export { insertReturning as insertRow } from "./crud.js";\n',
+    "backend/src/application/sql/index.ts": 'export { insertRow as put } from "./inner.js";\n',
+    "backend/src/features/a/x.ts": 'import { put } from "../../application/sql/index.js";\nput(tx, "a", ["id"], v);\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/x.ts", rule: "unscoped-helper-call" }]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("check treats a scanned file with no import as read, and one outside the scanned roots as untraceable", async () => {
+  const dir = await helperRepo({
+    "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+    "backend/src/application/sql/plain.ts": "export const plain = 1;\n",
+    "backend/src/application/sql/index.ts": 'export { plain as p } from "./plain.js";\nexport { thing as t } from "../../../../vendor/lib.js";\n',
+    "backend/src/features/a/x.ts": 'import { p } from "../../application/sql/index.js";\n',
+    "backend/src/features/a/y.ts": 'import { t } from "../../application/sql/index.js";\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/y.ts", rule: "unresolved-helper-import" }]);
+  rmSync(dir, { recursive: true, force: true });
+});

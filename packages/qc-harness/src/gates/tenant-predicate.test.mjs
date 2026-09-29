@@ -316,7 +316,10 @@ test("a renamed re-export in a barrel is followed, and its call is checked", () 
 test("an export-star barrel keeps the helper's name, and its call is checked", () => {
   const barrel = 'export * from "./crud.js";\nexport * from "./other.js";\n';
   const bad = `import { insertReturning } from "${BARREL_SPECIFIER}";\ninsertReturning(tx, "a", ["id"], v, C, f);`;
-  assert.deepEqual(viaBarrel(barrel, bad).map((problem) => problem.rule), ["unscoped-helper-call"]);
+  const other = { path: BARREL.replace("index", "other"), contents: "export const x = 1;\n" };
+  const files = [{ path: BARREL, contents: barrel }, other, { path: FILE, contents: bad }];
+  const problems = [...checkExemptHelperCalls(files, helpers), ...unresolvedHelperImports(files, helpers)];
+  assert.deepEqual(problems.map((problem) => problem.rule), ["unscoped-helper-call"]);
 });
 
 test("a barrel that imports the helper and exports it under another name is followed", () => {
@@ -355,4 +358,93 @@ test("a barrel that does not re-export the helper does not vouch for its name", 
 test("a barrel the gate cannot read still fails closed", () => {
   const source = `import { insertReturning } from "${BARREL_SPECIFIER}";`;
   assert.deepEqual(unresolvedHelperImports(at(source), helpers).map((problem) => problem.rule), ["unresolved-helper-import"]);
+});
+
+// A barrel is followed as far as it goes: through any number of barrels up to a cap, past a cycle,
+// and never into silence. What the gate cannot trace fails closed.
+
+const SQL = "backend/src/application/sql";
+const withFiles = (barrels, caller, options = {}) => {
+  const files = [...Object.entries(barrels).map(([path, contents]) => ({ path, contents })), { path: FILE, contents: caller }];
+  return [...checkExemptHelperCalls(files, helpers, options), ...unresolvedHelperImports(files, helpers, options)].map((problem) => problem.rule);
+};
+const importFrom = (name) => `import { ${name} } from "${BARREL_SPECIFIER}";\n${name}(tx, "a", ["id"], v, C, f);`;
+
+test("a helper renamed through two barrels is checked", () => {
+  const barrels = {
+    [`${SQL}/index.ts`]: 'export { insertRow as put } from "./inner.js";\n',
+    [`${SQL}/inner.ts`]: 'export { insertReturning as insertRow } from "./crud.js";\n',
+  };
+  assert.deepEqual(withFiles(barrels, importFrom("put")), ["unscoped-helper-call"]);
+  const good = `import { put } from "${BARREL_SPECIFIER}";\nput(tx, "a", ["tenant_id"], v, C, f);`;
+  assert.deepEqual(withFiles(barrels, good), []);
+});
+
+test("a helper reached by export-star through one barrel and renamed in the next is checked", () => {
+  const barrels = {
+    [`${SQL}/index.ts`]: 'export * from "./inner.js";\n',
+    [`${SQL}/inner.ts`]: 'export { insertReturning as insertRow } from "./crud.js";\n',
+  };
+  assert.deepEqual(withFiles(barrels, importFrom("insertRow")), ["unscoped-helper-call"]);
+});
+
+test("a barrel that imports another barrel and exports the name under a new one is followed", () => {
+  const barrels = {
+    [`${SQL}/index.ts`]: 'import { insertRow } from "./inner.js";\nexport { insertRow as put };\n',
+    [`${SQL}/inner.ts`]: 'export { insertReturning as insertRow } from "./crud.js";\n',
+  };
+  assert.deepEqual(withFiles(barrels, importFrom("put")), ["unscoped-helper-call"]);
+});
+
+test("a barrel cycle ends, and the helper reachable around it is still found", () => {
+  const barrels = {
+    [`${SQL}/index.ts`]: 'export * from "./loop.js";\nexport { insertReturning as put } from "./crud.js";\n',
+    [`${SQL}/loop.ts`]: 'export * from "./index.js";\n',
+  };
+  assert.deepEqual(withFiles(barrels, importFrom("put")), ["unscoped-helper-call"]);
+  const cyclic = { [`${SQL}/index.ts`]: 'export * from "./loop.js";\n', [`${SQL}/loop.ts`]: 'export * from "./index.js";\n' };
+  assert.deepEqual(withFiles(cyclic, importFrom("other")), []);
+});
+
+/** A chain of `count` barrels; the last renames the helper, and each above it re-exports with a star. */
+function chain(count) {
+  const barrels = {};
+  for (let i = 1; i < count; i += 1) barrels[`${SQL}/${i === 1 ? "index" : `n${i}`}.ts`] = `export * from "./n${i + 1}.js";\n`;
+  barrels[`${SQL}/${count === 1 ? "index" : `n${count}`}.ts`] = 'export { insertReturning as insertRow } from "./crud.js";\n';
+  return barrels;
+}
+
+test("a chain of eight barrels is followed, and a chain of nine fails closed", () => {
+  assert.deepEqual(withFiles(chain(8), importFrom("insertRow")), ["unscoped-helper-call"]);
+  assert.deepEqual(withFiles(chain(9), importFrom("insertRow")), ["unresolved-helper-import"]);
+});
+
+test("a barrel that exports a name from a module the gate cannot read fails closed for that name", () => {
+  const barrels = { [`${SQL}/index.ts`]: 'export { foo as put } from "../../../outside/lib.js";\nexport { bar } from "./crud.js";\n' };
+  assert.deepEqual(withFiles(barrels, importFrom("put")), ["unresolved-helper-import"]);
+  assert.deepEqual(withFiles(barrels, importFrom("bar")), []);
+});
+
+test("an export-star from a module the gate cannot read fails closed for every name", () => {
+  const barrels = { [`${SQL}/index.ts`]: 'export * from "../../../outside/lib.js";\n' };
+  assert.deepEqual(withFiles(barrels, importFrom("anything")), ["unresolved-helper-import"]);
+});
+
+test("a module the scan knows re-exports nothing, an asset is not a module, and a package is left alone", () => {
+  const barrel = 'export { foo as put } from "./known.js";\nexport { logo } from "./logo.svg";\nexport * from "zod";\n';
+  const barrels = { [`${SQL}/index.ts`]: barrel };
+  const leaves = new Set([`${SQL}/known.ts`]);
+  assert.deepEqual(withFiles(barrels, importFrom("put"), { leaves }), []);
+  assert.deepEqual(withFiles(barrels, importFrom("logo"), { leaves }), []);
+  assert.deepEqual(withFiles(barrels, importFrom("put")), ["unresolved-helper-import"]);
+});
+
+test("every importer of one barrel is checked, not only the first", () => {
+  const barrels = { [`${SQL}/index.ts`]: 'export { insertReturning as put } from "./crud.js";\n' };
+  const files = [
+    ...Object.entries(barrels).map(([path, contents]) => ({ path, contents })),
+    { path: FILE, contents: importFrom("put") },
+    { path: "backend/src/features/projects/shared/other.ts", contents: importFrom("put") },
+  ];
+  assert.equal(checkExemptHelperCalls(files, helpers).length, 2);
 });

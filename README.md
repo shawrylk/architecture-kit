@@ -746,17 +746,19 @@ repository whose `paths` live in `backend/tsconfig.json` must say so. That file 
 `compilerOptions.baseUrl` and `paths` count, and an `extends` chain is not followed. A file with no
 such tsconfig has no aliases.
 
-A local barrel is read one level. An `export { insertReturning as insertRow } from "./crud"`, an
-`export *` from the module, an `export * as crud` of it, and an import that a barrel re-exports
-under a new name all map back to the helper, and their calls are checked. An import of the helper
-that the gate cannot resolve to its `module` fails as `unresolved-helper-import`, naming the file
-and the specifier. That covers an alias with no matching path, a barrel outside the scanned roots,
-and a barrel that exports the helper under its own name from a module it cannot resolve. Import the
-helper from its own module.
+A local barrel is followed to the module, through as many barrels as it takes, up to 8. An
+`export { insertReturning as insertRow } from "./crud"`, an `export *` from the module, an
+`export * as crud` of it, and an import that a barrel re-exports under a new name all map back to
+the helper, and their calls are checked. A cycle of barrels ends. An import of the helper that the
+gate cannot resolve to its `module` fails as `unresolved-helper-import`, naming the file and the
+specifier. So does an import through a barrel the gate cannot trace: a chain longer than 8, or a
+re-export from a source file outside `paths.citable` (a name it exports, or an `export *`). An alias
+with no matching path fails the same way. Import the helper from its own module, or add the folder
+to `paths.citable`.
 
-The gate does not see `require()`, a dynamic `import()`, an `import type`, or a barrel that renames
-the helper by way of a second barrel, and it passes them unseen. A `paths` pattern whose `*` is not
-at the end is skipped, so an alias it would cover fails as `unresolved-helper-import`.
+The gate does not see `require()`, a dynamic `import()`, or an `import type`, and it passes them
+unseen. A `paths` pattern whose `*` is not at the end is skipped, so an alias it would cover fails
+as `unresolved-helper-import`.
 
 The kit ships these two defaults in `tenantPredicate.exemptHelpers`:
 
