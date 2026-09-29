@@ -63,6 +63,7 @@ import { repoFiles } from "./repo-files.mjs";
 const SKIP = /node_modules|\/dist\/|\.test\.[cm]?[jt]sx?$/;
 const BUILD_OUTPUT = /node_modules|\/dist\//;
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
+const MODULE_LINKS = /\bimport\b|\bexport\b[^;]*\bfrom\b/;
 const SOURCE_EXTENSION = /\.([cm]?[jt]sx?)$/;
 const CITABLE_EXTENSION = /\.(tsx?|mjs|md)$/;
 const INFRA_EXTENSIONS = [".tf", ".sh", ".tfvars", ".tfvars.example", ".hcl", ".hcl.example"];
@@ -325,8 +326,8 @@ async function sqlAgreement(config, tree, taken, lines) {
     const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers].filter(
       (helper, at, all) => all.findIndex((first) => first.module === helper.module && first.name === helper.name) === at,
     );
-    // Every source file is read for its imports: a namespace or barrel import may not contain the helper's name.
-    const callers = (await sourceFiles(config, tree)).filter((file) => !TEST_FILE.test(file.path));
+    // A file with no import and no re-export cannot reach a helper. A barrel stays in, since the gate reads it.
+    const callers = (await sourceFiles(config, tree)).filter((file) => !TEST_FILE.test(file.path) && MODULE_LINKS.test(file.contents));
     const tsconfig = posix(config.tenantPredicate.tsconfig);
     const tsconfigText = tsconfig && tree.isFile(tsconfig) ? await read(path.join(config.root, tsconfig)) : null;
     let aliases = [];

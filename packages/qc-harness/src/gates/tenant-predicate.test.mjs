@@ -292,3 +292,67 @@ test("a file that imports neither helper, nor anything like them, reports nothin
   assert.deepEqual(both('import { other } from "@/x/y.js";\nother(1);', { aliases }), []);
   assert.deepEqual(both("const insertReturning = 1;"), []);
 });
+
+// A barrel that renames the helper hides every call from the name match. The gate reads a local
+// barrel one level, maps the renamed export back to the helper, and checks the calls.
+
+const BARREL = "backend/src/application/sql/index.ts";
+const BARREL_SPECIFIER = "../../../application/sql/index.js";
+const viaBarrel = (barrel, caller, options = {}) => {
+  const files = [{ path: BARREL, contents: barrel }, { path: FILE, contents: caller }];
+  return [...checkExemptHelperCalls(files, helpers, options), ...unresolvedHelperImports(files, helpers, options)];
+};
+
+test("a renamed re-export in a barrel is followed, and its call is checked", () => {
+  const barrel = 'export { insertReturning as insertRow } from "./crud.js";\n';
+  const bad = `import { insertRow } from "${BARREL_SPECIFIER}";\ninsertRow(tx, "a", ["id"], v, C, f);`;
+  const problems = viaBarrel(barrel, bad);
+  assert.deepEqual(problems.map((problem) => problem.rule), ["unscoped-helper-call"]);
+  assert.equal(problems[0].path, FILE);
+  const good = `import { insertRow as put } from "${BARREL_SPECIFIER}";\nput(tx, "a", ["id", "tenant_id"], v, C, f);`;
+  assert.deepEqual(viaBarrel(barrel, good), []);
+});
+
+test("an export-star barrel keeps the helper's name, and its call is checked", () => {
+  const barrel = 'export * from "./crud.js";\nexport * from "./other.js";\n';
+  const bad = `import { insertReturning } from "${BARREL_SPECIFIER}";\ninsertReturning(tx, "a", ["id"], v, C, f);`;
+  assert.deepEqual(viaBarrel(barrel, bad).map((problem) => problem.rule), ["unscoped-helper-call"]);
+});
+
+test("a barrel that imports the helper and exports it under another name is followed", () => {
+  const barrel = 'import { insertReturning } from "./crud.js";\nexport { insertReturning as insertRow };\n';
+  const bad = `import { insertRow } from "${BARREL_SPECIFIER}";\ninsertRow(tx, "a", ["id"], v, C, f);`;
+  assert.deepEqual(viaBarrel(barrel, bad).map((problem) => problem.rule), ["unscoped-helper-call"]);
+});
+
+test("a barrel that names its source by alias is followed", () => {
+  const barrel = 'export { insertReturning as insertRow } from "@/application/sql/crud.js";\n';
+  const bad = `import { insertRow } from "${BARREL_SPECIFIER}";\ninsertRow(tx, "a", ["id"], v, C, f);`;
+  assert.deepEqual(viaBarrel(barrel, bad, { aliases }).map((problem) => problem.rule), ["unscoped-helper-call"]);
+  assert.deepEqual(viaBarrel(barrel, bad).map((problem) => problem.rule), ["unresolved-helper-import"]);
+});
+
+test("a namespace import of a barrel that names neither the module nor a folder above it is followed", () => {
+  const barrel = 'export * from "./sql/crud.js";\n';
+  const source = 'import * as db from "../../../application/db.js";\ndb.insertReturning(tx, "a", ["id"], v, C, f);\ndb.other(1);';
+  const files = [{ path: "backend/src/application/db.ts", contents: barrel }, { path: FILE, contents: source }];
+  assert.deepEqual(checkExemptHelperCalls(files, helpers).map((problem) => problem.rule), ["unscoped-helper-call"]);
+  assert.deepEqual(unresolvedHelperImports(files, helpers), []);
+});
+
+test("a namespace re-export of the module is followed", () => {
+  const barrel = 'export * as crud from "./crud.js";\n';
+  const source = `import { crud } from "${BARREL_SPECIFIER}";\ncrud.insertReturning(tx, "a", ["id"], v, C, f);`;
+  assert.deepEqual(viaBarrel(barrel, source).map((problem) => problem.rule), ["unscoped-helper-call"]);
+});
+
+test("a barrel that does not re-export the helper does not vouch for its name", () => {
+  const barrel = 'export { other } from "./other.js";\n';
+  const source = `import { insertReturning } from "${BARREL_SPECIFIER}";\ninsertReturning(tx, "a", ["id"], v, C, f);`;
+  assert.deepEqual(viaBarrel(barrel, source).map((problem) => problem.rule), ["unresolved-helper-import"]);
+});
+
+test("a barrel the gate cannot read still fails closed", () => {
+  const source = `import { insertReturning } from "${BARREL_SPECIFIER}";`;
+  assert.deepEqual(unresolvedHelperImports(at(source), helpers).map((problem) => problem.rule), ["unresolved-helper-import"]);
+});

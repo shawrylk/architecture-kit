@@ -314,3 +314,90 @@ test("a default also listed in extraExemptHelpers gives one unscoped-helper-call
   assert.equal(problems.filter((problem) => problem.rule === "unscoped-helper-call").length, 1);
   rmSync(dir, { recursive: true, force: true });
 });
+
+// The tenant-predicate gate reads how a caller imports an exempt helper. These run the whole check,
+// so the wiring in `check.mjs` (the tsconfig read, the alias map, the two rules) is under test too.
+const HELPER_RULES = new Set(["unscoped-helper-call", "unresolved-helper-import"]);
+const CRUD_SOURCE = "export function insertReturning() {}\n";
+const helperProblems = (problems) => problems.filter((problem) => HELPER_RULES.has(problem.rule)).map(({ path: file, rule }) => ({ file, rule }));
+
+async function helperRepo(files, config = {}) {
+  const dir = repo();
+  write(dir, { "qc.config.json": JSON.stringify({ featureRoots: ["backend/src/features"], ...config }), ...files });
+  return dir;
+}
+
+test("check resolves an alias call through the tsconfig, and an unscoped one fails", async () => {
+  const dir = await helperRepo({
+    "tsconfig.json": '{ // a comment\n "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["backend/src/*"], }, }, }',
+    "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+    "backend/src/features/a/bad.ts": 'import { insertReturning } from "@/application/sql/crud.js";\ninsertReturning(tx, "a", ["id"], v);\n',
+    "backend/src/features/a/good.ts": 'import { insertReturning } from "@/application/sql/crud.js";\ninsertReturning(tx, "a", ["id", "tenant_id"], v);\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/bad.ts", rule: "unscoped-helper-call" }]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("check fails a barrel import it cannot read, naming the file", async () => {
+  const dir = await helperRepo({
+    "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+    "backend/src/features/a/x.ts": 'import { insertReturning } from "../../application/sql/index.js";\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/x.ts", rule: "unresolved-helper-import" }]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("check follows a renamed re-export in a barrel one level", async () => {
+  const dir = await helperRepo({
+    "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+    "backend/src/application/sql/index.ts": 'export { insertReturning as insertRow } from "./crud.js";\n',
+    "backend/src/features/a/x.ts": 'import { insertRow } from "../../application/sql/index.js";\ninsertRow(tx, "a", ["id"], v);\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/x.ts", rule: "unscoped-helper-call" }]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("check reports a tsconfig it cannot parse, at the tsconfig", async () => {
+  const dir = await helperRepo({
+    "tsconfig.json": "{ not json",
+    "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+    "backend/src/features/a/x.ts": 'import { insertReturning } from "@/application/sql/crud.js";\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(
+    helperProblems(problems).sort((a, b) => a.file.localeCompare(b.file)),
+    [
+      { file: "backend/src/features/a/x.ts", rule: "unresolved-helper-import" },
+      { file: "tsconfig.json", rule: "unresolved-helper-import" },
+    ],
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("tenantPredicate.tsconfig points at the file that holds the paths, and its targets resolve from its folder", async () => {
+  const dir = await helperRepo(
+    {
+      "backend/tsconfig.json": '{ "compilerOptions": { "paths": { "@/*": ["src/*"] } } }',
+      "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+      "backend/src/features/a/x.ts": 'import { insertReturning } from "@/application/sql/crud.js";\ninsertReturning(tx, "a", ["id"], v);\n',
+    },
+    { tenantPredicate: { tsconfig: "backend/tsconfig.json" } },
+  );
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/x.ts", rule: "unscoped-helper-call" }]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("with the default tsconfig absent, an alias import fails closed", async () => {
+  const dir = await helperRepo({
+    "backend/tsconfig.json": '{ "compilerOptions": { "paths": { "@/*": ["src/*"] } } }',
+    "backend/src/application/sql/crud.ts": CRUD_SOURCE,
+    "backend/src/features/a/x.ts": 'import { insertReturning } from "@/application/sql/crud.js";\n',
+  });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(helperProblems(problems), [{ file: "backend/src/features/a/x.ts", rule: "unresolved-helper-import" }]);
+  rmSync(dir, { recursive: true, force: true });
+});

@@ -739,13 +739,24 @@ must name the tenant: the `tenant.sqlColumn` as a quoted string or an object key
 `tenant.column` identifier. A bare name is followed to its own declaration, and a call to a local
 function to that function's body. A call that names no tenant fails as `unscoped-helper-call`.
 
-The gate reads three import forms: a named import, a namespace import whose member call is the
-helper (`crud.insertReturning(`), and a path alias that `tenantPredicate.tsconfig` resolves. That
-file, `tsconfig.json` by default, is read alone: `compilerOptions.baseUrl` and `paths` count, and an
-`extends` chain is not followed. A file with no such tsconfig has no aliases. An import of the helper
+The gate reads a named import, a namespace import whose member call is the helper
+(`crud.insertReturning(`), and a path alias that `tenantPredicate.tsconfig` resolves. Point that
+setting at the file that holds `paths`: it defaults to `tsconfig.json` at the root, and a
+repository whose `paths` live in `backend/tsconfig.json` must say so. That file is read alone:
+`compilerOptions.baseUrl` and `paths` count, and an `extends` chain is not followed. A file with no
+such tsconfig has no aliases.
+
+A local barrel is read one level. An `export { insertReturning as insertRow } from "./crud"`, an
+`export *` from the module, an `export * as crud` of it, and an import that a barrel re-exports
+under a new name all map back to the helper, and their calls are checked. An import of the helper
 that the gate cannot resolve to its `module` fails as `unresolved-helper-import`, naming the file
-and the specifier. That covers an alias with no matching path, and a barrel that re-exports the
-helper: the gate does not follow a re-export, so import the helper from its own module.
+and the specifier. That covers an alias with no matching path, a barrel outside the scanned roots,
+and a barrel that exports the helper under its own name from a module it cannot resolve. Import the
+helper from its own module.
+
+The gate does not see `require()`, a dynamic `import()`, an `import type`, or a barrel that renames
+the helper by way of a second barrel, and it passes them unseen. A `paths` pattern whose `*` is not
+at the end is skipped, so an alias it would cover fails as `unresolved-helper-import`.
 
 The kit ships these two defaults in `tenantPredicate.exemptHelpers`:
 

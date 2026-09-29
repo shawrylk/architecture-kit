@@ -228,27 +228,97 @@ function namesModule(file, specifier, target, aliases) {
   return candidatesOf(file, specifier, aliases).some((candidate) => target.startsWith(`${stem(candidate)}/`));
 }
 
+const SOURCE_EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"];
+
+/** The scanned file a specifier points at: the path itself, or with an extension, or its `index`. */
+function fileFor(candidates, sources) {
+  for (const candidate of candidates) {
+    const base = candidate.replace(/\.[cm]?[jt]sx?$/, "");
+    const tries = [candidate, ...SOURCE_EXTENSIONS.flatMap((ext) => [`${base}${ext}`, `${base}/index${ext}`])];
+    const found = tries.find((name) => sources.has(name));
+    if (found !== undefined) return found;
+  }
+  return null;
+}
+
+const partsOf = (list) => list.split(",").map((part) => part.trim().split(/\s+as\s+/)).filter(([name]) => name !== "");
+
+/**
+ * What a barrel exports of the helper, read one level: the names it exports the helper under, an
+ * `export *` from the module, namespaces of the module, and names it exports from a specifier the
+ * gate cannot resolve. A re-export of a re-export is not followed.
+ * @returns {{named: Set<string>, star: boolean, namespaces: Set<string>, opaque: Set<string>}}
+ */
+function reexportsOf(barrel, source, helper, aliases) {
+  const target = stem(helper.module);
+  const resolves = (specifier) => candidatesOf(barrel, specifier, aliases).some((candidate) => stem(candidate) === target);
+  const found = { named: new Set(), star: false, namespaces: new Set(), opaque: new Set() };
+  for (const [, list, specifier] of source.matchAll(/\bexport\s+\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
+    for (const [name, exported] of partsOf(list)) {
+      if (name !== helper.name) continue;
+      (resolves(specifier) ? found.named : found.opaque).add(exported ?? name);
+    }
+  }
+  for (const [, specifier] of source.matchAll(/\bexport\s+\*\s*from\s*["']([^"']+)["']/g)) {
+    if (resolves(specifier)) found.star = true;
+  }
+  for (const [, name, specifier] of source.matchAll(/\bexport\s+\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']/g)) {
+    if (resolves(specifier)) found.namespaces.add(name);
+  }
+  // A barrel that imports the helper and exports the local name.
+  const { names } = helperImports(barrel, source, helper, aliases, null);
+  for (const [, list] of source.matchAll(/\bexport\s+\{([^}]*)\}(?!\s*from\b)/g)) {
+    for (const [name, exported] of partsOf(list)) {
+      if (names.includes(name)) found.named.add(exported ?? name);
+    }
+  }
+  return found;
+}
+
 /**
  * How a file imports `helper.name` from `helper.module`: the local names, the namespaces whose
- * members are the helper, and the specifiers the gate cannot resolve to the module. A barrel
- * re-export is one of those: following it needs a module graph, so it fails closed.
- * @returns {{names: string[], namespaces: string[], unresolved: {specifier: string, name: string}[]}}
+ * `member` is the helper, and the specifiers the gate cannot resolve to the module. A local barrel
+ * that `sources` holds is read one level, so a renamed re-export maps back to the helper. Any other
+ * barrel fails closed.
+ * @param {Map<string, string> | null} sources scanned file contents by path; null reads no barrel
+ * @returns {{names: string[], namespaces: {local: string, member: string}[], unresolved: {specifier: string, name: string}[]}}
  */
-function helperImports(file, source, helper, aliases = []) {
+function helperImports(file, source, helper, aliases = [], sources = new Map()) {
   const target = stem(helper.module);
-  const resolves = (specifier) => candidatesOf(file, specifier, aliases).some((candidate) => stem(candidate) === target);
+  const candidates = (specifier) => candidatesOf(file, specifier, aliases);
+  const resolves = (specifier) => candidates(specifier).some((candidate) => stem(candidate) === target);
+  const barrelOf = (specifier) => {
+    const path = sources === null ? null : fileFor(candidates(specifier), sources);
+    return path === null ? null : reexportsOf(path, sources.get(path), helper, aliases);
+  };
   const result = { names: [], namespaces: [], unresolved: [] };
   for (const [, list, specifier] of source.matchAll(/\bimport\s+(?:[\w$]+\s*,\s*)?\{([^}]*)\}\s*from\s*["']([^"']+)["']/g)) {
-    for (const part of list.split(",")) {
-      const [imported, local] = part.trim().split(/\s+as\s+/);
-      if (imported !== helper.name) continue;
-      if (resolves(specifier)) result.names.push(local ?? imported);
-      else result.unresolved.push({ specifier, name: helper.name });
+    const barrel = resolves(specifier) ? null : barrelOf(specifier);
+    for (const [imported, local] of partsOf(list)) {
+      if (resolves(specifier)) {
+        if (imported === helper.name) result.names.push(local ?? imported);
+      } else if (barrel?.named.has(imported) || (barrel?.star && imported === helper.name)) {
+        result.names.push(local ?? imported);
+      } else if (barrel?.namespaces.has(imported)) {
+        result.namespaces.push({ local: local ?? imported, member: helper.name });
+      } else if (imported === helper.name || barrel?.opaque.has(imported)) {
+        result.unresolved.push({ specifier, name: imported });
+      }
     }
   }
   for (const [, local, specifier] of source.matchAll(/\bimport\s+(?:[\w$]+\s*,\s*)?\*\s*as\s+([\w$]+)\s+from\s*["']([^"']+)["']/g)) {
-    if (resolves(specifier)) result.namespaces.push(local);
-    else if (namesModule(file, specifier, target, aliases)) result.unresolved.push({ specifier, name: "*" });
+    if (resolves(specifier)) {
+      result.namespaces.push({ local, member: helper.name });
+      continue;
+    }
+    const barrel = barrelOf(specifier);
+    if (barrel === null) {
+      if (namesModule(file, specifier, target, aliases)) result.unresolved.push({ specifier, name: "*" });
+      continue;
+    }
+    if (barrel.star) result.namespaces.push({ local, member: helper.name });
+    for (const member of barrel.named) result.namespaces.push({ local, member });
+    if (barrel.opaque.size > 0) result.unresolved.push({ specifier, name: "*" });
   }
   return result;
 }
@@ -264,10 +334,11 @@ function helperImports(file, source, helper, aliases = []) {
 export function exemptHelperCalls(files, helpers, options = {}) {
   const tenant = tenantPattern(options.column ?? DEFAULT_TENANT_COLUMN, options.identifier ?? DEFAULT_TENANT_IDENTIFIER);
   const calls = [];
+  const sources = new Map(files.map((file) => [file.path, file.contents]));
   for (const { path, contents: source } of files) {
     for (const helper of helpers) {
-      const { names, namespaces } = helperImports(path, source, helper, options.aliases);
-      const patterns = [...names.map((local) => callPattern(local)), ...namespaces.map((ns) => callPattern(helper.name, ns))];
+      const { names, namespaces } = helperImports(path, source, helper, options.aliases, sources);
+      const patterns = [...names.map((local) => callPattern(local)), ...namespaces.map(({ local, member }) => callPattern(member, local))];
       for (const pattern of patterns) {
         for (const match of source.matchAll(pattern)) {
           // The enclosing function starts the window, so a neighbour cannot vouch for this call.
@@ -310,10 +381,11 @@ export function checkExemptHelperCalls(files, helpers, options = {}) {
  */
 export function unresolvedHelperImports(files, helpers, options = {}) {
   const problems = [];
+  const sources = new Map(files.map((file) => [file.path, file.contents]));
   for (const { path, contents: source } of files) {
     const bySpecifier = new Map();
     for (const helper of helpers) {
-      for (const { specifier, name } of helperImports(path, source, helper, options.aliases).unresolved) {
+      for (const { specifier, name } of helperImports(path, source, helper, options.aliases, sources).unresolved) {
         const label = name === "*" ? `a namespace of ${helper.module}` : name;
         bySpecifier.set(specifier, new Set([...(bySpecifier.get(specifier) ?? []), label]));
       }
