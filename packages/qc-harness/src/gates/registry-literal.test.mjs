@@ -95,7 +95,7 @@ test("a bare number near a match phrase still fails", () => {
 test("an unknown id in an annotation fails", () => {
   const problems = check("Lint runs with 0 <!-- q:nosuch --> warnings allowed.");
   assert.deepEqual(problems.map((problem) => problem.rule), ["unknown-token"]);
-  assert.match(problems[0].detail, /'nosuch'/);
+  assert.match(problems[0].detail, /q:nosuch/);
 });
 
 test("an annotation with no number before it fails", () => {
