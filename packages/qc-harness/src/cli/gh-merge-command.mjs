@@ -9,14 +9,20 @@ import { nestedCommand, programName } from "./bash-command-guard.mjs";
 import { commandWords } from "./shell-command.mjs";
 import { nativePath } from "./workflow-place.mjs";
 
-const GH_SETTINGS = ["GH_CONFIG_DIR", "GH_HOST"];
-const VALUE_FLAGS = new Set(["-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit", "-R", "--repo"]);
+const GH_SETTINGS = ["GH_CONFIG_DIR", "GH_HOST", "GH_REPO"];
+const VALUE_FLAGS = new Set(["-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit", "--repo"]);
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 const POWERSHELL_ENV = /^\$env:([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$/is;
 const MERGE_ENDPOINT = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge\/?(?:\?.*)?$/;
 const MERGE_MUTATION = /\bmergePullRequest\b/;
 const GRAPHQL_ENDPOINT = /(?:^|\/)graphql\/?(?:\?.*)?$/;
 const FIELD_FLAGS = new Set(["--field"]);
+const PR_URL = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/;
+const REST_PATH = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?repos\//;
+/** The short flags of `gh pr merge` and of `gh api` that take a value, and the long flags of `gh api` that do. */
+const MERGE_VALUE_LETTERS = "bFtAR";
+const API_VALUE_LETTERS = "FfHXqtp";
+const API_VALUE_FLAGS = new Set(["--field", "--raw-field", "--header", "--method", "--jq", "--template", "--input", "--hostname", "--cache", "--preview"]);
 const MAX_QUERY_BYTES = 1024 * 1024;
 
 /** Only the settings that choose gh's account or host; a token is a credential and is never kept. */
@@ -49,6 +55,13 @@ function mergeOf(args) {
   const merge = { sha: null, repo: null, selector: null, auto: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
+    // pflag reads `-Rvalue`, `-R=value`, and a cluster of short flags that ends in -R (`-sRvalue`, `-sR value`).
+    const cluster = /^-([A-Za-z]*)R(.*)$/s.exec(arg);
+    if (cluster && !new RegExp(`[${MERGE_VALUE_LETTERS}]`).test(cluster[1])) {
+      const value = cluster[2] === "" ? args[++i] : cluster[2].replace(/^=/, "");
+      merge.repo = value ?? null;
+      continue;
+    }
     const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
     const flag = at === -1 ? arg : arg.slice(0, at);
     if (flag === "--disable-auto") return null;
@@ -56,7 +69,7 @@ function mergeOf(args) {
     if (VALUE_FLAGS.has(flag)) {
       const value = at === -1 ? args[++i] : arg.slice(at + 1);
       if (flag === "--match-head-commit") merge.sha = value ?? null;
-      if (flag === "-R" || flag === "--repo") merge.repo = value ?? null;
+      if (flag === "--repo") merge.repo = value ?? null;
     } else if (!arg.startsWith("-") && merge.selector === null) {
       merge.selector = arg;
     }
@@ -88,7 +101,11 @@ export function ghMerges(command, parse) {
     const [group, verb, ...args] = words;
     if (group !== "pr" || verb !== "merge") continue;
     const merge = mergeOf(args);
-    if (merge) merges.push({ ...merge, env });
+    if (!merge) continue;
+    // The repository comes from a PR URL first, then -R or --repo, then GH_REPO. GH_REPO is no setting to keep.
+    const { GH_REPO: fromEnv, ...settings } = env;
+    merge.repo = PR_URL.exec(merge.selector ?? "")?.[1] ?? merge.repo ?? fromEnv ?? null;
+    merges.push({ ...merge, env: settings });
   }
   return merges;
 }
@@ -140,11 +157,29 @@ function queryText(cwd, spelled) {
   }
 }
 
+/** The endpoint of a `gh api` call: its first word that is no flag and no flag's value, or null. */
+function apiEndpoint(args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("--")) {
+      if (!arg.includes("=") && API_VALUE_FLAGS.has(arg)) i++;
+    } else if (arg.startsWith("-") && arg.length > 1) {
+      // A value letter takes the rest of the word, or the next word when it ends the cluster.
+      const letter = [...arg.slice(1)].findIndex((char) => API_VALUE_LETTERS.includes(char));
+      if (letter !== -1 && letter === arg.length - 2) i++;
+    } else {
+      return arg;
+    }
+  }
+  return null;
+}
+
 /**
  * Each `gh api` call that merges with no review check, as `{ endpoint, unreadable }`. `endpoint` is the PR merge
  * endpoint as written, or the GraphQL URL as written (`graphql` when the call spells none). A call holds a
  * `mergePullRequest` mutation when any argument, or any query file it reads, names it, whatever the URL spelling.
  * A GraphQL call whose query file the guard cannot read fails closed, and `unreadable` names that file.
+ * A call whose endpoint is a `repos/` REST path holds no mutation, so its arguments and files are not searched.
  * @param options.cwd the folder a relative query file resolves against
  */
 export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
@@ -153,6 +188,7 @@ export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
     .flatMap(({ words }) => {
       const args = words.slice(1);
       const found = args.filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
+      if (REST_PATH.test(apiEndpoint(args) ?? "")) return found;
       const graphql = args.find((word) => GRAPHQL_ENDPOINT.test(word));
       let mutation = args.some((word) => MERGE_MUTATION.test(word));
       let unreadable;

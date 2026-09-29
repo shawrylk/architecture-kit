@@ -103,3 +103,39 @@ test("a query file the call reads is searched for the mutation, and a file the g
   assert.equal(found("gh api repos/o/r/issues/1/comments -F body=@notes.txt").length, 0);
   assert.equal(found("gh api repos/o/r/issues/1/comments -F body=@-").length, 0);
 });
+
+test("the repository of a merge comes from a PR URL, GH_REPO, an attached -R, or a cluster that ends in -R", () => {
+  const repoOf = (command, parse = segmentsOf) => ghMerges(command, parse)[0].repo;
+  assert.equal(repoOf("gh pr merge https://github.com/o/r/pull/5 --match-head-commit abc1234"), "o/r");
+  assert.equal(repoOf("gh pr merge https://ghe.example.com/o/r/pull/5/files"), "o/r");
+  assert.equal(repoOf("GH_REPO=o/r gh pr merge 5"), "o/r");
+  assert.equal(repoOf("export GH_REPO=o/r && gh pr merge 5"), "o/r");
+  assert.equal(repoOf(String.raw`$env:GH_REPO = "o/r"; gh pr merge 5`, powershellSegments), "o/r");
+  assert.equal(repoOf("gh pr merge 5 -Ro/r"), "o/r");
+  assert.equal(repoOf("gh pr merge 5 -R=o/r"), "o/r");
+  assert.equal(repoOf("gh pr merge 5 -sRo/r"), "o/r");
+  assert.equal(repoOf("gh pr merge 5 -sR o/r"), "o/r");
+  assert.equal(repoOf("gh pr merge 5 --repo=o/r"), "o/r");
+  assert.equal(repoOf("GH_REPO=x/y gh pr merge 5 -R o/r"), "o/r", "an explicit -R beats GH_REPO");
+  assert.equal(repoOf("gh pr merge https://github.com/o/r/pull/5 -R x/y"), "o/r", "a PR URL beats -R");
+  assert.equal(repoOf("gh pr merge 5"), null);
+  assert.equal(repoOf("gh pr merge 5 -bRo/r"), null, "-b takes the rest of the word as its value");
+  assert.deepEqual(ghMerges("GH_REPO=o/r gh pr merge 5", segmentsOf)[0].env, {}, "GH_REPO is not kept as a setting");
+});
+
+test("a mutation search skips a call whose endpoint is a repos/ REST path", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-gh-api-rest-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(path.join(dir, "review.md"), "The bypass is the mergePullRequest mutation.");
+  const found = (command) => ghApiMerges(command, segmentsOf, { cwd: dir });
+  assert.equal(found("gh api repos/o/r/issues/64/comments -F body=@review.md").length, 0);
+  assert.equal(found("gh api repos/o/r/issues/64/comments -f body='see mergePullRequest'").length, 0);
+  assert.equal(found("gh api https://api.github.com/repos/o/r/issues/64/comments -F body=@review.md").length, 0);
+  assert.equal(found("gh api -X POST -H 'Accept: x' /repos/o/r/issues/64/comments -iFbody=@review.md").length, 0);
+  // The REST merge endpoint stays refused by its own rule.
+  assert.equal(found("gh api -X PUT repos/o/r/pulls/64/merge -F body=@review.md").length, 1);
+  // A word that only looks like a path, as the value of a flag, is no endpoint.
+  assert.equal(found("gh api -H repos/x graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'").length, 1);
+  assert.equal(found("gh api graphql -F query=@review.md -f x=repos/o/r").length, 1);
+  assert.equal(found("gh api -q repos/x graphql -F query=@review.md").length, 1);
+});
