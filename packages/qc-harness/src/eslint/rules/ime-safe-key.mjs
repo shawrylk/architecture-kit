@@ -1,30 +1,14 @@
 // Enter and Escape in text entry wait for the IME, or a half-typed conversion is submitted. docs/ui.md.
 
+import { FUNCTIONS, attributeValue, propertyName, resolve, tagName, walk } from "../jsx.mjs";
 import { optionsOf, schemaOf } from "../options.mjs";
 
 const HANDLERS = new Set(["onKeyDown", "onKeyUp"]);
 const ACTION_KEYS = new Set(["Enter", "Escape"]);
 const EQUALITY = new Set(["===", "==", "!==", "!="]);
-const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration"]);
 // An input of these types takes no typed text, so no IME composes into it.
 const NON_TEXT_TYPES = new Set(["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"]);
 const IME_KEY_CODE = 229;
-
-function tagName(name) {
-  if (name.type === "JSXIdentifier") return name.name;
-  if (name.type === "JSXMemberExpression") return `${tagName(name.object)}.${name.property.name}`;
-  return null;
-}
-
-/** undefined when absent, the literal when static, null when computed at runtime. */
-function attributeValue(element, name) {
-  const attr = element.attributes.find((a) => a.type === "JSXAttribute" && a.name.name === name);
-  if (!attr) return undefined;
-  if (attr.value === null) return true;
-  if (attr.value.type === "Literal") return attr.value.value;
-  const expression = attr.value.expression;
-  return expression?.type === "Literal" ? expression.value : null;
-}
 
 function isTextEntry(element, components) {
   const editable = attributeValue(element, "contentEditable");
@@ -34,29 +18,6 @@ function isTextEntry(element, components) {
   if (name !== "input") return false;
   const type = attributeValue(element, "type");
   return typeof type !== "string" || !NON_TEXT_TYPES.has(type);
-}
-
-/** `useCallback(fn, deps)` and any wrapper like it: the handler is the first function argument. */
-function unwrap(node) {
-  if (node?.type === "CallExpression") return node.arguments.find((arg) => FUNCTIONS.has(arg.type)) ?? null;
-  return node && FUNCTIONS.has(node.type) ? node : null;
-}
-
-function resolve(sourceCode, expression) {
-  if (expression.type !== "Identifier") return unwrap(expression);
-  for (let scope = sourceCode.getScope(expression); scope; scope = scope.upper) {
-    const variable = scope.set.get(expression.name);
-    if (!variable) continue;
-    // Branch on the definition kind: for a parameter, `def.node` is the enclosing function, not the handler.
-    const def = variable.defs[0];
-    if (def?.type === "FunctionName") return def.node;
-    return def?.type === "Variable" ? unwrap(def.node.init) : null;
-  }
-  return null;
-}
-
-function propertyName(node) {
-  return node.type === "MemberExpression" && !node.computed ? node.property.name : null;
 }
 
 function isKey(node) {
@@ -77,16 +38,6 @@ function isInlineGuard(node) {
   if (node.type !== "BinaryExpression" || !EQUALITY.has(node.operator)) return false;
   const sides = [node.left, node.right];
   return sides.some((side) => propertyName(side) === "keyCode") && sides.some((side) => side.type === "Literal" && side.value === IME_KEY_CODE);
-}
-
-function walk(node, keys, visit) {
-  visit(node);
-  for (const key of keys[node.type] ?? []) {
-    const child = node[key];
-    for (const item of Array.isArray(child) ? child : [child]) {
-      if (item && typeof item.type === "string" && !FUNCTIONS.has(item.type)) walk(item, keys, visit);
-    }
-  }
 }
 
 function contains(outer, inner) {

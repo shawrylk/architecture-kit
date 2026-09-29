@@ -337,7 +337,7 @@ stopping the call they are judging; the session note skips the tool line instead
 **Lint** — `no-cross-feature-internals`, `storage-only-in-resource`, `scoped-repository`,
 `tenant-scoped-table`, `no-offset-pagination`, `no-status-literal`, `signal-last-param`,
 `no-raw-fetch`, `no-orchestration-in-trigger`, `no-number-in-comment`, `ime-safe-key`,
-`registry-literal`, `no-sql-raw`.
+`registry-literal`, `no-sql-raw`, `mutation-control-pending` (off by default).
 
 The preset also refuses an exemption written in a file. `noInlineConfig` makes ESLint ignore an
 `eslint-disable` comment and report it as a warning, so a run with `--max-warnings 0` fails on it.
@@ -378,6 +378,28 @@ the IME guard first. A row or a button that reacts to Enter is not text entry, s
 With `ime.guards` set, only a call to one of them counts, and an inline `isComposing` or
 `keyCode === 229` check is reported as a second mechanism. With no guard set, either inline check
 counts.
+
+### Show the pending state on a write control
+
+`qc/mutation-control-pending` reads `onClick`, `onSelect`, and `onConfirm`. A handler that calls
+`.mutate(` or `.mutateAsync(` must sit on a control that shows the write is pending. Two shapes
+pass:
+
+- The element is the configured button and carries the pending prop, such as `loading={m.isPending}`.
+- The element has both `disabled` and `aria-busy`.
+
+A handler that returns the `mutateAsync` promise also passes: an arrow with the call as its
+expression body, or a direct `return`. A promise stored in a variable does not count. `mutate`
+returns nothing, so returning it does not count either.
+
+```json
+{
+  "rules": { "mutation-control-pending": true },
+  "mutationControl": { "button": "Button", "prop": "loading", "handlers": ["onClick", "onSelect", "onConfirm"] }
+}
+```
+
+The rule ships off. The preset applies it to `clientFiles`.
 
 ### Let a reviewed file call `sql.raw`
 

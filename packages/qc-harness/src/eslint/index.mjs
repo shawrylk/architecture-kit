@@ -1,6 +1,7 @@
 import durableIdempotencyKey from "./rules/durable-idempotency-key.mjs";
 import externalServiceOnlyInAdapter from "./rules/external-service-only-in-adapter.mjs";
 import imeSafeKey from "./rules/ime-safe-key.mjs";
+import mutationControlPending from "./rules/mutation-control-pending.mjs";
 import noCrossFeatureInternals from "./rules/no-cross-feature-internals.mjs";
 import registryLiteral from "./rules/registry-literal.mjs";
 import noCommentParagraph from "./rules/no-comment-paragraph.mjs";
@@ -22,6 +23,7 @@ export const rules = {
   "durable-idempotency-key": durableIdempotencyKey,
   "external-service-only-in-adapter": externalServiceOnlyInAdapter,
   "ime-safe-key": imeSafeKey,
+  "mutation-control-pending": mutationControlPending,
   "no-cross-feature-internals": noCrossFeatureInternals,
   "registry-literal": registryLiteral,
   "no-comment-paragraph": noCommentParagraph,

@@ -120,6 +120,24 @@ test("the ime config reaches qc/ime-safe-key", () => {
   assert.deepEqual(setting[1], { components: [], guards: ["isImeComposing"] });
 });
 
+test("mutation-control-pending is off by default and reaches the client files with its options when on", () => {
+  const client = (rules) => {
+    const blocks = preset({ config: config({ clientFiles: ["frontend/src/**/*.tsx"], rules }) });
+    return emitted(blocks.filter((block) => block.files?.includes("frontend/src/**/*.tsx"))).get("qc/mutation-control-pending");
+  };
+  assert.equal(client({}), undefined);
+  const setting = client({ "mutation-control-pending": true });
+  assert.deepEqual(setting[1], { button: "Button", prop: "loading", handlers: ["onClick", "onSelect", "onConfirm"] });
+});
+
+test("the mutationControl config reaches qc/mutation-control-pending", () => {
+  const blocks = preset({
+    config: config({ clientFiles: ["src/**/*.tsx"], rules: { "mutation-control-pending": true }, mutationControl: { button: "Action", prop: "busy" } }),
+  });
+  const setting = emitted(blocks).get("qc/mutation-control-pending");
+  assert.deepEqual(setting[1], { button: "Action", prop: "busy", handlers: ["onClick", "onSelect", "onConfirm"] });
+});
+
 test("the preset refuses an inline config comment in every file", () => {
   const block = preset({ config: config() }).find((b) => b.linterOptions);
   assert.ok(block, "no linterOptions block emitted");
