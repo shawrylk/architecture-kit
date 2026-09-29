@@ -425,12 +425,14 @@ export const dispatchDefaults = {
     "architecture:sdd-reviewer",
     "architecture:sdd-branch-reviewer",
   ],
-  // Types that share one slot per session.
+  // Types that share the slots of a session.
   implementerTypes: ["sdd-implementer", "architecture:sdd-implementer"],
   // The longest prompt, in characters. A brief belongs in a file.
   maxPromptChars: 12000,
   // A slot with no stop expires after this many minutes.
   slotMinutes: 60,
+  // How many implementers run at once in a session. Each needs paths of its own, and a worktree.
+  implementerSlots: 1,
   // The model families each type's named `model` may carry. `"*"` covers every other type.
   models: {
     "sdd-planner": ["opus"],

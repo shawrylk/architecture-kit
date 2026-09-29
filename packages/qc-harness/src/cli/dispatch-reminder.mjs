@@ -15,6 +15,12 @@ export const REMINDER =
 
 const context = (eventName, text) => ({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
 
+/** One added line for a limit above 1, which overrides the one-at-a-time rule of the note. */
+const slotsLine = ({ implementerSlots }) =>
+  implementerSlots > 1
+    ? ` This repository allows up to ${implementerSlots} implementers at once, each in its own worktree, so the one-at-a-time rule above does not apply. A hook refuses one over the limit.`
+    : "";
+
 /** One added line naming `swarm.explore`'s tools, or "" when the section is off or names none. */
 function exploreLine(cwd) {
   let settings;
@@ -45,7 +51,7 @@ function decideSessionStart(call) {
   }
   const explore = exploreLine(cwd);
   if (!dispatch) return explore === "" ? null : context("SessionStart", explore.trim());
-  return context("SessionStart", `${REMINDER}${explore}`);
+  return context("SessionStart", `${REMINDER}${slotsLine(dispatch)}${explore}`);
 }
 
 /** @returns the hook output, or null when there is nothing to add for this event. */

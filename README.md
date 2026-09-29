@@ -238,26 +238,35 @@ fix:
   string carrying none of `models`' known families is refused the same way. A fork keeps the rule
   above instead, since it ignores `model`.
 - A prompt longer than `maxPromptChars`. The brief goes in a file, and the prompt names its path.
-- A second dispatch of a type in `implementerTypes` while one runs in the session.
+- A dispatch of a type in `implementerTypes` while `implementerSlots` of them run in the session. The default is one.
 
 The hook judges the dispatches of the main session only. A subagent's dispatch follows that
-subagent's own definition, which is often another plugin's. The hook keeps one implementer slot per session
-under the OS temp folder. The `Agent` call does not know the new agent's id, so the slot is keyed on
-the session. A `SubagentStop` of an implementer type frees the slot, wherever that agent ran. A
-`SubagentStart` of an implementer type claims a free slot again, so an implementer resumed through
-`SendMessage` holds it too. A slot with no stop expires after `slotMinutes`. A dispatch that passes
-the hook can still be denied later, and then no stop comes. So the refusal names the slot file to
-delete.
+subagent's own definition, which is often another plugin's. The hook keeps `implementerSlots` fixed slot files per session under the OS temp folder, `slot-0.claim`
+and up. A claim tries each slot in order with an exclusive create and takes the first one it makes, so
+no group of dispatches in one parallel block passes the limit. Each file holds its holder's id. The
+`Agent` call does not know the new agent's id, so a dispatch holds its own `tool_use_id`. A
+`SubagentStart` of an implementer type rewrites one waiting slot to the new agent's id, so a dispatch
+and its start count once. A `SubagentStop` removes the slot that holds its own agent's id. A stop
+that finds none removes one waiting slot, as the single slot did. A `SubagentStart` with no waiting
+slot takes a free one, so an implementer resumed through `SendMessage` holds one too, and it never
+takes a slot over the limit. A slot with no stop expires after `slotMinutes`. A dispatch that passes
+the hook can still be denied later, and then no stop comes. So the refusal names a slot file to
+delete. At a limit of 1 it names the claim's time and file. Above 1 it also names each holder and the
+limit.
+
+A limit over 1 fits a repository whose work orders own disjoint paths. Each implementer then runs in
+its own worktree.
 
 A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
-names the workflow, the four types, the model tiers, and the one-implementer rule.
+names the workflow, the four types, the model tiers, and the one-implementer rule. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `allowedTypes` | the four types, bare and with the `architecture:` prefix | the types that may omit `model` |
-| `implementerTypes` | `["sdd-implementer", "architecture:sdd-implementer"]` | the types that share the one slot |
+| `implementerTypes` | `["sdd-implementer", "architecture:sdd-implementer"]` | the types that share the slots |
 | `maxPromptChars` | `12000` | the longest prompt, in characters |
 | `slotMinutes` | `60` | when a slot with no stop expires |
+| `implementerSlots` | `1` | how many implementers run at once in a session; a positive whole number |
 | `models` | opus for the planner and the branch reviewer, sonnet for the implementer and the task reviewer, `["sonnet", "haiku"]` for `*` | the model families each type's named `model` may carry |
 
 The bare names cover a copy of the agents in `~/.claude/agents`. A list replaces its default and

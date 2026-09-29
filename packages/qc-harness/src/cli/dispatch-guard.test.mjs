@@ -204,3 +204,40 @@ test("hooks.json runs the guard on Agent, SubagentStart and SubagentStop", () =>
   assert.deepEqual(matchersOf(hooks.SubagentStart), [undefined]);
   assert.deepEqual(matchersOf(hooks.SubagentStop), [undefined]);
 });
+
+const slotCall = (cwd, toolUseId) => agentCall(cwd, implementer, { tool_use_id: toolUseId });
+const agentEvent = (cwd, agentId, hook_event_name) => ({
+  ...subagentEvent(cwd, "architecture:sdd-implementer", hook_event_name),
+  agent_id: agentId,
+});
+
+test("a limit of 3 lets three implementers run, refuses the fourth with the holders and the limit, and a stop frees one", (t) => {
+  const ws = workspace(t, { implementerSlots: 3 });
+  for (const id of ["a", "b", "c"]) {
+    assert.equal(decide(slotCall(ws.on, `use-${id}`), ws.tmp), null);
+    decide(agentEvent(ws.on, `agent-${id}`, "SubagentStart"), ws.tmp);
+  }
+  const fourth = reasonOf(decide(slotCall(ws.on, "use-d"), ws.tmp)) ?? "";
+  assert.match(fourth, /all 3 implementer slots/);
+  for (const id of ["agent-a", "agent-b", "agent-c"]) assert.ok(fourth.includes(id), fourth);
+  decide(agentEvent(ws.on, "agent-b", "SubagentStop"), ws.tmp);
+  assert.equal(decide(slotCall(ws.on, "use-d"), ws.tmp), null);
+  assert.match(reasonOf(decide(slotCall(ws.on, "use-e"), ws.tmp)) ?? "", /all 3 implementer slots/);
+});
+
+test("a resumed implementer takes its own slot again when the limit is above 1", (t) => {
+  const ws = workspace(t, { implementerSlots: 2 });
+  decide(slotCall(ws.on, "use-a"), ws.tmp);
+  decide(agentEvent(ws.on, "agent-a", "SubagentStart"), ws.tmp);
+  decide(agentEvent(ws.on, "agent-a", "SubagentStop"), ws.tmp);
+  decide(agentEvent(ws.on, "agent-a", "SubagentStart"), ws.tmp);
+  assert.equal(decide(slotCall(ws.on, "use-b"), ws.tmp), null);
+  assert.match(reasonOf(decide(slotCall(ws.on, "use-c"), ws.tmp)) ?? "", /all 2 implementer slots/);
+});
+
+test("a dispatch with no tool_use_id still claims its own slot", (t) => {
+  const ws = workspace(t, { implementerSlots: 2 });
+  assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
+  assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
+  assert.match(reasonOf(decide(agentCall(ws.on, implementer), ws.tmp)) ?? "", /all 2 implementer slots/);
+});

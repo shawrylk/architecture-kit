@@ -28,6 +28,11 @@ test("a wrong value names its key", () => {
     [{ implementerTypes: [""] }, /swarm\.dispatch\.implementerTypes/],
     [{ maxPromptChars: 0 }, /swarm\.dispatch\.maxPromptChars/],
     [{ slotMinutes: -1 }, /swarm\.dispatch\.slotMinutes/],
+    [{ implementerSlots: 0 }, /swarm\.dispatch\.implementerSlots/],
+    [{ implementerSlots: -1 }, /swarm\.dispatch\.implementerSlots/],
+    [{ implementerSlots: 1.5 }, /swarm\.dispatch\.implementerSlots/],
+    [{ implementerSlots: "2" }, /swarm\.dispatch\.implementerSlots/],
+    [{ implementerSlots: null }, /swarm\.dispatch\.implementerSlots/],
     [{ models: "opus" }, /swarm\.dispatch\.models\b/],
     [{ models: ["opus"] }, /swarm\.dispatch\.models\b/],
     [{ models: { "sdd-planner": [] } }, /swarm\.dispatch\.models\.sdd-planner/],
@@ -151,4 +156,39 @@ test("the slot refusal names the expiry and the file that frees the slot", () =>
   assert.match(reason, /holds the one implementer slot/);
   assert.match(reason, /1970-01-01T01:00:00\.000Z/);
   assert.match(reason, /delete \/tmp\/slot\.claim/);
+});
+
+test("implementerSlots defaults to 1, and a repository sets a whole number", () => {
+  assert.equal(dispatchSettings({ dispatch: {} }).implementerSlots, 1);
+  assert.equal(dispatchSettings({ dispatch: { implementerSlots: 3 } }).implementerSlots, 3);
+});
+
+test("a refusal over a limit above 1 names the limit and each holder, and one at 1 keeps its text", () => {
+  const holders = [
+    { id: "use-1", file: "/tmp/pending-use-1.claim", claimedAt: new Date(0) },
+    { id: "agent-2", file: "/tmp/agent-agent-2.claim", claimedAt: new Date(1000) },
+  ];
+  const reason = slotRefusal({
+    type: "sdd-implementer",
+    claimedAt: new Date(0),
+    expiresAt: new Date(3_600_000),
+    slotFile: "/tmp/pending-use-1.claim",
+    limit: 2,
+    holders,
+  });
+  assert.match(reason, /all 2 implementer slots/);
+  assert.match(reason, /use-1/);
+  assert.match(reason, /agent-2/);
+  assert.match(reason, /1970-01-01T01:00:00\.000Z/);
+  assert.match(reason, /delete \/tmp\/pending-use-1\.claim/);
+  const one = slotRefusal({
+    type: "sdd-implementer",
+    claimedAt: new Date(0),
+    expiresAt: new Date(3_600_000),
+    slotFile: "/tmp/slot.claim",
+    limit: 1,
+    holders: holders.slice(0, 1),
+  });
+  assert.match(one, /holds the one implementer slot/);
+  assert.doesNotMatch(one, /use-1/);
 });
