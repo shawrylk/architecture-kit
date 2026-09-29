@@ -19,6 +19,7 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [branch]       the workflow ledger: dispatches, stops, verdicts, merges, issue updates
+  qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc worktree add <name> <branch> [--from <ref>]
                            fetch, add ../<name> beside the main checkout, install, print the path
   qc worktree remove <name>
@@ -85,6 +86,10 @@ async function main() {
     case "ledger": {
       const { runLedger } = await import("./ledger.mjs");
       process.exit(runLedger(config, rest));
+    }
+    case "plan-check": {
+      const { runPlanCheck } = await import("./plan-check.mjs");
+      process.exit(runPlanCheck(config, rest));
     }
     case "decisions": {
       const { runDecisions } = await import("./decisions.mjs");
