@@ -119,6 +119,8 @@ test("while swarm.dispatch is on, a main-session shell write outside the control
   const text = contextOf(output);
   assert.match(text, /src\/a\.ts: outside the controller paths \(docs\/\*\*, /);
   assert.doesNotMatch(text, /docs\/b\.md/);
+  assert.match(text, /dispatch an implementer/i);
+  assert.doesNotMatch(text, /work order|orchestrator/);
   assert.equal(await report({ ...call, agent_id: "agent-1" }, ws.plain), null);
   assert.equal(await report(bash(ws.plain, "cat src/a.ts"), ws.plain), null);
 });
