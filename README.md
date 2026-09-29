@@ -133,6 +133,9 @@ structure. `pre-push` is the full pass — every repository-wide gate (citations
 predicate, route agreement, sagas) — once per push instead of once per commit. A human and an agent
 both go through the same two hooks; neither can commit past the fast tier or push past the full one.
 
+While `commitMessage.conventional` is on, the default `hooks.required` also requires a `commit-msg` hook
+that calls `qc commit-msg`. Setting `conventional` to `false` drops that requirement.
+
 ### 8. Hold a swarm to its own scope
 
 When one work order runs several agents against the same working directory, declare its exclusive
