@@ -872,6 +872,9 @@ jsx.run("mutation-control-pending", rules["mutation-control-pending"], {
       code: "<Cell loading={m.isPending} onClick={() => m.mutate(id)} />;",
       options: [{ button: "Cell", prop: "busy" }],
       errors: [{ messageId: "pending", data: { button: "Cell", prop: "busy" } }],
+    },
+  ],
+});
 
 // A number another registry owns, such as a session lifetime, is held only by the readers its entry names.
 const GRACE = [{ values: [{ key: "offlinegrace", registry: "session-lifetimes.json", value: 7, readers: ["frontend/src/platform/auth/device-session.ts"] }] }];
