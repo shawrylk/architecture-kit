@@ -87,6 +87,7 @@ const GATE_RULES = new Set([
   "missing-idempotency-field",
   "legacy-now-declares",
   "legacy-grew",
+  "unreadable-base-contract",
   "unreadable-contract",
   "unreadable-ledger",
   "contract-reader-unavailable",
@@ -148,15 +149,6 @@ test("a ledger with an entry that is not a string is unreadable", async () => {
   assert.deepEqual(ledger.problems.map((problem) => problem.rule), ["unreadable-ledger"]);
 });
 
-test("an id added to the ledger fails unless the operation existed at the merge base", () => {
-  const before = { ledger: ["oldOne"], ids: ["oldOne", "existedThenUnlisted"] };
-  const after = ["oldOne", "existedThenUnlisted", "brandNew"];
-  const found = checkLedgerGrowth(after, before, { ledger: "contracts/idempotency-legacy.json" });
-  assert.deepEqual(found.map((problem) => problem.rule), ["legacy-grew"]);
-  assert.equal(found[0].path, "contracts/idempotency-legacy.json");
-  assert.match(found[0].detail, /brandNew/);
-  assert.deepEqual(checkLedgerGrowth(["oldOne"], before, { ledger: "l.json" }), []);
-});
 
 // Growth is compared with the merge base, so these run in a repository with two commits.
 const git = (dir, ...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: dir, stdio: "pipe" });
@@ -212,4 +204,54 @@ test("with no merge base the growth check passes and says it did not run", async
   });
   assert.deepEqual(found.problems, []);
   assert.ok(found.lines.some((line) => line.includes("growth") && line.includes("skipped")));
+});
+
+const bare = { method: "post", path: "/v1/a", params: [], bodyProps: [] };
+const opAt = (id, extra) => ({ id, params: [], bodyProps: [], ...extra });
+const growth = { ledger: "contracts/idempotency-legacy.json", fields: ["mutationId"], exemptDeleteById: true };
+
+test("an id added to the ledger fails unless the operation was owed at the merge base", () => {
+  const before = { ledger: ["oldOne"], operations: [{ id: "owedThen", method: "post", path: "/v1/a", owed: true }] };
+  const now = [opAt("oldOne", bare), opAt("owedThen", bare), opAt("brandNew", { ...bare, path: "/v1/b" })];
+  const found = checkLedgerGrowth(["oldOne", "owedThen", "brandNew"], before, now, growth);
+  assert.deepEqual(found.map((problem) => problem.rule), ["legacy-grew"]);
+  assert.equal(found[0].path, "contracts/idempotency-legacy.json");
+  assert.match(found[0].detail, /brandNew/);
+});
+
+test("a renamed GET whose id a new unkeyed POST reuses is not owed", () => {
+  const before = { ledger: [], operations: [{ id: "reused", method: "get", path: "/v1/a", owed: false }] };
+  const found = checkLedgerGrowth(["reused"], before, [opAt("reused", bare)], growth);
+  assert.deepEqual(found.map((problem) => problem.rule), ["legacy-grew"]);
+});
+
+test("a keyed POST that drops its key and is ledgered fails", () => {
+  const before = { ledger: [], operations: [{ id: "createA", method: "post", path: "/v1/a", owed: false }] };
+  const found = checkLedgerGrowth(["createA"], before, [opAt("createA", bare)], growth);
+  assert.deepEqual(found.map((problem) => problem.rule), ["legacy-grew"]);
+});
+
+test("a ledgered id that moves to a new path fails", () => {
+  const before = { ledger: [], operations: [{ id: "createA", method: "post", path: "/v1/a", owed: true }] };
+  const found = checkLedgerGrowth(["createA"], before, [opAt("createA", { ...bare, path: "/v1/moved" })], growth);
+  assert.deepEqual(found.map((problem) => problem.rule), ["legacy-grew"]);
+  assert.deepEqual(checkLedgerGrowth(["createA"], before, [opAt("createA", bare)], growth), []);
+});
+
+
+test("a base contract that does not parse is a problem, not a skip", async () => {
+  const found = await grown({
+    atBase: { "openapi.yaml": "paths: [unclosed\n", "idempotency-legacy.json": '["createBoard"]' },
+    now: { "openapi.yaml": POSTS, "idempotency-legacy.json": '["createBoard"]' },
+  });
+  assert.deepEqual(found.problems.map((problem) => problem.rule), ["unreadable-base-contract"]);
+});
+
+test("the skip line for a missing ref is a note, not an OK", async () => {
+  const found = await grown({
+    atBase: { "openapi.yaml": POSTS },
+    now: { "openapi.yaml": POSTS + "# changed" },
+    base: "no-such-ref",
+  });
+  assert.ok(found.lines.some((line) => /^NOTE\s+idempotency\s+ledger growth skipped/.test(line)));
 });

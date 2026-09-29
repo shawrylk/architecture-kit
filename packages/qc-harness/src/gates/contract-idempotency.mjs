@@ -1,8 +1,8 @@
 // A mutating operation names the key that makes a retry a resume: docs/guards.md. The contract
 // carries it, so a client cannot call a write that has no way to say "this is the same attempt".
 // Operations that predate the gate sit in a ledger. An entry whose operation no longer owes the key
-// fails, so a stale entry cannot linger. An entry new since the merge base fails unless its operation
-// already existed then, so the ledger cannot absorb a new write.
+// fails, so a stale entry cannot linger. An entry new since the merge base fails unless that same
+// operation lacked its key then, so the ledger cannot absorb a new write.
 
 const MUTATING = new Set(["post", "put", "patch", "delete"]);
 const PARAMETER_SEGMENT = /^(?:\{[^}]+\}|:[^/]+)$/;
@@ -13,6 +13,11 @@ export function isDeleteById({ method, path }) {
 }
 
 const declares = (operation, fields) => fields.some((field) => operation.params.includes(field) || operation.bodyProps.includes(field));
+
+/** A write that names none of `fields`, and is not a DELETE by id the config exempts. */
+export function owesKey(operation, { fields, exemptDeleteById }) {
+  return MUTATING.has(operation.method) && !(exemptDeleteById && isDeleteById(operation)) && !declares(operation, fields);
+}
 
 /** Why a ledger entry has no work left to do, or null when its operation still owes the field. */
 function staleReason(operation, fields, exemptDeleteById) {
@@ -51,21 +56,26 @@ export function checkContractIdempotency(operations, legacy, { fields, exemptDel
 }
 
 /**
- * An id added to the ledger since the merge base fails unless its operation existed then, so the
- * ledger cannot absorb a write that is new.
+ * An id added to the ledger since the merge base fails unless the base contract held an operation with
+ * the same id, method and path that lacked its key. A reused id, a key dropped since, or a moved path
+ * cannot pass as an older write. An id the contract no longer holds is `legacy-now-declares`'s to report.
  * @param {string[]} legacy the ledger now
- * @param {{ledger: string[], ids: string[]}} before the ledger and the operation ids at the merge base
+ * @param {{ledger: string[], operations: {id: string, method: string, path: string, owed: boolean}[]}} before
+ *   the ledger and the operations at the merge base, `owed` marking one that lacked its key
+ * @param {{id: string, method: string, path: string}[]} operations the contract now
  * @param {{ledger: string}} options the path a problem reports
  * @returns {{path: string, rule: string, detail: string}[]}
  */
-export function checkLedgerGrowth(legacy, before, { ledger }) {
+export function checkLedgerGrowth(legacy, before, operations, { ledger }) {
   const listed = new Set(before.ledger);
-  const existed = new Set(before.ids);
+  const current = new Map(operations.map((operation) => [operation.id, operation]));
+  const wasOwed = (now) =>
+    before.operations.some((then) => then.owed && then.id === now.id && then.method === now.method && then.path === now.path);
   return [...new Set(legacy)]
-    .filter((id) => !listed.has(id) && !existed.has(id))
+    .filter((id) => !listed.has(id) && current.has(id) && !wasOwed(current.get(id)))
     .map((id) => ({
       path: ledger,
       rule: "legacy-grew",
-      detail: `'${id}' was added to the ledger, and no such operation existed at the merge base; declare its idempotency field instead`,
+      detail: "'" + id + "' was added to the ledger, and the merge base held no operation with its id, method and path that lacked its key; declare its idempotency field instead",
     }));
 }

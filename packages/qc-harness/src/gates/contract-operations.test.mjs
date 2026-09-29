@@ -217,3 +217,23 @@ test("a schema first reached past the depth cap still counts when a shallow path
 `);
   assert.deepEqual(found[0].bodyProps, ["mutationId"]);
 });
+
+test("a ref keeps its shallowest reach: one first met near the cap is walked again from a shallower path", async () => {
+  const found = await contractOperations(`${post("Top")}
+    Top:
+      allOf: [{ $ref: "#/components/schemas/C1" }, { $ref: "#/components/schemas/A" }]
+    C1:
+      allOf: [{ $ref: "#/components/schemas/C2" }]
+    C2:
+      allOf: [{ $ref: "#/components/schemas/C3" }]
+    C3:
+      allOf: [{ $ref: "#/components/schemas/C4" }]
+    C4:
+      allOf: [{ $ref: "#/components/schemas/A" }]
+    A:
+      allOf: [{ $ref: "#/components/schemas/B" }]
+    B:
+      properties: { mutationId: {} }
+`);
+  assert.deepEqual(found[0].bodyProps, ["mutationId"]);
+});

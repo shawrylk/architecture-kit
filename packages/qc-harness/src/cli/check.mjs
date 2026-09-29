@@ -559,11 +559,13 @@ async function contractIdempotency(config, lines) {
   const fields = config.idempotency.keys;
   const problems = checkContractIdempotency(operations, ledger ?? [], { fields, exemptDeleteById, contract, ledger: legacy });
   lines.push(`OK  idempotency  ${operations.length} operation(s), each write names its key or sits in the ${(ledger ?? []).length}-entry ledger`);
-  const history = await contractHistory(config.root, { base: config.ratchet.base, contract, legacy });
+  const history = await contractHistory(config.root, { base: config.ratchet.base, contract, legacy, fields, exemptDeleteById });
   if (history.skip) {
-    lines.push(`OK  idempotency  ledger growth skipped: ${history.skip}`);
+    lines.push("NOTE  idempotency  ledger growth skipped: " + history.skip);
+  } else if (history.unreadable) {
+    problems.push({ path: contract, rule: "unreadable-base-contract", detail: history.unreadable });
   } else {
-    problems.push(...checkLedgerGrowth(ledger ?? [], history, { ledger: legacy }));
+    problems.push(...checkLedgerGrowth(ledger ?? [], history, operations, { ledger: legacy }));
   }
   return problems;
 }

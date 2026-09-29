@@ -39,15 +39,16 @@ function segment(text) {
 
 /**
  * A local `$ref` followed to its target, a few hops at most. Anything else is returned as it is.
- * With `seen`, each ref is followed once: a ref already in it resolves to undefined.
+ * With `seen`, a map of ref to the shallowest depth it was walked at, a ref is followed again only
+ * when it is reached shallower than before; one already walked that shallow resolves to undefined.
  */
-function deref(document, node, seen) {
+function deref(document, node, seen, depth = 0) {
   let current = node;
   for (let hop = 0; hop < MAX_HOPS; hop++) {
     const ref = current?.$ref;
     if (typeof ref !== "string" || !ref.startsWith("#/")) return current;
-    if (seen?.has(ref)) return undefined;
-    seen?.add(ref);
+    if (seen && seen.get(ref) <= depth) return undefined;
+    seen?.set(ref, depth);
     const target = ref
       .slice(2)
       .split("/")
@@ -60,13 +61,13 @@ function deref(document, node, seen) {
 
 /**
  * The property names of a schema. A local `$ref` and each `allOf` part are followed. `seen` holds the
- * refs of one body walk, so a schema reached twice, or one that composes itself, is walked once;
- * the depth is a backstop.
+ * refs of one body walk with their shallowest depth, so a schema that composes itself ends, and a
+ * ref cut off near the cap is walked again when a shallower path reaches it.
  */
 function schemaProps(document, schema, seen, depth = 0) {
   // The cap comes first: a ref reached past it must stay unseen, so a shallower path can still walk it.
   if (depth > MAX_HOPS) return [];
-  const resolved = deref(document, schema, seen);
+  const resolved = deref(document, schema, seen, depth);
   if (!resolved || typeof resolved !== "object") return [];
   const own = Object.keys(resolved.properties ?? {});
   const composed = (resolved.allOf ?? []).flatMap((part) => schemaProps(document, part, seen, depth + 1));
@@ -75,7 +76,7 @@ function schemaProps(document, schema, seen, depth = 0) {
 
 function bodyProps(document, operation) {
   const body = deref(document, operation.requestBody);
-  const seen = new Set();
+  const seen = new Map();
   const media = Object.values(body?.content ?? {});
   return [...new Set(media.flatMap((entry) => schemaProps(document, entry?.schema, seen)))];
 }
