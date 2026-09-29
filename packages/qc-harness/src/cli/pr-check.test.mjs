@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { checkPullRequest, issueReferences } from "./pr-check.mjs";
+import { checkPullRequest, isCi, issueReferences } from "./pr-check.mjs";
 
 const event = (body) => ({
   repository: { full_name: "acme/app" },
@@ -13,6 +13,9 @@ const ghKnowing = (issues) => async (args) => {
   if (!created) return { ok: false, stderr: "GraphQL: Could not resolve to an issue or pull request with the number of 404." };
   return { ok: true, stdout: JSON.stringify({ createdAt: created }) };
 };
+
+const unreachable = async () => ({ ok: false, stderr: "dial tcp: lookup api.github.com: no such host" });
+const missingGh = async () => ({ ok: false, missing: true, stderr: "spawn gh ENOENT" });
 
 test("a PR body names its issue as Fixes #n, Refs #n, or a cross-repository Refs owner/repo#n", () => {
   assert.deepEqual(issueReferences("Fixes #12\nrefs #3, and Refs other/lib#7", "acme/app"), [
@@ -35,14 +38,59 @@ test("an issue that exists and predates the PR passes; a missing or newer one fa
   assert.match((await checkPullRequest(event("Refs #13"), { gh, hasToken: true })).problems.join(), /was opened after the pull request/);
 });
 
-test("with no token, or no network, the issue lookup skips with a note, but the reference is still required", async () => {
+test("with no token, or outside CI with no network, the issue lookup skips with a note, but the reference is still required", async () => {
   const noToken = await checkPullRequest(event("Fixes #12"), { gh: ghKnowing({}), hasToken: false });
   assert.deepEqual(noToken.problems, []);
   assert.match(noToken.notes.join(), /no GH_TOKEN/);
-  const offline = await checkPullRequest(event("Fixes #12"), { gh: async () => ({ ok: false, stderr: "dial tcp: lookup api.github.com: no such host" }), hasToken: true });
+  assert.match((await checkPullRequest(event(""), { gh: ghKnowing({}), hasToken: false })).problems.join(), /names no issue/);
+});
+
+test("outside CI the same failure stays a note", async () => {
+  const offline = await checkPullRequest(event("Fixes #12"), { gh: unreachable, hasToken: true, ci: false });
   assert.deepEqual(offline.problems, []);
   assert.match(offline.notes.join(), /could not reach GitHub/);
-  assert.match((await checkPullRequest(event(""), { gh: ghKnowing({}), hasToken: false })).problems.join(), /names no issue/);
+  const noGh = await checkPullRequest(event("Fixes #12"), { gh: missingGh, hasToken: true, ci: false });
+  assert.deepEqual(noGh.problems, []);
+  assert.match(noGh.notes.join(), /could not reach GitHub/);
+  const unset = await checkPullRequest(event("Fixes #12"), { gh: unreachable, hasToken: true });
+  assert.deepEqual(unset.problems, []);
+});
+
+test("in CI a missing gh fails with a message that names gh", async () => {
+  const result = await checkPullRequest(event("Fixes #12"), { gh: missingGh, hasToken: true, ci: true });
+  assert.equal(result.problems.length, 1);
+  assert.match(result.problems[0], /gh is not installed, so acme\/app#12 cannot be checked/);
+  assert.deepEqual(result.notes, []);
+});
+
+test("in CI a failed call to GitHub fails and quotes the first stderr line", async () => {
+  const gh = async () => ({ ok: false, stderr: "HTTP 502: Bad Gateway\nsecond line" });
+  const result = await checkPullRequest(event("Fixes #12"), { gh, hasToken: true, ci: true });
+  assert.equal(result.problems.length, 1);
+  assert.match(result.problems[0], /could not reach GitHub for acme\/app#12: HTTP 502: Bad Gateway$/);
+  assert.deepEqual(result.notes, []);
+});
+
+test("in CI with no token the check is still a note", async () => {
+  const result = await checkPullRequest(event("Fixes #12"), { gh: missingGh, hasToken: false, ci: true });
+  assert.deepEqual(result.problems, []);
+  assert.match(result.notes.join(), /no GH_TOKEN/);
+});
+
+test("in CI a repository the token cannot see is still a note", async () => {
+  const gh = async () => ({ ok: false, stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/private'. (repository)" });
+  const result = await checkPullRequest(event("Refs acme/private#5"), { gh, hasToken: true, ci: true });
+  assert.deepEqual(result.problems, []);
+  assert.match(result.notes.join(), /the token cannot see acme.private/);
+});
+
+test("CI=false is not CI", () => {
+  assert.equal(isCi({ CI: "true" }), true);
+  assert.equal(isCi({ CI: "1" }), true);
+  assert.equal(isCi({ CI: "" }), false);
+  assert.equal(isCi({ CI: "false" }), false);
+  assert.equal(isCi({ CI: "FALSE" }), false);
+  assert.equal(isCi({}), false);
 });
 
 test("a repository the token cannot see is a note, never a missing issue", async () => {
