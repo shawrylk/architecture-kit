@@ -53,6 +53,8 @@ export const defaults = {
     // A store that outlives nothing has nothing to dedupe, so a disposable key is right.
     ledgerKey: "ledger",
     throwawayLedgers: ["InMemoryPipelineLedger"],
+    // "uuid" refuses a key built as a string, for a column typed uuid.
+    format: null,
   },
 
   // The log that is evidence only while nothing can edit it.
