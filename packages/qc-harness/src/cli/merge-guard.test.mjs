@@ -293,3 +293,36 @@ test("an --auto merge on a PR reopened after a closed pending record is tracked 
   decide(shell(ws.on, command, "PostToolUse"), { gh: open });
   assert.equal(readLedger(ws.ledgerOf(ws.on)).length, 3, "and a repeat adds no fourth record");
 });
+
+test("a merge names another repository through a PR URL, GH_REPO, or an attached -R, and passes with a note", (t) => {
+  const ws = workspace(t);
+  for (const command of [
+    `gh pr merge https://github.com/shawrylk/architecture-kit/pull/64 --match-head-commit ${SHA}`,
+    `GH_REPO=shawrylk/architecture-kit gh pr merge 64 --match-head-commit ${SHA}`,
+    `gh pr merge 64 -Rshawrylk/architecture-kit --match-head-commit ${SHA}`,
+    `gh pr merge 64 -sRshawrylk/architecture-kit --match-head-commit ${SHA}`,
+  ]) {
+    const output = decide(shell(ws.on, command));
+    assert.equal(denied(output), null, command);
+    assert.match(output.hookSpecificOutput.additionalContext, /shawrylk\/architecture-kit/, command);
+    const { gh, calls } = fakeGh(MERGED);
+    assert.equal(decide(shell(ws.on, command, "PostToolUse"), { gh }), null);
+    assert.equal(calls.length, 0, command);
+  }
+  assert.equal(existsSync(ws.ledgerOf(ws.on)), false);
+  // The checkout's own repository, named the same ways, is still judged.
+  for (const command of [
+    `gh pr merge https://github.com/o/r/pull/60 --match-head-commit ${SHA}`,
+    `GH_REPO=o/r gh pr merge 60 --match-head-commit ${SHA}`,
+    `gh pr merge 60 -Ro/r --match-head-commit ${SHA}`,
+  ]) {
+    assert.match(denied(decide(shell(ws.on, command))) ?? "", /no APPROVED branch review/, command);
+  }
+});
+
+test("a gh api call to a repos/ path whose body file quotes the mutation is allowed", (t) => {
+  const ws = workspace(t);
+  writeFileSync(path.join(ws.on, "review.md"), "The bypass is the mergePullRequest mutation.");
+  assert.equal(decide(shell(ws.on, "gh api repos/o/r/issues/64/comments -F body=@review.md")), null);
+  assert.match(denied(decide(shell(ws.on, "gh api graphql -F query=@review.md"))) ?? "", /gh pr merge <n> --match-head-commit <sha>/);
+});
