@@ -712,11 +712,11 @@ object argument is minted.
 
 - A value fails when it holds a call of a volatile name, matched at its tail: `crypto.randomUUID()`,
   `randomUUID()`, `nanoid()`, `uuid.v4()` and `new Date()` all count. The names are `idempotency.volatile`
-  and `uuid.v4`, and `volatile: []` leaves `uuid.v4` alone.
+  and `uuid.v4`. `uuid.v4` counts even when `volatile` is `[]`.
 - The value is read whole. Parentheses, `await`, `as T` and `!` come off. Each arm of `a ?? b`, `a || b`,
   `a && b` and `c ? a : b` counts, except a ternary's condition and the guard before `&&`. A mint inside a
   wrapping call's arguments counts too: `String(Date.now())`, `useRef(randomUUID())`, `useMemo(() => randomUUID(), [])`.
-  A volatile call nested in a callback inside those arguments counts as well, so `lookup(list.filter((x) => x.at < Date.now()))` fails, a loud false positive that a stored key avoids.
+  A volatile call nested in a callback inside those arguments counts as well, so `lookup(list.filter((x) => x.at < Date.now()))` fails, a loud false positive that a stored key avoids. A function parameter that shadows a minted const is reported the same way: `const id = randomUUID(); function f(id) { return runPipeline({ mutationId: id }); }` fails.
 - A bare name, and the shorthand `{ mutationId }`, follow to the nearest `const` in scope that declares
   it, and a const that names another const is followed the same way. A `const id = crypto.randomUUID()`
   there fails, and a `const id = state.clientMutationId` passes.
