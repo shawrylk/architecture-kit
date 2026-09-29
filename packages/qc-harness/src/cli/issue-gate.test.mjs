@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { decide, issueStatus } from "./issue-gate.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
+import { rememberSession } from "./workflow-settings.mjs";
 
 const HOOK = fileURLToPath(new URL("./issue-gate.mjs", import.meta.url));
 const MERGED_AT = "2026-09-29T04:35:17Z";
@@ -107,6 +108,30 @@ test("an issue gh cannot read is named to the user, blocks nothing, and is asked
   const again = fakeGh({});
   decide(stopCall(ws.on), { gh: again.gh });
   assert.equal(again.calls.length, 1);
+});
+
+test("a stop already blocked once by this hook is never blocked again, and the open issues are named", (t) => {
+  const ws = workspace(t);
+  appendRecord(ws.ledger, merge("s", [{ repo: "o/r", number: 12 }]));
+  const { gh } = fakeGh({ 12: { state: "OPEN", comments: [] } });
+  const output = decide({ ...stopCall(ws.on), stop_hook_active: true }, { gh });
+  assert.equal(output.decision, undefined);
+  assert.match(output.systemMessage, /o\/r#12/);
+});
+
+test("a stop whose cwd holds no config finds the checkout its session remembered", (t) => {
+  const ws = workspace(t);
+  const tmp = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-issue-gate-tmp-")));
+  const outside = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-issue-gate-out-")));
+  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  t.after(() => rmSync(outside, { recursive: true, force: true }));
+  appendRecord(ws.ledger, merge("s", [{ repo: "o/r", number: 12 }]));
+  const { gh, calls } = fakeGh({ 12: { state: "OPEN", comments: [] } });
+  assert.equal(decide(stopCall(outside), { gh, tmp }), null);
+  assert.equal(calls.length, 0);
+  rememberSession("s", ws.on, tmp);
+  assert.equal(decide(stopCall(outside), { gh, tmp }).decision, "block");
+  assert.equal(calls.length, 1);
 });
 
 test("the hook process is silent in a checkout without the checks", (t) => {

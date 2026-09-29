@@ -2,10 +2,11 @@
 // The Stop trigger that holds a merge to its issues. Each issue that a PR merged in this session names is
 // closed, or has a comment after the merge, before the turn ends. It makes one gh call per unsettled issue.
 
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { runGh } from "./gh-run.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
-import { workflowAt } from "./workflow-settings.mjs";
+import { workflowOf } from "./workflow-settings.mjs";
 
 const pairOf = (prRepo, pr, repo, number) => `${prRepo}#${pr}>${repo}#${number}`;
 const prefixOf = (env = {}) => Object.entries(env).map(([name, value]) => `${name}=${value} `).join("");
@@ -28,6 +29,8 @@ function statusOf(issue, merge, gh, cwd) {
   }
 }
 
+const nameOf = ({ issue }) => `${issue.repo}#${issue.number}`;
+
 function refusalOf(open) {
   const lines = open.map(({ issue, merge }) => {
     const gh = `${prefixOf(merge.ghEnv)}gh`;
@@ -45,11 +48,11 @@ function refusalOf(open) {
 }
 
 /** The verdict on one Stop. @returns the hook output, or null to let the turn end with no message. */
-export function decide(call, { gh = runGh } = {}) {
+export function decide(call, { gh = runGh, tmp = os.tmpdir() } = {}) {
   if (call.hook_event_name !== "Stop") return null;
   let workflow;
   try {
-    workflow = workflowAt(call.cwd ?? process.cwd());
+    workflow = workflowOf(call, tmp);
   } catch {
     // The pre-call hooks report a config error; a stop that cannot read the config lets the turn end.
     return null;
@@ -76,7 +79,11 @@ export function decide(call, { gh = runGh } = {}) {
       else appendRecord(workflow.ledger, { type: "issue-update", session, pr: merge.pr, prRepo: merge.repo, repo: issue.repo, number: issue.number, how: status });
     }
   }
-  if (open.length > 0) return { decision: "block", reason: refusalOf(open) };
+  if (open.length > 0) {
+    // A stop the hook already blocked once must end, or a denied close or comment loops forever.
+    if (call.stop_hook_active) return { systemMessage: `Issue check: ${open.map(nameOf).join(", ")} still open with no update since the merge. Update each by hand.` };
+    return { decision: "block", reason: refusalOf(open) };
+  }
   return unread.length > 0 ? { systemMessage: `Issue check: gh could not read ${unread.join(", ")}. Check each by hand.` } : null;
 }
 
