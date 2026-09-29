@@ -15,7 +15,7 @@ const POWERSHELL_ENV = /^\$env:([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$/is;
 const MERGE_ENDPOINT = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge\/?(?:\?.*)?$/;
 const MERGE_MUTATION = /\bmergePullRequest\b/;
 const GRAPHQL_ENDPOINT = /(?:^|\/)graphql\/?(?:\?.*)?$/;
-const FIELD_FLAGS = new Set(["-F", "--field"]);
+const FIELD_FLAGS = new Set(["--field"]);
 const MAX_QUERY_BYTES = 1024 * 1024;
 
 /** Only the settings that choose gh's account or host; a token is a credential and is never kept. */
@@ -99,25 +99,31 @@ function fileOf(cwd, spelled) {
   return path.resolve(cwd, file);
 }
 
-/** The files a `gh api` call reads its body from: each `-F key=@file` (also `-Fkey=@file`), and `--input file`. `-` is standard input. */
+/**
+ * The files a `gh api` call reads its body from: each `-F key=@file`, and `--input file`. `-` is standard input.
+ * pflag reads a short flag with its value attached (`-Fkey=@file`, `-F=key=@file`) and a cluster of short flags
+ * that ends in `-F` (`-iFkey=@file`, `-iF key=@file`). A letter that takes a value ends a cluster, so it hides an `F` after it.
+ */
 function bodyFiles(args) {
   const files = [];
+  const add = (field) => {
+    if (/^[^=]*=@/.test(field)) files.push(field.slice(field.indexOf("@") + 1));
+  };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
-    const flag = at === -1 ? arg : arg.slice(0, at);
-    const attached = /^-F(.+)$/s.exec(arg);
-    if (attached) {
-      // pflag reads `-Fvalue` and `-F=value` alike.
-      const value = attached[1].replace(/^=/, "");
-      if (/^[^=]*=@/.test(value)) files.push(value.slice(value.indexOf("@") + 1));
+    const cluster = /^-([A-Za-z]*)F(.*)$/s.exec(arg);
+    if (cluster && !/[fFHXqt]/.test(cluster[1])) {
+      const value = cluster[2] === "" ? args[++i] : cluster[2].replace(/^=/, "");
+      if (value !== undefined) add(value);
       continue;
     }
+    const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
+    const flag = at === -1 ? arg : arg.slice(0, at);
     if (flag !== "--input" && !FIELD_FLAGS.has(flag)) continue;
     const value = at === -1 ? args[++i] : arg.slice(at + 1);
     if (value === undefined) continue;
     if (flag === "--input") files.push(value);
-    else if (/^[^=]*=@/.test(value)) files.push(value.slice(value.indexOf("@") + 1));
+    else add(value);
   }
   return files;
 }

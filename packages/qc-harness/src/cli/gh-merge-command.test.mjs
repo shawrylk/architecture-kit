@@ -83,6 +83,14 @@ test("a query file the call reads is searched for the mutation, and a file the g
   assert.equal(found("gh api graphql -F=query=@merge.graphql").length, 1);
   assert.equal(found("gh api graphql -fquery=@merge.graphql").length, 0, "-f reads no file");
   assert.equal(found("gh api graphql -Fquery=@missing.graphql")[0].unreadable, "missing.graphql");
+  assert.equal(found("gh api graphql -iFquery=@merge.graphql").length, 1, "a cluster of short flags ends in -F");
+  assert.equal(found("gh api graphql -i -F query=@merge.graphql").length, 1);
+  assert.equal(found("gh api graphql -iF query=@merge.graphql").length, 1, "a cluster that ends in -F takes the next argument");
+  assert.equal(found("gh api graphql -fFquery=@merge.graphql").length, 0, "-f takes the rest of the word as its value");
+  assert.equal(found("gh api graphql -iFquery=@viewer.graphql").length, 0);
+  assert.equal(found("gh api graphql --field=query=@missing.graphql")[0].unreadable, "missing.graphql");
+  assert.equal(found("gh api graphql -Fquery=@-")[0].unreadable, "-");
+  assert.equal(found("gh api graphql -iFquery=@missing.graphql")[0].unreadable, "missing.graphql");
   assert.equal(found("gh api graphql -Fquery=@viewer.graphql").length, 0);
   assert.equal(found("gh api graphql -F query=@viewer.graphql").length, 0);
   assert.equal(found("gh api graphql -f query=@merge.graphql").length, 0, "-f sends the text as written and reads no file");
