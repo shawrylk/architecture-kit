@@ -40,15 +40,21 @@ export function dispatchSettings(swarm = {}) {
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${KEY} in qc.config.json must be an object, got ${JSON.stringify(raw)}`);
   }
-  const { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, models } = merge(dispatchDefaults, raw);
+  const { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, implementerSlots, models } = merge(
+    dispatchDefaults,
+    raw,
+  );
   if (!isNameList(allowedTypes)) throw wrong("allowedTypes", allowedTypes, "a list of agent types");
   if (!isNameList(implementerTypes)) throw wrong("implementerTypes", implementerTypes, "a list of agent types");
   if (!Number.isInteger(maxPromptChars) || maxPromptChars < 1) {
     throw wrong("maxPromptChars", maxPromptChars, "a positive whole number");
   }
   if (typeof slotMinutes !== "number" || !(slotMinutes > 0)) throw wrong("slotMinutes", slotMinutes, "a positive number");
+  if (!Number.isInteger(implementerSlots) || implementerSlots < 1) {
+    throw wrong("implementerSlots", implementerSlots, "a positive whole number");
+  }
   checkModels(models);
-  return { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, models };
+  return { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, implementerSlots, models };
 }
 
 /** @returns the settings of the checkout that holds `cwd`, or null when it has no config or no section. */
@@ -151,11 +157,20 @@ export function dispatchRefusal(input, settings) {
   return null;
 }
 
-/** The reason a second implementer waits, with the two ways the slot frees. */
-export function slotRefusal({ type, claimedAt, expiresAt, slotFile }) {
+/** The reason an implementer over the limit waits, with the two ways a slot frees. */
+export function slotRefusal({ type, claimedAt, expiresAt, slotFile, limit = 1, holders = [] }) {
+  const frees = `If no implementer runs, because its dispatch was denied after this hook, delete ${slotFile}.`;
+  if (limit === 1) {
+    return (
+      `Dispatch guard: an implementer holds the one implementer slot of this session since ${claimedAt.toISOString()}. ` +
+      `Wait for it to stop, then dispatch ${type}. The slot frees when it stops, or at ${expiresAt.toISOString()}. ` +
+      frees
+    );
+  }
+  const named = holders.map((holder) => `${holder.id} (since ${holder.claimedAt.toISOString()})`).join(", ");
   return (
-    `Dispatch guard: an implementer holds the one implementer slot of this session since ${claimedAt.toISOString()}. ` +
-    `Wait for it to stop, then dispatch ${type}. The slot frees when it stops, or at ${expiresAt.toISOString()}. ` +
-    `If no implementer runs, because its dispatch was denied after this hook, delete ${slotFile}.`
+    `Dispatch guard: all ${limit} implementer slots of this session are held, by ${named}. ` +
+    `Wait for one to stop, then dispatch ${type}. A slot frees when its holder stops, and by ${expiresAt.toISOString()} at the latest. ` +
+    frees
   );
 }

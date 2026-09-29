@@ -129,3 +129,14 @@ test("hooks.json also runs the note on SubagentStart, all matchers, beside the e
     "the existing dispatch-guard.mjs SubagentStart entry stays",
   );
 });
+
+test("a limit above 1 adds one line stating it, and a limit of 1 leaves the note as REMINDER", (t) => {
+  const [three, one] = checkouts(t, [
+    { swarm: { dispatch: { implementerSlots: 3 } } },
+    { swarm: { dispatch: { implementerSlots: 1 } } },
+  ]);
+  const text = decide(start(three, "startup")).hookSpecificOutput.additionalContext;
+  assert.ok(text.startsWith(REMINDER));
+  assert.match(text, /up to 3 implementers at once/);
+  assert.equal(decide(start(one, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+});

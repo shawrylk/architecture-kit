@@ -12,13 +12,15 @@ const output = (fields) => ({ hookSpecificOutput: { hookEventName: "PreToolUse",
 const deny = (reason) => output({ permissionDecision: "deny", permissionDecisionReason: reason });
 const context = (text) => output({ additionalContext: text });
 
+const idOf = (value) => (typeof value === "string" && value !== "" ? value : undefined);
+
 /** Claims or frees the slot as a subagent starts or stops. It reads no config, since the agent's cwd is its own. */
 function onSubagent(call, dir, now) {
   // Only a claim makes the folder, so a session with the guard off gets no file here.
   if (!existsSync(dir)) return;
   try {
-    if (call.hook_event_name === "SubagentStart") reclaimSlot(dir, call.agent_type, now);
-    else releaseSlot(dir, call.agent_type);
+    if (call.hook_event_name === "SubagentStart") reclaimSlot(dir, call.agent_type, now, idOf(call.agent_id));
+    else releaseSlot(dir, call.agent_type, idOf(call.agent_id));
   } catch {
     // A busy or read-only temp folder is the hook's own problem, and the slot still expires.
   }
@@ -51,7 +53,7 @@ export function decide(call, tmp = os.tmpdir(), now = Date.now()) {
   if (!isImplementer(type, settings)) return null;
   let holder;
   try {
-    holder = claimSlot(dir, settings, now);
+    holder = claimSlot(dir, settings, now, idOf(call.tool_use_id));
   } catch {
     // A busy or read-only temp folder is the hook's own problem, never a reason to refuse a dispatch.
     return null;
