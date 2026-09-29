@@ -716,6 +716,7 @@ object argument is minted.
 - The value is read whole. Parentheses, `await`, `as T` and `!` come off. Each arm of `a ?? b`, `a || b`,
   `a && b` and `c ? a : b` counts, except a ternary's condition and the guard before `&&`. A mint inside a
   wrapping call's arguments counts too: `String(Date.now())`, `useRef(randomUUID())`, `useMemo(() => randomUUID(), [])`.
+  A volatile call nested in a callback inside those arguments counts as well, so `lookup(list.filter((x) => x.at < Date.now()))` fails, a loud false positive that a stored key avoids.
 - A bare name, and the shorthand `{ mutationId }`, follow to the nearest `const` in scope that declares
   it, and a const that names another const is followed the same way. A `const id = crypto.randomUUID()`
   there fails, and a `const id = state.clientMutationId` passes.
@@ -734,8 +735,8 @@ The gate reads text, not a syntax tree, so these forms pass unseen:
 - A runner imported under another name (`import { runPipeline as run }`): list the alias in `runners`.
 - A `let` that is assigned again after its declaration: only its first value is read.
 - A key read from a property of an object built elsewhere, such as `mutationId: base.mutationId`.
-- A key built inside a helper the call names, or a name passed through a wrapping call: `hash(id)`
-  where `id` is a minted const.
+- A key built inside a helper the call names.
+- A name passed through a wrapping call, such as `hash(id)` where `id` is a minted const.
 - A parameter with a default value, such as `(mutationId = randomUUID()) =>`, and a key set by a spread.
 - A runner call outside a feature folder, or outside a `.ts` or `.tsx` file.
 
