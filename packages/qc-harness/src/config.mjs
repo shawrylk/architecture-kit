@@ -221,6 +221,8 @@ export const defaults = {
     toolCallBudget: 100,
     // Off until a repository writes the section. `{}` turns it on, and `dispatchDefaults` fills each key it omits.
     dispatch: null,
+    // Read only while `dispatch` is on. `reviewDefaults` fills each key it omits.
+    review: null,
   },
 
   // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`.
@@ -460,6 +462,24 @@ export const exploreDefaults = {
   maxGrepLines: 80,
   maxOutputChars: 20000,
   exempt: [],
+};
+
+// What each key of `swarm.review` means when a repository omits it. The workflow checks run only while
+// `swarm.dispatch` is on, so this section alone turns nothing on.
+export const reviewDefaults = {
+  // The review kind whose APPROVED verdict lets `gh pr merge` run: "branch" or "task".
+  merge: "branch",
+  // The largest tool-call estimate one plan task may carry.
+  maxTaskCalls: 35,
+  // Globs, relative to a checkout of this repository, that the main session may edit.
+  controllerPaths: ["docs/**", "*.md", "qc.config.json", "**/.claude/**"],
+  // The agent types whose stop records a verdict of each kind.
+  reviewerTypes: {
+    task: ["sdd-reviewer", "architecture:sdd-reviewer"],
+    branch: ["sdd-branch-reviewer", "architecture:sdd-branch-reviewer"],
+  },
+  // The agent types whose stop runs the plan check.
+  plannerTypes: ["sdd-planner", "architecture:sdd-planner"],
 };
 
 function isPlainObject(value) {
