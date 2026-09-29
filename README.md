@@ -53,9 +53,8 @@ first gate fails on every source file you have.
 
 It writes `qc.config.json`, `quality-thresholds.json`, `.jscpd.json`, `docs/` (decisions,
 architecture, enforcement, guards, performance, glossary, ui), `.githooks/pre-commit`,
-`.githooks/commit-msg`, `.githooks/pre-push` and `.github/workflows/ci.yml`, skipping anything that already exists. It also
-adds `spec:check`,
-`gen:feature` and `prepare` to `package.json`.
+`.githooks/commit-msg`, `.githooks/pre-push` and `.github/workflows/ci.yml`, skipping anything that
+already exists. It also adds `spec:check`, `gen:feature` and `prepare` to `package.json`.
 
 `qc init` skips a workflow you already have. If you copied `ci.yml` before the kit set
 `fetch-depth: 0` on its checkout step, add it: the threshold ratchet needs the merge base, and a
@@ -133,9 +132,10 @@ structure. `pre-push` is the full pass — every repository-wide gate (citations
 predicate, route agreement, sagas) — once per push instead of once per commit. A human and an agent
 both go through the same two hooks; neither can commit past the fast tier or push past the full one.
 
-While `commitMessage.conventional` is on, the default `hooks.required` also requires a `commit-msg` hook
-that calls `qc commit-msg`. Setting `conventional` to `false` drops that requirement. A repository upgrading from an earlier
-kit copies `templates/githooks/commit-msg` into its hooks folder, or sets `conventional` to `false`.
+While `commitMessage.conventional` is on, the default `hooks.required` also requires a `commit-msg`
+hook that calls `qc commit-msg`. Setting `conventional` to `false` drops that requirement. A
+repository upgrading from an earlier kit copies `templates/githooks/commit-msg` into its hooks
+folder, or sets `conventional` to `false`.
 
 ### 8. Hold a swarm to its own scope
 

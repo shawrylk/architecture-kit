@@ -24,10 +24,11 @@ export function weakenedHooks(shipped = {}, configured = {}) {
 
 /** Every shipped check this repository has switched off, by kind. A hook's exemption key is `hooks.<name>`. */
 function offByKind(shipped, configured) {
+  const shippedHooks = requiredHooks({ ...shipped, commitMessage: configured.commitMessage });
   return {
     gates: switchedOff(shipped.gates ?? {}, configured.gates ?? {}),
     rules: switchedOff(shipped.rules ?? {}, configured.rules ?? {}),
-    hooks: weakenedHooks(requiredHooks({ ...shipped, commitMessage: configured.commitMessage }), configured.hooks?.required).map((name) => `hooks.${name}`),
+    hooks: weakenedHooks(shippedHooks, configured.hooks?.required).map((name) => `hooks.${name}`),
   };
 }
 

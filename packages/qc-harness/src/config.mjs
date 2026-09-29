@@ -500,7 +500,7 @@ export function load(root = process.cwd()) {
   return config;
 }
 
-/** The calls each git hook must make. Commit messages are not checked with `conventional` off, so `commit-msg` needs none. */
+/** The calls each git hook must make. With `conventional` off the hook has no required call, so `commit-msg` needs none. */
 export function requiredHooks(config) {
   const required = config.hooks?.required ?? {};
   return config.commitMessage?.conventional === false ? { ...required, "commit-msg": [] } : required;
