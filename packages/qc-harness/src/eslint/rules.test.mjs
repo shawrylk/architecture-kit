@@ -1,4 +1,5 @@
 import { RuleTester } from "eslint";
+import tsparser from "@typescript-eslint/parser";
 import { rules } from "./index.mjs";
 
 const tester = new RuleTester({
@@ -467,6 +468,9 @@ tester.run("no-supersession-trail", rules["no-supersession-trail"], {
   valid: [
     { code: "// the one place a caller resolves a name\nconst a = 1;" },
     { code: 'const label = "deprecated";' },
+    { code: 'const note = "not yet, for now, for the time being, the next phase";' },
+    { code: "// cannot yet, a fork for nowhere\nconst a = 1;" },
+    { code: "// an inspection cycle has a next phase per site\nconst a = 1;" },
   ],
   invalid: [
     { code: "// deprecated, use the new one\nconst a = 1;", errors: [{ messageId: "trail" }] },
@@ -474,6 +478,10 @@ tester.run("no-supersession-trail", rules["no-supersession-trail"], {
     { code: "// legacy path, kept for now\nconst a = 1;", errors: [{ messageId: "trail" }] },
     { code: "// this replaces the old runner\nconst a = 1;", errors: [{ messageId: "trail" }] },
     { code: "// formerly known as the ledger block\nconst a = 1;", errors: [{ messageId: "trail" }] },
+    { code: "// not yet wired to the queue\nconst a = 1;", errors: [{ messageId: "trail" }] },
+    { code: "/* a stub for now */\nconst a = 1;", errors: [{ messageId: "trail" }] },
+    { code: "// the next phase adds the retry\nconst a = 1;", errors: [{ messageId: "trail" }] },
+    { code: "// a stub for the time being\nconst a = 1;", errors: [{ messageId: "trail" }] },
   ],
 });
 
@@ -502,6 +510,34 @@ tester.run("durable-idempotency-key", rules["durable-idempotency-key"], {
       code: "runPipeline({ pipeline, mutationId: crypto.randomUUID(), ledger: new PostgresLedger() });",
       errors: [{ messageId: "volatile" }],
     },
+  ],
+});
+
+// The shape check: a uuid column refuses a key built as a string, whether it is sent or bound.
+const UUID = [{ format: "uuid" }];
+const shape = { messageId: "shape" };
+tester.run("durable-idempotency-key", rules["durable-idempotency-key"], {
+  valid: [
+    { code: "send({ mutationId: `${a}:${b}` });" },
+    { code: 'send({ mutationId: a + ":" + b });' },
+    { code: "send({ mutationId: deriveId(a, b) });", options: UUID },
+    { code: "const operation = { mutationId: crypto.randomUUID() };\nqueue.push(operation);", options: UUID },
+    { code: "send({ mutationId: `fixed` });", options: UUID },
+    { code: 'send({ mutationId: "fixed" });', options: UUID },
+    { code: "send({ mutationId: row.id });", options: UUID },
+    { code: "send({ mutationId: a + b });", options: UUID },
+    { code: "send({ note: `${a}:${b}` });", options: UUID },
+    { code: "send({ mutationId: `${a}:${b}` });", options: [{ format: null }] },
+  ],
+  invalid: [
+    { code: "send({ mutationId: `${a}:${b}` });", options: UUID, errors: [shape] },
+    { code: "const body = { mutationId: `${a}:${b}` };", options: UUID, errors: [shape] },
+    { code: 'send({ mutationId: a + ":" + b });', options: UUID, errors: [shape] },
+    { code: 'send({ idempotencyKey: "op-" + id });', options: UUID, errors: [shape] },
+    { code: "send({ mutationId: stored ?? `${a}:${b}` });", options: UUID, errors: [shape] },
+    { code: "send({ mutationId: ok ? `${a}:${b}` : other });", options: UUID, errors: [shape] },
+    // The volatile path still owns an inline mint.
+    { code: "send({ mutationId: crypto.randomUUID() });", options: UUID, errors: [{ messageId: "volatile" }] },
   ],
 });
 
@@ -774,5 +810,122 @@ tester.run("registry-literal", rules["registry-literal"], {
       options: [{ entries: [{ key: "dragslop", names: ["\\w*DRAG\\w*_PX"], readers: [] }] }],
       errors: [{ messageId: "unread", data: { name: "PIN_DRAG_THRESHOLD_PX", key: "dragslop" } }],
     },
+  ],
+});
+
+const pending = { messageId: "pending" };
+
+console.log("→", "mutation-control-pending");
+jsx.run("mutation-control-pending", rules["mutation-control-pending"], {
+  valid: [
+    { code: "<Button loading={m.isPending} onClick={() => m.mutate(id)} />;" },
+    { code: "<Button onClick={() => m.mutateAsync(id)} />;" },
+    { code: "<Button onClick={() => { return m.mutateAsync(id); }} />;" },
+    { code: "<Button onClick={() => m?.mutateAsync(id)} />;" },
+    { code: "<button disabled={m.isPending} aria-busy={m.isPending} onClick={() => m.mutate(id)} />;" },
+    { code: "<Button onClick={() => setOpen(true)} />;" },
+    { code: "<Button onClick={() => { track(); }} />;" },
+    { code: "const save = useCallback(() => m.mutate(id), [m]); <Button loading={m.isPending} onClick={save} />;" },
+    { code: "function save() { return m.mutateAsync(id); } <Button onClick={save} />;" },
+    // A mutation started inside a nested function is not this handler's own work.
+    { code: "<Button onClick={() => { queue.push(() => m.mutate(id)); }} />;" },
+    { code: "<Button onClick={() => m.mutateAsync(id).then(close)} />;" },
+    { code: "<Button onClick={() => { return m?.mutateAsync(id).finally(done); }} />;" },
+    { code: "const { mutateAsync } = useMutation(f); <Button onClick={mutateAsync} />;" },
+    { code: "const m = useMutation(f); <Button onClick={m.mutateAsync} />;" },
+    { code: "const { mutateAsync: save } = useMutation(f); <Button onClick={() => save(id)} />;" },
+    { code: "const { mutate } = useMutation(f); <Button loading={pending} onClick={() => mutate(id)} />;" },
+    // A name that does not come from useMutation is not a mutation.
+    { code: "const { mutate } = other(f); <Button onClick={() => mutate(id)} />;" },
+    { code: "<Button onClick={props.mutate} />;" },
+    { code: "const m = other(f); <Button onClick={m.mutate} />;" },
+    { code: "<button disabled aria-busy=\"true\" onClick={() => m.mutate(id)} />;" },
+    { code: "<Cell busy={m.isPending} onClick={() => m.mutate(id)} />;", options: [{ button: "Cell", prop: "busy" }] },
+    { code: "<Menu onSelect={() => m.mutate(id)} />;", options: [{ handlers: ["onClick"] }] },
+  ],
+  invalid: [
+    { code: "<Button onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<Button onClick={() => { m.mutateAsync(id); }} />;", errors: [pending] },
+    { code: "<Button onClick={async () => { await m.mutateAsync(id); }} />;", errors: [pending] },
+    { code: "<Button onClick={() => { const p = m.mutateAsync(id); return p; }} />;", errors: [pending] },
+    { code: "const { mutate } = useMutation(f); <Button onClick={() => mutate(id)} />;", errors: [pending] },
+    { code: "const { mutate } = useMutation(f); <Button onClick={mutate} />;", errors: [pending] },
+    { code: "const m = useMutation(f); <Button onClick={m.mutate} />;", errors: [pending] },
+    { code: "const { mutateAsync: save } = useMutation(f); <Button onClick={() => { save(id); }} />;", errors: [pending] },
+    { code: "const { mutate: go } = useMutation(f); <Button onClick={go} />;", errors: [pending] },
+    { code: "const { mutate = noop } = useMutation(f); <Button onClick={() => mutate(id)} />;", errors: [pending] },
+    { code: "<Button onClick={() => { m.mutateAsync(id).then(close); }} />;", errors: [pending] },
+    { code: "<button disabled aria-busy=\"false\" onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<button disabled=\"false\" aria-busy onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<Menu.Item onSelect={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<Dialog onConfirm={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<button disabled={m.isPending} onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<button aria-busy={m.isPending} onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<div loading={m.isPending} onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<Button loading={false} onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "<Button loading=\"false\" onClick={() => m.mutate(id)} />;", errors: [pending] },
+    { code: "const save = useCallback(() => { m.mutate(id); }, [m]); <Button onClick={save} />;", errors: [pending] },
+    { code: "function save() { m.mutate(id); } <Button onClick={save} />;", errors: [pending] },
+    // One report per element, however many handlers start a mutation.
+    { code: "<Button onClick={() => m.mutate(1)} onSelect={() => m.mutate(2)} />;", errors: [pending] },
+    { code: "<Menu onSelect={() => m.mutate(id)} />;", options: [{ handlers: ["onSelect"] }], errors: [pending] },
+    {
+      code: "<Cell loading={m.isPending} onClick={() => m.mutate(id)} />;",
+      options: [{ button: "Cell", prop: "busy" }],
+      errors: [{ messageId: "pending", data: { button: "Cell", prop: "busy" } }],
+    },
+  ],
+});
+
+// A number another registry owns, such as a session lifetime, is held only by the readers its entry names.
+const GRACE = [{ values: [{ key: "offlinegrace", registry: "session-lifetimes.json", value: 7, readers: ["frontend/src/platform/auth/device-session.ts"] }] }];
+
+console.log("→", "registry-literal (values)");
+tester.run("registry-literal", rules["registry-literal"], {
+  valid: [
+    { code: "export const GRACE_DAYS = 7;", filename: "frontend/src/platform/auth/device-session.ts", options: GRACE },
+    { code: "export const GRACE_DAYS = 7;", filename: "C:\\repo\\frontend\\src\\platform\\auth\\device-session.ts", options: GRACE },
+    { code: "const GRACE_DAYS = 8;", filename: "frontend/src/features/login/form.ts", options: GRACE },
+    { code: "const first = rows[7]; const map = { 7: 'a' };", filename: "frontend/src/features/login/form.ts", options: GRACE },
+    { code: "const GRACE_DAYS = 7;", filename: "frontend/src/features/login/form.ts" },
+    { code: "const HOLD_DURATION_MS = 400;", filename: READER, options: [{ ...HOLD[0], ...GRACE[0] }] },
+  ],
+  invalid: [
+    {
+      code: "const GRACE_DAYS = 7;",
+      filename: "frontend/src/features/login/form.ts",
+      options: GRACE,
+      errors: [
+        {
+          messageId: "restatedValue",
+          data: { value: "7", key: "offlinegrace", registry: "session-lifetimes.json", readers: "frontend/src/platform/auth/device-session.ts" },
+        },
+      ],
+    },
+    { code: "if (age > 7 * 86400) expire();", filename: "frontend/src/features/login/form.ts", options: GRACE, errors: [{ messageId: "restatedValue" }] },
+    {
+      code: "const HOLD_DURATION_MS = 400; const days = 7;",
+      filename: "frontend/src/features/pins/drag.ts",
+      options: [{ ...HOLD[0], ...GRACE[0] }],
+      errors: [{ messageId: "restated" }, { messageId: "restatedValue" }],
+    },
+  ],
+});
+
+// A figure in a type or a key position is no number a reader would import.
+console.log("→", "registry-literal (values, TypeScript positions)");
+new RuleTester({ languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" } }).run("registry-literal", rules["registry-literal"], {
+  valid: [
+    "type D = 7;",
+    "type D = -7;",
+    "interface I { 7: string }",
+    "type T = { 7: string };",
+    "type T = { 7(): void };",
+    "interface I { 7(): void }",
+    "class A { 7() {} }",
+    "class A { 7 = 'x'; }",
+  ].map((code) => ({ code, filename: "frontend/src/features/login/form.ts", options: GRACE })),
+  invalid: [
+    { code: "const days = -7;", filename: "frontend/src/features/login/form.ts", options: GRACE, errors: [{ messageId: "restatedValue" }] },
   ],
 });

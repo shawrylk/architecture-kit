@@ -18,17 +18,25 @@ export function issueReferences(body, repo) {
 function runGh(args) {
   return new Promise((resolve) => {
     execFile("gh", args, { encoding: "utf8" }, (error, stdout, stderr) => {
-      resolve(error ? { ok: false, stderr: `${stderr || error.message}` } : { ok: true, stdout });
+      resolve(error ? { ok: false, missing: error.code === "ENOENT", stderr: `${stderr || error.message}` } : { ok: true, stdout });
     });
   });
 }
 
+/** @returns whether `CI` is set to a value that means yes: an empty value and `false` mean no. */
+export function isCi(env) {
+  const value = `${env.CI ?? ""}`.trim().toLowerCase();
+  return value !== "" && value !== "false";
+}
+
 /**
+ * In CI a missing `gh` or a failed call fails the check, so a broken runner cannot pass it in silence.
+ * Elsewhere the same failure is a note.
  * @param {object} event the GitHub event payload
- * @param {{gh?: (args: string[]) => Promise<{ok: boolean, stdout?: string, stderr?: string}>, hasToken: boolean}} options
+ * @param {{gh?: (args: string[]) => Promise<{ok: boolean, missing?: boolean, stdout?: string, stderr?: string}>, hasToken: boolean, ci?: boolean}} options
  * @returns {Promise<{problems: string[], notes: string[]}>}
  */
-export async function checkPullRequest(event, { gh = runGh, hasToken }) {
+export async function checkPullRequest(event, { gh = runGh, hasToken, ci = false }) {
   const pr = event?.pull_request;
   if (!pr) return { problems: [], notes: ["the event is not a pull request, so there is no body to read"] };
   const references = issueReferences(pr.body, event.repository?.full_name);
@@ -49,7 +57,11 @@ export async function checkPullRequest(event, { gh = runGh, hasToken }) {
       const stderr = result.stderr ?? "";
       if (NO_ISSUE.test(stderr)) problems.push(`${name} does not exist. Open the issue, then reference it.`);
       else if (NO_REPOSITORY.test(stderr)) notes.push(`the token cannot see ${repo}, so ${name} was not looked up`);
-      else notes.push(`could not reach GitHub for ${name}: ${(result.stderr ?? "").trim().split("\n")[0]}`);
+      else if (ci && result.missing) problems.push(`gh is not installed, so ${name} cannot be checked`);
+      else {
+        const message = `could not reach GitHub for ${name}: ${stderr.trim().split("\n")[0]}`;
+        (ci ? problems : notes).push(message);
+      }
       continue;
     }
     const created = JSON.parse(result.stdout).createdAt;
@@ -66,7 +78,7 @@ export async function runPrCheck(env = process.env) {
     return 0;
   }
   const event = JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, "utf8"));
-  const { problems, notes } = await checkPullRequest(event, { hasToken: Boolean(env.GH_TOKEN || env.GITHUB_TOKEN) });
+  const { problems, notes } = await checkPullRequest(event, { hasToken: Boolean(env.GH_TOKEN || env.GITHUB_TOKEN), ci: isCi(env) });
   for (const note of notes) console.log(`NOTE  pr-check     ${note}`);
   for (const problem of problems) console.error(`FAIL  pr-check     ${problem}`);
   if (problems.length === 0) console.log("OK  pr-check     the pull request names an issue opened before it");

@@ -45,7 +45,7 @@ repository.
 ```bash
 pnpm add -D github:shawrylk/architecture-kit#path:packages/qc-harness --save-exact
 npx qc init            # decisions, architecture & enforcement docs, config, git hooks, CI
-npx qc install-hooks   # binds .githooks/pre-commit and .githooks/pre-push
+npx qc install-hooks   # binds .githooks/pre-commit, commit-msg and pre-push
 ```
 
 `qc init` is not a convenience. The citations gate reads `docs/decisions.md`; without that file the
@@ -53,9 +53,8 @@ first gate fails on every source file you have.
 
 It writes `qc.config.json`, `quality-thresholds.json`, `.jscpd.json`, `docs/` (decisions,
 architecture, enforcement, guards, performance, glossary, ui), `.githooks/pre-commit`,
-`.githooks/pre-push` and `.github/workflows/ci.yml`, skipping anything that already exists. It also
-adds `spec:check`,
-`gen:feature` and `prepare` to `package.json`.
+`.githooks/commit-msg`, `.githooks/pre-push` and `.github/workflows/ci.yml`, skipping anything that
+already exists. It also adds `spec:check`, `gen:feature` and `prepare` to `package.json`.
 
 `qc init` skips a workflow you already have. If you copied `ci.yml` before the kit set
 `fetch-depth: 0` on its checkout step, add it: the threshold ratchet needs the merge base, and a
@@ -132,6 +131,11 @@ A consuming repository keeps no hook scripts of its own.
 structure. `pre-push` is the full pass — every repository-wide gate (citations, the tenant
 predicate, route agreement, sagas) — once per push instead of once per commit. A human and an agent
 both go through the same two hooks; neither can commit past the fast tier or push past the full one.
+
+While `commitMessage.conventional` is on, the default `hooks.required` also requires a `commit-msg`
+hook that calls `qc commit-msg`. Setting `conventional` to `false` drops that requirement. A
+repository upgrading from an earlier kit copies `templates/githooks/commit-msg` into its hooks
+folder, or sets `conventional` to `false`.
 
 ### 8. Hold a swarm to its own scope
 
@@ -394,7 +398,7 @@ Known limits:
 **Lint** — `no-cross-feature-internals`, `storage-only-in-resource`, `scoped-repository`,
 `tenant-scoped-table`, `no-offset-pagination`, `no-status-literal`, `signal-last-param`,
 `no-raw-fetch`, `no-orchestration-in-trigger`, `no-number-in-comment`, `ime-safe-key`,
-`registry-literal`, `no-sql-raw`.
+`registry-literal`, `no-sql-raw`, `mutation-control-pending` (off by default).
 
 The preset also refuses an exemption written in a file. `noInlineConfig` makes ESLint ignore an
 `eslint-disable` comment and report it as a warning, so a run with `--max-warnings 0` fails on it.
@@ -436,6 +440,28 @@ With `ime.guards` set, only a call to one of them counts, and an inline `isCompo
 `keyCode === 229` check is reported as a second mechanism. With no guard set, either inline check
 counts.
 
+### Show the pending state on a write control
+
+`qc/mutation-control-pending` reads `onClick`, `onSelect`, and `onConfirm`. A handler that calls
+`.mutate(` or `.mutateAsync(` must sit on a control that shows the write is pending. Two shapes
+pass:
+
+- The element is the configured button and carries the pending prop, such as `loading={m.isPending}`.
+- The element has both `disabled` and `aria-busy`.
+
+A handler that returns the `mutateAsync` promise also passes: an arrow with the call as its
+expression body, or a direct `return`. A promise stored in a variable does not count. `mutate`
+returns nothing, so returning it does not count either.
+
+```json
+{
+  "rules": { "mutation-control-pending": true },
+  "mutationControl": { "button": "Button", "prop": "loading", "handlers": ["onClick", "onSelect", "onConfirm"] }
+}
+```
+
+The rule ships off. The preset applies it to `clientFiles`.
+
 ### Let a reviewed file call `sql.raw`
 
 `qc/no-sql-raw` refuses `sql.raw` everywhere except the paths in `sqlRaw.allow`. Each path is a
@@ -444,7 +470,7 @@ like every `qc/*` rule.
 
 ### Name who may hold a registry number
 
-An entry in `quality-thresholds.json` can carry two more keys:
+An entry in `quality-thresholds.json`, or in any registry the `registry-literal` gate reads, can carry two more keys:
 
 | Key | What it holds |
 | --- | --- |
@@ -457,7 +483,7 @@ An entry in `quality-thresholds.json` can carry two more keys:
 
 `qc/registry-literal` reports a numeric literal bound to a matching name, in a variable, a property
 or a class field, in any file that is not a reader. The `registry-readers` gate fails when a reader
-does not exist, or never names the entry key, as a string or through the registry accessor.
+does not exist, or never names the entry key, as a string or through the registry accessor. Both the rule and the gate read every registry the `registry-literal` gate reads, not only the thresholds.
 
 ### Keep registry figures out of the docs
 
@@ -475,6 +501,36 @@ globs to replace it.
 
 ```json
 { "versions": "versions.json", "registryLiteral": { "exempt": ["docs/decisions/**", "docs/history.md"] } }
+```
+
+A number may carry its token in an HTML comment: `0 <!-- q:maxwarnings -->`. The comment is invisible
+when the page renders. The gate accepts the number when it equals the entry's current figure. A number
+that differs fails as `stale-annotated-number`, and it names the entry and the current figure. An id
+that no registry holds fails as `unknown-token`. An entry that has no figure under its `valueKey`
+fails as `entry-without-value`. Put the comment right after the number, before its unit:
+`15 <!-- ttl:accesstoken --> minutes`. The number and its comment share one line.
+
+`registryLiteral.registries` adds registries to the two above, which always apply. Each item has a
+`path`, the `key` of the object that holds the entries, and a token `prefix`: a word, or a list of
+words. An item may set `valueKey` for the field that holds the figure (default `value`) and `unitKey`
+for the field that holds its unit (default `unit`). An entry with a numeric figure and a `match` list
+gets the phrase scan. An item with the `path` of `thresholds` or `versions` replaces that registry.
+`libraries` from `versions` still feeds the label scan.
+
+An item that is malformed, a listed file that is missing or not JSON, a `key` that is no object, and a
+prefix that two registries share each fail as a `registry-literal` problem at `qc.config.json`. Only a
+built-in registry whose file is absent is silent.
+
+The ESLint rule `qc/registry-literal` reads the same registries. An entry with `names` restricts the
+identifiers, as before. An entry in any registry that lists `readers` and no `names` restricts its
+figure: a numeric literal equal to it fails in code outside those readers.
+
+```json
+{
+  "registryLiteral": {
+    "registries": [{ "path": "session-lifetimes.json", "key": "lifetimes", "prefix": "ttl" }]
+  }
+}
 ```
 
 ### Loosen a threshold only with a decision
@@ -608,6 +664,8 @@ must name the tenant: the `tenant.sqlColumn` as a quoted string or an object key
 `tenant.column` identifier. A bare name is followed to its own declaration, and a call to a local
 function to that function's body. A call that names no tenant fails as `unscoped-helper-call`.
 
+The kit ships these two defaults in `tenantPredicate.exemptHelpers`:
+
 ```json
 {
   "tenantPredicate": {
@@ -616,6 +674,34 @@ function to that function's body. A call that names no tenant fails as `unscoped
       { "module": "backend/src/application/sql/crud.ts", "name": "updateVersionedRow", "argument": 3 }
     ]
   }
+}
+```
+
+Two keys hold the list. A repository adds a helper to the second, and the kit defaults stay:
+
+| Key | Holds | A repository |
+|---|---|---|
+| `tenantPredicate.exemptHelpers` | The kit defaults | Leaves it alone. A value here replaces the list. |
+| `tenantPredicate.extraExemptHelpers` | The repository's own helpers | Appends to the defaults. It ships empty. |
+
+```json
+{
+  "tenantPredicate": {
+    "extraExemptHelpers": [
+      { "module": "backend/src/application/sql/bulk.ts", "name": "insertMany", "argument": 1 }
+    ]
+  }
+}
+```
+
+`qc check` reads the two lists as one, and checks a helper that both name once. With the
+`config-floor` gate on, a kit default that neither list names fails as `dropped-default-helper`. A
+default named in either list counts as kept. The detail names the entry by `module` and `name`. To drop a default on purpose, cite a decision id, or `off-by-design`, under
+`floor.exemptions` with the key `tenantPredicate.<name>`:
+
+```json
+{
+  "floor": { "exemptions": { "tenantPredicate.updateVersionedRow": "QC-011" } }
 }
 ```
 

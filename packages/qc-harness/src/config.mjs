@@ -40,8 +40,9 @@ export const defaults = {
   versions: "versions.json",
 
   // Globs of docs that may state a registry figure. Null is the ADR log, from adrLog(): a decision
-  // states the number as of its date.
-  registryLiteral: { exempt: null },
+  // states the number as of its date. `registries` adds `{ path, key, prefix, valueKey?, unitKey? }` to the
+  // thresholds and the versions, which always apply; an item with the path of one of them replaces it.
+  registryLiteral: { exempt: null, registries: [] },
 
   // A threshold loosens only with an ADR. `base` is the ref whose merge base the registry is compared with.
   ratchet: { base: "origin/main" },
@@ -53,6 +54,8 @@ export const defaults = {
     // A store that outlives nothing has nothing to dedupe, so a disposable key is right.
     ledgerKey: "ledger",
     throwawayLedgers: ["InMemoryPipelineLedger"],
+    // "uuid" refuses a key built as a string, for a column typed uuid.
+    format: null,
   },
 
   // The log that is evidence only while nothing can edit it.
@@ -109,6 +112,9 @@ export const defaults = {
     sqlColumn: "tenant_id",
     tableFactory: "pgTable",
     indexFactory: "index",
+    // The function a two-tenant test calls. Null until a repository writes one; the
+    // tenant-isolation-test gate reports a null helper when it is switched on.
+    isolationHelper: null,
   },
 
   storage: {
@@ -246,7 +252,9 @@ export const defaults = {
   // A null `pattern` switches the rule off.
   branches: { pattern: "^[a-z]+/[0-9]+-", allow: ["main", "master", "release/**"] },
 
-  hooks: { required: { "pre-commit": ["qc work-order-check"], "pre-push": ["qc check"] } },
+  hooks: {
+    required: { "pre-commit": ["qc work-order-check"], "commit-msg": ["qc commit-msg"], "pre-push": ["qc check"] },
+  },
 
   // `conventional` runs commitlint's conventional rules, an optional peer dependency the repository
   // installs. `attribution` requires a Co-Authored-By trailer. The English rule always runs.
@@ -262,6 +270,10 @@ export const defaults = {
   // Enter and Escape in text entry wait for the IME. `components` are a repository's own text
   // inputs. `guards` name the one guard function; empty accepts an inline isComposing or keyCode check.
   ime: { components: [], guards: [] },
+
+  // A control whose handler calls mutate or mutateAsync shows it is pending: `prop` on `button`, or
+  // disabled with aria-busy. `handlers` are the props that run the handler.
+  mutationControl: { button: "Button", prop: "loading", handlers: ["onClick", "onSelect", "onConfirm"] },
 
   // Files a person reviewed that may call sql.raw. Each one is a decision, so the list stays short.
   sqlRaw: { allow: [] },
@@ -294,6 +306,8 @@ export const defaults = {
       { module: "backend/src/application/sql/crud.ts", name: "insertReturning", argument: 2 },
       { module: "backend/src/application/sql/crud.ts", name: "updateVersionedRow", argument: 3 },
     ],
+    // A repository appends its own helpers here. They join `exemptHelpers`; they never replace it.
+    extraExemptHelpers: [],
   },
 
   anatomy: {
@@ -349,6 +363,7 @@ export const defaults = {
     "integration-imports": false,
     "closed-set-writers": false,
     "doc-claims": false,
+    "tenant-isolation-test": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and
@@ -373,6 +388,8 @@ export const defaults = {
     "no-raw-fetch": true,
     "no-sql-raw": true,
     "ime-safe-key": true,
+    // A policy rule: a repository turns it on once its controls carry the pending prop.
+    "mutation-control-pending": false,
     "registry-literal": true,
     "durable-idempotency-key": true,
     "no-supersession-trail": true,
@@ -503,6 +520,12 @@ export function load(root = process.cwd()) {
   const config = merge(defaults, user);
   config.root = root;
   return config;
+}
+
+/** The calls each git hook must make. With `conventional` off the hook has no required call, so `commit-msg` needs none. */
+export function requiredHooks(config) {
+  const required = config.hooks?.required ?? {};
+  return config.commitMessage?.conventional === false ? { ...required, "commit-msg": [] } : required;
 }
 
 /** Thresholds live in their own registry so lint and docs cite one number. */

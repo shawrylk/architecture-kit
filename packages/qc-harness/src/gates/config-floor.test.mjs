@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { checkConfigFloor, exemptionIds, switchedOff } from "./config-floor.mjs";
+import { checkConfigFloor, droppedHelpers, exemptionIds, switchedOff } from "./config-floor.mjs";
 
 const shipped = { gates: { citations: true, "english-source": true }, rules: { "no-promise-then": true } };
 const allOn = { gates: { citations: true, "english-source": true }, rules: { "no-promise-then": true } };
@@ -59,4 +59,74 @@ test("a weakened hooks.required entry is an opt-out, held to the same floor", ()
   assert.match(problems[0].detail, /^hooks\.pre-push is switched off/);
   assert.deepEqual(checkConfigFloor(shipped, weakened, { exemptions: { "hooks.pre-push": "off-by-design" } }), []);
   assert.deepEqual(checkConfigFloor(shipped, shipped, { exemptions: { "hooks.pre-push": "off-by-design" } }).map((p) => p.rule), ["stale-exemption"]);
+});
+
+test("conventional false does not report hooks.commit-msg as weakened; emptying it while conventional is on does", () => {
+  const hooks = { required: { "pre-push": ["qc check"], "commit-msg": ["qc commit-msg"] } };
+  const shipped = { gates: {}, rules: {}, hooks, commitMessage: { conventional: true } };
+  const emptied = { gates: {}, rules: {}, hooks: { required: { "pre-push": ["qc check"], "commit-msg": [] } } };
+  assert.deepEqual(checkConfigFloor(shipped, { ...emptied, commitMessage: { conventional: false } }), []);
+  const [problem] = checkConfigFloor(shipped, { ...emptied, commitMessage: { conventional: true } });
+  assert.match(problem.detail, /^hooks\.commit-msg is switched off/);
+});
+
+const crud = "backend/src/application/sql/crud.ts";
+const insert = { module: crud, name: "insertReturning", argument: 2 };
+const update = { module: crud, name: "updateVersionedRow", argument: 3 };
+const shippedHelpers = { gates: {}, rules: {}, tenantPredicate: { exemptHelpers: [insert, update] } };
+const withHelpers = (exemptHelpers, extraExemptHelpers = []) => ({
+  gates: {},
+  rules: {},
+  tenantPredicate: { exemptHelpers, extraExemptHelpers },
+});
+
+test("a config whose exemptHelpers omits a default reports that default by name", () => {
+  const problems = checkConfigFloor(shippedHelpers, withHelpers([insert]));
+  assert.deepEqual(problems.map((problem) => problem.rule), ["dropped-default-helper"]);
+  assert.match(problems[0].detail, /updateVersionedRow/);
+  assert.match(problems[0].detail, /backend\/src\/application\/sql\/crud\.ts/);
+  assert.match(problems[0].detail, /extraExemptHelpers/);
+  assert.equal(problems[0].path, "qc.config.json");
+});
+
+test("a config with only extraExemptHelpers reports nothing", () => {
+  const extra = { module: "backend/src/application/sql/bulk.ts", name: "insertMany", argument: 1 };
+  assert.deepEqual(checkConfigFloor(shippedHelpers, withHelpers([insert, update], [extra])), []);
+});
+
+test("an entry matches on module and name, so a same-named helper in another module does not stand in", () => {
+  const other = { module: "backend/src/other/crud.ts", name: "updateVersionedRow", argument: 3 };
+  assert.deepEqual(droppedHelpers(shippedHelpers.tenantPredicate.exemptHelpers, [insert, other]), [update]);
+  assert.deepEqual(droppedHelpers(shippedHelpers.tenantPredicate.exemptHelpers, [update, insert]), []);
+});
+
+test("a dropped default with a decision id, or off-by-design, is a deliberate choice", () => {
+  const dropped = withHelpers([insert]);
+  const key = "tenantPredicate.updateVersionedRow";
+  assert.deepEqual(checkConfigFloor(shippedHelpers, dropped, { exemptions: { [key]: "QC-011" } }), []);
+  assert.deepEqual(checkConfigFloor(shippedHelpers, dropped, { exemptions: { [key]: "off-by-design" } }), []);
+  const [prose] = checkConfigFloor(shippedHelpers, dropped, { exemptions: { [key]: "later" } });
+  assert.match(prose.detail, /neither a decision id nor/);
+});
+
+test("an exemption for a default the config still lists is stale", () => {
+  const [problem] = checkConfigFloor(shippedHelpers, withHelpers([insert, update]), {
+    exemptions: { "tenantPredicate.updateVersionedRow": "QC-011" },
+  });
+  assert.equal(problem.rule, "stale-exemption");
+});
+
+test("a config with no tenantPredicate block reports every shipped helper", () => {
+  const problems = checkConfigFloor(shippedHelpers, { gates: {}, rules: {} });
+  assert.equal(problems.length, 2);
+});
+
+test("a default named in extraExemptHelpers counts as kept", () => {
+  assert.deepEqual(checkConfigFloor(shippedHelpers, withHelpers([insert], [update])), []);
+  assert.deepEqual(checkConfigFloor(shippedHelpers, withHelpers([], [insert, update])), []);
+});
+
+test("the dropped-default-helper detail says a default in either list counts as kept", () => {
+  const [problem] = checkConfigFloor(shippedHelpers, withHelpers([insert]));
+  assert.match(problem.detail, /neither exemptHelpers nor extraExemptHelpers/);
 });

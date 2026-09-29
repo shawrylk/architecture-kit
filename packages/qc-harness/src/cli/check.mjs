@@ -22,6 +22,7 @@ import { calledInternalRoutes, checkInternalRoutes, declaredInternalRoutes } fro
 import { checkHeadlessPipelines } from "../gates/headless-sagas.mjs";
 import { checkFeatureCommands, governedFeatures } from "../gates/feature-cli.mjs";
 import { checkSagaTests, declaredSagas } from "../gates/saga-tests.mjs";
+import { checkTenantIsolationTests, tenantFeatures } from "../gates/tenant-isolation-test.mjs";
 import { checkGatesAreTested } from "../gates/gate-tests.mjs";
 import { checkAuditAppendOnly } from "../gates/audit-append-only.mjs";
 import { checkEnforcementMap } from "../gates/enforcement-map.mjs";
@@ -33,10 +34,11 @@ import { checkAdrFormat } from "../gates/adr-format.mjs";
 import { checkConfigFloor } from "../gates/config-floor.mjs";
 import { defaults } from "../config.mjs";
 import { rules as lintRules } from "../eslint/index.mjs";
-import { adrLog, enabled, readerEntries, thresholds } from "../config.mjs";
+import { adrLog, enabled, readerEntries, requiredHooks, thresholds } from "../config.mjs";
 import { checkRegistryReaders } from "../gates/registry-readers.mjs";
 import { checkMigrationNumbers } from "../gates/migration-numbers.mjs";
 import { checkRegistryLiteral } from "../gates/registry-literal.mjs";
+import { literalRegistries } from "../registries.mjs";
 import { checkThresholdRatchet } from "../gates/threshold-ratchet.mjs";
 import { checkParity, placeholderSlices } from "../gates/parity.mjs";
 import { checkIntegrationImports } from "../gates/integration-imports.mjs";
@@ -308,7 +310,10 @@ async function sqlAgreement(config, tree, taken, lines) {
     if (declared.length > 0) lines.push(`OK  schema       ${declared.length} table(s), ${columns} column(s) in schema files, each named by a migration`);
   }
   if (enabled(config.gates, "tenant-predicate")) {
-    const helpers = config.tenantPredicate.exemptHelpers;
+    // A default also listed in `extraExemptHelpers` is one helper, so each call is judged once.
+    const helpers = [...config.tenantPredicate.exemptHelpers, ...config.tenantPredicate.extraExemptHelpers].filter(
+      (helper, at, all) => all.findIndex((first) => first.module === helper.module && first.name === helper.name) === at,
+    );
     const callers = (await sourceFiles(config, tree)).filter(
       (file) => !TEST_FILE.test(file.path) && helpers.some((helper) => file.contents.includes(helper.name)),
     );
@@ -572,7 +577,7 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   }
 
   if (enabled(config.gates, "registry-readers")) {
-    const entries = readerEntries(thresholds(config));
+    const entries = literalRegistries(config).list.flatMap((registry) => readerEntries(registry.entries));
     const readers = [...new Set(entries.flatMap((entry) => entry.readers))];
     const sources = new Map(await Promise.all(readers.map(async (reader) => [reader, await read(path.join(config.root, reader))])));
     problems.push(...checkRegistryReaders(entries, sources));
@@ -583,7 +588,9 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     const docs = await readEach(config.root, tree.under(config.docs.root).filter((file) => file.endsWith(".md")));
     const libraries = parsedJson(await read(path.join(config.root, config.versions)))?.libraries ?? {};
     const exempt = config.registryLiteral.exempt ?? adrLog(config);
-    problems.push(...checkRegistryLiteral(docs, { thresholds: thresholds(config), libraries, exempt }));
+    const registries = literalRegistries(config);
+    problems.push(...checkRegistryLiteral(docs, { thresholds: thresholds(config), libraries, exempt, registries: registries.list }));
+    problems.push(...registries.problems);
     if (docs.length > 0) lines.push(`OK  literals     ${docs.length} doc(s) carry a token, never a figure a registry owns`);
   }
 
@@ -626,6 +633,19 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
       }),
     );
     lines.push(`OK  sagas        ${sagas.length} workflow(s), each named by a test that runs without a view`);
+  }
+
+  if (enabled(config.gates, "tenant-isolation-test")) {
+    const roots = config.featureRoots.map(posix);
+    const features = (await Promise.all(roots.map((root) => sourceFiles(config, tree, root)))).flat();
+    const isolation = {
+      helper: config.tenant.isolationHelper,
+      featureRoots: roots,
+      tableFactory: config.tenant.tableFactory,
+      column: config.tenant.column,
+    };
+    problems.push(...checkTenantIsolationTests(features, isolation));
+    lines.push(`OK  tenancy      ${tenantFeatures(features, isolation).length} feature(s) with tenant tables, each with a two-tenant test`);
   }
 
   if (enabled(config.gates, "gate-tests")) {
@@ -704,7 +724,7 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   if (enabled(config.gates, "config-floor")) {
     problems.push(...checkConfigFloor(defaults, config, { exemptions: config.floor.exemptions }));
     lines.push("OK  floor        every check the kit ships on is in force, or names the decision that switched it off");
-    const hooks = hookDrift(config.root, config.hooks.required);
+    const hooks = hookDrift(config.root, requiredHooks(config));
     problems.push(...hooks.problems);
     lines.push("OK  hooks        each git hook makes the calls hooks.required names");
     for (const note of hooks.notes) lines.push(`NOTE  hooks      ${note}`);

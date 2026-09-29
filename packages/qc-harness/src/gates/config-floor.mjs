@@ -3,6 +3,8 @@
 // the register. Turning a rule off becomes a reviewed act with a reason attached, which is the
 // difference between adopting a standard and negotiating with it.
 
+import { requiredHooks } from "../config.mjs";
+
 const OFF_BY_DESIGN = "off-by-design";
 
 /** @returns every check the kit ships that this repository has switched off. */
@@ -20,12 +22,18 @@ export function weakenedHooks(shipped = {}, configured = {}) {
     .sort();
 }
 
+/** @returns each shipped helper the configured list lacks. An entry matches on `module` and `name`. */
+export function droppedHelpers(shipped = [], configured = []) {
+  return shipped.filter((helper) => !configured.some((kept) => kept.module === helper.module && kept.name === helper.name));
+}
+
 /** Every shipped check this repository has switched off, by kind. A hook's exemption key is `hooks.<name>`. */
 function offByKind(shipped, configured) {
+  const shippedHooks = requiredHooks({ ...shipped, commitMessage: configured.commitMessage });
   return {
     gates: switchedOff(shipped.gates ?? {}, configured.gates ?? {}),
     rules: switchedOff(shipped.rules ?? {}, configured.rules ?? {}),
-    hooks: weakenedHooks(shipped.hooks?.required, configured.hooks?.required).map((name) => `hooks.${name}`),
+    hooks: weakenedHooks(shippedHooks, configured.hooks?.required).map((name) => `hooks.${name}`),
   };
 }
 
@@ -39,32 +47,45 @@ export function checkConfigFloor(shipped, configured, options = {}) {
   const pattern = options.pattern ?? /^[A-Z]{2,5}-\d{3,4}$/;
   const problems = [];
 
+  // A missing exemption is `unexempted`; a cited one must be a decision id or "off-by-design".
+  const judge = (key, rule, unexempted) => {
+    const cited = exemptions[key];
+    if (cited === undefined) problems.push({ path: "qc.config.json", rule, detail: unexempted });
+    else if (cited !== OFF_BY_DESIGN && !pattern.test(cited)) {
+      problems.push({
+        path: "qc.config.json",
+        rule,
+        detail: `floor.exemptions.${key} is "${cited}", which is neither a decision id nor "${OFF_BY_DESIGN}".`,
+      });
+    }
+  };
+
   const off = offByKind(shipped, configured);
   for (const kind of ["gates", "rules", "hooks"]) {
     for (const name of off[kind]) {
       const shown = kind === "hooks" ? name : `${kind}.${name}`;
-      const cited = exemptions[name];
-      if (cited === undefined) {
-        problems.push({
-          path: "qc.config.json",
-          rule: "unexempted-opt-out",
-          detail:
-            `${shown} is switched off, and the kit ships it on. Name the decision that says ` +
-            `why under floor.exemptions, or "${OFF_BY_DESIGN}" when the rule cannot apply to this repository's shape.`,
-        });
-        continue;
-      }
-      if (cited !== OFF_BY_DESIGN && !pattern.test(cited)) {
-        problems.push({
-          path: "qc.config.json",
-          rule: "unexempted-opt-out",
-          detail: `floor.exemptions.${name} is "${cited}", which is neither a decision id nor "${OFF_BY_DESIGN}".`,
-        });
-      }
+      judge(
+        name,
+        "unexempted-opt-out",
+        `${shown} is switched off, and the kit ships it on. Name the decision that says ` +
+          `why under floor.exemptions, or "${OFF_BY_DESIGN}" when the rule cannot apply to this repository's shape.`,
+      );
     }
   }
+  // A kit default helper named in neither list is the same opt-out. `qc check` reads the two lists as one.
+  const { exemptHelpers = [], extraExemptHelpers = [] } = configured.tenantPredicate ?? {};
+  const dropped = droppedHelpers(shipped.tenantPredicate?.exemptHelpers, [...exemptHelpers, ...extraExemptHelpers]);
+  for (const { module, name } of dropped) {
+    judge(
+      `tenantPredicate.${name}`,
+      "dropped-default-helper",
+      `The kit default ${name} (${module}) is in neither exemptHelpers nor extraExemptHelpers under tenantPredicate. Keep it in exemptHelpers, and put a helper you add in ` +
+        `extraExemptHelpers. To drop it on purpose, name the decision that says why under ` +
+        `floor.exemptions.tenantPredicate.${name}, or "${OFF_BY_DESIGN}".`,
+    );
+  }
   // An exemption for something that is not off is a stale reason nobody will notice going wrong.
-  const inForce = new Set([...off.gates, ...off.rules, ...off.hooks]);
+  const inForce = new Set([...off.gates, ...off.rules, ...off.hooks, ...dropped.map(({ name }) => `tenantPredicate.${name}`)]);
   for (const name of Object.keys(exemptions).sort()) {
     if (!inForce.has(name)) {
       problems.push({

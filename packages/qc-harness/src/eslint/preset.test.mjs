@@ -51,6 +51,13 @@ test("a rule switched off in config is not emitted as an error", () => {
   assert.ok(settings.every((s) => s === "off" || (Array.isArray(s) && s[0] !== "error")));
 });
 
+test("the idempotency key format reaches the rule", () => {
+  const set = emitted(preset({ config: config({ idempotency: { format: "uuid" } }) })).get("qc/durable-idempotency-key");
+  assert.equal(set[1].format, "uuid");
+  const off = emitted(preset({ config: config() })).get("qc/durable-idempotency-key");
+  assert.equal(off[1].format, null);
+});
+
 test("a rule's options come from the config, not from its own defaults", () => {
   const blocks = preset({ config: config({ apiClient: "net/http.ts" }) });
   const setting = emitted(blocks).get("qc/no-raw-fetch");
@@ -108,9 +115,62 @@ test("a registry entry with names reaches qc/registry-literal, and one without s
   assert.deepEqual(setting[1].entries, [{ key: "holdpress", names: holdpress.names, readers: holdpress.readers }]);
 });
 
+const LIFETIMES = {
+  lifetimes: {
+    offlinegrace: { value: 7, unit: "days", readers: ["frontend/src/platform/auth/device-session.ts"], match: ["offline grace"] },
+    clockdrift: { value: 5, unit: "minutes", match: ["clock drift"] },
+  },
+};
+
+test("a listed registry reaches qc/registry-literal: an entry that names readers restricts its number", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-preset-"));
+  writeFileSync(path.join(root, "quality-thresholds.json"), JSON.stringify({ gates: {} }));
+  writeFileSync(path.join(root, "session-lifetimes.json"), JSON.stringify(LIFETIMES));
+  const registries = [{ path: "session-lifetimes.json", key: "lifetimes", prefix: "ttl" }];
+  const setting = emitted(preset({ config: { ...config({ registryLiteral: { registries } }), root } })).get("qc/registry-literal");
+  assert.deepEqual(setting[1].values, [
+    { key: "offlinegrace", registry: "session-lifetimes.json", value: 7, readers: ["frontend/src/platform/auth/device-session.ts"] },
+  ]);
+});
+
+test("a session lifetime in code fails outside its reader, through the whole preset", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-preset-"));
+  writeFileSync(path.join(root, "quality-thresholds.json"), JSON.stringify({ gates: {} }));
+  writeFileSync(path.join(root, "session-lifetimes.json"), JSON.stringify(LIFETIMES));
+  const registries = [{ path: "session-lifetimes.json", key: "lifetimes", prefix: "ttl" }];
+  const run = (filename) => {
+    const blocks = preset({
+      config: { ...config({ registryLiteral: { registries } }), root },
+      plugins: { tseslint },
+      languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
+    });
+    return byRule(new Linter({ configType: "flat" }).verify("export const graceDays = 7;\nexport const drift = 5;\nexport type Days = 7;\n", blocks, filename), "qc/registry-literal");
+  };
+  assert.equal(run("frontend/src/features/login/form.ts").length, 1);
+  assert.equal(run("frontend/src/platform/auth/device-session.ts").length, 0);
+});
+
 test("the ime config reaches qc/ime-safe-key", () => {
   const setting = emitted(preset({ config: config({ ime: { guards: ["isImeComposing"] } }) })).get("qc/ime-safe-key");
   assert.deepEqual(setting[1], { components: [], guards: ["isImeComposing"] });
+});
+
+test("mutation-control-pending is off by default and reaches the client files with its options when on", () => {
+  const client = (rules) => {
+    const blocks = preset({ config: config({ clientFiles: ["frontend/src/**/*.tsx"], rules }) });
+    return emitted(blocks.filter((block) => block.files?.includes("frontend/src/**/*.tsx"))).get("qc/mutation-control-pending");
+  };
+  assert.equal(client({}), undefined);
+  const setting = client({ "mutation-control-pending": true });
+  assert.deepEqual(setting[1], { button: "Button", prop: "loading", handlers: ["onClick", "onSelect", "onConfirm"] });
+});
+
+test("the mutationControl config reaches qc/mutation-control-pending", () => {
+  const blocks = preset({
+    config: config({ clientFiles: ["src/**/*.tsx"], rules: { "mutation-control-pending": true }, mutationControl: { button: "Action", prop: "busy" } }),
+  });
+  const setting = emitted(blocks).get("qc/mutation-control-pending");
+  assert.deepEqual(setting[1], { button: "Action", prop: "busy", handlers: ["onClick", "onSelect", "onConfirm"] });
 });
 
 test("the preset refuses an inline config comment in every file", () => {

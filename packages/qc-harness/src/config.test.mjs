@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaults, load, merge } from "./config.mjs";
+import { defaults, load, merge, requiredHooks } from "./config.mjs";
 import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -56,4 +56,29 @@ test("an array replaces rather than merges", () => {
 test("a repository with no config file loads the reference layout", () => {
   const config = load(here);
   assert.deepEqual(config.featureRoots, defaults.featureRoots);
+});
+
+test("the tenant isolation helper is unset and its gate ships off", () => {
+  assert.equal(defaults.tenant.isolationHelper, null);
+  assert.equal(defaults.gates["tenant-isolation-test"], false);
+});
+
+test("requiredHooks drops commit-msg only when conventional is false", () => {
+  assert.deepEqual(defaults.hooks.required["commit-msg"], ["qc commit-msg"]);
+  assert.deepEqual(requiredHooks(defaults)["commit-msg"], ["qc commit-msg"]);
+  const off = { ...defaults, commitMessage: { ...defaults.commitMessage, conventional: false } };
+  assert.deepEqual(requiredHooks(off), { ...defaults.hooks.required, "commit-msg": [] });
+  assert.deepEqual(defaults.hooks.required["commit-msg"], ["qc commit-msg"], "the shipped map is not mutated");
+  assert.deepEqual(requiredHooks({ hooks: { required: { "pre-push": ["qc check"] } } }), { "pre-push": ["qc check"] });
+});
+
+test("extraExemptHelpers defaults to an empty list, and exemptHelpers keeps the kit defaults", () => {
+  assert.deepEqual(defaults.tenantPredicate.extraExemptHelpers, []);
+  assert.deepEqual(
+    defaults.tenantPredicate.exemptHelpers.map((helper) => helper.name),
+    ["insertReturning", "updateVersionedRow"],
+  );
+  const config = load(here);
+  assert.deepEqual(config.tenantPredicate.extraExemptHelpers, []);
+  assert.equal(config.tenantPredicate.exemptHelpers.length, 2);
 });

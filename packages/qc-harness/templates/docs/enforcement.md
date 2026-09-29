@@ -32,7 +32,7 @@ Read it as an index; the reasoning is under the headings that follow.
 | A promise is awaited, never continued with .then() or .catch() | `qc/no-promise-then` |
 | Fetch belongs to the api client | `qc/no-raw-fetch` |
 | No hand-written HTTP status | `qc/no-status-literal` |
-| No supersession trail in a comment; the repository states what is true now | `qc/no-supersession-trail` |
+| No supersession trail or progress phrase in a comment; the repository states what is true now | `qc/no-supersession-trail` |
 | Repositories and sagas are scoped, never singleton | `qc/scoped-repository` |
 | An exported async function takes a cancellation token last | `qc/signal-last-param` |
 | Storage imports belong in the resource block | `qc/storage-only-in-resource` |
