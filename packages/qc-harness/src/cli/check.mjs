@@ -537,9 +537,10 @@ async function docClaims(config, lines) {
   return problems;
 }
 
-/** Every write of the composed contract names its idempotency key, or sits in the shrinking ledger. */
+/** Every write of the composed contract names its idempotency key, or sits in the ledger. */
 async function contractIdempotency(config, lines) {
-  const { contract, legacy, exemptDeleteById } = config.contractIdempotency;
+  const { contract } = config;
+  const { legacy, exemptDeleteById } = config.contractIdempotency;
   const text = await read(path.join(config.root, contract));
   if (text === null) return [];
   let operations;
@@ -551,8 +552,8 @@ async function contractIdempotency(config, lines) {
   }
   const ledgerText = await read(path.join(config.root, legacy));
   const ledger = parsedJson(ledgerText);
-  if (ledgerText !== null && !Array.isArray(ledger)) {
-    return [{ path: legacy, rule: "unreadable-ledger", detail: "the ledger is not a JSON array of operation ids" }];
+  if (ledgerText !== null && !(Array.isArray(ledger) && ledger.every((id) => typeof id === "string"))) {
+    return [{ path: legacy, rule: "unreadable-ledger", detail: "the ledger is not a JSON array of operation-id strings" }];
   }
   const fields = config.idempotency.keys;
   const problems = checkContractIdempotency(operations, ledger ?? [], { fields, exemptDeleteById, contract, ledger: legacy });

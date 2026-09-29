@@ -131,3 +131,69 @@ components:
 `);
   assert.deepEqual(found[0].bodyProps, ["name"]);
 });
+
+const NL = String.fromCharCode(10);
+
+const slow = (run) => async () => {
+  const started = performance.now();
+  await run();
+  assert.ok(performance.now() - started < 100, "the walk took 100 ms or more");
+};
+
+const post = (schema) => `
+paths:
+  /a:
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/${schema}"
+components:
+  schemas:
+`;
+
+test("a wide self-referencing allOf finishes at once", slow(async () => {
+  const refs = Array.from({ length: 14 }, () => '        - $ref: "#/components/schemas/Loop"').join(NL);
+  const found = await contractOperations([post("Loop"), "    Loop:", "      properties: { name: {} }", "      allOf:", refs, ""].join(NL));
+  assert.deepEqual(found[0].bodyProps, ["name"]);
+}));
+
+test("two schemas that compose each other finish at once and keep both property sets", slow(async () => {
+  const found = await contractOperations(`${post("Ping")}
+    Ping:
+      properties: { a: {} }
+      allOf: [{ $ref: "#/components/schemas/Pong" }, { $ref: "#/components/schemas/Pong" }]
+    Pong:
+      properties: { b: {} }
+      allOf: [{ $ref: "#/components/schemas/Ping" }, { $ref: "#/components/schemas/Ping" }]
+`);
+  assert.deepEqual(found[0].bodyProps.sort(), ["a", "b"]);
+}));
+
+test("a schema reached by two routes is walked once and still counted", async () => {
+  const found = await contractOperations(`${post("Top")}
+    Top:
+      allOf: [{ $ref: "#/components/schemas/Left" }, { $ref: "#/components/schemas/Right" }]
+    Left:
+      allOf: [{ $ref: "#/components/schemas/Base" }]
+    Right:
+      allOf: [{ $ref: "#/components/schemas/Base" }]
+      properties: { r: {} }
+    Base:
+      properties: { mutationId: {} }
+`);
+  assert.deepEqual(found[0].bodyProps, ["mutationId", "r"]);
+});
+
+test("a $ref segment is percent-decoded, and ~0 and ~1 are unescaped", async () => {
+  const found = await contractOperations(`${post("Create%20Board")}
+    Create Board:
+      allOf: [{ $ref: "#/components/schemas/a~1b" }, { $ref: "#/components/schemas/c~0d" }]
+    a/b:
+      properties: { slash: {} }
+    c~d:
+      properties: { tilde: {} }
+`);
+  assert.deepEqual(found[0].bodyProps, ["slash", "tilde"]);
+});

@@ -58,12 +58,14 @@ export const defaults = {
     format: null,
   },
 
-  // Every write of the composed contract carries one of `idempotency.keys`, as a body property or a
+  // The composed API description. Every gate that judges the contract reads this one path.
+  contract: "contracts/openapi.yaml",
+
+  // Every write of the contract carries one of `idempotency.keys`, as a body property or a
   // parameter. `legacy` lists the operation ids that predate the gate;
   // an entry whose operation no longer owes the key fails.
   // A DELETE whose last path segment is a parameter names one row, so it is exempt unless this is off.
   contractIdempotency: {
-    contract: "contracts/openapi.yaml",
     legacy: "contracts/idempotency-legacy.json",
     exemptDeleteById: true,
   },
@@ -372,10 +374,10 @@ export const defaults = {
     "contract-idempotency": false,
   },
 
-  // Modules under gates/ that `qc check` does not run, so they carry no switch — a switch that
-  // changed nothing would be a lie about what the config controls. A repository's codegen imports
-  // a generator and writes its output; `contract-operations` is the reader the contract gates share.
-  generators: ["tenant-tables", "contract-compose", "contract-operations"],
+  // Gates that produce rather than inspect: a repository's codegen imports these and
+  // writes their output. `qc check` does not run them, so they carry no switch — a
+  // switch that changed nothing would be a lie about what the config controls.
+  generators: ["tenant-tables", "contract-compose"],
 
   rules: {
     "no-comment-paragraph": true,

@@ -585,15 +585,14 @@ lines: 412
 
 ### Require an idempotency key on every write
 
-The `contract-idempotency` gate ships off. It reads the composed contract at
-`contractIdempotency.contract`. Every `POST`, `PUT`, `PATCH` and `DELETE` must carry one of
-`idempotency.keys` as a request-body property or a parameter. The gate resolves a `$ref` body one level
-into `components.schemas`, and each `allOf` part, to a bounded depth.
+The `contract-idempotency` gate ships off. It reads the composed contract at `contract`, the one path every contract gate shares. Every
+`POST`, `PUT`, `PATCH` and `DELETE` must carry one of `idempotency.keys` as a request-body property or
+a parameter. The gate follows a `$ref` body into `components.schemas`, and each `allOf` part, once each.
 
 - The `yaml` package reads the contract. It is an optional peer dependency: run `pnpm add -D yaml`. A
   repository that turns the gate on without it fails as `contract-reader-unavailable`.
 - A write without the key fails as `missing-idempotency-field`.
-- The ledger at `contractIdempotency.legacy` is a JSON array of operation ids. An operation with no
+- The ledger at `contractIdempotency.legacy` is a JSON array of operation-id strings. An operation with no
   `operationId` is named `METHOD /path`, as in `POST /v1/boards`. A listed operation passes.
 - A ledger entry fails as `legacy-now-declares` when its operation now declares the key, no longer
   exists, or needs no key. Nothing yet stops a new entry: growth against the merge base is not checked.
@@ -604,8 +603,8 @@ into `components.schemas`, and each `allOf` part, to a bounded depth.
 ```json
 {
   "gates": { "contract-idempotency": true },
+  "contract": "contracts/openapi.yaml",
   "contractIdempotency": {
-    "contract": "contracts/openapi.yaml",
     "legacy": "contracts/idempotency-legacy.json",
     "exemptDeleteById": true
   }

@@ -26,35 +26,56 @@ async function parser(load) {
   }
 }
 
-/** A local `$ref` followed to its target, a few hops at most. Anything else is returned as it is. */
-function deref(document, node) {
+/** One segment of a JSON pointer in a URI fragment: percent-decoded, then `~1` and `~0` unescaped. */
+function segment(text) {
+  let decoded = text;
+  try {
+    decoded = decodeURIComponent(text);
+  } catch {
+    // A stray % is part of the name.
+  }
+  return decoded.replace(/~1/g, "/").replace(/~0/g, "~");
+}
+
+/**
+ * A local `$ref` followed to its target, a few hops at most. Anything else is returned as it is.
+ * With `seen`, each ref is followed once: a ref already in it resolves to undefined.
+ */
+function deref(document, node, seen) {
   let current = node;
   for (let hop = 0; hop < MAX_HOPS; hop++) {
     const ref = current?.$ref;
     if (typeof ref !== "string" || !ref.startsWith("#/")) return current;
+    if (seen?.has(ref)) return undefined;
+    seen?.add(ref);
     const target = ref
       .slice(2)
       .split("/")
-      .reduce((at, key) => at?.[key.replace(/~1/g, "/").replace(/~0/g, "~")], document);
+      .reduce((at, key) => at?.[segment(key)], document);
     if (target === undefined) return undefined;
     current = target;
   }
   return current;
 }
 
-/** The property names of a schema. A local `$ref` and each `allOf` part are followed, to a bounded depth. */
-function schemaProps(document, schema, depth = 0) {
-  const resolved = deref(document, schema);
+/**
+ * The property names of a schema. A local `$ref` and each `allOf` part are followed. `seen` holds the
+ * refs of one body walk, so a schema reached twice, or one that composes itself, is walked once;
+ * the depth is a backstop.
+ */
+function schemaProps(document, schema, seen, depth = 0) {
+  const resolved = deref(document, schema, seen);
   if (depth > MAX_HOPS || !resolved || typeof resolved !== "object") return [];
   const own = Object.keys(resolved.properties ?? {});
-  const composed = (resolved.allOf ?? []).flatMap((part) => schemaProps(document, part, depth + 1));
+  const composed = (resolved.allOf ?? []).flatMap((part) => schemaProps(document, part, seen, depth + 1));
   return [...new Set([...own, ...composed])];
 }
 
 function bodyProps(document, operation) {
   const body = deref(document, operation.requestBody);
+  const seen = new Set();
   const media = Object.values(body?.content ?? {});
-  return [...new Set(media.flatMap((entry) => schemaProps(document, entry?.schema)))];
+  return [...new Set(media.flatMap((entry) => schemaProps(document, entry?.schema, seen)))];
 }
 
 function paramNames(document, ...lists) {

@@ -92,14 +92,16 @@ const GATE_RULES = new Set([
 ]);
 
 // The runner reads the contract and the ledger from disk and reports what the gate finds.
-async function checked({ contract, ledger, gates = { "contract-idempotency": true } }) {
+async function checked({ contract, ledger, gates = { "contract-idempotency": true }, overrides = {} }) {
   const dir = mkdtempSync(path.join(tmpdir(), "qc-idem-"));
   try {
     execFileSync("git", ["init", "-q"], { cwd: dir });
     mkdirSync(path.join(dir, "contracts"), { recursive: true });
-    if (contract !== undefined) writeFileSync(path.join(dir, "contracts/openapi.yaml"), contract);
+    const file = overrides.contract ?? "contracts/openapi.yaml";
+    mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    if (contract !== undefined) writeFileSync(path.join(dir, file), contract);
     if (ledger !== undefined) writeFileSync(path.join(dir, "contracts/idempotency-legacy.json"), ledger);
-    const config = { ...load(dir), gates: { ...load(dir).gates, ...gates } };
+    const config = { ...load(dir), ...overrides, gates: { ...load(dir).gates, ...gates } };
     const { problems, lines } = await runCheck(config);
     return { problems: problems.filter((problem) => GATE_RULES.has(problem.rule)), lines };
   } finally {
@@ -129,5 +131,18 @@ test("a contract or a ledger the gate cannot read is a problem, not a crash", as
   const broken = await checked({ contract: "paths: [unclosed\n" });
   assert.deepEqual(broken.problems.map((problem) => problem.rule), ["unreadable-contract"]);
   const ledger = await checked({ contract: POSTS, ledger: '{"createBoard": true}' });
+  assert.deepEqual(ledger.problems.map((problem) => problem.rule), ["unreadable-ledger"]);
+});
+
+test("the contract path is the top-level `contract`, and an override moves it", async () => {
+  assert.equal(defaults.contract, "contracts/openapi.yaml");
+  assert.equal(defaults.contractIdempotency.contract, undefined);
+  const moved = await checked({ contract: POSTS, overrides: { contract: "api/spec.yaml" } });
+  assert.deepEqual(moved.problems.map((problem) => problem.rule), ["missing-idempotency-field"]);
+  assert.equal(moved.problems[0].path, "api/spec.yaml");
+});
+
+test("a ledger with an entry that is not a string is unreadable", async () => {
+  const ledger = await checked({ contract: POSTS, ledger: '["createBoard", 7]' });
   assert.deepEqual(ledger.problems.map((problem) => problem.rule), ["unreadable-ledger"]);
 });
