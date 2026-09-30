@@ -1,9 +1,9 @@
 import { strict as assert } from "node:assert";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { RATES, costsOf, summarizeSession } from "./tokens.mjs";
+import { RATES, costsOf, projectKeyOf, runTokens, sessionFiles, summarizeSession } from "./tokens.mjs";
 import { readRequests } from "./transcript-usage.mjs";
 
 const MINUTE = 60_000;
@@ -169,4 +169,69 @@ test("totals on a transcript with a line per content block count each request on
   assert.equal(types[0].write5m, 1100);
   assert.equal(total.calls, 2);
   assert.equal(total.output, 10);
+});
+
+function claudeDir(t) {
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-tokens-")));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  return base;
+}
+
+/** A fake Claude Code folder with one project, one session, a main transcript, and two subagents. */
+function fakeSession(t) {
+  const dir = claudeDir(t);
+  const project = path.join(dir, "repo");
+  const projectDir = path.join(dir, "projects", projectKeyOf(project));
+  const subagents = path.join(projectDir, "s1", "subagents");
+  mkdirSync(subagents, { recursive: true });
+  writeFileSync(path.join(projectDir, "s1.jsonl"), `${line("m1", 0, 0, 500)}\n`);
+  writeFileSync(path.join(subagents, "agent-a1.jsonl"), `${line("i1", 0, 0, 1000)}\n${line("i1", 0, 0, 1000)}\n${line("i2", 1, 1000, 100)}\n`);
+  writeFileSync(path.join(subagents, "agent-a1.meta.json"), JSON.stringify({ agentType: "architecture:sdd-implementer" }));
+  writeFileSync(path.join(subagents, "agent-a2.jsonl"), `${line("r1", 2, 0, 300)}\n`);
+  return { dir, project };
+}
+
+test("the project key replaces each character outside letters and digits with a dash", () => {
+  if (process.platform === "win32") assert.equal(projectKeyOf("C:\\Users\\x\\qc-mono"), "C--Users-x-qc-mono");
+  else assert.equal(projectKeyOf("/home/u/qc-mono"), "-home-u-qc-mono");
+});
+
+test("sessionFiles finds the newest session's main transcript and each subagent transcript", (t) => {
+  const { dir, project } = fakeSession(t);
+  const files = sessionFiles({ claudeDir: dir, project });
+  assert.equal(files.id, "s1");
+  assert.ok(files.main.endsWith("s1.jsonl"));
+  assert.deepEqual(files.agents.map((file) => path.basename(file)).sort(), ["agent-a1.jsonl", "agent-a2.jsonl"]);
+  assert.equal(sessionFiles({ claudeDir: dir, project: path.join(dir, "elsewhere") }), null);
+});
+
+test("qc tokens --json reports each type once per request, and an agent with no meta as unknown", (t) => {
+  const { dir, project } = fakeSession(t);
+  const lines = [];
+  const code = runTokens({ root: project }, ["--claude-dir", dir, "--json"], (text) => lines.push(text));
+  assert.equal(code, 0);
+  const report = JSON.parse(lines.join("\n"));
+  assert.equal(report.session, "s1");
+  const byType = Object.fromEntries(report.types.map((stats) => [stats.type, stats]));
+  assert.deepEqual(Object.keys(byType), ["main", "architecture:sdd-implementer", "unknown"]);
+  assert.equal(byType["architecture:sdd-implementer"].calls, 2);
+  assert.equal(byType.unknown.calls, 1);
+});
+
+test("qc tokens prints a table with a footer that names the rates", (t) => {
+  const { dir, project } = fakeSession(t);
+  const lines = [];
+  assert.equal(runTokens({ root: project }, ["--claude-dir", dir, "--session", "s1"], (text) => lines.push(text)), 0);
+  const text = lines.join("\n");
+  assert.match(text, /architecture:sdd-implementer/);
+  assert.match(text, /total/);
+  assert.match(text, /API list prices/);
+  assert.match(text, /subagentPromptCacheTtl/);
+});
+
+test("qc tokens with no session to read says so and exits 1", (t) => {
+  const dir = claudeDir(t);
+  const errors = [];
+  assert.equal(runTokens({ root: path.join(dir, "none") }, ["--claude-dir", dir], () => {}, (text) => errors.push(text)), 1);
+  assert.match(errors.join("\n"), /no session/);
 });

@@ -292,6 +292,23 @@ repeating the rest. A family matches a bare alias (`sonnet`) or a full model id
 existing family needs no kit change. `models` constrains only a dispatch that names a `model`; a
 dispatch with no model still runs its type's frontmatter model, which `models` does not touch.
 
+#### Measure a session's tokens
+
+`qc tokens` reads the transcripts Claude Code keeps for one session and prints, per agent type, the
+tokens read and written, the cache hit rate, the average and largest context per call, and the
+median first call. It counts a request once, though Claude Code writes one line per content block.
+It needs no hook and no config.
+
+```bash
+npx qc tokens                         # the newest session of this folder
+npx qc tokens --session <id> --json   # one session, as JSON, for a before-and-after comparison
+```
+
+The `1h` column prices the same requests at the one-hour cache lifetime. A negative value means
+`subagentPromptCacheTtl: "1h"` in your settings would have cost less. The plugin's agents set no
+`experimental.cacheTtl`: in the measured sessions the one-hour lifetime cost more for all four types,
+and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are API list prices.
+
 ### 10. Send a wide read or search to the repository's own tools
 
 A session spends most of its tokens on whole-file reads and wide searches, when a repository often

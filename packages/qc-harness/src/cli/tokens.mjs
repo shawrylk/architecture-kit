@@ -1,7 +1,10 @@
 // `qc tokens`: what one session read and wrote, per agent type, from its transcripts. It also prices the
 // same requests at the one-hour cache lifetime, at API list prices, to show which lifetime fits.
 
-import { contextOf } from "./transcript-usage.mjs";
+import { readdirSync, statSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { agentTypeOf, contextOf, readRequests } from "./transcript-usage.mjs";
 
 export const RATES = { read: 0.1, write5m: 1.25, write1h: 2 };
 const FIVE_MINUTES = 5 * 60_000;
@@ -132,4 +135,105 @@ export function summarizeSession({ main = [], agents = [] }, rates = RATES) {
   }
   // The types' own credits are already in their cost1h, so the total takes none of its own.
   return { types, total: finish(sum, rates, 0) };
+}
+
+const UNKNOWN = "unknown";
+
+/** The folder name Claude Code gives a project: its path, with each character outside letters and digits a dash. */
+export const projectKeyOf = (dir) => path.resolve(dir).replace(/[^A-Za-z0-9]/g, "-");
+
+export const claudeDirOf = (env = process.env) => env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
+
+function listOf(dir) {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+function newestSession(projectDir) {
+  let newest = null;
+  for (const name of listOf(projectDir).filter((file) => file.endsWith(".jsonl"))) {
+    const at = statSync(path.join(projectDir, name)).mtimeMs;
+    if (!newest || at > newest.at) newest = { id: name.slice(0, -".jsonl".length), at };
+  }
+  return newest?.id ?? null;
+}
+
+/** The transcripts of one session: `session`, or the newest one of the project. @returns null when there is none */
+export function sessionFiles({ claudeDir, project, session = null }) {
+  const projectDir = path.join(claudeDir, "projects", projectKeyOf(project));
+  const id = session ?? newestSession(projectDir);
+  if (!id) return null;
+  const main = path.join(projectDir, `${id}.jsonl`);
+  const subagents = path.join(projectDir, id, "subagents");
+  const agents = listOf(subagents).filter((file) => /^agent-.+\.jsonl$/.test(file)).map((file) => path.join(subagents, file));
+  const hasMain = listOf(projectDir).includes(`${id}.jsonl`);
+  if (!hasMain && agents.length === 0) return null;
+  return { id, main: hasMain ? main : null, agents };
+}
+
+function optionsOf(args) {
+  const options = { session: null, project: null, claudeDir: null, json: false };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--json") options.json = true;
+    else if (arg === "--session") options.session = args[++index] ?? null;
+    else if (arg === "--project") options.project = args[++index] ?? null;
+    else if (arg === "--claude-dir") options.claudeDir = args[++index] ?? null;
+  }
+  return options;
+}
+
+const amount = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(Math.round(n)));
+const percent = (x) => `${(x * 100).toFixed(1)}%`;
+const signed = (x) => `${x > 0 ? "+" : ""}${(x * 100).toFixed(1)}%`;
+const COLUMNS = [
+  ["type", 34, (s) => s.type],
+  ["agents", 6, (s) => String(s.agents)],
+  ["calls", 6, (s) => String(s.calls)],
+  ["read", 7, (s) => amount(s.read)],
+  ["w5m", 7, (s) => amount(s.write5m)],
+  ["w1h", 7, (s) => amount(s.write1h)],
+  ["input", 6, (s) => amount(s.input)],
+  ["output", 6, (s) => amount(s.output)],
+  ["hit", 6, (s) => percent(s.hitRate)],
+  ["avgctx", 6, (s) => amount(s.avgContext)],
+  ["first", 6, (s) => (s.type === "total" ? "-" : amount(s.firstMedian))],
+  ["maxctx", 6, (s) => amount(s.maxContext)],
+  ["gapmiss", 7, (s) => String(s.gapMisses)],
+  ["prefix", 6, (s) => (s.type === "total" ? "-" : String(s.prefixes))],
+  ["1h", 7, (s) => signed(s.whatIf1h)],
+];
+const row = (cells) => cells.map((cell, index) => (index === 0 ? cell.padEnd(COLUMNS[0][1]) : cell.padStart(COLUMNS[index][1]))).join(" ");
+
+const FOOTER = [
+  `Rates, in base-input units: read ${RATES.read}, 5m write ${RATES.write5m}, 1h write ${RATES.write1h}. These are API list prices; a subscription's usage limit may weigh them otherwise.`,
+  "1h: the cost change had every write used the one-hour lifetime. A negative value favors `subagentPromptCacheTtl: \"1h\"` in settings for this kind of session.",
+  "gapmiss: calls after a gap over five minutes that wrote more than they read. prefix: distinct warm first-call reads per model; more than 1 means the type's prefix changed.",
+];
+
+/** `qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]`. @returns the exit code */
+export function runTokens(config, args = [], out = console.log, err = console.error) {
+  const options = optionsOf(args);
+  const project = options.project ?? config.root ?? process.cwd();
+  const files = sessionFiles({ claudeDir: options.claudeDir ?? claudeDirOf(), project, session: options.session });
+  if (!files) {
+    err(`qc tokens: no session transcript for ${project} under ${options.claudeDir ?? claudeDirOf()}.`);
+    return 1;
+  }
+  const report = summarizeSession({
+    main: files.main ? readRequests(files.main) : [],
+    agents: files.agents.map((file) => ({ type: agentTypeOf(file) ?? UNKNOWN, requests: readRequests(file) })),
+  });
+  if (options.json) {
+    out(JSON.stringify({ session: files.id, ...report }, null, 2));
+    return 0;
+  }
+  out(`qc tokens  session ${files.id}`);
+  out(row(COLUMNS.map(([name]) => name)));
+  for (const stats of [...report.types, report.total]) out(row(COLUMNS.map(([, , cell]) => cell(stats))));
+  for (const text of FOOTER) out(text);
+  return 0;
 }

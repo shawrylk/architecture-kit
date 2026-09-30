@@ -146,3 +146,12 @@ test("the default allowed types are the shipped types, bare and scoped", () => {
   assert.deepEqual([...dispatchDefaults.allowedTypes].sort(), shipped.sort());
   assert.deepEqual(dispatchDefaults.implementerTypes, ["sdd-implementer", `${PLUGIN}:sdd-implementer`]);
 });
+
+test("no type pins a prompt cache lifetime, so a user's own setting decides it", () => {
+  // The measured one-hour lifetime cost more for all four types; `qc tokens` reports it per session.
+  for (const name of Object.keys(EXPECTED)) {
+    const front = frontOf(name);
+    assert.equal(front.experimental, undefined, `${name} sets experimental`);
+    assert.equal(front.cacheTtl, undefined, `${name} sets cacheTtl`);
+  }
+});
