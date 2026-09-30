@@ -19,11 +19,9 @@ function readCount(file) {
   }
 }
 
-/** Adds one to the count and writes it through a rename. @returns the new count; throws on a write error. */
-export function bumpCount(file, now = Date.now()) {
-  const count = readCount(file) + 1;
+/** Writes one small JSON payload through a rename; throws on a write error. */
+function writeJson(file, payload) {
   const temp = `${file}.${process.pid}.tmp`;
-  const payload = JSON.stringify({ count, updatedAt: new Date(now).toISOString() });
   try {
     writeFileSync(temp, payload);
   } catch {
@@ -36,5 +34,28 @@ export function bumpCount(file, now = Date.now()) {
     rmSync(temp, { force: true });
     throw error;
   }
+}
+
+/** Adds one to the count and writes it through a rename. @returns the new count; throws on a write error. */
+export function bumpCount(file, now = Date.now()) {
+  const count = readCount(file) + 1;
+  writeJson(file, JSON.stringify({ count, updatedAt: new Date(now).toISOString() }));
   return count;
 }
+
+/** The file that holds one agent's context-signal state: its first context, its estimate, and the last note. */
+export const stateFileOf = (sessionId, agentId, tmp) =>
+  path.join(tmp, "architecture-kit", "context", `${fileSafe(sessionId)}-${fileSafe(agentId)}.json`);
+
+/** @returns the state, or {} for a missing or unreadable file. */
+export function readState(file) {
+  try {
+    const state = JSON.parse(readFileSync(file, "utf8"));
+    return state !== null && typeof state === "object" && !Array.isArray(state) ? state : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Writes the state through a rename; throws on a write error. */
+export const writeState = (file, state) => writeJson(file, JSON.stringify(state));

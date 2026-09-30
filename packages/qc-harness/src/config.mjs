@@ -519,6 +519,17 @@ export const exploreDefaults = {
   exempt: [],
 };
 
+// What each key of `swarm.context` means when a repository omits it. The signal is on wherever the config
+// is, and `"context": false` turns it off. Each ratio compares an agent's latest request with its first.
+export const contextDefaults = {
+  every: 5,
+  summarizeRatio: 3,
+  handoffRatio: 5,
+  minCallsLeft: 15,
+  repeatEvery: 20,
+  handoffTypes: ["sdd-implementer", "architecture:sdd-implementer", "general-purpose"],
+};
+
 // What each key of `swarm.review` means when a repository omits it. The workflow checks run only while
 // `swarm.dispatch` is on, so this section alone turns nothing on.
 export const reviewDefaults = {
