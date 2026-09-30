@@ -142,7 +142,7 @@ test("a repeat stop with the same failure ends with a system message that names 
   assert.equal(repeat.status, 0, repeat.stderr);
   const message = JSON.parse(repeat.stdout).systemMessage;
   assert.match(message, /still fails/);
-  assert.ok(message.includes("structure failed:"), message);
+  assert.ok(message.includes("ADR-0099 is cited but not defined"), message);
 });
 
 test("a repeat stop with a changed failure blocks again", (t) => {
@@ -190,4 +190,23 @@ test("the same failure at a stop that follows no refusal blocks, because only a 
   const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
   assert.equal(ws.run({ session_id: "session-plain" }).status, 2);
   assert.equal(ws.run({ session_id: "session-plain" }).status, 2);
+});
+
+test("a repeat stop names the first line of a failure that has no FAIL line", (t) => {
+  const text = ["error TS2322: Type 'string' is not assignable to type 'number'.", "src/a.ts(1,1): more"].join("\n");
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: text } });
+  assert.equal(ws.run({ session_id: "session-bare" }).status, 2);
+  const repeat = ws.run({ session_id: "session-bare", stop_hook_active: true });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  const message = JSON.parse(repeat.stdout).systemMessage;
+  assert.ok(message.includes("error TS2322"), message);
+  assert.ok(!message.includes("structure failed:"), message);
+});
+
+test("the memory file holds a hash of the failure text, not the text", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  assert.equal(ws.run({ session_id: "session-hash" }).status, 2);
+  const stored = readFileSync(path.join(ws.tmpDir, "qc-stop-gate", "session-hash.last"), "utf8");
+  assert.match(stored.trim(), /^[0-9a-f]{64}$/);
+  assert.ok(!stored.includes("ADR-0099"));
 });

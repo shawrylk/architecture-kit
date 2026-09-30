@@ -11,8 +11,8 @@ SESSION="${INPUT#*|}"
 [ "$SESSION" = "$INPUT" ] && SESSION=""
 
 # The memory of the last refusal: one file per session under the system temp folder, holding the
-# failure text. `same` exits 10 when this is a repeat stop and the text is the one last refused, and
-# stores the text otherwise. Every other outcome, an unreadable or unwritable file included, exits 0,
+# sha256 of the failure text. `same` exits 10 when this is a repeat stop and the text is the one last
+# refused, and stores the hash otherwise. Every other outcome, an unreadable or unwritable file included, exits 0,
 # so the gate blocks as it did before it had a memory.
 MEMORY_JS='
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
@@ -22,10 +22,11 @@ try {
   const dir = path.join(os.tmpdir(), "qc-stop-gate");
   const file = path.join(dir, session + ".last");
   if (mode === "clear") { fs.rmSync(file, { force: true }); process.exit(0); }
-  let text = "";
+  let raw = "";
   process.stdin.setEncoding("utf8");
-  process.stdin.on("data", (d) => (text += d)).on("end", () => {
+  process.stdin.on("data", (d) => (raw += d)).on("end", () => {
     try {
+      const text = require("node:crypto").createHash("sha256").update(raw).digest("hex");
       let last = null;
       try { last = fs.readFileSync(file, "utf8"); } catch {}
       if (active === "1" && last === text) process.exit(10);
@@ -94,7 +95,11 @@ if [ -n "$FAIL" ]; then
   # A block that brings no change ends the turn with a note. The gate adds no cap: a changed failure blocks again.
   printf '%s' "$FAIL" | node -e "$MEMORY_JS" same "$SESSION" "$ACTIVE" 2>/dev/null
   if [ $? -eq 10 ]; then
-    MESSAGE="The stop gate still fails with the same text as at the last block. Fix it: $(printf '%s' "$FAIL" | head -1)"
+    # Name the failure, not the heading: the first FAIL line, else the first line after the heading.
+    FIRST=$(printf '%s' "$FAIL" | grep -m1 '^FAIL')
+    [ -n "$FIRST" ] || FIRST=$(printf '%s' "$FAIL" | sed 1d | grep -m1 .)
+    [ -n "$FIRST" ] || FIRST=$(printf '%s' "$FAIL" | head -1)
+    MESSAGE="The stop gate still fails with the same text as at the last block. Fix it: $FIRST"
     node -e 'process.stdout.write(JSON.stringify({systemMessage: process.argv[1]}))' "$MESSAGE"
     exit 0
   fi
