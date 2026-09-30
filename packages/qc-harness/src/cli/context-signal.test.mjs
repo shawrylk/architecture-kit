@@ -80,3 +80,20 @@ test("the hand-back stamp names the end context only at or over summarizeRatio",
   assert.match(handbackStamp({ context: 200_000, first: 40_000 }, settings), /^CONTEXT: this agent ended at about 200K tokens per call, 5\.0x its first call \(40K\)/);
   assert.equal(handbackStamp({ context: 200_000, first: 0 }, settings), null);
 });
+
+test("an estimate far past the budget is capped at the budget", () => {
+  assert.equal(callsLeft({ count: 10, budget: 100, estimate: 500 }), 90);
+});
+
+test("exactly minCallsLeft calls left still hands off", () => {
+  assert.equal(contextVerdict(facts(200_000, { count: 85 }), settings).level, "handoff");
+  assert.equal(contextVerdict(facts(200_000, { count: 86 }), settings).level, "summarize");
+});
+
+test("the hand-back stamp fires at exactly summarizeRatio", () => {
+  assert.match(handbackStamp({ context: 120_000, first: 40_000 }, settings), /^CONTEXT: /);
+});
+
+test("a null context is the same as false", () => {
+  assert.equal(contextSettings({ context: null }), null);
+});
