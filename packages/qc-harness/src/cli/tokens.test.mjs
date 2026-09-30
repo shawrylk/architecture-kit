@@ -218,6 +218,21 @@ test("the project key of a short 8.3 path is the key of its long path", () => {
   assert.equal(projectKeyOf(os.tmpdir()), projectKeyOf(realpathSync.native(os.tmpdir())));
 });
 
+test("the project key of a missing child of a short 8.3 folder is the key of the same child of the long folder", () => {
+  const child = "qc-no-such-project";
+  assert.equal(projectKeyOf(path.join(os.tmpdir(), child)), projectKeyOf(path.join(realpathSync.native(os.tmpdir()), child)));
+});
+
+test("the project key of a missing child of a linked folder is the key of the same child of the target", (t) => {
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-tokens-linkmiss-")));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const target = path.join(base, "target");
+  mkdirSync(target);
+  const link = path.join(base, "link");
+  symlinkSync(target, link, "junction");
+  assert.equal(projectKeyOf(path.join(link, "a", "b")), projectKeyOf(path.join(target, "a", "b")));
+});
+
 test("the project key of a path that does not exist is built from the path as given", (t) => {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-tokens-none-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));

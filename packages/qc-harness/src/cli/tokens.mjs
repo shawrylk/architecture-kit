@@ -139,13 +139,22 @@ export function summarizeSession({ main = [], agents = [] }, rates = RATES) {
 
 const UNKNOWN = "unknown";
 
-/** An existing path in the form Claude Code keys it by: links followed, an 8.3 short name made long. */
+/**
+ * A path in the form Claude Code keys it by: links followed, an 8.3 short name made long. A path
+ * that does not exist keeps its own tail, after its nearest existing ancestor is resolved.
+ */
 function realPathOf(dir) {
   const resolved = path.resolve(dir);
-  try {
-    return realpathSync.native(resolved);
-  } catch {
-    return resolved;
+  let ancestor = resolved;
+  for (;;) {
+    try {
+      const real = realpathSync.native(ancestor);
+      return ancestor === resolved ? real : path.join(real, path.relative(ancestor, resolved));
+    } catch {
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return resolved;
+      ancestor = parent;
+    }
   }
 }
 
