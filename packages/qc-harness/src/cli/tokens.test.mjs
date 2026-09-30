@@ -1,6 +1,10 @@
 import { strict as assert } from "node:assert";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { RATES, costsOf, summarizeSession } from "./tokens.mjs";
+import { readRequests } from "./transcript-usage.mjs";
 
 const MINUTE = 60_000;
 const req = (id, minute, read, write, { input = 2, model = "m", w1h = 0 } = {}) => ({
@@ -91,4 +95,78 @@ test("an empty session sums to zero without dividing by zero", () => {
   assert.deepEqual(types, []);
   assert.equal(total.hitRate, 0);
   assert.equal(total.whatIf1h, 0);
+});
+
+test("a call that writes as much as it reads after a long gap is no miss", () => {
+  const { gapMisses, cost1h } = costsOf([req("a", 0, 0, 1000), req("b", 10, 500, 500)]);
+  assert.equal(gapMisses, 0);
+  assert.equal(cost1h, 1000 * 2 + 2 + 500 * 0.1 + 500 * 2 + 2);
+});
+
+test("a call that writes more than it reads after a gap under five minutes is no miss", () => {
+  const { gapMisses, cost1h } = costsOf([req("a", 0, 0, 1000), req("b", 1, 0, 1100)]);
+  assert.equal(gapMisses, 0);
+  assert.equal(cost1h, 1000 * 2 + 2 + 1100 * 2 + 2);
+});
+
+test("a shared prefix warmed more than an hour before earns no one-hour credit", () => {
+  const agents = [
+    { type: "rev", requests: [req("a", 0, 0, 1000)] },
+    { type: "rev", requests: [req("b", 2, 800, 200)] },
+    { type: "rev", requests: [req("c", 100, 0, 1000)] },
+  ];
+  const [stats] = summarizeSession({ agents }).types;
+  assert.equal(stats.cost1h, agents.reduce((sum, agent) => sum + costsOf(agent.requests).cost1h, 0));
+});
+
+test("the credit for a shared prefix holds at exactly one hour and not at exactly five minutes", () => {
+  const credited = (gap) => {
+    const agents = [
+      { type: "rev", requests: [req("a", 0, 800, 200)] },
+      { type: "rev", requests: [req("b", gap, 0, 1000)] },
+    ];
+    const [stats] = summarizeSession({ agents }).types;
+    return stats.cost1h < agents.reduce((sum, agent) => sum + costsOf(agent.requests).cost1h, 0);
+  };
+  assert.equal(credited(5), false);
+  assert.equal(credited(60), true);
+  assert.equal(credited(61), false);
+});
+
+test("the total keeps the largest context and the summed one-hour cost, and takes no credit of its own", () => {
+  const { types, total } = summarizeSession({
+    main: [req("m1", 0, 0, 500), req("m2", 1, 500, 5000)],
+    agents: [
+      { type: "rev", requests: [req("a", 0, 0, 1000)] },
+      { type: "rev", requests: [req("b", 2, 800, 200)] },
+      { type: "rev", requests: [req("c", 20, 0, 1000)] },
+    ],
+  });
+  assert.equal(total.maxContext, 500 + 5000 + 2);
+  assert.equal(total.cost1h, types.reduce((sum, stats) => sum + stats.cost1h, 0));
+  assert.equal(total.whatIf1h, (total.cost1h - total.cost) / total.cost);
+  const rev = types.find((stats) => stats.type === "rev");
+  const plain = costsOf([req("a", 0, 0, 1000)]).cost1h + costsOf([req("b", 2, 800, 200)]).cost1h + costsOf([req("c", 20, 0, 1000)]).cost1h;
+  assert.equal(rev.cost1h, plain - 800 * (RATES.write1h - RATES.read), "the shared prefix credit is in the type, once");
+});
+
+const line = (id, minute, read, write) =>
+  JSON.stringify({
+    type: "assistant",
+    timestamp: new Date(minute * 60_000).toISOString(),
+    message: { id, model: "claude-sonnet-5-5", role: "assistant", content: [], usage: { input_tokens: 2, cache_read_input_tokens: read, cache_creation_input_tokens: write, output_tokens: 5 } },
+  });
+
+test("totals on a transcript with a line per content block count each request once", (t) => {
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-tokens-")));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const file = path.join(base, "agent-a1.jsonl");
+  const lines = [line("i1", 0, 0, 1000), line("i1", 0, 0, 1000), line("i2", 1, 1000, 100), line("i2", 1, 1000, 100), line("i2", 1, 1000, 100)];
+  writeFileSync(file, `${lines.join("\n")}\n`);
+  const { types, total } = summarizeSession({ agents: [{ type: "impl", requests: readRequests(file) }] });
+  assert.equal(types[0].calls, 2);
+  assert.equal(types[0].read, 1000);
+  assert.equal(types[0].write5m, 1100);
+  assert.equal(total.calls, 2);
+  assert.equal(total.output, 10);
 });
