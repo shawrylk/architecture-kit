@@ -22,6 +22,8 @@ const USAGE = `qc — architecture gates
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [branch]       the workflow ledger: dispatches, stops, verdicts, merges, issue updates
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
+  qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
+                           one session's tokens and cache hit rate per agent type, from its transcripts
   qc worktree add <name> <branch> [--from <ref>]
                            fetch, add ../<name> beside the main checkout, install, print the path
   qc worktree remove <name>
@@ -96,6 +98,10 @@ async function main() {
     case "plan-check": {
       const { runPlanCheck } = await import("./plan-check.mjs");
       process.exit(runPlanCheck(config, rest));
+    }
+    case "tokens": {
+      const { runTokens } = await import("./tokens.mjs");
+      process.exit(runTokens(config, rest));
     }
     case "decisions": {
       const { runDecisions } = await import("./decisions.mjs");
