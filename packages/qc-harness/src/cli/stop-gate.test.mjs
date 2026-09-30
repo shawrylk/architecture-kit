@@ -203,6 +203,17 @@ test("a repeat stop names the first line of a failure that has no FAIL line", (t
   assert.ok(!message.includes("structure failed:"), message);
 });
 
+test("a repeat stop names the FAIL line when other output comes before it", (t) => {
+  const text = ["OK    orders  structure", SESSION_FAIL].join("\n");
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: text } });
+  assert.equal(ws.run({ session_id: "session-later" }).status, 2);
+  const repeat = ws.run({ session_id: "session-later", stop_hook_active: true });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  const message = JSON.parse(repeat.stdout).systemMessage;
+  assert.ok(message.includes("ADR-0099 is cited but not defined"), message);
+  assert.ok(!message.includes("OK    orders"), message);
+});
+
 test("the memory file holds a hash of the failure text, not the text", (t) => {
   const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
   assert.equal(ws.run({ session_id: "session-hash" }).status, 2);
