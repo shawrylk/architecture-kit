@@ -200,3 +200,26 @@ test("excerptOf keeps a quarter for the head, the rest for the tail, and at most
   assert.equal(replacedOutput({ output: "x" }, "y").output, "y");
   assert.equal(replacedOutput(null, "y"), null);
 });
+
+test("replacedOutput blanks a non-empty stderr and keeps the other fields", () => {
+  const replaced = replacedOutput({ stdout: "out", stderr: "boom", interrupted: false, isImage: false }, "y");
+  assert.deepEqual(replaced, { stdout: "y", stderr: "", interrupted: false, isImage: false });
+});
+
+test("an excerpt with no summarizer names the file and offers no summarizer", (t) => {
+  const ws = excerptWorkspace(t, { summarizer: null });
+  const scratch = path.join(ws.on, "scratch");
+  const output = decide({ ...call(ws.on, "Bash", bashResponse(longOutput)), tool_use_id: "toolu_3", scratchpad_dir: scratch });
+  const { stdout } = output.hookSpecificOutput.updatedToolOutput;
+  assert.ok(stdout.includes(path.join(scratch, "outputs", "toolu_3.txt")));
+  assert.doesNotMatch(stdout, /Ask the summarizer/);
+});
+
+test("a save that fails leaves the output whole and shows the hint", (t) => {
+  const ws = excerptWorkspace(t);
+  const blocker = path.join(ws.on, "blocker");
+  writeFileSync(blocker, "a regular file");
+  const output = decide({ ...call(ws.on, "Bash", bashResponse(longOutput)), tool_use_id: "toolu_4" }, path.join(blocker, "tmp"));
+  assert.equal(output.hookSpecificOutput.updatedToolOutput, undefined);
+  assert.match(contextOf(output) ?? "", /lfm-ask/);
+});
