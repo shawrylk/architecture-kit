@@ -474,3 +474,34 @@ test("after CHANGES_REQUIRED, a continuation of the fix round's hand-off needs n
   assert.match(refusalOf(ws) ?? "", /CHANGES_REQUIRED|no review/);
   assert.equal(refusalOf(ws, `HANDOFF: ${note}`), null);
 });
+
+test("a stop that a later CHANGES_REQUIRED reviewed is no longer continued by its HANDOFF line", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  const stopped = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, stopped, "feat/1-x", note);
+  assert.equal(refusalOf(ws, `HANDOFF: ${note}`), null);
+  verdict(ws, stopped, "CHANGES_REQUIRED");
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
+  assert.match(refusalOf(ws, `HANDOFF: ${note}`) ?? "", /CHANGES_REQUIRED/);
+  assert.equal(refusalOf(ws, `HANDOFF: ${note}\nNO-RESUME: the budget is spent`), null);
+});
+
+test("a later verdict that names the stop's head ends the continuation, whatever branch it records", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  const stopped = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, stopped, "feat/1-x", note);
+  appendRecord(ws.ledger, { type: "verdict", kind: "task", verdict: "CHANGES_REQUIRED", sha: stopped });
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
+  assert.match(refusalOf(ws, `HANDOFF: ${note}`) ?? "", /CHANGES_REQUIRED/);
+});
+
+test("a later verdict on the branch ends the continuation, whatever commit it names", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  implementerStop(ws, commitIn(ws.linked, "b.txt"), "feat/1-x", note);
+  verdict(ws, "abc1234", "CHANGES_REQUIRED");
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
+  assert.match(refusalOf(ws, `HANDOFF: ${note}`) ?? "", /CHANGES_REQUIRED/);
+});

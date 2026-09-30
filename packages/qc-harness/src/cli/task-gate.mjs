@@ -58,11 +58,17 @@ function unreviewedImplementerStop({ records, branch, head, cwd, git }) {
   return later.some((verdict) => descendants.some((sha) => shaMatches(verdict.sha, sha))) ? null : stop;
 }
 
-/** The newest implementer stop on `branch` when it left the note `handoff`, else null. */
+/**
+ * The newest implementer stop on `branch` when it left the note `handoff` and no verdict came after it, else null.
+ * A later verdict on the branch, or one that names the stop's head, reviewed the stop, so its note is spent.
+ */
 export function continuedStop(records, branch, handoff) {
   if (handoff === null) return null;
-  const stop = records.findLast((record) => record.type === "stop" && record.role === "implementer" && record.branch === branch);
-  return stop && typeof stop.handoff === "string" && pathKey(stop.handoff) === pathKey(handoff) ? stop : null;
+  const stopAt = records.findLastIndex((record) => record.type === "stop" && record.role === "implementer" && record.branch === branch);
+  const stop = records[stopAt];
+  if (!stop || typeof stop.handoff !== "string" || pathKey(stop.handoff) !== pathKey(handoff)) return null;
+  const reviewed = records.slice(stopAt + 1).some((record) => record.type === "verdict" && (record.branch === branch || shaMatches(record.sha, stop.head)));
+  return reviewed ? null : stop;
 }
 
 /**
