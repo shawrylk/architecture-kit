@@ -399,7 +399,7 @@ stopping the call they are judging; the session note skips the tool line instead
 | `maxOutputChars` | `10000` | the output excerpt's and the output hint's threshold, in characters |
 | `exempt` | `[]` | globs the read budget never refuses |
 | `longOutput` | `"excerpt"` | `"excerpt"` saves a long output and shows an excerpt; `"hint"` only names the `summarizer` |
-| `excerptChars` | `4000` | the excerpt's size: a quarter head, three quarters tail. It must be smaller than `maxOutputChars`; a config that breaks this switches the explore guard off and names the key |
+| `excerptChars` | `4000`, or half of `maxOutputChars` when that is under 8000 | the excerpt's size: a quarter head, three quarters tail. One you set must be smaller than `maxOutputChars`; a config that breaks this switches the explore guard off and names the key |
 
 ### 11. Hold the workflow to its reviews
 

@@ -12,7 +12,7 @@ const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.
 const TOOLS = [{ name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' }];
 
 /** A checkout with `swarm.explore` on, and one with no config. */
-function workspace(t, explore = { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, excerptChars: 10, longOutput: "hint", summarizer: "lfm-ask" }) {
+function workspace(t, explore = { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, longOutput: "hint", summarizer: "lfm-ask" }) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-explore-hint-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const on = path.join(base, "on");
@@ -66,7 +66,7 @@ test("a command output at or under maxOutputChars sees no change", (t) => {
 });
 
 test("no summarizer configured means no output hint even over the limit", (t) => {
-  const ws = workspace(t, { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, excerptChars: 10, longOutput: "hint", summarizer: null });
+  const ws = workspace(t, { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, longOutput: "hint", summarizer: null });
   assert.equal(decide(call(ws.on, "Bash", "x".repeat(30))), null);
 });
 

@@ -77,7 +77,9 @@ export function exploreSettings(swarm = {}) {
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${EXPLORE_KEY} in qc.config.json must be an object, got ${JSON.stringify(raw)}`);
   }
-  const { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt, longOutput, excerptChars } = merge(exploreDefaults, raw);
+  const { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt, longOutput, excerptChars: set } = merge(exploreDefaults, raw);
+  // A repository that sets only maxOutputChars keeps its explore hooks: the excerpt default follows it.
+  const excerptChars = raw.excerptChars === undefined && Number.isInteger(maxOutputChars) ? Math.min(exploreDefaults.excerptChars, Math.floor(maxOutputChars / 2)) : set;
   if (!Array.isArray(tools) || !tools.every(isToolEntry)) {
     throw wrongExplore("tools", tools, 'a list of { "name", "use", "how" } strings');
   }
