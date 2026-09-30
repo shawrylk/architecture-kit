@@ -515,8 +515,11 @@ export const exploreDefaults = {
   summarizer: null,
   maxReadLines: 300,
   maxGrepLines: 80,
-  maxOutputChars: 20000,
+  maxOutputChars: 10000,
   exempt: [],
+  // "excerpt" saves a long successful command output to a file and shows its head and tail; "hint" only names the summarizer.
+  longOutput: "excerpt",
+  excerptChars: 4000,
 };
 
 // What each key of `swarm.context` means when a repository omits it. The signal is on wherever the config

@@ -327,8 +327,10 @@ has better tools: a semantic index, a call graph, a local summarizer. A `swarm.e
       "summarizer": "<command> | lfm-ask \"<question>\"",
       "maxReadLines": 300,
       "maxGrepLines": 80,
-      "maxOutputChars": 20000,
-      "exempt": []
+      "maxOutputChars": 10000,
+      "exempt": [],
+      "longOutput": "excerpt",
+      "excerptChars": 4000
     }
   }
 }
@@ -348,9 +350,15 @@ of those types runs a tool such as `slm-rerank`, `gitnexus`, or `ccc` through `B
   session, so a real need for the whole file costs one retry, never a standing exemption.
 - **Search hint** — a `PostToolUse` hook on `Grep` adds context naming the tools when the answer
   runs past `maxGrepLines` lines. It never refuses anything.
-- **Output hint** — a `PostToolUse` hook on `Bash` and `PowerShell` adds context naming the
-  `summarizer` when the output runs past `maxOutputChars` characters. A `summarizer` of `null`
-  turns this one hint off; the read budget and the search hint are unaffected.
+- **Output excerpt** — a `PostToolUse` hook on `Bash` and `PowerShell` acts on a successful output
+  over `maxOutputChars` characters. With `longOutput` at `"excerpt"`, and an output over twice
+  `excerptChars`, it saves the whole output to `<scratchpad>/outputs/<tool use id>.txt` and shows
+  Claude the head, up to 20 lines between that name a failure or an error, the tail, and a line that
+  names the file and the `summarizer`. The whole output never enters the context, so no later call
+  re-sends it. A failed command reaches `PostToolUseFailure` instead, and Claude Code already cuts it
+  to a head-and-tail excerpt. An image, or an output shape the hook does not know, gets the hint.
+  With `"hint"`, the hook only adds context naming the `summarizer`, and a `summarizer` of `null`
+  turns that hint off.
 - **Session note** — the tool names reach the main session at start (section 9's note, even with
   `swarm.dispatch` off). Each subagent gets each tool's `use` and `how` at its own `SubagentStart`,
   past a compaction included. `swarm.explore` with no `tools` adds nothing.
@@ -364,8 +372,10 @@ stopping the call they are judging; the session note skips the tool line instead
 | `summarizer` | `null` | the command the output hint names; `null` turns that hint off |
 | `maxReadLines` | `300` | the read budget, in lines |
 | `maxGrepLines` | `80` | the search hint's threshold, in lines |
-| `maxOutputChars` | `20000` | the output hint's threshold, in characters |
+| `maxOutputChars` | `10000` | the output excerpt's and the output hint's threshold, in characters |
 | `exempt` | `[]` | globs the read budget never refuses |
+| `longOutput` | `"excerpt"` | `"excerpt"` saves a long output and shows an excerpt; `"hint"` only names the `summarizer` |
+| `excerptChars` | `4000` | the excerpt's size: a quarter head, three quarters tail |
 
 ### 11. Hold the workflow to its reviews
 
