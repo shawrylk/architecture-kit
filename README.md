@@ -193,11 +193,11 @@ sections `## Done`, `## Left`, and `## Next step`. The report names it on a line
 `HANDOFF: <note path>`. The main session is never counted.
 
 The same hook reads each subagent's context from its transcript: the tokens its latest request sent,
-against its first. It never refuses a call. Once every `every` calls it adds a note. At
-`summarizeRatio` times the first call, the note says that new output adds to every later call. At
-`handoffRatio` times, an agent of a `handoffTypes` type with `minCallsLeft` calls of work left gets
-the hand-off steps. The work left runs to an `Estimate: <n>` line of the dispatch prompt, or to the
-budget. When an agent hands back at `summarizeRatio` times or more, its report gains a `CONTEXT:`
+against its first. It never refuses a call. It checks once every `every` calls, and each level of note
+fires once. At `summarizeRatio` times the first call, the note says that new output adds to every
+later call. At `handoffRatio` times, an agent of a `handoffTypes` type with `minCallsLeft` calls of
+work left gets the hand-off steps, and again after every `repeatEvery` calls. The work left runs to an
+`Estimate: <n>` line of the dispatch prompt, or to the budget. When an agent hands back at `summarizeRatio` times or more, its report gains a `CONTEXT:`
 line, so the controller can weigh a resume against a fresh agent. `"context": false` in the `swarm`
 section turns the signal off.
 
@@ -399,7 +399,7 @@ stopping the call they are judging; the session note skips the tool line instead
 | `maxOutputChars` | `10000` | the output excerpt's and the output hint's threshold, in characters |
 | `exempt` | `[]` | globs the read budget never refuses |
 | `longOutput` | `"excerpt"` | `"excerpt"` saves a long output and shows an excerpt; `"hint"` only names the `summarizer` |
-| `excerptChars` | `4000` | the excerpt's size: a quarter head, three quarters tail |
+| `excerptChars` | `4000` | the excerpt's size: a quarter head, three quarters tail. It must be smaller than `maxOutputChars`; a config that breaks this switches the explore guard off and names the key |
 
 ### 11. Hold the workflow to its reviews
 

@@ -92,6 +92,7 @@ export function exploreSettings(swarm = {}) {
   ]) {
     if (!Number.isInteger(value) || value < 1) throw wrongExplore(key, value, "a positive whole number");
   }
+  if (excerptChars >= maxOutputChars) throw wrongExplore("excerptChars", excerptChars, `smaller than maxOutputChars (${maxOutputChars})`);
   if (!isNameList(exempt)) throw wrongExplore("exempt", exempt, "a list of globs");
   if (longOutput !== "excerpt" && longOutput !== "hint") throw wrongExplore("longOutput", longOutput, '"excerpt" or "hint"');
   return { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt, longOutput, excerptChars };

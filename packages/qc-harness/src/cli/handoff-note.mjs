@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { nativePath } from "./workflow-place.mjs";
 
-export const HANDOFF_LINE = /^[ \t]*HANDOFF:[ \t]*(\S.*?)[ \t]*$/im;
+export const HANDOFF_LINE = /^[ \t]*HANDOFF:[ \t]*(\S.*?)[ \t]*$/m;
 const QUOTES = /^["'`]|["'`]$/g;
 const FIELDS = ["Brief", "Worktree", "Branch", "Head"];
 const SECTIONS = [["Done", "done"], ["Left", "left"], ["Next step", "next"]];

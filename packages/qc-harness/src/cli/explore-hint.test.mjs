@@ -12,7 +12,7 @@ const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.
 const TOOLS = [{ name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' }];
 
 /** A checkout with `swarm.explore` on, and one with no config. */
-function workspace(t, explore = { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, summarizer: "lfm-ask" }) {
+function workspace(t, explore = { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, excerptChars: 10, longOutput: "hint", summarizer: "lfm-ask" }) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-explore-hint-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const on = path.join(base, "on");
@@ -66,7 +66,7 @@ test("a command output at or under maxOutputChars sees no change", (t) => {
 });
 
 test("no summarizer configured means no output hint even over the limit", (t) => {
-  const ws = workspace(t, { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, summarizer: null });
+  const ws = workspace(t, { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, excerptChars: 10, longOutput: "hint", summarizer: null });
   assert.equal(decide(call(ws.on, "Bash", "x".repeat(30))), null);
 });
 
@@ -136,7 +136,7 @@ test("hooks.json runs the hint on PostToolUse Grep and Bash|PowerShell", () => {
 const bashResponse = (stdout) => ({ stdout, stderr: "", interrupted: false, isImage: false });
 const longOutput = `${"h".repeat(50)}\n${"m".repeat(1000)}\nnot ok 3 - breaks\n${"m".repeat(2000)}\n${"t".repeat(80)}`;
 const excerptWorkspace = (t, extra = {}) =>
-  workspace(t, { tools: TOOLS, maxOutputChars: 20, summarizer: '<command> | lfm-ask "<question>"', excerptChars: 100, ...extra });
+  workspace(t, { tools: TOOLS, maxOutputChars: 120, summarizer: '<command> | lfm-ask "<question>"', excerptChars: 100, ...extra });
 
 test("a long successful output is saved whole and reaches Claude as its head, its failure lines, and its tail", (t) => {
   const ws = excerptWorkspace(t);
@@ -188,6 +188,15 @@ test("a wrong longOutput or excerptChars is a named config error, reported as co
     const ws = excerptWorkspace(t, extra);
     assert.match(contextOf(decide(call(ws.on, "Bash", bashResponse(longOutput)))) ?? "", /Explore guard is off: swarm\.explore\./);
   }
+});
+
+test("an excerptChars that is not smaller than maxOutputChars is a named config error, reported as context", (t) => {
+  for (const excerptChars of [120, 5000]) {
+    const ws = excerptWorkspace(t, { excerptChars });
+    assert.match(contextOf(decide(call(ws.on, "Bash", bashResponse(longOutput)))) ?? "", /Explore guard is off: swarm\.explore\.excerptChars .*smaller than maxOutputChars \(120\)/);
+  }
+  const fine = excerptWorkspace(t, { excerptChars: 119 });
+  assert.ok(decide(call(fine.on, "Bash", bashResponse(longOutput))).hookSpecificOutput.updatedToolOutput);
 });
 
 test("excerptOf keeps a quarter for the head, the rest for the tail, and at most 20 failure lines", () => {

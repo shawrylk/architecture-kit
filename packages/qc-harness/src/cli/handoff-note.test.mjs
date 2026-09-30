@@ -40,9 +40,14 @@ test("each missing line and each empty section is named", () => {
 
 test("the HANDOFF line is read from a report or a prompt, with or without quotes", () => {
   assert.equal(handoffPathOf("DONE_WITH_CONCERNS\nHANDOFF: C:/scratch/handoffs/t3-1.md\n"), "C:/scratch/handoffs/t3-1.md");
-  assert.equal(handoffPathOf('handoff: "/tmp/handoffs/a b.md"'), "/tmp/handoffs/a b.md");
+  assert.equal(handoffPathOf('HANDOFF: "/tmp/handoffs/a b.md"'), "/tmp/handoffs/a b.md");
   assert.equal(handoffPathOf("no line"), null);
   assert.equal(resolveHandoff("notes/a.md", path.resolve("/base")), path.resolve("/base", "notes/a.md"));
+});
+
+test("the marker is spelled HANDOFF, in capitals", () => {
+  assert.equal(handoffPathOf("Handoff: none"), null);
+  assert.equal(handoffPathOf("handoff: C:/scratch/handoffs/t3-1.md"), null);
 });
 
 test("a HANDOFF word inside a line is not the HANDOFF line", () => {
