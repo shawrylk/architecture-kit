@@ -189,6 +189,24 @@ budget, the agent gets a reminder to commit, push, and plan the hand-off, and ag
 At the budget, only the hand-off runs: Read, read-only and `git add`, `commit`, and `push` commands,
 and a Write to a path under `/handoffs/`. The main session is never counted.
 
+The same hook reads each subagent's context from its transcript: the tokens its latest request sent,
+against its first. It never refuses a call. Once every `every` calls it adds a note. At
+`summarizeRatio` times the first call, the note says that new output adds to every later call. At
+`handoffRatio` times, an agent of a `handoffTypes` type with `minCallsLeft` calls of work left gets
+the hand-off steps. The work left runs to an `Estimate: <n>` line of the dispatch prompt, or to the
+budget. When an agent hands back at `summarizeRatio` times or more, its report gains a `CONTEXT:`
+line, so the controller can weigh a resume against a fresh agent. `"context": false` in the `swarm`
+section turns the signal off.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `every` | `5` | check once every this many calls |
+| `summarizeRatio` | `3` | the ratio for the note that keeps new output small |
+| `handoffRatio` | `5` | the ratio for the hand-off note |
+| `minCallsLeft` | `15` | the calls of work the hand-off note needs left |
+| `repeatEvery` | `20` | the hand-off note repeats after this many calls |
+| `handoffTypes` | `["sdd-implementer", "architecture:sdd-implementer", "general-purpose"]` | the types that get the hand-off note |
+
 Give each agent its own worktree beside the main checkout:
 
 ```bash
