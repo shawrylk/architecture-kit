@@ -211,6 +211,16 @@ test("a subagent call with no transcript gets the note once, and the next signal
   assert.equal(stateOf(ws, "a1").noTranscript, true, "the state file records that the note fired");
 });
 
+test("an agent_transcript_path to a missing file falls back to the subagents path, then to the note", (t) => {
+  const ws = workspace(t, { toolCallBudget: 100, context: { every: 1 } });
+  const missing = path.join(ws.tmp, "none", "agent-a1.jsonl");
+  const main = transcripts(ws, "a1", [10_000, 60_000]);
+  const found = { ...signalCall(ws, main), agent_transcript_path: missing };
+  assert.match(noteOf(runGuard(ws, found)) ?? "", /re-sends about 60K tokens/, "the subagents path is read");
+  const none = path.join(ws.tmp, "none", "x.jsonl");
+  assert.match(noteOf(runGuard(ws, { ...signalCall(ws, none), agent_transcript_path: missing })) ?? "", NO_TRANSCRIPT);
+});
+
 test("a hand-back with no transcript gets no stamp and no note, and leaves the note for a later signal call", (t) => {
   const ws = workspace(t, { toolCallBudget: 100, context: { every: 1 } });
   const none = path.join(ws.tmp, "none", "x.jsonl");

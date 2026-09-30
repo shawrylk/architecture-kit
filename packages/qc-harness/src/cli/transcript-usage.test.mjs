@@ -112,12 +112,21 @@ test("a subagent's transcript is found however the hook input names it", (t) => 
   write(own, [user("go")]);
   assert.equal(agentTranscriptOf({ agent_id: "a1", transcript_path: main }), own);
   assert.equal(agentTranscriptOf({ agent_id: "a1", transcript_path: own }), own);
-  assert.equal(
-    agentTranscriptOf({ agent_id: "a1", agent_transcript_path: "/x/agent-a1.jsonl", transcript_path: main }),
-    "/x/agent-a1.jsonl",
-  );
+  const named = write(path.join(base, "elsewhere", "agent-a1.jsonl"), [user("go")]);
+  assert.equal(agentTranscriptOf({ agent_id: "a1", agent_transcript_path: named, transcript_path: main }), named);
   assert.equal(agentTranscriptOf({ transcript_path: main }), null, "the main session has no agent id");
   assert.equal(agentTranscriptOf({ agent_id: "a1" }), null);
+});
+
+test("an agent_transcript_path to a missing file falls back to the subagents path, and then to null", (t) => {
+  const base = folder(t);
+  const main = path.join(base, "proj", "sess.jsonl");
+  const missing = path.join(base, "proj", "gone", "agent-a1.jsonl");
+  write(main, [user("hi")]);
+  assert.equal(agentTranscriptOf({ agent_id: "a1", agent_transcript_path: missing, transcript_path: main }), null, "no file anywhere");
+  assert.equal(agentTranscriptOf({ agent_id: "a1", agent_transcript_path: missing }), null, "no main transcript either");
+  const own = write(subagentTranscriptOf(main, "a1"), [user("go")]);
+  assert.equal(agentTranscriptOf({ agent_id: "a1", agent_transcript_path: missing, transcript_path: main }), own);
 });
 
 test("agentTypeOf reads the type from the meta file beside a transcript", (t) => {

@@ -38,7 +38,11 @@ function workspace(t) {
 }
 
 // A hook input as Claude Code sends it for a subagent: its own transcript path, whose file may name nothing.
-const unread = (cwd) => path.join(cwd, "unread.jsonl");
+const unread = (cwd) => {
+  const file = path.join(cwd, "unread.jsonl");
+  if (!existsSync(file)) writeFileSync(file, "");
+  return file;
+};
 /** The same call with no transcript path, the input the hook must say it cannot place. */
 const bare = ({ agent_transcript_path: _, ...call }) => call;
 
@@ -497,6 +501,17 @@ test("a hand-back with no agent_transcript_path finds its worktree in the subage
 });
 
 const LOST = /the hook input names no transcript for this agent, so the checks judge against the repository of the cwd or the session/;
+
+test("an agent_transcript_path to a missing file falls back to the subagent transcript, and says so when that is missing too", (t) => {
+  const ws = workspace(t);
+  const message = "VERDICT: APPROVED deadbee\nRED-CHECKED: x";
+  const missing = { agent_transcript_path: path.join(ws.tmp, "gone", "agent-1.jsonl") };
+  const found = { ...handback(ws.on, REVIEWER, message), ...missing, transcript_path: sessionTranscripts(ws, "agent-1", ws.on) };
+  assert.match(denied(decide(found, ws.tmp)) ?? "", /deadbee names no commit/);
+  assert.doesNotMatch(denied(decide(found, ws.tmp)) ?? "", LOST);
+  const lost = decide({ ...handback(ws.on, REVIEWER, "Looks fine."), ...missing }, ws.tmp);
+  assert.match(denied(lost) ?? "", LOST, "the file named is missing, and no other transcript exists");
+});
 
 test("with no transcript that finds the agent, a hand-back or a stop says what it was judged against, and keeps its decision", (t) => {
   const ws = workspace(t);
