@@ -111,12 +111,12 @@ export function firstPromptOf(file, bytes = WINDOW_BYTES) {
 export const subagentTranscriptOf = (mainTranscript, agentId) =>
   path.join(path.dirname(mainTranscript), path.basename(mainTranscript, ".jsonl"), "subagents", `agent-${agentId}.jsonl`);
 
-/** The transcript of the subagent a hook call runs in, or null for the main session or a file not found. */
+/** The transcript of the subagent a hook call runs in, or null for the main session or when no file exists. */
 export function agentTranscriptOf(call) {
   const agentId = call?.agent_id;
   if (typeof agentId !== "string" || agentId === "") return null;
   const own = call.agent_transcript_path;
-  if (typeof own === "string" && own !== "") return own;
+  if (typeof own === "string" && own !== "" && existsSync(own)) return own;
   const main = call.transcript_path;
   if (typeof main !== "string" || main === "") return null;
   if (path.basename(main) === `agent-${agentId}.jsonl`) return main;

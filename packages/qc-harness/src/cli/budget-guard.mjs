@@ -45,6 +45,12 @@ export function decide(call, tmp = os.tmpdir()) {
   return withSignal(verdict, contextSignal(call, { swarm, count, budget, tmp }), call);
 }
 
+/** The one note for an agent whose hook input names no transcript, and the state that keeps later calls quiet. */
+function noTranscriptNote(file, state) {
+  writeState(file, { ...state, noTranscript: true });
+  return { note: "Context signal is off for this agent: the hook input names no transcript for it." };
+}
+
 /** What the context signal adds to this call: `{ note }`, `{ stamp }`, or null. It never throws. */
 function contextSignal(call, { swarm, count, budget, tmp }) {
   let settings;
@@ -58,9 +64,9 @@ function contextSignal(call, { swarm, count, budget, tmp }) {
   if (!handback && count % settings.every !== 0) return null;
   try {
     const transcript = agentTranscriptOf(call);
-    if (!transcript) return null;
     const file = stateFileOf(call.session_id ?? "session", call.agent_id, tmp);
     const state = readState(file);
+    if (!transcript) return handback || state.noTranscript ? null : noTranscriptNote(file, state);
     const first = state.first > 0 ? state.first : contextOf(firstUsage(transcript));
     if (!(first > 0)) return null;
     const estimate = "estimate" in state ? state.estimate : estimateOf(firstPromptOf(transcript));

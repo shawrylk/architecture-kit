@@ -116,8 +116,9 @@ export default preset({
 
 Install the plugin per [Install](#install) above, if you have not already.
 
-A fast per-file pass runs after every edit; a full pass refuses to end a turn while the repository is
-red. Add your own step to that full pass with `QC_STOP_EXTRA` in `.claude/settings.json`:
+A fast per-file pass runs after every edit. A full pass blocks a red turn. If the next stop shows the
+same failure, the gate ends the turn with a note that names it. A changed failure blocks again. Add
+your own step to that full pass with `QC_STOP_EXTRA` in `.claude/settings.json`:
 
 ```json
 { "env": { "QC_STOP_EXTRA": "node scripts/headless-e2e.mjs" } }
@@ -199,7 +200,7 @@ later call. At `handoffRatio` times, an agent of a `handoffTypes` type with `min
 work left gets the hand-off steps, and again after every `repeatEvery` calls. The work left runs to an
 `Estimate: <n>` line of the dispatch prompt, or to the budget. When an agent hands back at `summarizeRatio` times or more, its report gains a `CONTEXT:`
 line, so the controller can weigh a resume against a fresh agent. `"context": false` in the `swarm`
-section turns the signal off.
+section turns the signal off. When the hook finds no transcript for an agent, it adds one note that the context signal is off for that agent.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -410,7 +411,7 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 
 | Check | Hook | What it refuses |
 |---|---|---|
-| Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha that git reports as unknown in the repository of the named worktree, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha. A git failure or a timeout passes with a note, and the stop records the sha as written, with no branch. A sha with no named worktree that the working directory's repository lacks passes with a note, and the stop records no verdict |
+| Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha that git reports as unknown in the repository of the named worktree, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha. A git failure or a timeout passes with a note, and the stop records the sha as written, with no branch. A sha with no named worktree that the working directory's repository lacks passes with a note, and the stop records no verdict. When the hook finds no transcript for the agent, it judges against the repository of the working directory and adds a line that says so |
 | Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:`. A report with a `HANDOFF: <path>` line needs neither; it needs a note at that path with `Brief:`, `Worktree:`, `Branch:`, and `Head:` lines and non-empty `## Done`, `## Left`, and `## Next step` sections. The stop records the note's path |
 | Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review. An implementer whose prompt has the `HANDOFF: <path>` line of the newest implementer stop on the branch continues that task and passes; the next implementer after it needs a review, and a review of the later head covers both stops |
 | Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line or continues the newest stop's hand-off. The ledger records the reason or the note. A resume through `SendMessage` passes |

@@ -37,7 +37,17 @@ function workspace(t) {
   return { on, plain, outside, tmp, head: git(on, "rev-parse", "HEAD"), ledger: path.join(on, ".git", "qc", "ledger.jsonl") };
 }
 
+// A hook input as Claude Code sends it for a subagent: its own transcript path, whose file may name nothing.
+const unread = (cwd) => {
+  const file = path.join(cwd, "unread.jsonl");
+  if (!existsSync(file)) writeFileSync(file, "");
+  return file;
+};
+/** The same call with no transcript path, the input the hook must say it cannot place. */
+const bare = ({ agent_transcript_path: _, ...call }) => call;
+
 const handback = (cwd, agentType, message, event = "PreToolUse") => ({
+  agent_transcript_path: unread(cwd),
   session_id: "s",
   cwd,
   hook_event_name: event,
@@ -47,6 +57,7 @@ const handback = (cwd, agentType, message, event = "PreToolUse") => ({
   agent_type: agentType,
 });
 const stop = (cwd, agentType, last, extra = {}) => ({
+  agent_transcript_path: unread(cwd),
   session_id: "s",
   cwd,
   hook_event_name: "SubagentStop",
@@ -306,7 +317,7 @@ test("a resumed implementer keeps its worktree after another dispatch, and needs
   decide(stop(ws.on, IMPLEMENTER, REPORT, { agent_id: "agent-A", ...namesWorktree(ws, "ta", a.dir) }), ws.tmp);
   taskWorktree(ws, "wt-b", "feat/b-1");
   const fixed = commitMore(a.dir, "fix.txt");
-  assert.equal(decide(stop(ws.on, IMPLEMENTER, REPORT, { agent_id: "agent-A" }), ws.tmp), null);
+  assert.equal(decide(bare(stop(ws.on, IMPLEMENTER, REPORT, { agent_id: "agent-A" })), ws.tmp), null);
   const second = stopsOf(ws).at(-1);
   assert.deepEqual([second.worktree, second.branch, second.head], [a.dir, "feat/a-1", fixed]);
 });
@@ -468,4 +479,65 @@ test("the implementer definition names the HANDOFF line and the resume from a no
   const body = readFileSync(path.join(AGENTS, "sdd-implementer.md"), "utf8");
   assert.match(body, /`HANDOFF: <note path>`/);
   assert.match(body, /git log --oneline <Head>\.\.HEAD/);
+});
+
+/** The main transcript of a session and the subagent transcript Claude Code keeps beside it, which names `worktree`. */
+function sessionTranscripts(ws, agentId, worktree) {
+  const dir = path.join(ws.tmp, "projects", "p");
+  const main = path.join(dir, "sess.jsonl");
+  mkdirSync(path.join(dir, "sess", "subagents"), { recursive: true });
+  writeFileSync(main, "");
+  const prompt = { type: "user", message: { role: "user", content: `Read the brief.\nWorktree: ${worktree}\nGo.` } };
+  writeFileSync(path.join(dir, "sess", "subagents", `agent-${agentId}.jsonl`), `${JSON.stringify(prompt)}\n`);
+  return main;
+}
+
+test("a hand-back with no agent_transcript_path finds its worktree in the subagent transcript beside the main one", (t) => {
+  const ws = workspace(t);
+  const message = "VERDICT: APPROVED deadbee\nRED-CHECKED: x";
+  const input = { ...bare(handback(ws.on, REVIEWER, message)), transcript_path: sessionTranscripts(ws, "agent-1", ws.on) };
+  assert.match(denied(decide(input, ws.tmp)) ?? "", /deadbee names no commit/);
+  assert.doesNotMatch(denied(decide(input, ws.tmp)) ?? "", /names no transcript/);
+});
+
+const LOST = /the hook input names no transcript for this agent, so the checks judge against the repository of the cwd or the session/;
+
+test("an agent_transcript_path to a missing file falls back to the subagent transcript, and says so when that is missing too", (t) => {
+  const ws = workspace(t);
+  const message = "VERDICT: APPROVED deadbee\nRED-CHECKED: x";
+  const missing = { agent_transcript_path: path.join(ws.tmp, "gone", "agent-1.jsonl") };
+  const found = { ...handback(ws.on, REVIEWER, message), ...missing, transcript_path: sessionTranscripts(ws, "agent-1", ws.on) };
+  assert.match(denied(decide(found, ws.tmp)) ?? "", /deadbee names no commit/);
+  assert.doesNotMatch(denied(decide(found, ws.tmp)) ?? "", LOST);
+  const lost = decide({ ...handback(ws.on, REVIEWER, "Looks fine."), ...missing }, ws.tmp);
+  assert.match(denied(lost) ?? "", LOST, "the file named is missing, and no other transcript exists");
+});
+
+test("with no transcript that finds the agent, a hand-back or a stop says what it was judged against, and keeps its decision", (t) => {
+  const ws = workspace(t);
+  const refused = decide(bare(handback(ws.on, REVIEWER, "Looks fine.")), ws.tmp);
+  assert.match(denied(refused) ?? "", /VERDICT: APPROVED <sha>/, "a deny stays a deny");
+  assert.match(denied(refused) ?? "", LOST);
+  assert.ok((denied(refused) ?? "").includes(ws.on), "the line names the repository it judged against");
+  const message = `VERDICT: APPROVED ${ws.head.slice(0, 8)}\nRED-CHECKED: the test failed before the fix`;
+  const allowed = decide(bare(handback(ws.on, REVIEWER, message)), ws.tmp);
+  assert.equal(allowed.hookSpecificOutput.permissionDecision, undefined, "an allow stays an allow");
+  assert.match(allowed.hookSpecificOutput.additionalContext, LOST);
+  const blocked = decide(bare(stop(ws.on, REVIEWER, "All good.")), ws.tmp);
+  assert.equal(blocked.decision, "block");
+  assert.match(blocked.reason, LOST);
+  const held = decide(bare(stop(ws.on, REVIEWER, "All good.", { stop_hook_active: true })), ws.tmp);
+  assert.equal(held.decision, undefined);
+  assert.match(held.systemMessage, LOST);
+  decide(bare(handback(ws.on, REVIEWER, message, "PostToolUse")), ws.tmp);
+  const passed = decide(bare(stop(ws.on, REVIEWER, "Sent.")), ws.tmp);
+  assert.equal(passed.decision, undefined);
+  assert.match(passed.systemMessage, LOST);
+  assert.deepEqual(readLedger(ws.ledger).map((record) => record.type), ["stop", "verdict"], "the note leaves the record alone");
+});
+
+test("the no-transcript line is left off for an agent type the workflow does not track", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(bare(stop(ws.on, "Explore", "done")), ws.tmp), null);
+  assert.equal(decide(bare(handback(ws.on, "Explore", "done")), ws.tmp), null);
 });

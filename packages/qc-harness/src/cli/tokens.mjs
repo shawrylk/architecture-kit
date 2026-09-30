@@ -1,7 +1,7 @@
 // `qc tokens`: what one session read and wrote, per agent type, from its transcripts. It also prices the
 // same requests at the one-hour cache lifetime, at API list prices, to show which lifetime fits.
 
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { agentTypeOf, contextOf, readRequests } from "./transcript-usage.mjs";
@@ -139,8 +139,27 @@ export function summarizeSession({ main = [], agents = [] }, rates = RATES) {
 
 const UNKNOWN = "unknown";
 
-/** The folder name Claude Code gives a project: its path, with each character outside letters and digits a dash. */
-export const projectKeyOf = (dir) => path.resolve(dir).replace(/[^A-Za-z0-9]/g, "-");
+/**
+ * A path in the form Claude Code keys it by: links followed, an 8.3 short name made long. A path
+ * that does not exist keeps its own tail, after its nearest existing ancestor is resolved.
+ */
+function realPathOf(dir) {
+  const resolved = path.resolve(dir);
+  let ancestor = resolved;
+  for (;;) {
+    try {
+      const real = realpathSync.native(ancestor);
+      return ancestor === resolved ? real : path.join(real, path.relative(ancestor, resolved));
+    } catch {
+      const parent = path.dirname(ancestor);
+      if (parent === ancestor) return resolved;
+      ancestor = parent;
+    }
+  }
+}
+
+/** The folder name Claude Code gives a project: its real path, with each character outside letters and digits a dash. */
+export const projectKeyOf = (dir) => realPathOf(dir).replace(/[^A-Za-z0-9]/g, "-");
 
 export const claudeDirOf = (env = process.env) => env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 
