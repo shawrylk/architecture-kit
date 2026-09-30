@@ -430,3 +430,42 @@ test("an implementer that edits qc.config.json in its worktree is still judged",
   const output = decide(stop(ws.on, IMPLEMENTER, "DONE", namesWorktree(ws, "cfg", linked)), ws.tmp);
   assert.equal(output.decision, "block");
 });
+
+const NOTE = [
+  "# Hand-off: Task 3",
+  "Brief: C:/scratch/briefs/task-3.md",
+  "Worktree: C:/work/kit-85",
+  "Branch: feat/85-context",
+  "Head: 1a2b3c4",
+  "",
+  "## Done",
+  "- 1a2b3c4 the reader",
+  "",
+  "## Left",
+  "1. wire the guard",
+  "",
+  "## Next step",
+  "node --test packages/qc-harness/src/cli/budget-guard.test.mjs",
+].join("\n");
+
+test("an implementer that hands off reports a checked note in place of the RED and GREEN lines", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t3-1.md");
+  mkdirSync(path.dirname(note), { recursive: true });
+  const missing = decide(handback(ws.on, "architecture:sdd-implementer", `DONE_WITH_CONCERNS\nHANDOFF: ${note}`), ws.tmp);
+  assert.match(denied(missing) ?? "", /a hand-off note at .*t3-1\.md that exists and reads \(ENOENT\)/);
+  writeFileSync(note, NOTE.replace("Head: 1a2b3c4\n", ""));
+  assert.match(denied(decide(handback(ws.on, "architecture:sdd-implementer", `DONE\nHANDOFF: ${note}`), ws.tmp)) ?? "", /a line `Head: <value>` in the hand-off note/);
+  writeFileSync(note, NOTE);
+  assert.equal(decide(handback(ws.on, "architecture:sdd-implementer", `DONE\nHANDOFF: ${note}`), ws.tmp), null);
+  const stopped = decide(stop(ws.on, "sdd-implementer", `DONE\nHANDOFF: ${note}`), ws.tmp);
+  assert.equal(stopped?.decision, undefined);
+  const [record] = readLedger(ws.ledger);
+  assert.equal(record.handoff, note);
+});
+
+test("the implementer definition names the HANDOFF line and the resume from a note", () => {
+  const body = readFileSync(path.join(AGENTS, "sdd-implementer.md"), "utf8");
+  assert.match(body, /`HANDOFF: <note path>`/);
+  assert.match(body, /git log --oneline <Head>\.\.HEAD/);
+});

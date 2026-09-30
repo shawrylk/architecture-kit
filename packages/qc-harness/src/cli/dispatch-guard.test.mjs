@@ -142,13 +142,12 @@ test("each allowed pair passes, including a full model id and a branch reviewer 
     null,
   );
   decide(subagentEvent(ws.on, "architecture:sdd-implementer"), ws.tmp);
-  assert.equal(
-    decide(
-      agentCall(ws.on, { subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5", prompt: "p" }),
-      ws.tmp,
-    ),
-    null,
+  const pinned = decide(
+    agentCall(ws.on, { subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5", prompt: "p" }),
+    ws.tmp,
   );
+  assert.equal(pinned.hookSpecificOutput.permissionDecision, undefined);
+  assert.match(pinned.hookSpecificOutput.additionalContext, /share no prompt cache/);
 });
 
 test("a repository's models override replaces one type's families and leaves the rest at default", (t) => {

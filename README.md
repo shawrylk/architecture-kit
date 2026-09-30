@@ -187,7 +187,28 @@ A subagent does not count its own tool calls, so a `PreToolUse` hook counts them
 `swarm.toolCallBudget` in `qc.config.json` sets the budget, and the default is 100. At 70% of the
 budget, the agent gets a reminder to commit, push, and plan the hand-off, and again every 10 calls.
 At the budget, only the hand-off runs: Read, read-only and `git add`, `commit`, and `push` commands,
-and a Write to a path under `/handoffs/`. The main session is never counted.
+and a Write to a path under `/handoffs/`. The hand-off note goes in a `handoffs/` folder beside the
+report file, outside every checkout, with lines `Brief:`, `Worktree:`, `Branch:`, and `Head:`, and
+sections `## Done`, `## Left`, and `## Next step`. The report names it on a line
+`HANDOFF: <note path>`. The main session is never counted.
+
+The same hook reads each subagent's context from its transcript: the tokens its latest request sent,
+against its first. It never refuses a call. It checks once every `every` calls, and each level of note
+fires once. At `summarizeRatio` times the first call, the note says that new output adds to every
+later call. At `handoffRatio` times, an agent of a `handoffTypes` type with `minCallsLeft` calls of
+work left gets the hand-off steps, and again after every `repeatEvery` calls. The work left runs to an
+`Estimate: <n>` line of the dispatch prompt, or to the budget. When an agent hands back at `summarizeRatio` times or more, its report gains a `CONTEXT:`
+line, so the controller can weigh a resume against a fresh agent. `"context": false` in the `swarm`
+section turns the signal off.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `every` | `5` | check once every this many calls |
+| `summarizeRatio` | `3` | the ratio for the note that keeps new output small |
+| `handoffRatio` | `5` | the ratio for the hand-off note |
+| `minCallsLeft` | `15` | the calls of work the hand-off note needs left |
+| `repeatEvery` | `20` | the hand-off note repeats after this many calls |
+| `handoffTypes` | `["sdd-implementer", "architecture:sdd-implementer", "general-purpose"]` | the types that get the hand-off note |
 
 Give each agent its own worktree beside the main checkout:
 
@@ -292,6 +313,27 @@ repeating the rest. A family matches a bare alias (`sonnet`) or a full model id
 existing family needs no kit change. `models` constrains only a dispatch that names a `model`; a
 dispatch with no model still runs its type's frontmatter model, which `models` does not touch.
 
+A dispatch of an allowed type that names a full model id, such as `claude-sonnet-5`, gets a note:
+requests to different models share no prompt cache, so it pays the type's shared first-call prefix
+again. The note never refuses the dispatch.
+
+#### Measure a session's tokens
+
+`qc tokens` reads the transcripts Claude Code keeps for one session and prints, per agent type, the
+tokens read and written, the cache hit rate, the average and largest context per call, and the
+median first call. It counts a request once, though Claude Code writes one line per content block.
+It needs no hook and no config.
+
+```bash
+npx qc tokens                         # the newest session of this folder
+npx qc tokens --session <id> --json   # one session, as JSON, for a before-and-after comparison
+```
+
+The `1h` column prices the same requests at the one-hour cache lifetime. A negative value means
+`subagentPromptCacheTtl: "1h"` in your settings would have cost less. The plugin's agents set no
+`experimental.cacheTtl`: in the measured sessions the one-hour lifetime cost more for all four types,
+and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are API list prices.
+
 ### 10. Send a wide read or search to the repository's own tools
 
 A session spends most of its tokens on whole-file reads and wide searches, when a repository often
@@ -309,8 +351,10 @@ has better tools: a semantic index, a call graph, a local summarizer. A `swarm.e
       "summarizer": "<command> | lfm-ask \"<question>\"",
       "maxReadLines": 300,
       "maxGrepLines": 80,
-      "maxOutputChars": 20000,
-      "exempt": []
+      "maxOutputChars": 10000,
+      "exempt": [],
+      "longOutput": "excerpt",
+      "excerptChars": 4000
     }
   }
 }
@@ -330,9 +374,15 @@ of those types runs a tool such as `slm-rerank`, `gitnexus`, or `ccc` through `B
   session, so a real need for the whole file costs one retry, never a standing exemption.
 - **Search hint** — a `PostToolUse` hook on `Grep` adds context naming the tools when the answer
   runs past `maxGrepLines` lines. It never refuses anything.
-- **Output hint** — a `PostToolUse` hook on `Bash` and `PowerShell` adds context naming the
-  `summarizer` when the output runs past `maxOutputChars` characters. A `summarizer` of `null`
-  turns this one hint off; the read budget and the search hint are unaffected.
+- **Output excerpt** — a `PostToolUse` hook on `Bash` and `PowerShell` acts on a successful output
+  over `maxOutputChars` characters. With `longOutput` at `"excerpt"`, and an output over twice
+  `excerptChars`, it saves the whole output to `<scratchpad>/outputs/<tool use id>.txt` and shows
+  Claude the head, up to 20 lines between that name a failure or an error, the tail, and a line that
+  names the file and the `summarizer`. The whole output never enters the context, so no later call
+  re-sends it. A failed command reaches `PostToolUseFailure` instead, and Claude Code already cuts it
+  to a head-and-tail excerpt. An image, or an output shape the hook does not know, gets the hint.
+  With `"hint"`, the hook only adds context naming the `summarizer`, and a `summarizer` of `null`
+  turns that hint off.
 - **Session note** — the tool names reach the main session at start (section 9's note, even with
   `swarm.dispatch` off). Each subagent gets each tool's `use` and `how` at its own `SubagentStart`,
   past a compaction included. `swarm.explore` with no `tools` adds nothing.
@@ -346,8 +396,10 @@ stopping the call they are judging; the session note skips the tool line instead
 | `summarizer` | `null` | the command the output hint names; `null` turns that hint off |
 | `maxReadLines` | `300` | the read budget, in lines |
 | `maxGrepLines` | `80` | the search hint's threshold, in lines |
-| `maxOutputChars` | `20000` | the output hint's threshold, in characters |
+| `maxOutputChars` | `10000` | the output excerpt's and the output hint's threshold, in characters |
 | `exempt` | `[]` | globs the read budget never refuses |
+| `longOutput` | `"excerpt"` | `"excerpt"` saves a long output and shows an excerpt; `"hint"` only names the `summarizer` |
+| `excerptChars` | `4000`, or half of `maxOutputChars` when that is under 8000 | the excerpt's size: a quarter head, three quarters tail. One you set must be smaller than `maxOutputChars`; a config that breaks this switches the explore guard off and names the key |
 
 ### 11. Hold the workflow to its reviews
 
@@ -359,9 +411,9 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Check | Hook | What it refuses |
 |---|---|---|
 | Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha that git reports as unknown in the repository of the named worktree, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha. A git failure or a timeout passes with a note, and the stop records the sha as written, with no branch. A sha with no named worktree that the working directory's repository lacks passes with a note, and the stop records no verdict |
-| Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:` |
-| Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review |
-| Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line. The ledger records the reason. A resume through `SendMessage` passes |
+| Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:`. A report with a `HANDOFF: <path>` line needs neither; it needs a note at that path with `Brief:`, `Worktree:`, `Branch:`, and `Head:` lines and non-empty `## Done`, `## Left`, and `## Next step` sections. The stop records the note's path |
+| Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review. An implementer whose prompt has the `HANDOFF: <path>` line of the newest implementer stop on the branch continues that task and passes; the next implementer after it needs a review, and a review of the later head covers both stops |
+| Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line or continues the newest stop's hand-off. The ledger records the reason or the note. A resume through `SendMessage` passes |
 | Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names. A `gh api` call to a merge endpoint is refused outright. So is a `gh api` call that holds the `mergePullRequest` mutation in an argument or in a readable query file, and a query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A merge that names a repository other than `origin` passes with a note, whether it names it with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
 | Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
 | Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths` |
@@ -376,6 +428,7 @@ The hooks read these markers:
 | `PLAN: <absolute path>` | the first line of a planner report | the plan the plan check reads |
 | `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>` | the first line of a reviewer report | the verdict and the head it judged. A short or upper-case sha resolves to the full one |
 | `RED:` and `GREEN:` | one line each of an implementer report | the failing run, then the passing run |
+| `HANDOFF: <absolute path>` | one line of an implementer report, or of an implementer prompt | the hand-off note: in a report, the note the stop checks and records; in a prompt, the note a fresh implementer continues from |
 | `RED-CHECKED:` | a line of a task reviewer's APPROVED report | the reviewer saw the test fail before the code |
 | `Test: none — <reason>` | a line of a plan task | a task with no test step, such as a docs task. It needs a reason of three words or more, and it does not cover a task that changes a source file |
 | `**Estimate:** <n> tool calls` | a line of a plan task | the size the plan check compares with `maxTaskCalls` |

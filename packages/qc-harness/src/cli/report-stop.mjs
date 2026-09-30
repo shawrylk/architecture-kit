@@ -6,6 +6,7 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { branchAt, branchesAt, gitOut, pathKey } from "./git-read.mjs";
+import { checkHandoffFile, handoffPathOf } from "./handoff-note.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { dropReport, keepReport, reportOf } from "./report-stash.mjs";
 import { commitLookup, firstUserText, resolveNamedWorktree, workflowOfRepo } from "./workflow-place.mjs";
@@ -40,10 +41,16 @@ export function verdictOf(text) {
 /**
  * @param lookup the read of the verdict's sha, `{ sha }`, `{ unknown }`, `{ error }`, or null
  * @param named true when the dispatch names the worktree whose repository the sha must belong to
+ * @param handoff the check of the note an implementer's `HANDOFF:` line names, or null
  * @returns each line the report still needs, as a phrase; empty when it carries every line its role owes
  */
-export function reportProblems(role, text, verdict, lookup, named) {
+export function reportProblems(role, text, verdict, lookup, named, handoff = null) {
   if (role === "implementer") {
+    // A hand-off stops before GREEN, so its checked note stands in for both lines.
+    if (handoff) {
+      if (handoff.missing) return [`a hand-off note at ${handoff.spelled} that exists and reads (${handoff.missing})`];
+      return handoff.problems.map((problem) => `${problem} in the hand-off note at ${handoff.spelled}`);
+    }
     const problems = [];
     if (!RED_LINE.test(text)) problems.push("a line that starts `RED:` with the test command and the line that shows it failing before the code");
     if (!GREEN_LINE.test(text)) problems.push("a line that starts `GREEN:` with the same command and the line that shows it passing after");
@@ -146,10 +153,11 @@ function offNote(call, root, event, tmp) {
   return event === "SubagentStop" ? { systemMessage: note } : null;
 }
 
-function recordStop({ workflow, call, session, agentId, role, worktree, verdict, lookup, text, tmp, records, notes }) {
+function recordStop({ workflow, call, session, agentId, role, worktree, verdict, lookup, text, tmp, records, notes, handoff = null }) {
   try {
     const place = worktree ? (role === "implementer" ? implementerPlace(records, worktree) : { worktree }) : {};
-    appendRecord(workflow.ledger, { type: "stop", session, agentType: call.agent_type, agentId, role, ...place });
+    const handedOff = handoff ? { handoff: handoff.file } : {};
+    appendRecord(workflow.ledger, { type: "stop", session, agentType: call.agent_type, agentId, role, ...place, ...handedOff });
     // A failed read keeps the sha as the reviewer wrote it, which the gates match by prefix.
     const sha = lookup?.sha ?? (lookup?.error ? verdict.sha : null);
     if (verdict && sha) {
@@ -216,6 +224,8 @@ export function decide(call, tmp = os.tmpdir(), deps = {}) {
   const worktree = prior?.worktree ?? named;
   const text = event === "PreToolUse" ? String(call.tool_input?.message ?? "") : reportOf(call, tmp);
   const verdict = role === "implementer" ? null : verdictOf(text);
+  const spelled = role === "implementer" ? handoffPathOf(text) : null;
+  const handoff = spelled === null ? null : { spelled, ...checkHandoffFile(spelled, call.cwd ?? process.cwd()) };
   const lookup = verdict ? commit(worktree ?? workflow.root, verdict.sha) : null;
   const notes = [];
   if (lookup?.error) {
@@ -228,13 +238,13 @@ export function decide(call, tmp = os.tmpdir(), deps = {}) {
   if (event === "SubagentStop" && role === "implementer" && !worktree) {
     notes.push("Workflow report: the prompt of this implementer has no readable `Worktree:` line, so the stop records no head.");
   }
-  const problems = reportProblems(role, text, verdict, lookup, worktree !== null);
+  const problems = reportProblems(role, text, verdict, lookup, worktree !== null, handoff);
   if (problems.length > 0) {
     if (event === "PreToolUse") return deny(refusal(role, problems));
     return call.stop_hook_active === true ? held(role, problems) : block(refusal(role, problems));
   }
   if (event === "PreToolUse") return notes.length > 0 ? preContext(notes.join(" ")) : null;
-  return recordStop({ workflow, call, session, agentId, role, worktree, verdict, lookup, text, tmp, records, notes });
+  return recordStop({ workflow, call, session, agentId, role, worktree, verdict, lookup, text, tmp, records, notes, handoff });
 }
 
 async function readStdin() {

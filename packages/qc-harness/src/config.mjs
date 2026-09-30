@@ -515,8 +515,22 @@ export const exploreDefaults = {
   summarizer: null,
   maxReadLines: 300,
   maxGrepLines: 80,
-  maxOutputChars: 20000,
+  maxOutputChars: 10000,
   exempt: [],
+  // "excerpt" saves a long successful command output to a file and shows its head and tail; "hint" only names the summarizer.
+  longOutput: "excerpt",
+  excerptChars: 4000,
+};
+
+// What each key of `swarm.context` means when a repository omits it. The signal is on wherever the config
+// is, and `"context": false` turns it off. Each ratio compares an agent's latest request with its first.
+export const contextDefaults = {
+  every: 5,
+  summarizeRatio: 3,
+  handoffRatio: 5,
+  minCallsLeft: 15,
+  repeatEvery: 20,
+  handoffTypes: ["sdd-implementer", "architecture:sdd-implementer", "general-purpose"],
 };
 
 // What each key of `swarm.review` means when a repository omits it. The workflow checks run only while

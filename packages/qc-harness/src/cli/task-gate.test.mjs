@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { decide as dispatchDecide } from "./dispatch-guard.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { gitOut } from "./git-read.mjs";
-import { gateRefusal, judgeTask, noResumeReason, recordDispatch, worktreeNamed } from "./task-gate.mjs";
+import { continuedStop, gateRefusal, judgeTask, noResumeReason, recordDispatch, worktreeNamed } from "./task-gate.mjs";
 import { sessionDirOf } from "./workflow-settings.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
@@ -52,7 +52,7 @@ const dispatch = (cwd, prompt, subagent_type = "architecture:sdd-implementer", e
   ...extra,
 });
 const taskPrompt = (worktree, more = "") => `Read the brief at C:/scratch/brief.md.\nWorktree: ${worktree}\n${more}`;
-const implementerStop = (ws, head, branch = "feat/1-x") =>
+const implementerStop = (ws, head, branch = "feat/1-x", handoff = null) =>
   appendRecord(ws.ledger, {
     type: "stop",
     session: "s",
@@ -61,6 +61,7 @@ const implementerStop = (ws, head, branch = "feat/1-x") =>
     role: "implementer",
     branch,
     head,
+    ...(handoff ? { handoff } : {}),
   });
 const verdict = (ws, sha, value = "APPROVED", kind = "task") =>
   appendRecord(ws.ledger, { type: "verdict", kind, verdict: value, sha, branch: "feat/1-x" });
@@ -418,4 +419,89 @@ test("an implementer that edits qc.config.json in its worktree cannot turn its o
   writeFileSync(path.join(ws.linked, "qc.config.json"), JSON.stringify({ swarm: { toolCallBudget: 50 } }));
   implementerStop(ws, commitIn(ws.linked, "b.txt"));
   assert.match(refusalOf(ws) ?? "", /no review in the ledger/);
+});
+
+test("a fresh implementer with the HANDOFF line of the newest stop continues it without a review first", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  const moved = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, moved, "feat/1-x", note);
+  assert.match(refusalOf(ws) ?? "", /no review in the ledger names/);
+  assert.match(refusalOf(ws) ?? "", /`HANDOFF: <note path>`/);
+  assert.equal(refusalOf(ws, `HANDOFF: ${note}`), null);
+  const { record } = judgeTask(dispatch(ws.main, taskPrompt(ws.linked, `HANDOFF: ${note}`)), ws.tmp);
+  assert.equal(record.handoff, note);
+});
+
+test("the continuation's own stop needs a review, and a review of the later head covers both", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  implementerStop(ws, commitIn(ws.linked, "b.txt"), "feat/1-x", note);
+  const later = commitIn(ws.linked, "c.txt");
+  implementerStop(ws, later);
+  assert.match(refusalOf(ws, `HANDOFF: ${note}`) ?? "", /no review in the ledger names/);
+  verdict(ws, later);
+  assert.equal(refusalOf(ws), null);
+});
+
+test("a HANDOFF line of an older stop, of another branch, or of another note does not excuse a review", (t) => {
+  const ws = workspace(t);
+  const old = path.join(ws.tmp, "handoffs", "old.md");
+  implementerStop(ws, commitIn(ws.linked, "b.txt"), "feat/1-x", old);
+  implementerStop(ws, commitIn(ws.linked, "c.txt"));
+  assert.match(refusalOf(ws, `HANDOFF: ${old}`) ?? "", /no review in the ledger names/);
+  assert.match(refusalOf(ws, `HANDOFF: ${path.join(ws.tmp, "handoffs", "other.md")}`) ?? "", /no review in the ledger names/);
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/2-y", old), null);
+});
+
+test("the newest stop of another branch with the named note is not a continuation of this branch", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  implementerStop(ws, "abc1234", "feat/2-y", note);
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/2-y", note)?.branch, "feat/2-y");
+});
+
+test("after CHANGES_REQUIRED, a continuation of the fix round's hand-off needs no NO-RESUME line", (t) => {
+  const ws = workspace(t);
+  const reviewed = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, reviewed);
+  verdict(ws, reviewed, "CHANGES_REQUIRED");
+  const note = path.join(ws.tmp, "handoffs", "fix-1.md");
+  const partial = commitIn(ws.linked, "c.txt");
+  implementerStop(ws, partial, "feat/1-x", note);
+  assert.match(refusalOf(ws) ?? "", /CHANGES_REQUIRED|no review/);
+  assert.equal(refusalOf(ws, `HANDOFF: ${note}`), null);
+});
+
+test("a stop that a later CHANGES_REQUIRED reviewed is no longer continued by its HANDOFF line", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  const stopped = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, stopped, "feat/1-x", note);
+  assert.equal(refusalOf(ws, `HANDOFF: ${note}`), null);
+  verdict(ws, stopped, "CHANGES_REQUIRED");
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
+  assert.match(refusalOf(ws, `HANDOFF: ${note}`) ?? "", /CHANGES_REQUIRED/);
+  assert.equal(refusalOf(ws, `HANDOFF: ${note}\nNO-RESUME: the budget is spent`), null);
+});
+
+test("a later verdict that names the stop's head ends the continuation, whatever branch it records", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  const stopped = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, stopped, "feat/1-x", note);
+  appendRecord(ws.ledger, { type: "verdict", kind: "task", verdict: "CHANGES_REQUIRED", sha: stopped });
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
+  assert.match(refusalOf(ws, `HANDOFF: ${note}`) ?? "", /CHANGES_REQUIRED/);
+});
+
+test("a later verdict on the branch ends the continuation, whatever commit it names", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  implementerStop(ws, commitIn(ws.linked, "b.txt"), "feat/1-x", note);
+  verdict(ws, "abc1234", "CHANGES_REQUIRED");
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
+  assert.match(refusalOf(ws, `HANDOFF: ${note}`) ?? "", /CHANGES_REQUIRED/);
 });

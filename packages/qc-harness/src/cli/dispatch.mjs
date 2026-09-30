@@ -77,7 +77,9 @@ export function exploreSettings(swarm = {}) {
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${EXPLORE_KEY} in qc.config.json must be an object, got ${JSON.stringify(raw)}`);
   }
-  const { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt } = merge(exploreDefaults, raw);
+  const { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt, longOutput, excerptChars: set } = merge(exploreDefaults, raw);
+  // A repository that sets only maxOutputChars keeps its explore hooks: the excerpt default follows it.
+  const excerptChars = raw.excerptChars === undefined && Number.isInteger(maxOutputChars) ? Math.min(exploreDefaults.excerptChars, Math.floor(maxOutputChars / 2)) : set;
   if (!Array.isArray(tools) || !tools.every(isToolEntry)) {
     throw wrongExplore("tools", tools, 'a list of { "name", "use", "how" } strings');
   }
@@ -88,11 +90,14 @@ export function exploreSettings(swarm = {}) {
     ["maxReadLines", maxReadLines],
     ["maxGrepLines", maxGrepLines],
     ["maxOutputChars", maxOutputChars],
+    ["excerptChars", excerptChars],
   ]) {
     if (!Number.isInteger(value) || value < 1) throw wrongExplore(key, value, "a positive whole number");
   }
+  if (excerptChars >= maxOutputChars) throw wrongExplore("excerptChars", excerptChars, `smaller than maxOutputChars (${maxOutputChars})`);
   if (!isNameList(exempt)) throw wrongExplore("exempt", exempt, "a list of globs");
-  return { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt };
+  if (longOutput !== "excerpt" && longOutput !== "hint") throw wrongExplore("longOutput", longOutput, '"excerpt" or "hint"');
+  return { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt, longOutput, excerptChars };
 }
 
 /** @returns the explore settings of the checkout that holds `cwd`, or null when it has no config or no section. */
@@ -158,6 +163,19 @@ export function dispatchRefusal(input, settings) {
   const length = typeof input.prompt === "string" ? input.prompt.length : 0;
   if (length > settings.maxPromptChars) return promptRefusal(length, settings.maxPromptChars);
   return null;
+}
+
+/** A note for a dispatch that starts a second prompt cache for its type, or null. It never refuses. */
+export function dispatchNote(input, settings) {
+  const type = typeOf(input);
+  const model = typeof input.model === "string" ? input.model.trim() : "";
+  if (model === "" || type === FORK || !settings.allowedTypes.includes(type)) return null;
+  if (MODEL_FAMILIES.includes(model.toLowerCase())) return null;
+  return (
+    `Dispatch note: ${type} sets its own model, and "${model}" is a full model id. Requests to different models share no prompt cache, ` +
+    `so this dispatch pays the type's shared first-call prefix again when the id differs from the definition's model. ` +
+    "A dispatch of this type with no `model` shares one cache with the others."
+  );
 }
 
 /** The reason an implementer over the limit waits, with the two ways a slot frees. */

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { typeOf } from "./dispatch.mjs";
+import { handoffPathOf, resolveHandoff } from "./handoff-note.mjs";
 import { branchAt, gitOut, linkedWorktrees, pathKey } from "./git-read.mjs";
 import { appendRecord, latestVerdictFor, latestVerdictOn, readLedger, shaMatches } from "./ledger.mjs";
 import { resolveNamedWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
@@ -26,15 +27,16 @@ const fixRoundRefusal = (branch, sha, type) =>
 const unreviewedRefusal = (branch, stopHead, head) =>
   `Task gate: an implementer stopped on ${branch} at ${short(stopHead)}, and no review in the ledger names ${short(stopHead)} or a later commit. ` +
   `Dispatch the task reviewer on ${short(head)} first; its first line \`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>\` records the review. ` +
+  `If that stop handed off, its report named \`HANDOFF: <note path>\`; the same line in the next implementer prompt continues the task. ` +
   `\`qc ledger ${branch}\` lists what is recorded.`;
 
 const HISTORY_LIMIT = 5000;
 
 /**
- * The head of the newest implementer stop in this branch's history that no later verdict on the branch covers,
+ * The newest implementer stop in this branch's history that no later verdict on the branch covers,
  * or null. Older stops are ancestors of it, so its verdict covers them. Two git calls at most; a git error passes.
  */
-function unreviewedImplementerHead({ records, branch, head, cwd, git }) {
+function unreviewedImplementerStop({ records, branch, head, cwd, git }) {
   if (cwd === undefined) return null;
   const history = git(cwd, "rev-list", `--max-count=${HISTORY_LIMIT}`, head);
   if (history === null) return null;
@@ -44,28 +46,45 @@ function unreviewedImplementerHead({ records, branch, head, cwd, git }) {
       record.type === "stop" && record.role === "implementer" && record.branch === branch && typeof record.head === "string" && inHistory.has(record.head.toLowerCase()),
   );
   if (stopAt < 0) return null;
-  const stopHead = records[stopAt].head;
+  const stop = records[stopAt];
+  const stopHead = stop.head;
   // A commit is reviewed once, wherever and whenever the verdict on it was written.
   if (records.some((record) => record.type === "verdict" && shaMatches(record.sha, stopHead))) return null;
   const later = records.slice(stopAt + 1).filter((record) => record.type === "verdict" && record.branch === branch && typeof record.sha === "string");
-  if (later.length === 0 || shaMatches(stopHead, head)) return stopHead;
+  if (later.length === 0 || shaMatches(stopHead, head)) return stop;
   const below = git(cwd, "rev-list", "--ancestry-path", `${stopHead}..${head}`);
   if (below === null) return null;
   const descendants = below.split(/\r?\n/).filter(Boolean);
-  return later.some((verdict) => descendants.some((sha) => shaMatches(verdict.sha, sha))) ? null : stopHead;
+  return later.some((verdict) => descendants.some((sha) => shaMatches(verdict.sha, sha))) ? null : stop;
+}
+
+/**
+ * The newest implementer stop on `branch` when it left the note `handoff` and no verdict came after it, else null.
+ * A later verdict on the branch, or one that names the stop's head, reviewed the stop, so its note is spent.
+ */
+export function continuedStop(records, branch, handoff) {
+  if (handoff === null) return null;
+  const stopAt = records.findLastIndex((record) => record.type === "stop" && record.role === "implementer" && record.branch === branch);
+  const stop = records[stopAt];
+  if (!stop || typeof stop.handoff !== "string" || pathKey(stop.handoff) !== pathKey(handoff)) return null;
+  const reviewed = records.slice(stopAt + 1).some((record) => record.type === "verdict" && (record.branch === branch || shaMatches(record.sha, stop.head)));
+  return reviewed ? null : stop;
 }
 
 /**
  * @returns the reason an implementer may not start on `branch` now, or null. Only implementer commits need a
  * review, so a controller commit after a reviewed head passes. `cwd` is any checkout; `git` reads it.
  */
-export function gateRefusal({ records, branch, head, reason, type, cwd, git = gitOut }) {
+export function gateRefusal({ records, branch, head, reason, type, cwd, git = gitOut, handoff = null }) {
+  // A continuation of the newest stop's hand-off is the same task, so it is neither a fix round nor a new task.
+  const continued = continuedStop(records, branch, handoff);
+  const why = reason ?? (continued ? `continues the hand-off ${continued.handoff}` : null);
   const last = latestVerdictOn(records, branch);
-  if (last?.verdict === "CHANGES_REQUIRED" && reason === null) return fixRoundRefusal(branch, last.sha, type);
-  const unreviewed = unreviewedImplementerHead({ records, branch, head, cwd, git });
-  if (unreviewed) return unreviewedRefusal(branch, unreviewed, head);
+  if (last?.verdict === "CHANGES_REQUIRED" && why === null) return fixRoundRefusal(branch, last.sha, type);
+  const unreviewed = unreviewedImplementerStop({ records, branch, head, cwd, git });
+  if (unreviewed && unreviewed !== continued) return unreviewedRefusal(branch, unreviewed.head, head);
   const current = latestVerdictFor(records, head, ["task", "branch"]);
-  if (current?.verdict === "CHANGES_REQUIRED" && reason === null) return fixRoundRefusal(branch, current.sha, type);
+  if (current?.verdict === "CHANGES_REQUIRED" && why === null) return fixRoundRefusal(branch, current.sha, type);
   return null;
 }
 
@@ -140,9 +159,12 @@ export function judgeTask(call, tmp = os.tmpdir()) {
     return pass(null, null, `Task gate could not read the ledger (${error.message}), so this dispatch is not judged.`);
   }
   const reason = noResumeReason(prompt);
-  const refusal = gateRefusal({ records, branch: worktree.branch, head: worktree.head, reason, type, cwd: workflow.root });
+  const spelled = handoffPathOf(prompt);
+  const handoff = spelled === null ? null : resolveHandoff(spelled, cwd);
+  const refusal = gateRefusal({ records, branch: worktree.branch, head: worktree.head, reason, type, cwd: workflow.root, handoff });
   if (refusal) return refuse(refusal);
-  return pass(workflow, { ...base, task: true, worktree: worktree.path, branch: worktree.branch, head: worktree.head, resumeReason: reason });
+  const continues = handoff ? { handoff } : {};
+  return pass(workflow, { ...base, task: true, worktree: worktree.path, branch: worktree.branch, head: worktree.head, resumeReason: reason, ...continues });
 }
 
 /** Writes the dispatch record of a judged call. @returns a note for the session, or null. */

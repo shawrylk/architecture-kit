@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { defaults, dispatchDefaults, merge } from "../config.mjs";
-import { dispatchRefusal, dispatchSettings, exploreToolLines, familyOf, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
+import { dispatchNote, dispatchRefusal, dispatchSettings, exploreSettings, exploreToolLines, familyOf, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
 
 test("a swarm section with no dispatch key keeps the guard off", () => {
   assert.equal(dispatchSettings({}), null);
@@ -205,4 +205,28 @@ test("exploreToolLines gives one `- name: use (how)` line per tool, in config or
     ],
   );
   assert.deepEqual(exploreToolLines([]), []);
+});
+
+test("a shipped type that names a full model id gets a cache note, never a refusal", () => {
+  const settings = { ...dispatchDefaults };
+  const note = dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5", prompt: "x" }, settings);
+  assert.match(note, /share no prompt cache/);
+  assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "x" }, settings), null);
+  assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", prompt: "x" }, settings), null);
+  assert.equal(dispatchNote({ subagent_type: "general-purpose", model: "claude-sonnet-5", prompt: "x" }, settings), null);
+});
+
+test("an excerptChars the repository leaves out is half of maxOutputChars, at most 4000, and never an error", () => {
+  assert.equal(exploreSettings({ explore: { maxOutputChars: 20 } }).excerptChars, 10);
+  assert.equal(exploreSettings({ explore: { maxOutputChars: 7 } }).excerptChars, 3);
+  assert.equal(exploreSettings({ explore: { maxOutputChars: 7999 } }).excerptChars, 3999);
+  assert.equal(exploreSettings({ explore: { maxOutputChars: 20000 } }).excerptChars, 4000);
+  assert.equal(exploreSettings({ explore: {} }).excerptChars, 4000);
+});
+
+test("an excerptChars the repository sets must be smaller than maxOutputChars", () => {
+  assert.equal(exploreSettings({ explore: { maxOutputChars: 20, excerptChars: 19 } }).excerptChars, 19);
+  for (const excerptChars of [20, 21]) {
+    assert.throws(() => exploreSettings({ explore: { maxOutputChars: 20, excerptChars } }), /swarm\.explore\.excerptChars .*smaller than maxOutputChars \(20\)/);
+  }
 });
