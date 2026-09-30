@@ -1,9 +1,9 @@
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { RATES, costsOf, projectKeyOf, runTokens, sessionFiles, summarizeSession } from "./tokens.mjs";
+import { RATES, claudeDirOf, costsOf, projectKeyOf, runTokens, sessionFiles, summarizeSession } from "./tokens.mjs";
 import { readRequests } from "./transcript-usage.mjs";
 
 const MINUTE = 60_000;
@@ -177,7 +177,7 @@ function claudeDir(t) {
   return base;
 }
 
-/** A fake Claude Code folder with one project, one session, a main transcript, and two subagents. */
+/** A fake Claude Code folder with one project, a newer session `s1` (a main transcript and two subagents), and an older one `s0`. */
 function fakeSession(t) {
   const dir = claudeDir(t);
   const project = path.join(dir, "repo");
@@ -188,12 +188,25 @@ function fakeSession(t) {
   writeFileSync(path.join(subagents, "agent-a1.jsonl"), `${line("i1", 0, 0, 1000)}\n${line("i1", 0, 0, 1000)}\n${line("i2", 1, 1000, 100)}\n`);
   writeFileSync(path.join(subagents, "agent-a1.meta.json"), JSON.stringify({ agentType: "architecture:sdd-implementer" }));
   writeFileSync(path.join(subagents, "agent-a2.jsonl"), `${line("r1", 2, 0, 300)}\n`);
-  return { dir, project };
+  writeFileSync(path.join(subagents, "notes.jsonl"), `${line("z1", 3, 0, 9)}\n`);
+  const older = path.join(projectDir, "s0.jsonl");
+  writeFileSync(older, `${line("o1", 0, 0, 77)}\n`);
+  utimesSync(older, new Date("2020-01-01"), new Date("2020-01-01"));
+  return { dir, project, projectDir };
 }
 
 test("the project key replaces each character outside letters and digits with a dash", () => {
   if (process.platform === "win32") assert.equal(projectKeyOf("C:\\Users\\x\\qc-mono"), "C--Users-x-qc-mono");
   else assert.equal(projectKeyOf("/home/u/qc-mono"), "-home-u-qc-mono");
+});
+
+test("the project key keeps a digit", () => {
+  assert.match(projectKeyOf(path.join(os.tmpdir(), "repo2")), /repo2$/);
+});
+
+test("the Claude folder is the environment's, else the home folder's", () => {
+  assert.equal(claudeDirOf({ CLAUDE_CONFIG_DIR: "/somewhere" }), "/somewhere");
+  assert.equal(claudeDirOf({}), path.join(os.homedir(), ".claude"));
 });
 
 test("sessionFiles finds the newest session's main transcript and each subagent transcript", (t) => {
@@ -203,6 +216,34 @@ test("sessionFiles finds the newest session's main transcript and each subagent 
   assert.ok(files.main.endsWith("s1.jsonl"));
   assert.deepEqual(files.agents.map((file) => path.basename(file)).sort(), ["agent-a1.jsonl", "agent-a2.jsonl"]);
   assert.equal(sessionFiles({ claudeDir: dir, project: path.join(dir, "elsewhere") }), null);
+});
+
+test("sessionFiles reads a named session even when a newer one exists", (t) => {
+  const { dir, project } = fakeSession(t);
+  const files = sessionFiles({ claudeDir: dir, project, session: "s0" });
+  assert.equal(files.id, "s0");
+  assert.deepEqual(files.agents, []);
+});
+
+test("a session with subagents and no main transcript has no main, and one with neither is not found", (t) => {
+  const { dir, project, projectDir } = fakeSession(t);
+  mkdirSync(path.join(projectDir, "s2", "subagents"), { recursive: true });
+  writeFileSync(path.join(projectDir, "s2", "subagents", "agent-b1.jsonl"), `${line("b1", 0, 0, 5)}\n`);
+  const headless = sessionFiles({ claudeDir: dir, project, session: "s2" });
+  assert.equal(headless.main, null);
+  assert.equal(headless.agents.length, 1);
+  assert.equal(sessionFiles({ claudeDir: dir, project, session: "ghost" }), null);
+});
+
+test("qc tokens --session reads that session, and --project names the project, not the config root", (t) => {
+  const { dir, project } = fakeSession(t);
+  const lines = [];
+  const code = runTokens({ root: path.join(dir, "elsewhere") }, ["--claude-dir", dir, "--project", project, "--session", "s0", "--json"], (text) => lines.push(text));
+  assert.equal(code, 0);
+  const report = JSON.parse(lines.join("\n"));
+  assert.equal(report.session, "s0");
+  assert.deepEqual(report.types.map((stats) => stats.type), ["main"]);
+  assert.equal(report.types[0].write5m, 77);
 });
 
 test("qc tokens --json reports each type once per request, and an agent with no meta as unknown", (t) => {
