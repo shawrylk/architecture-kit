@@ -151,11 +151,10 @@ test("a hand-back of a large agent gains a CONTEXT line through updatedInput", (
   assert.match(output.hookSpecificOutput.updatedInput.message, /^VERDICT: APPROVED abc1234\n\nCONTEXT: this agent ended at about 60K tokens per call/);
 });
 
-test("a small hand-back, a missing transcript, and `context: false` change nothing", (t) => {
+test("a small hand-back and `context: false` change nothing", (t) => {
   const ws = workspace(t, { toolCallBudget: 100, context: { every: 1 } });
   const small = transcripts(ws, "a1", [10_000, 12_000]);
   assert.equal(runGuard(ws, signalCall(ws, small, "architecture:sdd-reviewer", "SubagentHandback", { message: "DONE" })), null);
-  assert.equal(runGuard(ws, signalCall(ws, path.join(ws.tmp, "none", "x.jsonl"))), null);
   const off = workspace(t, { toolCallBudget: 100, context: false });
   assert.equal(runGuard(off, signalCall(off, transcripts(off, "a1", [10_000, 60_000]))), null);
 });
@@ -198,4 +197,30 @@ test("a hand-back stamp replaces the budget reminder on the same call, because t
   assert.match(output.hookSpecificOutput.updatedInput.message, /CONTEXT: this agent ended/);
   assert.equal(noteOf(output), null);
   assert.doesNotMatch(JSON.stringify(output), /Tool-call budget/);
+});
+
+const NO_TRANSCRIPT = /^Context signal is off for this agent: the hook input names no transcript for it\.$/;
+const stateOf = (ws, agentId) => JSON.parse(readFileSync(path.join(ws.tmp, "architecture-kit", "context", `session-aaaa-${agentId}.json`), "utf8"));
+
+test("a subagent call with no transcript gets the note once, and the next signal call gets none", (t) => {
+  const ws = workspace(t, { toolCallBudget: 100, context: { every: 1 } });
+  const lost = signalCall(ws, path.join(ws.tmp, "none", "x.jsonl"));
+  assert.match(noteOf(runGuard(ws, lost)) ?? "", NO_TRANSCRIPT);
+  assert.equal(runGuard(ws, lost), null);
+  assert.equal(runGuard(ws, lost), null);
+  assert.equal(stateOf(ws, "a1").noTranscript, true, "the state file records that the note fired");
+});
+
+test("a hand-back with no transcript gets no stamp and no note, and leaves the note for a later signal call", (t) => {
+  const ws = workspace(t, { toolCallBudget: 100, context: { every: 1 } });
+  const none = path.join(ws.tmp, "none", "x.jsonl");
+  assert.equal(runGuard(ws, signalCall(ws, none, "architecture:sdd-reviewer", "SubagentHandback", { message: "DONE" })), null);
+  assert.match(noteOf(runGuard(ws, signalCall(ws, none))) ?? "", NO_TRANSCRIPT);
+});
+
+test("a main-session call with no transcript gets no note", (t) => {
+  const ws = workspace(t, { toolCallBudget: 100, context: { every: 1 } });
+  const { agent_id: _id, agent_type: _type, ...main } = signalCall(ws, path.join(ws.tmp, "none", "x.jsonl"));
+  assert.equal(runGuard(ws, main), null);
+  assert.equal(runGuard(ws, main), null);
 });

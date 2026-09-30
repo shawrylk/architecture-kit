@@ -10,6 +10,7 @@ import { checkHandoffFile, handoffPathOf } from "./handoff-note.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { dropReport, keepReport, reportOf } from "./report-stash.mjs";
 import { commitLookup, firstUserText, resolveNamedWorktree, workflowOfRepo } from "./workflow-place.mjs";
+import { agentTranscriptOf } from "./transcript-usage.mjs";
 import { workflowOf } from "./workflow-settings.mjs";
 
 const HANDBACK = "SubagentHandback";
@@ -69,8 +70,8 @@ const refusal = (role, problems) =>
   "Add it and send the report again.";
 
 /** A block already held this stop once, so it ends now, records nothing, and says what is still missing. */
-const held = (role, problems) => ({
-  systemMessage: `${refusal(role, problems)} A block already held this stop once, so it ends now and the ledger records nothing.`,
+const held = (role, problems, lost = null) => ({
+  systemMessage: `${refusal(role, problems)} A block already held this stop once, so it ends now and the ledger records nothing.${lost ? ` ${lost}` : ""}`,
 });
 
 const MAX_BRANCH_PROBES = 10;
@@ -122,7 +123,7 @@ function implementerPlace(records, worktree) {
  * @returns `{ workflow, named }`, `{ off }` for a repository with no workflow, or null; throws on a wrong config
  */
 function locate(call, tmp) {
-  const text = firstUserText(call.agent_transcript_path);
+  const text = firstUserText(agentTranscriptOf(call));
   const place = text === null ? null : resolveNamedWorktree(text, call.cwd ?? process.cwd());
   const root = place?.found ? checkoutRootOf(place.abs) : null;
   if (root) {
@@ -138,6 +139,10 @@ function locate(call, tmp) {
   const workflow = workflowOf(call, tmp);
   return workflow ? { workflow, named: null } : null;
 }
+
+/** The line for a report the hook judges with no transcript to place the agent, so it cannot name the agent's worktree. */
+const noTranscriptLine = (root) =>
+  `Workflow report: the hook input names no transcript for this agent, so the checks judge against the repository of the cwd or the session, ${root}.`;
 
 /** The note for an agent whose work is in a repository with no workflow, or null when the cwd's workflow does not track its type. */
 function offNote(call, root, event, tmp) {
@@ -228,6 +233,10 @@ export function decide(call, tmp = os.tmpdir(), deps = {}) {
   const handoff = spelled === null ? null : { spelled, ...checkHandoffFile(spelled, call.cwd ?? process.cwd()) };
   const lookup = verdict ? commit(worktree ?? workflow.root, verdict.sha) : null;
   const notes = [];
+  // A prior stop already placed a resumed agent, so only an agent with no worktree at all lacks a place.
+  const lost = worktree === null && agentTranscriptOf(call) === null ? noTranscriptLine(workflow.root) : null;
+  const withLost = (text) => (lost ? `${text} ${lost}` : text);
+  if (lost) notes.push(lost);
   if (lookup?.error) {
     notes.push(`Workflow report: git could not read ${verdict.sha} (${lookup.error}), so the verdict is not checked and is recorded as written.`);
   } else if (lookup?.unknown && !worktree) {
@@ -240,8 +249,9 @@ export function decide(call, tmp = os.tmpdir(), deps = {}) {
   }
   const problems = reportProblems(role, text, verdict, lookup, worktree !== null, handoff);
   if (problems.length > 0) {
-    if (event === "PreToolUse") return deny(refusal(role, problems));
-    return call.stop_hook_active === true ? held(role, problems) : block(refusal(role, problems));
+    if (event === "PreToolUse") return deny(withLost(refusal(role, problems)));
+    if (call.stop_hook_active !== true) return block(withLost(refusal(role, problems)));
+    return held(role, problems, lost);
   }
   if (event === "PreToolUse") return notes.length > 0 ? preContext(notes.join(" ")) : null;
   return recordStop({ workflow, call, session, agentId, role, worktree, verdict, lookup, text, tmp, records, notes, handoff });
