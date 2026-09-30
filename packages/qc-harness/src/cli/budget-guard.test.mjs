@@ -176,3 +176,26 @@ test("the budget reminder and the context note share one additionalContext", (t)
   assert.match(noteOf(output), /Tool-call budget: this is call 7 of 10/);
   assert.match(noteOf(output), /Context signal/);
 });
+
+test("a budget deny stays a deny, and a large context adds no note to it", (t) => {
+  const ws = workspace(t, { toolCallBudget: 3, context: { every: 3 } });
+  const main = transcripts(ws, "a1", [10_000, 60_000]);
+  runGuard(ws, signalCall(ws, main));
+  runGuard(ws, signalCall(ws, main));
+  const denied = runGuard(ws, signalCall(ws, main));
+  assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /call 3 of 3/);
+  assert.equal(noteOf(denied), null);
+  assert.doesNotMatch(JSON.stringify(denied), /Context signal/);
+});
+
+test("a hand-back stamp replaces the budget reminder on the same call, because the agent is ending", (t) => {
+  const ws = workspace(t, { toolCallBudget: 10, context: { every: 50 } });
+  const main = transcripts(ws, "a1", [10_000, 60_000]);
+  for (let index = 1; index < 7; index += 1) assert.equal(runGuard(ws, signalCall(ws, main)), null);
+  const output = runGuard(ws, signalCall(ws, main, "architecture:sdd-reviewer", "SubagentHandback", { message: "DONE" }));
+  assert.equal(countOf(ws, "a1"), 7, "call 7 of 10 is a reminder call");
+  assert.match(output.hookSpecificOutput.updatedInput.message, /CONTEXT: this agent ended/);
+  assert.equal(noteOf(output), null);
+  assert.doesNotMatch(JSON.stringify(output), /Tool-call budget/);
+});
