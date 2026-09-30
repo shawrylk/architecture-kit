@@ -11,8 +11,8 @@ SESSION="${INPUT#*|}"
 [ "$SESSION" = "$INPUT" ] && SESSION=""
 
 # The memory of the last refusal: one file per session under the system temp folder, holding the
-# sha256 of the full failure log, with each clock time and each duration replaced by a fixed token, so a
-# run that only takes a different time hashes the same. `same` exits 10 when this is a repeat stop and the
+# sha256 of the full failure log, with the timing lines of a test runner replaced by a fixed token, so a
+# run that only takes a different time hashes the same. A time inside an assertion message stays. `same` exits 10 when this is a repeat stop and the
 # text is the one last refused, and stores the hash otherwise. Every other outcome, an unreadable or unwritable file included, exits 0,
 # so the gate blocks as it did before it had a memory.
 MEMORY_JS='
@@ -27,9 +27,15 @@ try {
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (d) => (raw += d)).on("end", () => {
     try {
+      // Only the timing lines of a runner change from run to run. The 200ms in an assertion message is not one.
       const steady = raw
-        .replace(/\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b/g, "<time>")
-        .replace(/\b\d+(?:\.\d+)?(?:ms|s)\b/g, "<duration>");
+        .split("\n")
+        .map((line) => {
+          if (/^\s*(?:Start at|Duration|\u2139 duration_ms|# duration_ms)/.test(line)) return "<timing>";
+          if (/^\s*[\u2713\u00d7\u2717\u276f\u2193\u2714\u2716]/.test(line)) return line.replace(/ \(?\d+(?:\.\d+)?(?:ms|s)\)?(\s*)$/, " <duration>$1");
+          return line;
+        })
+        .join("\n");
       const text = require("node:crypto").createHash("sha256").update(steady).digest("hex");
       let last = null;
       try { last = fs.readFileSync(file, "utf8"); } catch {}

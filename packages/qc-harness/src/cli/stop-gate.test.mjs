@@ -236,9 +236,9 @@ test("a repeat stop blocks when only an early error line beyond the last 20 chan
 
 test("a repeat stop whose only change is a clock time and a duration ends the turn", (t) => {
   const gate = extraWorkspace(t);
-  gate.set(["Start at 10:22:11", "FAIL  orders  citations: ADR-0099 is cited but not defined", "Duration 12.34s (transform 3ms)"]);
+  gate.set(["Start at 10:22:11", "FAIL  orders  citations: ADR-0099 is cited but not defined", "Duration 12.34s (transform 3ms)", " ✓ src/a.test.ts (3 tests) 12ms", "ℹ duration_ms 812.5"]);
   assert.equal(gate.run({ session_id: "session-clock" }).status, 2);
-  gate.set(["Start at 10:23:45.678", "FAIL  orders  citations: ADR-0099 is cited but not defined", "Duration 9ms (transform 41ms)"]);
+  gate.set(["Start at 10:23:45.678", "FAIL  orders  citations: ADR-0099 is cited but not defined", "Duration 9ms (transform 41ms)", " ✓ src/a.test.ts (3 tests) 9ms", "ℹ duration_ms 79.1"]);
   const repeat = gate.run({ session_id: "session-clock", stop_hook_active: true });
   assert.equal(repeat.status, 0, repeat.stderr);
   assert.match(JSON.parse(repeat.stdout).systemMessage, /still fails/);
@@ -250,6 +250,22 @@ test("a repeat stop that changes a number beside a clock time and a duration sti
   assert.equal(gate.run({ session_id: "session-digit" }).status, 2);
   gate.set(["Start at 10:23:45", "FAIL  ADR-0100 is cited but not defined", "Duration 1.5s"]);
   assert.equal(gate.run({ session_id: "session-digit", stop_hook_active: true }).status, 2);
+});
+
+test("a repeat stop whose only change is a duration inside an assertion message still blocks", (t) => {
+  const gate = extraWorkspace(t);
+  gate.set([" ✓ src/a.test.ts (3 tests) 12ms", "AssertionError: expected 200ms, received 400ms"]);
+  assert.equal(gate.run({ session_id: "session-assert-ms" }).status, 2);
+  gate.set([" ✓ src/a.test.ts (3 tests) 9ms", "AssertionError: expected 200ms, received 100ms"]);
+  assert.equal(gate.run({ session_id: "session-assert-ms", stop_hook_active: true }).status, 2);
+});
+
+test("a repeat stop whose only change is a clock value inside an assertion message still blocks", (t) => {
+  const gate = extraWorkspace(t);
+  gate.set(["Start at 10:22:11", "AssertionError: expected 10:00:00, received 10:22:12"]);
+  assert.equal(gate.run({ session_id: "session-assert-clock" }).status, 2);
+  gate.set(["Start at 10:23:45", "AssertionError: expected 10:00:00, received 10:22:13"]);
+  assert.equal(gate.run({ session_id: "session-assert-clock", stop_hook_active: true }).status, 2);
 });
 
 test("the memory file holds a hash of the failure text, not the text", (t) => {
