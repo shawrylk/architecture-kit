@@ -47,7 +47,7 @@ function workspace(t, installed) {
   // Each workspace owns its temp folder, so the gate's memory of a block is shared with no other test.
   const tmp = path.join(base, "tmp");
   mkdirSync(tmp, { recursive: true });
-  const run = (input = {}) =>
+  const run = (input = {}, env = {}) =>
     spawnSync("bash", [HOOK], {
       input: JSON.stringify({ hook_event_name: "Stop", ...input }),
       env: {
@@ -58,6 +58,7 @@ function workspace(t, installed) {
         TMPDIR: tmp,
         TEMP: tmp,
         TMP: tmp,
+        ...env,
       },
       encoding: "utf8",
     });
@@ -212,6 +213,43 @@ test("a repeat stop names the FAIL line when other output comes before it", (t) 
   const message = JSON.parse(repeat.stdout).systemMessage;
   assert.ok(message.includes("ADR-0099 is cited but not defined"), message);
   assert.ok(!message.includes("OK    orders"), message);
+});
+
+/** A stop gate whose only failing step is `QC_STOP_EXTRA`, which prints the file the test rewrites and fails. */
+function extraWorkspace(t) {
+  const ws = workspace(t, { codes: {}, withDoctor: false });
+  const file = path.join(ws.tmpDir, "extra.txt");
+  const env = { QC_STOP_EXTRA: 'cat "$QC_TEST_EXTRA_FILE"; false', QC_TEST_EXTRA_FILE: file };
+  return { run: (input) => ws.run(input, env), set: (lines) => writeFileSync(file, lines.map((line) => `${line}\n`).join("")) };
+}
+
+test("a repeat stop blocks when only an early error line beyond the last 20 changed", (t) => {
+  const gate = extraWorkspace(t);
+  const tail = Array.from({ length: 24 }, (_, i) => `error TS2322: line ${i + 2}`);
+  gate.set(["error TS0001: first A", ...tail]);
+  assert.equal(gate.run({ session_id: "session-long" }).status, 2);
+  gate.set(["error TS0001: first B", ...tail]);
+  const repeat = gate.run({ session_id: "session-long", stop_hook_active: true });
+  assert.equal(repeat.status, 2, repeat.stdout);
+  assert.equal(gate.run({ session_id: "session-long", stop_hook_active: true }).status, 0, "the same text again ends the turn");
+});
+
+test("a repeat stop whose only change is a clock time and a duration ends the turn", (t) => {
+  const gate = extraWorkspace(t);
+  gate.set(["Start at 10:22:11", "FAIL  orders  citations: ADR-0099 is cited but not defined", "Duration 12.34s (transform 3ms)"]);
+  assert.equal(gate.run({ session_id: "session-clock" }).status, 2);
+  gate.set(["Start at 10:23:45.678", "FAIL  orders  citations: ADR-0099 is cited but not defined", "Duration 9ms (transform 41ms)"]);
+  const repeat = gate.run({ session_id: "session-clock", stop_hook_active: true });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  assert.match(JSON.parse(repeat.stdout).systemMessage, /still fails/);
+});
+
+test("a repeat stop that changes a number beside a clock time and a duration still blocks", (t) => {
+  const gate = extraWorkspace(t);
+  gate.set(["Start at 10:22:11", "FAIL  ADR-0099 is cited but not defined", "Duration 12.34s"]);
+  assert.equal(gate.run({ session_id: "session-digit" }).status, 2);
+  gate.set(["Start at 10:23:45", "FAIL  ADR-0100 is cited but not defined", "Duration 1.5s"]);
+  assert.equal(gate.run({ session_id: "session-digit", stop_hook_active: true }).status, 2);
 });
 
 test("the memory file holds a hash of the failure text, not the text", (t) => {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The expensive pass. Refuses to end a turn while the repo is red.
+# The expensive pass. Blocks a red turn. A repeat block with the same failure ends the turn with a note.
 set -uo pipefail
 
 # Read the hook input first: `stop_hook_active` says this stop already follows a refusal, and
@@ -11,8 +11,9 @@ SESSION="${INPUT#*|}"
 [ "$SESSION" = "$INPUT" ] && SESSION=""
 
 # The memory of the last refusal: one file per session under the system temp folder, holding the
-# sha256 of the failure text. `same` exits 10 when this is a repeat stop and the text is the one last
-# refused, and stores the hash otherwise. Every other outcome, an unreadable or unwritable file included, exits 0,
+# sha256 of the full failure log, with each clock time and each duration replaced by a fixed token, so a
+# run that only takes a different time hashes the same. `same` exits 10 when this is a repeat stop and the
+# text is the one last refused, and stores the hash otherwise. Every other outcome, an unreadable or unwritable file included, exits 0,
 # so the gate blocks as it did before it had a memory.
 MEMORY_JS='
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
@@ -26,7 +27,10 @@ try {
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (d) => (raw += d)).on("end", () => {
     try {
-      const text = require("node:crypto").createHash("sha256").update(raw).digest("hex");
+      const steady = raw
+        .replace(/\b\d{1,2}:\d{2}:\d{2}(?:\.\d+)?\b/g, "<time>")
+        .replace(/\b\d+(?:\.\d+)?(?:ms|s)\b/g, "<duration>");
+      const text = require("node:crypto").createHash("sha256").update(steady).digest("hex");
       let last = null;
       try { last = fs.readFileSync(file, "utf8"); } catch {}
       if (active === "1" && last === text) process.exit(10);
@@ -56,13 +60,21 @@ fi
 # A real newline, so the failure text prints as it is, backslashes and all.
 NL=$'\n'
 FAIL=""
+# The same failures with each log whole, not its last 20 lines: what the repeat memory hashes.
+FULL=""
 DRIFT=""
 
 if [ -f "$ROOT/node_modules/.bin/tsc" ]; then
-  npx tsc -b --pretty false >"$LOGS/tsc" 2>&1 || FAIL+="typecheck failed:${NL}$(tail -20 "$LOGS/tsc")${NL}"
+  npx tsc -b --pretty false >"$LOGS/tsc" 2>&1 || {
+    FAIL+="typecheck failed:${NL}$(tail -20 "$LOGS/tsc")${NL}"
+    FULL+="typecheck failed:${NL}$(cat "$LOGS/tsc")${NL}"
+  }
 fi
 if [ -f "$ROOT/node_modules/.bin/eslint" ]; then
-  npx eslint . --max-warnings 0 >"$LOGS/lint" 2>&1 || FAIL+="lint failed:${NL}$(tail -20 "$LOGS/lint")${NL}"
+  npx eslint . --max-warnings 0 >"$LOGS/lint" 2>&1 || {
+    FAIL+="lint failed:${NL}$(tail -20 "$LOGS/lint")${NL}"
+    FULL+="lint failed:${NL}$(cat "$LOGS/lint")${NL}"
+  }
 fi
 # The doctor compares the plugin, the lockfile and the git hooks. Its findings are about the setup,
 # not the code, so they are kept apart from the code's failures.
@@ -83,17 +95,21 @@ if ! node "$QC_CLI" check >"$LOGS/struct" 2>&1; then
 }$(cat "$LOGS/struct")"
   else
     FAIL+="structure failed:${NL}$(cat "$LOGS/struct")${NL}"
+    FULL+="structure failed:${NL}$(cat "$LOGS/struct")${NL}"
   fi
 fi
 
 # Anything else this repository wants in the stop gate.
 if [ -n "${QC_STOP_EXTRA:-}" ]; then
-  eval "$QC_STOP_EXTRA" >"$LOGS/extra" 2>&1 || FAIL+="$QC_STOP_EXTRA failed:${NL}$(tail -20 "$LOGS/extra")${NL}"
+  eval "$QC_STOP_EXTRA" >"$LOGS/extra" 2>&1 || {
+    FAIL+="$QC_STOP_EXTRA failed:${NL}$(tail -20 "$LOGS/extra")${NL}"
+    FULL+="$QC_STOP_EXTRA failed:${NL}$(cat "$LOGS/extra")${NL}"
+  }
 fi
 
 if [ -n "$FAIL" ]; then
   # A block that brings no change ends the turn with a note. The gate adds no cap: a changed failure blocks again.
-  printf '%s' "$FAIL" | node -e "$MEMORY_JS" same "$SESSION" "$ACTIVE" 2>/dev/null
+  printf '%s' "$FULL" | node -e "$MEMORY_JS" same "$SESSION" "$ACTIVE" 2>/dev/null
   if [ $? -eq 10 ]; then
     # Name the failure, not the heading: the first FAIL line, else the first line after the heading.
     FIRST=$(printf '%s' "$FAIL" | grep -m1 '^FAIL')
