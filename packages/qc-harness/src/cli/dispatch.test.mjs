@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { defaults, dispatchDefaults, merge } from "../config.mjs";
-import { dispatchRefusal, dispatchSettings, exploreToolLines, familyOf, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
+import { dispatchNote, dispatchRefusal, dispatchSettings, exploreToolLines, familyOf, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
 
 test("a swarm section with no dispatch key keeps the guard off", () => {
   assert.equal(dispatchSettings({}), null);
@@ -205,4 +205,13 @@ test("exploreToolLines gives one `- name: use (how)` line per tool, in config or
     ],
   );
   assert.deepEqual(exploreToolLines([]), []);
+});
+
+test("a shipped type that names a full model id gets a cache note, never a refusal", () => {
+  const settings = { ...dispatchDefaults };
+  const note = dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5", prompt: "x" }, settings);
+  assert.match(note, /share no prompt cache/);
+  assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "x" }, settings), null);
+  assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", prompt: "x" }, settings), null);
+  assert.equal(dispatchNote({ subagent_type: "general-purpose", model: "claude-sonnet-5", prompt: "x" }, settings), null);
 });

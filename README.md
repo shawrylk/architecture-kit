@@ -187,7 +187,10 @@ A subagent does not count its own tool calls, so a `PreToolUse` hook counts them
 `swarm.toolCallBudget` in `qc.config.json` sets the budget, and the default is 100. At 70% of the
 budget, the agent gets a reminder to commit, push, and plan the hand-off, and again every 10 calls.
 At the budget, only the hand-off runs: Read, read-only and `git add`, `commit`, and `push` commands,
-and a Write to a path under `/handoffs/`. The main session is never counted.
+and a Write to a path under `/handoffs/`. The hand-off note goes in a `handoffs/` folder beside the
+report file, outside every checkout, with lines `Brief:`, `Worktree:`, `Branch:`, and `Head:`, and
+sections `## Done`, `## Left`, and `## Next step`. The report names it on a line
+`HANDOFF: <note path>`. The main session is never counted.
 
 The same hook reads each subagent's context from its transcript: the tokens its latest request sent,
 against its first. It never refuses a call. Once every `every` calls it adds a note. At
@@ -310,6 +313,10 @@ repeating the rest. A family matches a bare alias (`sonnet`) or a full model id
 existing family needs no kit change. `models` constrains only a dispatch that names a `model`; a
 dispatch with no model still runs its type's frontmatter model, which `models` does not touch.
 
+A dispatch of an allowed type that names a full model id, such as `claude-sonnet-5`, gets a note:
+requests to different models share no prompt cache, so it pays the type's shared first-call prefix
+again. The note never refuses the dispatch.
+
 #### Measure a session's tokens
 
 `qc tokens` reads the transcripts Claude Code keeps for one session and prints, per agent type, the
@@ -404,9 +411,9 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Check | Hook | What it refuses |
 |---|---|---|
 | Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha that git reports as unknown in the repository of the named worktree, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha. A git failure or a timeout passes with a note, and the stop records the sha as written, with no branch. A sha with no named worktree that the working directory's repository lacks passes with a note, and the stop records no verdict |
-| Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:` |
-| Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review |
-| Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line. The ledger records the reason. A resume through `SendMessage` passes |
+| Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:`. A report with a `HANDOFF: <path>` line needs neither; it needs a note at that path with `Brief:`, `Worktree:`, `Branch:`, and `Head:` lines and non-empty `## Done`, `## Left`, and `## Next step` sections. The stop records the note's path |
+| Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review. An implementer whose prompt has the `HANDOFF: <path>` line of the newest implementer stop on the branch continues that task and passes; the next implementer after it needs a review, and a review of the later head covers both stops |
+| Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line or continues the newest stop's hand-off. The ledger records the reason or the note. A resume through `SendMessage` passes |
 | Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names. A `gh api` call to a merge endpoint is refused outright. So is a `gh api` call that holds the `mergePullRequest` mutation in an argument or in a readable query file, and a query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A merge that names a repository other than `origin` passes with a note, whether it names it with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
 | Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
 | Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths` |
@@ -421,6 +428,7 @@ The hooks read these markers:
 | `PLAN: <absolute path>` | the first line of a planner report | the plan the plan check reads |
 | `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>` | the first line of a reviewer report | the verdict and the head it judged. A short or upper-case sha resolves to the full one |
 | `RED:` and `GREEN:` | one line each of an implementer report | the failing run, then the passing run |
+| `HANDOFF: <absolute path>` | one line of an implementer report, or of an implementer prompt | the hand-off note: in a report, the note the stop checks and records; in a prompt, the note a fresh implementer continues from |
 | `RED-CHECKED:` | a line of a task reviewer's APPROVED report | the reviewer saw the test fail before the code |
 | `Test: none — <reason>` | a line of a plan task | a task with no test step, such as a docs task. It needs a reason of three words or more, and it does not cover a task that changes a source file |
 | `**Estimate:** <n> tool calls` | a line of a plan task | the size the plan check compares with `maxTaskCalls` |

@@ -162,6 +162,19 @@ export function dispatchRefusal(input, settings) {
   return null;
 }
 
+/** A note for a dispatch that starts a second prompt cache for its type, or null. It never refuses. */
+export function dispatchNote(input, settings) {
+  const type = typeOf(input);
+  const model = typeof input.model === "string" ? input.model.trim() : "";
+  if (model === "" || type === FORK || !settings.allowedTypes.includes(type)) return null;
+  if (MODEL_FAMILIES.includes(model.toLowerCase())) return null;
+  return (
+    `Dispatch note: ${type} sets its own model, and "${model}" is a full model id. Requests to different models share no prompt cache, ` +
+    `so this dispatch pays the type's shared first-call prefix again when the id differs from the definition's model. ` +
+    "A dispatch of this type with no `model` shares one cache with the others."
+  );
+}
+
 /** The reason an implementer over the limit waits, with the two ways a slot frees. */
 export function slotRefusal({ type, claimedAt, expiresAt, slotFile, limit = 1, holders = [] }) {
   const frees = `If no implementer runs, because its dispatch was denied after this hook, delete ${slotFile}.`;

@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { dispatchRefusal, dispatchSettingsAt, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
+import { dispatchNote, dispatchRefusal, dispatchSettingsAt, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
 import { claimSlot, reclaimSlot, releaseSlot, slotDirOf } from "./dispatch-slot.mjs";
 import { judgeTask, recordDispatch } from "./task-gate.mjs";
 
@@ -53,19 +53,23 @@ export function decide(call, tmp = os.tmpdir(), now = Date.now()) {
   // The task gate judges before the slot is claimed, so a refused task holds no slot.
   const task = judgeTask(call, tmp);
   if (task.refusal) return deny(task.refusal);
+  const note = dispatchNote(input, settings);
   const type = typeOf(input);
-  if (!isImplementer(type, settings)) return noted(recordDispatch(task));
+  if (!isImplementer(type, settings)) return noted(recordDispatch(task), note);
   let holder;
   try {
     holder = claimSlot(dir, settings, now, idOf(call.tool_use_id));
   } catch {
     // A busy or read-only temp folder is the hook's own problem, never a reason to refuse a dispatch.
-    return noted(recordDispatch(task));
+    return noted(recordDispatch(task), note);
   }
-  return holder ? deny(slotRefusal({ type, ...holder })) : noted(recordDispatch(task));
+  return holder ? deny(slotRefusal({ type, ...holder })) : noted(recordDispatch(task), note);
 }
 
-const noted = (note) => (note ? context(note) : null);
+const noted = (...notes) => {
+  const text = notes.filter(Boolean).join(" ");
+  return text ? context(text) : null;
+};
 
 async function readStdin() {
   let data = "";
