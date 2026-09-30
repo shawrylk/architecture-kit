@@ -454,6 +454,15 @@ test("a HANDOFF line of an older stop, of another branch, or of another note doe
   assert.equal(continuedStop(readLedger(ws.ledger), "feat/2-y", old), null);
 });
 
+test("the newest stop of another branch with the named note is not a continuation of this branch", (t) => {
+  const ws = workspace(t);
+  const note = path.join(ws.tmp, "handoffs", "t1-1.md");
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  implementerStop(ws, "abc1234", "feat/2-y", note);
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
+  assert.equal(continuedStop(readLedger(ws.ledger), "feat/2-y", note)?.branch, "feat/2-y");
+});
+
 test("after CHANGES_REQUIRED, a continuation of the fix round's hand-off needs no NO-RESUME line", (t) => {
   const ws = workspace(t);
   const reviewed = commitIn(ws.linked, "b.txt");

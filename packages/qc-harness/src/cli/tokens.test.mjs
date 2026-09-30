@@ -218,6 +218,14 @@ test("sessionFiles finds the newest session's main transcript and each subagent 
   assert.equal(sessionFiles({ claudeDir: dir, project: path.join(dir, "elsewhere") }), null);
 });
 
+test("a stray file in the subagents folder is not read as a subagent transcript", (t) => {
+  const { dir, project, projectDir } = fakeSession(t);
+  const subagents = path.join(projectDir, "s1", "subagents");
+  for (const stray of ["agent-notes.txt", "xagent-1.jsonl", "agent-a3.jsonl.bak"]) writeFileSync(path.join(subagents, stray), `${line("z", 4, 0, 9)}\n`);
+  const files = sessionFiles({ claudeDir: dir, project });
+  assert.deepEqual(files.agents.map((file) => path.basename(file)).sort(), ["agent-a1.jsonl", "agent-a2.jsonl"]);
+});
+
 test("sessionFiles reads a named session even when a newer one exists", (t) => {
   const { dir, project } = fakeSession(t);
   const files = sessionFiles({ claudeDir: dir, project, session: "s0" });

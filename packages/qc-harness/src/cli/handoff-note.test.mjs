@@ -45,6 +45,16 @@ test("the HANDOFF line is read from a report or a prompt, with or without quotes
   assert.equal(resolveHandoff("notes/a.md", path.resolve("/base")), path.resolve("/base", "notes/a.md"));
 });
 
+test("a HANDOFF word inside a line is not the HANDOFF line", () => {
+  assert.equal(handoffPathOf("see the HANDOFF: C:/scratch/handoffs/t3-1.md above"), null);
+  assert.equal(handoffPathOf("see the HANDOFF: C:/scratch/handoffs/t3-1.md above\nHANDOFF: C:/scratch/handoffs/real.md"), "C:/scratch/handoffs/real.md");
+});
+
+test("a field name inside a line is not that field, and the field line further down still counts", () => {
+  assert.equal(parseHandoff("the Head: 1a2b3c4 was tbd").head, null);
+  assert.equal(parseHandoff("the Head: deadbeef was tbd\nHead: 1a2b3c4").head, "1a2b3c4");
+});
+
 test("checkHandoffFile reads the note, and a missing file is one problem", (t) => {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-handoff-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
