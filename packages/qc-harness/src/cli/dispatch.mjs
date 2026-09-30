@@ -77,7 +77,7 @@ export function exploreSettings(swarm = {}) {
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${EXPLORE_KEY} in qc.config.json must be an object, got ${JSON.stringify(raw)}`);
   }
-  const { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt } = merge(exploreDefaults, raw);
+  const { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt, longOutput, excerptChars } = merge(exploreDefaults, raw);
   if (!Array.isArray(tools) || !tools.every(isToolEntry)) {
     throw wrongExplore("tools", tools, 'a list of { "name", "use", "how" } strings');
   }
@@ -88,11 +88,13 @@ export function exploreSettings(swarm = {}) {
     ["maxReadLines", maxReadLines],
     ["maxGrepLines", maxGrepLines],
     ["maxOutputChars", maxOutputChars],
+    ["excerptChars", excerptChars],
   ]) {
     if (!Number.isInteger(value) || value < 1) throw wrongExplore(key, value, "a positive whole number");
   }
   if (!isNameList(exempt)) throw wrongExplore("exempt", exempt, "a list of globs");
-  return { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt };
+  if (longOutput !== "excerpt" && longOutput !== "hint") throw wrongExplore("longOutput", longOutput, '"excerpt" or "hint"');
+  return { tools, summarizer, maxReadLines, maxGrepLines, maxOutputChars, exempt, longOutput, excerptChars };
 }
 
 /** @returns the explore settings of the checkout that holds `cwd`, or null when it has no config or no section. */

@@ -1,11 +1,11 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { decide } from "./explore-hint.mjs";
+import { decide, excerptOf, replacedOutput } from "./explore-hint.mjs";
 
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
 
@@ -131,4 +131,72 @@ test("hooks.json runs the hint on PostToolUse Grep and Bash|PowerShell", () => {
     .filter((entry) => entry.hooks.some((hook) => hook.command.includes("explore-hint.mjs")))
     .map((entry) => entry.matcher);
   assert.deepEqual(matchers.sort(), ["Bash|PowerShell", "Grep"]);
+});
+
+const bashResponse = (stdout) => ({ stdout, stderr: "", interrupted: false, isImage: false });
+const longOutput = `${"h".repeat(50)}\n${"m".repeat(1000)}\nnot ok 3 - breaks\n${"m".repeat(2000)}\n${"t".repeat(80)}`;
+const excerptWorkspace = (t, extra = {}) =>
+  workspace(t, { tools: TOOLS, maxOutputChars: 20, summarizer: '<command> | lfm-ask "<question>"', excerptChars: 100, ...extra });
+
+test("a long successful output is saved whole and reaches Claude as its head, its failure lines, and its tail", (t) => {
+  const ws = excerptWorkspace(t);
+  const scratch = path.join(ws.on, "scratch");
+  const output = decide({ ...call(ws.on, "Bash", bashResponse(longOutput)), tool_use_id: "toolu_9", scratchpad_dir: scratch });
+  const replaced = output.hookSpecificOutput.updatedToolOutput;
+  const file = path.join(scratch, "outputs", "toolu_9.txt");
+  assert.equal(readFileSync(file, "utf8"), longOutput);
+  assert.equal(replaced.stderr, "");
+  assert.equal(replaced.isImage, false);
+  assert.ok(replaced.stdout.startsWith("h".repeat(25)));
+  assert.ok(replaced.stdout.endsWith("t".repeat(75)));
+  assert.match(replaced.stdout, /not ok 3 - breaks/);
+  assert.ok(replaced.stdout.includes(file));
+  assert.ok(replaced.stdout.includes(`cat "${file}" | lfm-ask`));
+  assert.ok(replaced.stdout.length < longOutput.length);
+});
+
+test("with no scratchpad folder, the whole output goes under the temp folder of the session", (t) => {
+  const ws = excerptWorkspace(t);
+  const tmp = path.join(ws.on, "tmp");
+  const output = decide({ ...call(ws.on, "Bash", bashResponse(longOutput)), session_id: "s/1", tool_use_id: "toolu_1" }, tmp);
+  assert.ok(output.hookSpecificOutput.updatedToolOutput.stdout.includes(path.join(tmp, "architecture-kit", "outputs", "s_1", "toolu_1.txt")));
+  assert.ok(existsSync(path.join(tmp, "architecture-kit", "outputs", "s_1", "toolu_1.txt")));
+});
+
+test("one long line with no failure is still cut, and a string output stays a string", (t) => {
+  const ws = excerptWorkspace(t);
+  const scratch = path.join(ws.on, "scratch");
+  const oneLine = "x".repeat(5000);
+  const output = decide({ ...call(ws.on, "PowerShell", oneLine), tool_use_id: "toolu_2", scratchpad_dir: scratch });
+  const replaced = output.hookSpecificOutput.updatedToolOutput;
+  assert.equal(typeof replaced, "string");
+  assert.ok(replaced.length < 1000);
+  assert.doesNotMatch(replaced, /name a failure/);
+});
+
+test("longOutput hint, an image, an unknown shape, or an output under twice excerptChars keeps the hint", (t) => {
+  const hint = excerptWorkspace(t, { longOutput: "hint" });
+  assert.match(contextOf(decide(call(hint.on, "Bash", bashResponse(longOutput)))) ?? "", /lfm-ask/);
+  const ws = excerptWorkspace(t);
+  assert.match(contextOf(decide(call(ws.on, "Bash", { ...bashResponse(longOutput), isImage: true }))) ?? "", /lfm-ask/);
+  assert.match(contextOf(decide(call(ws.on, "Bash", { lines: longOutput.split("\n") }))) ?? "", /lfm-ask/);
+  assert.match(contextOf(decide(call(ws.on, "Bash", bashResponse("y".repeat(150))))) ?? "", /lfm-ask/);
+});
+
+test("a wrong longOutput or excerptChars is a named config error, reported as context", (t) => {
+  for (const extra of [{ longOutput: "cut" }, { excerptChars: 0 }]) {
+    const ws = excerptWorkspace(t, extra);
+    assert.match(contextOf(decide(call(ws.on, "Bash", bashResponse(longOutput)))) ?? "", /Explore guard is off: swarm\.explore\./);
+  }
+});
+
+test("excerptOf keeps a quarter for the head, the rest for the tail, and at most 20 failure lines", () => {
+  const text = `${"a".repeat(100)}\n${Array.from({ length: 30 }, (_, index) => `error ${index}`).join("\n")}\n${"z".repeat(400)}`;
+  const { head, signal, tail, omitted } = excerptOf(text, 200);
+  assert.equal(head.length, 50);
+  assert.equal(tail.length, 150);
+  assert.equal(signal.length, 20);
+  assert.equal(omitted, text.length - 200);
+  assert.equal(replacedOutput({ output: "x" }, "y").output, "y");
+  assert.equal(replacedOutput(null, "y"), null);
 });
