@@ -2,8 +2,40 @@
 # The expensive pass. Refuses to end a turn while the repo is red.
 set -uo pipefail
 
-# Read the hook input first: `stop_hook_active` says this stop already follows a refusal.
-ACTIVE=$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s).stop_hook_active===true?"1":"")}catch{}})' 2>/dev/null)
+# Read the hook input first: `stop_hook_active` says this stop already follows a refusal, and
+# `session_id` keys the memory of the last refusal. The session id is cut to letters, digits, dash and
+# underscore, so it is safe in a file name. The output is `<1 or empty>|<session>`.
+INPUT=$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const i=JSON.parse(s);process.stdout.write((i.stop_hook_active===true?"1":"")+"|"+String(i.session_id??"").replace(/[^A-Za-z0-9_-]/g,"").slice(0,128))}catch{}})' 2>/dev/null)
+ACTIVE="${INPUT%%|*}"
+SESSION="${INPUT#*|}"
+[ "$SESSION" = "$INPUT" ] && SESSION=""
+
+# The memory of the last refusal: one file per session under the system temp folder, holding the
+# failure text. `same` exits 10 when this is a repeat stop and the text is the one last refused, and
+# stores the text otherwise. Every other outcome, an unreadable or unwritable file included, exits 0,
+# so the gate blocks as it did before it had a memory.
+MEMORY_JS='
+const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const [mode, session, active] = process.argv.slice(1);
+try {
+  if (!session) process.exit(0);
+  const dir = path.join(os.tmpdir(), "qc-stop-gate");
+  const file = path.join(dir, session + ".last");
+  if (mode === "clear") { fs.rmSync(file, { force: true }); process.exit(0); }
+  let text = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (d) => (text += d)).on("end", () => {
+    try {
+      let last = null;
+      try { last = fs.readFileSync(file, "utf8"); } catch {}
+      if (active === "1" && last === text) process.exit(10);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, text);
+    } catch {}
+    process.exit(0);
+  });
+} catch { process.exit(0); }
+'
 
 ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 [ -f "$ROOT/qc.config.json" ] || exit 0
@@ -20,14 +52,16 @@ if [ -f "$ROOT/node_modules/architecture-harness/src/cli/qc.mjs" ]; then
 else
   QC_CLI="${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"
 fi
+# A real newline, so the failure text prints as it is, backslashes and all.
+NL=$'\n'
 FAIL=""
 DRIFT=""
 
 if [ -f "$ROOT/node_modules/.bin/tsc" ]; then
-  npx tsc -b --pretty false >"$LOGS/tsc" 2>&1 || FAIL+="typecheck failed:\n$(tail -20 "$LOGS/tsc")\n"
+  npx tsc -b --pretty false >"$LOGS/tsc" 2>&1 || FAIL+="typecheck failed:${NL}$(tail -20 "$LOGS/tsc")${NL}"
 fi
 if [ -f "$ROOT/node_modules/.bin/eslint" ]; then
-  npx eslint . --max-warnings 0 >"$LOGS/lint" 2>&1 || FAIL+="lint failed:\n$(tail -20 "$LOGS/lint")\n"
+  npx eslint . --max-warnings 0 >"$LOGS/lint" 2>&1 || FAIL+="lint failed:${NL}$(tail -20 "$LOGS/lint")${NL}"
 fi
 # The doctor compares the plugin, the lockfile and the git hooks. Its findings are about the setup,
 # not the code, so they are kept apart from the code's failures.
@@ -47,21 +81,30 @@ if ! node "$QC_CLI" check >"$LOGS/struct" 2>&1; then
     DRIFT="${DRIFT:+$DRIFT
 }$(cat "$LOGS/struct")"
   else
-    FAIL+="structure failed:\n$(cat "$LOGS/struct")\n"
+    FAIL+="structure failed:${NL}$(cat "$LOGS/struct")${NL}"
   fi
 fi
 
 # Anything else this repository wants in the stop gate.
 if [ -n "${QC_STOP_EXTRA:-}" ]; then
-  eval "$QC_STOP_EXTRA" >"$LOGS/extra" 2>&1 || FAIL+="$QC_STOP_EXTRA failed:\n$(tail -20 "$LOGS/extra")\n"
+  eval "$QC_STOP_EXTRA" >"$LOGS/extra" 2>&1 || FAIL+="$QC_STOP_EXTRA failed:${NL}$(tail -20 "$LOGS/extra")${NL}"
 fi
 
 if [ -n "$FAIL" ]; then
+  # A block that brings no change ends the turn with a note. The gate adds no cap: a changed failure blocks again.
+  printf '%s' "$FAIL" | node -e "$MEMORY_JS" same "$SESSION" "$ACTIVE" 2>/dev/null
+  if [ $? -eq 10 ]; then
+    MESSAGE="The stop gate still fails with the same text as at the last block. Fix it: $(printf '%s' "$FAIL" | head -1)"
+    node -e 'process.stdout.write(JSON.stringify({systemMessage: process.argv[1]}))' "$MESSAGE"
+    exit 0
+  fi
   [ -n "$DRIFT" ] && printf '%s\n' "$DRIFT" >&2
-  printf '%b' "$FAIL" >&2
+  printf '%s' "$FAIL" >&2
   echo "The repo is red. Do not stop here — fix it. docs/enforcement.md." >&2
   exit 2
 fi
+# A green gate forgets the last block of this session.
+node -e "$MEMORY_JS" clear "$SESSION" </dev/null 2>/dev/null
 if [ -n "$DRIFT" ]; then
   # A second refusal for drift alone would loop the session: an agent cannot restart its own plugin.
   if [ -n "$ACTIVE" ]; then
