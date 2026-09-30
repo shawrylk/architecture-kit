@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -202,6 +202,27 @@ test("the project key replaces each character outside letters and digits with a 
 
 test("the project key keeps a digit", () => {
   assert.match(projectKeyOf(path.join(os.tmpdir(), "repo2")), /repo2$/);
+});
+
+test("the project key of a link to a folder is the key of the folder", (t) => {
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-tokens-link-")));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const target = path.join(base, "target");
+  mkdirSync(target);
+  const link = path.join(base, "link");
+  symlinkSync(target, link, "junction");
+  assert.equal(projectKeyOf(link), projectKeyOf(target));
+});
+
+test("the project key of a short 8.3 path is the key of its long path", () => {
+  assert.equal(projectKeyOf(os.tmpdir()), projectKeyOf(realpathSync.native(os.tmpdir())));
+});
+
+test("the project key of a path that does not exist is built from the path as given", (t) => {
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-tokens-none-")));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  const missing = path.join(base, "not-there");
+  assert.equal(projectKeyOf(missing), path.resolve(missing).replace(/[^A-Za-z0-9]/g, "-"));
 });
 
 test("the Claude folder is the environment's, else the home folder's", () => {

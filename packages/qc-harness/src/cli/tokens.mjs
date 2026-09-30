@@ -1,7 +1,7 @@
 // `qc tokens`: what one session read and wrote, per agent type, from its transcripts. It also prices the
 // same requests at the one-hour cache lifetime, at API list prices, to show which lifetime fits.
 
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { agentTypeOf, contextOf, readRequests } from "./transcript-usage.mjs";
@@ -139,8 +139,18 @@ export function summarizeSession({ main = [], agents = [] }, rates = RATES) {
 
 const UNKNOWN = "unknown";
 
-/** The folder name Claude Code gives a project: its path, with each character outside letters and digits a dash. */
-export const projectKeyOf = (dir) => path.resolve(dir).replace(/[^A-Za-z0-9]/g, "-");
+/** An existing path in the form Claude Code keys it by: links followed, an 8.3 short name made long. */
+function realPathOf(dir) {
+  const resolved = path.resolve(dir);
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+/** The folder name Claude Code gives a project: its real path, with each character outside letters and digits a dash. */
+export const projectKeyOf = (dir) => realPathOf(dir).replace(/[^A-Za-z0-9]/g, "-");
 
 export const claudeDirOf = (env = process.env) => env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 

@@ -44,13 +44,24 @@ function workspace(t, installed) {
     stubHarness(cli, "installed", log, installed.codes, installed.withDoctor, installed.outputs);
   }
   const ran = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+  // Each workspace owns its temp folder, so the gate's memory of a block is shared with no other test.
+  const tmp = path.join(base, "tmp");
+  mkdirSync(tmp, { recursive: true });
   const run = (input = {}) =>
     spawnSync("bash", [HOOK], {
       input: JSON.stringify({ hook_event_name: "Stop", ...input }),
-      env: { ...process.env, CLAUDE_PROJECT_DIR: repo, CLAUDE_PLUGIN_ROOT: pluginRoot, QC_STOP_EXTRA: "" },
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: repo,
+        CLAUDE_PLUGIN_ROOT: pluginRoot,
+        QC_STOP_EXTRA: "",
+        TMPDIR: tmp,
+        TEMP: tmp,
+        TMP: tmp,
+      },
       encoding: "utf8",
     });
-  return { ran, run };
+  return { ran, run, tmpDir: tmp, installedCli: installed ? path.join(repo, "node_modules", "architecture-harness", "src", "cli") : null };
 }
 
 test("an installed harness newer than the bundled one judges the repository, and the stop passes", (t) => {
@@ -110,4 +121,92 @@ test("hook drift beside a real gate failure still refuses a stop after a refused
   const result = ws.run({ stop_hook_active: true });
   assert.equal(result.status, 2);
   assert.match(result.stderr, /citations: ADR-0099/);
+});
+
+test("a failure text with backslashes reaches stderr byte for byte", (t) => {
+  const text = String.raw`FAIL  C:\Users\x\AppData\Local\Temp\tmp.x\new  a \t b \U c \n d`;
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: text } });
+  const result = ws.run();
+  assert.equal(result.status, 2);
+  assert.ok(result.stderr.includes(text), result.stderr);
+  assert.doesNotMatch(result.stderr, /printf/);
+});
+
+const SESSION_FAIL = "FAIL  orders  citations: ADR-0099 is cited but not defined";
+
+test("a repeat stop with the same failure ends with a system message that names it", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  const first = ws.run({ session_id: "session-same" });
+  assert.equal(first.status, 2);
+  const repeat = ws.run({ session_id: "session-same", stop_hook_active: true });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  const message = JSON.parse(repeat.stdout).systemMessage;
+  assert.match(message, /still fails/);
+  assert.ok(message.includes("ADR-0099 is cited but not defined"), message);
+});
+
+test("a repeat stop with a changed failure blocks again", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  assert.equal(ws.run({ session_id: "session-changed" }).status, 2);
+  writeFileSync(
+    path.join(ws.installedCli, "qc.mjs"),
+    `console.error(${JSON.stringify(SESSION_FAIL.replace("0099", "0100"))}); process.exit(1);`,
+  );
+  const repeat = ws.run({ session_id: "session-changed", stop_hook_active: true });
+  assert.equal(repeat.status, 2);
+  assert.match(repeat.stderr, /ADR-0100/);
+  const third = ws.run({ session_id: "session-changed", stop_hook_active: true });
+  assert.equal(third.status, 0, third.stderr);
+});
+
+test("a repeat stop with no session id blocks", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  assert.equal(ws.run().status, 2);
+  assert.equal(ws.run({ stop_hook_active: true }).status, 2);
+});
+
+test("a first stop with stop_hook_active set and no earlier block still blocks", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  assert.equal(ws.run({ session_id: "session-fresh", stop_hook_active: true }).status, 2);
+});
+
+test("a green gate forgets the last block, so the same failure later blocks again", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  assert.equal(ws.run({ session_id: "session-green" }).status, 2);
+  const qc = readFileSync(path.join(ws.installedCli, "qc.mjs"), "utf8");
+  writeFileSync(path.join(ws.installedCli, "qc.mjs"), "process.exit(0);");
+  assert.equal(ws.run({ session_id: "session-green" }).status, 0);
+  writeFileSync(path.join(ws.installedCli, "qc.mjs"), qc);
+  assert.equal(ws.run({ session_id: "session-green", stop_hook_active: true }).status, 2);
+});
+
+test("a session id with path characters cannot write outside the memory folder", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  assert.equal(ws.run({ session_id: "../../escape" }).status, 2);
+  assert.equal(existsSync(path.join(ws.tmpDir, "..", "escape.last")), false);
+});
+
+test("the same failure at a stop that follows no refusal blocks, because only a repeat block ends", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  assert.equal(ws.run({ session_id: "session-plain" }).status, 2);
+  assert.equal(ws.run({ session_id: "session-plain" }).status, 2);
+});
+
+test("a repeat stop names the first line of a failure that has no FAIL line", (t) => {
+  const text = ["error TS2322: Type 'string' is not assignable to type 'number'.", "src/a.ts(1,1): more"].join("\n");
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: text } });
+  assert.equal(ws.run({ session_id: "session-bare" }).status, 2);
+  const repeat = ws.run({ session_id: "session-bare", stop_hook_active: true });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  const message = JSON.parse(repeat.stdout).systemMessage;
+  assert.ok(message.includes("error TS2322"), message);
+  assert.ok(!message.includes("structure failed:"), message);
+});
+
+test("the memory file holds a hash of the failure text, not the text", (t) => {
+  const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: SESSION_FAIL } });
+  assert.equal(ws.run({ session_id: "session-hash" }).status, 2);
+  const stored = readFileSync(path.join(ws.tmpDir, "qc-stop-gate", "session-hash.last"), "utf8");
+  assert.match(stored.trim(), /^[0-9a-f]{64}$/);
+  assert.ok(!stored.includes("ADR-0099"));
 });
