@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { needsLoader, parseInput, runRun } from "./run.mjs";
 import { listing } from "./run-dispatch.mjs";
 
@@ -68,4 +70,26 @@ test("an unknown command fails and does not run anything", async () => {
   await writeFile(path.join(dir, registry), 'export const commands = { "tasks.kanban": { run: () => 1 } };');
   const code = await runRun({ root: dir, cli: { registry, loader: [] } }, ["tasks.nope"]);
   assert.equal(code, 1);
+});
+
+const SHIM = fileURLToPath(new URL("./run-dispatch.mjs", import.meta.url));
+
+/** Spawns the shim as run.mjs does, against a one-command javascript registry. */
+async function spawnShim(...args) {
+  const dir = await mkdtemp(path.join(tmpdir(), "qc-run-"));
+  const registry = path.join(dir, "commands.generated.mjs");
+  await writeFile(registry, 'export const commands = { "tasks.kanban": { run: (input) => ({ seen: input }) } };');
+  return spawnSync(process.execPath, [SHIM, registry, ...args], { encoding: "utf8" });
+}
+
+test("the spawned shim fails an unknown command and names it", async () => {
+  const child = await spawnShim("tasks.nope");
+  assert.equal(child.status, 1);
+  assert.match(child.stderr, /no command `tasks\.nope`/);
+});
+
+test("the spawned shim runs a declared command and prints its result", async () => {
+  const child = await spawnShim("tasks.kanban", "--project", "P3");
+  assert.equal(child.status, 0);
+  assert.deepEqual(JSON.parse(child.stdout), { seen: { project: "P3" } });
 });

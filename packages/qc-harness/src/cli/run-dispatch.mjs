@@ -2,7 +2,7 @@
 // run.mjs for exactly that reason: the parent process must not need the loader to decide anything.
 
 import process from "node:process";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseInput } from "./run.mjs";
 
 /** Every command the registry publishes, sorted, one per line — what `qc run` with no name prints. */
@@ -41,7 +41,7 @@ export async function dispatch(registry, name, argv) {
 }
 
 // Spawned by run.mjs under the repository's loader: argv is [registry, name?, ...rest].
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
   const [registry, name, ...rest] = process.argv.slice(2);
   try {
     process.exit(await dispatch(registry, name, rest));
