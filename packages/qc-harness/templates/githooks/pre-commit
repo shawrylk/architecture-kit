@@ -11,7 +11,7 @@ npx qc work-order-check || exit 1
 # pass the command-line limit of npx.cmd on Windows (8191 characters).
 STAGED=$(mktemp)
 trap 'rm -f "$STAGED"' EXIT
-git diff --cached --name-only -z --diff-filter=ACM | grep -zE '.(ts|tsx|mjs)$' > "$STAGED" || true
+git diff --cached --name-only -z --diff-filter=ACM | grep -zE '\.(ts|tsx|mjs)$' > "$STAGED" || true
 [ -s "$STAGED" ] || exit 0
 # `--no-warn-ignored`: a staged file the config ignores is a decision, not a finding, and
 # without it a generated file turns "I ignored that" into a warning that fails the gate.
