@@ -7,12 +7,14 @@ set -euo pipefail
 # Runs before the extension filter below: a work order's own branch is checked regardless of
 # what kind of file it touches, so a commit of .tf/.yml/.md files is covered too.
 npx qc work-order-check || exit 1
-STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.(ts|tsx|mjs)$' || true)
-[ -z "$STAGED" ] && exit 0
+# The staged list is NUL-separated in a file, never in an argument: a large merge commit would
+# pass the command-line limit of npx.cmd on Windows (8191 characters).
+STAGED=$(mktemp)
+trap 'rm -f "$STAGED"' EXIT
+git diff --cached --name-only -z --diff-filter=ACM | grep -zE '\.(ts|tsx|mjs)$' > "$STAGED" || true
+[ -s "$STAGED" ] || exit 0
 # `--no-warn-ignored`: a staged file the config ignores is a decision, not a finding, and
 # without it a generated file turns "I ignored that" into a warning that fails the gate.
-npx eslint $STAGED --max-warnings 0 --no-warn-ignored
+xargs -0 -n 20 npx eslint --max-warnings 0 --no-warn-ignored < "$STAGED"
 npx tsc -b --pretty false
-for file in $STAGED; do
-  npx qc check "$file"
-done
+npx qc check --files-from - < "$STAGED"

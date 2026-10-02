@@ -4,10 +4,12 @@
 import process from "node:process";
 import { load } from "../config.mjs";
 import { runCheck } from "./check.mjs";
+import { checkFiles } from "./check-input.mjs";
 
 const USAGE = `qc — architecture gates
 
-  qc check [file...]       every structural gate; files given take the fast path a hook or a commit takes
+  qc check [file...] [--files-from <path|->]
+                           every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
   qc init                  scaffold the docs, config, hooks and workflow into this repository
   qc feature <name>        scaffold a feature in the configured anatomy
   qc run [name]            drive one feature command headless; no name lists them
@@ -45,7 +47,10 @@ async function main() {
 
   switch (command) {
     case "check": {
-      const { problems, lines } = await runCheck(config, rest);
+      const { files, listed } = await checkFiles(rest);
+      // An empty list means nothing staged to check, not the full check.
+      if (listed && files.length === 0) return;
+      const { problems, lines } = await runCheck(config, files);
       if (problems.length > 0) {
         for (const problem of problems) {
           console.error(`FAIL  ${problem.feature ?? problem.path}  ${problem.rule}: ${problem.detail}`);
