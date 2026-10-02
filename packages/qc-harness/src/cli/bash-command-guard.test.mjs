@@ -88,6 +88,7 @@ test("a hand run of a hook script is denied, and the reason names the lease", (t
     "node src/cli/issue-gate.mjs",
     "node src/cli/plan-stop.mjs",
     "node src/cli/controller-guard.mjs",
+    "node src/cli/worktree-gate.mjs",
   ]) {
     assert.match(reasonOf(decide(bash(ws.adopted, command))) ?? "", /writes a lease/, command);
   }

@@ -48,7 +48,7 @@ function ignoreFolder(common, main, dir, target) {
 }
 
 /** @returns {{path: string, branch?: string}[]} */
-function worktrees(main) {
+export function worktrees(main) {
   return git(main, "worktree", "list", "--porcelain")
     .out.split(/\n\s*\n/)
     .map((block) => {

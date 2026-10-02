@@ -25,6 +25,7 @@ test("hooks.json runs each workflow check on its events", () => {
     assert.deepEqual(matchersOf("SubagentStop", script), [undefined], script);
   }
   assert.deepEqual(matchersOf("Stop", "issue-gate.mjs"), [undefined]);
+  assert.deepEqual(matchersOf("Stop", "worktree-gate.mjs"), [undefined]);
 });
 
 test("every node script hooks.json names exists", () => {
