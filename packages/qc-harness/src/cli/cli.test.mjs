@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { load, requiredHooks } from "../config.mjs";
 import { hookDrift } from "./git-hooks.mjs";
 import { runInit } from "./init.mjs";
@@ -232,6 +233,29 @@ test("check with several files reports every problem from each, and judges only 
   assert.deepEqual(englishPaths(problems), [`${orders}/junk/a.ts`]);
   const full = await runCheck(load(dir));
   assert.ok(englishPaths(full.problems).includes("docs/untouched.md"), "no file given must stay the full check");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+// A Windows command line holds about 8,000 characters through `npx.cmd`, so a hook sends the list on stdin.
+test("check --files-from - reads 300 long paths from stdin and reports a failure in each of two files", async () => {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  const orders = "backend/src/features/orders";
+  const invoices = "backend/src/features/invoices";
+  write(dir, {
+    "qc.config.json": ENGLISH_ON,
+    [`${orders}/index.ts`]: "export {};\n",
+    [`${orders}/junk/a.ts`]: "// 注文の補助\nexport {};\n",
+    [`${invoices}/index.ts`]: "export {};\n",
+    [`${invoices}/junk/b.ts`]: "// 請求の補助\nexport {};\n",
+  });
+  const filler = Array.from({ length: 300 }, (_, i) => `docs/${"long-segment-".repeat(6)}${i}.md`);
+  const input = [...filler, `${orders}/junk/a.ts`, `${invoices}/junk/b.ts`].join("\0") + "\0";
+  const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
+  const run = spawnSync(process.execPath, [qc, "check", "--files-from", "-"], { cwd: dir, input, encoding: "utf8" });
+  assert.equal(run.status, 1, run.stderr);
+  assert.match(run.stderr, /orders\/junk\/a\.ts/);
+  assert.match(run.stderr, /invoices\/junk\/b\.ts/);
   rmSync(dir, { recursive: true, force: true });
 });
 

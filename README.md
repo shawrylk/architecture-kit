@@ -85,11 +85,16 @@ or slice is a review finding, so fill each file or delete the ones the feature d
 
 ```bash
 npx qc check                 # every structural gate
-npx qc check <file>...       # the fast per-file path a post-edit hook or a pre-commit hook takes
+npx qc check <file>...       # the fast per-file path a post-edit hook takes
+npx qc check --files-from -  # the same path, with NUL-separated files on stdin; no length limit
 ```
 
 With files given, the check reads only the features that hold them, once each, and reports every
 problem before it exits 1. It also runs the per-file English rules on exactly those files.
+
+The `pre-commit` hook sends the staged files to `qc check --files-from -` on stdin, so a commit of any size
+stays under the command-line limit of `npx.cmd` on Windows (8191 characters). `--files-from <path>` reads a file.
+An empty list checks nothing.
 
 Every gate reads one file list: `git ls-files --cached --others --exclude-standard`, minus
 `ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
