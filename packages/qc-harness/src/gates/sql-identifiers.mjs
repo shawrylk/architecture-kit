@@ -128,11 +128,19 @@ const EXEMPT = /\/\/\s*tenant-predicate:\s*exempt\s*—\s*(.+)/;
 // A migration file is `<sequence>_<slug>.sql`; the slug names the feature that owns it.
 const MIGRATION_FILE = /^\d+_(.+)\.sql$/;
 
+// One pass, left to right: a template literal, a quoted string with escapes, or a comment. A comment
+// is matched to be skipped, so an apostrophe in one opens no string.
+const LITERAL = /`([^`]*)`|'((?:[^'\\\n]|\\.)*)'|"((?:[^"\\\n]|\\.)*)"|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+const TEMPLATE_STATEMENT = /\b(select|insert into|update|delete from)\b/i;
+// A quoted string needs the whole shape: a UI label such as "select a folder" opens with a keyword too.
+const QUOTED_STATEMENT = /\bselect\b[^]*\bfrom\b|\binsert\s+into\b|\bupdate\b[^]*\bset\b|\bdelete\s+from\b/i;
+
 function statements(source) {
   const found = [];
-  for (const match of source.matchAll(/`([^`]*)`/g)) {
-    const body = match[1];
-    if (!/\b(select|insert into|update|delete from)\b/i.test(body)) continue;
+  for (const match of source.matchAll(LITERAL)) {
+    const body = match[1] ?? match[2] ?? match[3];
+    if (body === undefined) continue;
+    if (!(match[1] === undefined ? QUOTED_STATEMENT : TEMPLATE_STATEMENT).test(body)) continue;
     const preamble = source.slice(Math.max(0, match.index - 400), match.index);
     const lastLines = preamble.split("\n").slice(-4).join("\n");
     found.push({

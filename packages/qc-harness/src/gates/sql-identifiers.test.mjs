@@ -6,6 +6,7 @@ import {
   declaredColumns,
   migrationNames,
   schemaTables,
+  sqlStatements,
   tableOwners,
   usedIdentifiers,
 } from "./sql-identifiers.mjs";
@@ -187,6 +188,44 @@ test("a feature reading another feature's table is named, with its owner", () =>
 test("a migration filename with an underscore names a hyphenated feature", () => {
   const owners = tableOwners([{ file: "0001_identity_tenancy.sql", sql: ddl }]);
   assert.equal(owners.get("projects"), "identity-tenancy");
+});
+
+const crossFeature = (source) => {
+  const owners = tableOwners([{ file: "0002_projects.sql", sql: ddl }]);
+  return checkSqlIdentifiers(declaredColumns([ddl]), [{ path: "r.ts", source, feature: "pins" }], owners);
+};
+
+test("a double-quoted statement reading another feature's table is named", () => {
+  const problems = crossFeature('const q = "select id from projects where tenant_id = $1";');
+  assert.deepEqual(problems.map((problem) => problem.rule), ["cross-feature-table"]);
+});
+
+test("a single-quoted statement reading another feature's table is named", () => {
+  const problems = crossFeature("const q = 'select id from projects where tenant_id = $1';");
+  assert.deepEqual(problems.map((problem) => problem.rule), ["cross-feature-table"]);
+});
+
+test("an escaped quote inside a quoted statement does not end it", () => {
+  const problems = crossFeature(`const q = "select id from projects where code = \\"x\\" and tenant_id = $1";`);
+  assert.deepEqual(problems.map((problem) => problem.rule), ["cross-feature-table"]);
+});
+
+test("a UI label that starts with a SQL keyword is not a statement", () => {
+  const source = `const label = "select a folder"; const hint = 'update your profile'; const cta = "delete the folder";`;
+  assert.deepEqual(sqlStatements(source), []);
+  assert.deepEqual(crossFeature(source), []);
+});
+
+test("an apostrophe in a comment opens no string", () => {
+  const source = `// don't read it
+const q = "select id from projects where tenant_id = $1";`;
+  assert.equal(sqlStatements(source).length, 1);
+});
+
+test("the exemption comment above a quoted statement is kept", () => {
+  const source = `// tenant-predicate: exempt — a share is found by its secret
+const q = "select id from projects where code = $1";`;
+  assert.equal(sqlStatements(source)[0].exemption, "a share is found by its secret");
 });
 
 test("a recursive common table expression binds its own name", () => {
