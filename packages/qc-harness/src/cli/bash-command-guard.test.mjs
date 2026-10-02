@@ -88,6 +88,7 @@ test("a hand run of a hook script is denied, and the reason names the lease", (t
     "node src/cli/issue-gate.mjs",
     "node src/cli/plan-stop.mjs",
     "node src/cli/controller-guard.mjs",
+    "node src/cli/worktree-gate.mjs",
   ]) {
     assert.match(reasonOf(decide(bash(ws.adopted, command))) ?? "", /writes a lease/, command);
   }
@@ -167,4 +168,69 @@ test("a PowerShell command is held to the same rules as a Bash one", (t) => {
 test("the deny names the tool it guarded", (t) => {
   const ws = workspace(t);
   assert.match(reasonOf(decide(powershell(ws.adopted, "git push --no-verify"))), /^PowerShell command guard:/);
+});
+
+const outsideFolder = (output) => /npx qc worktree add <name> <branch>/.test(reasonOf(output) ?? "");
+
+test("git worktree add to a path outside .worktree/ of the main checkout is refused, and names qc worktree add", (t) => {
+  const ws = workspace(t);
+  for (const command of [
+    "git worktree add ../x",
+    "git worktree add -b b ../x origin/main",
+    "git worktree add -B b --lock --reason why ../x",
+    "git -C .. worktree add x",
+    "cd .. && git worktree add x",
+    "git worktree add .worktree/a/b",
+    "git worktree add x",
+    `bash -c 'git worktree add ../x'`,
+    "git worktree add -- ../x",
+  ]) {
+    assert.ok(outsideFolder(decide(bash(ws.adopted, command))), command);
+  }
+});
+
+test("git worktree add under .worktree/, qc worktree add, and other worktree commands pass", (t) => {
+  const ws = workspace(t);
+  for (const command of [
+    "git worktree add .worktree/x",
+    "git worktree add -b feat/1-x .worktree/x origin/main",
+    "git worktree add --detach -f .worktree/x HEAD",
+    "cd .worktree && git worktree add x",
+    "cd .. && git worktree add adopted/.worktree/x",
+    `git -C .. worktree add "${path.join(ws.adopted, ".worktree", "x")}"`,
+    "npx qc worktree add x feat/1-x",
+    "git worktree list",
+    "git worktree remove ../x",
+  ]) {
+    assert.equal(decide(bash(ws.adopted, command)), null, command);
+  }
+});
+
+test("a PowerShell git worktree add is held to the same folder", (t) => {
+  const ws = workspace(t);
+  for (const command of [String.raw`git worktree add ..\x`, String.raw`git worktree add -B b ..\x origin/main`, "Set-Location ..; git worktree add x"]) {
+    assert.ok(outsideFolder(decide(powershell(ws.adopted, command))), command);
+  }
+  for (const command of [String.raw`git worktree add .worktree\x`, String.raw`Set-Location .worktree; git worktree add x`]) {
+    assert.equal(decide(powershell(ws.adopted, command)), null, command);
+  }
+});
+
+test("worktree.dir moves the folder, and worktree.enforce false turns the rule off", (t) => {
+  const ws = workspace(t);
+  writeFileSync(path.join(ws.adopted, "qc.config.json"), JSON.stringify({ worktree: { dir: "trees" } }));
+  assert.ok(outsideFolder(decide(bash(ws.adopted, "git worktree add .worktree/x"))));
+  assert.equal(decide(bash(ws.adopted, "git worktree add trees/x")), null);
+  writeFileSync(path.join(ws.adopted, "qc.config.json"), JSON.stringify({ worktree: { enforce: false } }));
+  assert.equal(decide(bash(ws.adopted, "git worktree add ../x")), null);
+});
+
+test("inside a linked worktree, the folder is the main checkout's", (t) => {
+  const ws = workspace(t);
+  execFileSync("git", ["-c", "user.name=qc", "-c", "user.email=qc@example.com", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: ws.adopted, stdio: "pipe" });
+  const linked = path.join(ws.adopted, ".worktree", "wt");
+  execFileSync("git", ["worktree", "add", "-q", linked], { cwd: ws.adopted, stdio: "pipe" });
+  writeFileSync(path.join(linked, "qc.config.json"), "{}");
+  assert.equal(decide(bash(linked, "git worktree add ../x")), null);
+  assert.ok(outsideFolder(decide(bash(linked, "git worktree add x"))), "a worktree nested in a worktree is refused");
 });

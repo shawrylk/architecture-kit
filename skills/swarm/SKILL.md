@@ -16,6 +16,9 @@ description: The protocol for several agents working one repository at once — 
 - The first commit of a feature work order is its `index.ts` signature — types, query keys, fan-out
   edges, method names, no bodies — so downstream units are not blocked.
 - Changing a published `index` signature is a request to the orchestrator.
+- Each unit works in its own worktree under `.worktree/` in the main checkout. Make it with
+  `npx qc worktree add <name> <branch>`. After its pull request merges, run
+  `npx qc worktree remove <name>` from the main checkout, which also deletes the branch. QC-015.
 - Exit criteria are machine-checkable: typecheck, lint, `qc check`, the feature's tests, contract
   lint, claimed ids resolved. `docs/enforcement.md` lists the commands.
 

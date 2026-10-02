@@ -72,6 +72,16 @@ recorded.
 | The controller edits only its own paths | `controller-guard.mjs` |
 | A plan task names its files, a test step, and a commit step, within the budget | `qc plan-check`, and `plan-stop.mjs` |
 
+## Worktrees — QC-015
+
+These hooks are on wherever `qc.config.json` is. `"worktree": { "enforce": false }` turns them off.
+
+| Rule | Check |
+|---|---|
+| A worktree is one folder directly under `worktree.dir` of the main checkout | `bash-command-guard.mjs`, on `PreToolUse` of `Bash` and `PowerShell` |
+| A pull request this session merged leaves no worktree, local branch, or remote branch on its head | `worktree-gate.mjs`, on `Stop`, from the merge record of `merge-guard.mjs` |
+| A squash-merged branch is deleted | `qc worktree remove`, on a merged pull request whose head is the branch at its tip |
+
 ## File length
 
 A block is one file, and the gate is `filelength` in `quality-thresholds.json`. Blanks and comments

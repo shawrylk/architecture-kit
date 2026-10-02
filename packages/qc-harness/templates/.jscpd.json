@@ -5,6 +5,7 @@
   "reporters": ["console"],
   "ignore": [
     "**/node_modules/**",
+    "**/.worktree/**",
     "**/dist/**",
     "**/*.test.*",
     "**/*.generated.*",

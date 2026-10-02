@@ -23,7 +23,7 @@ const LOCATION_NAMES = new Set(["cd", "chdir", "sl", "set-location", "pushd", "p
 const PATH_PARAMETERS = new Set(["-path", "-literalpath"]);
 
 /** @returns the directory a location change moves to, or null when the segment is none. */
-function locationTarget(segment) {
+export function locationTarget(segment) {
   const [program, ...args] = commandWords(segment);
   if (!LOCATION_NAMES.has(program?.toLowerCase())) return null;
   for (let i = 0; i < args.length; i++) {

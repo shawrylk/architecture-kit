@@ -256,7 +256,8 @@ export const defaults = {
 
   // `qc worktree`. `install` runs in each new worktree. `base` is the default `--from`: the ref a
   // branch starts at, and the ref `remove` checks a merge against.
-  worktree: { install: "pnpm install --frozen-lockfile", base: "origin/main" },
+  // `dir` holds each worktree, inside the main checkout. `enforce: false` turns off the QC-015 hooks.
+  worktree: { install: "pnpm install --frozen-lockfile", base: "origin/main", dir: ".worktree", enforce: true },
 
   // Names that must be registered scoped, never singleton.
   scopedSuffixes: ["Repository", "Saga", "UnitOfWork", "UnitOfWorkFactory"],
@@ -600,6 +601,12 @@ export function readerEntries(registry) {
   return Object.entries(registry)
     .filter(([, entry]) => entry.names?.length > 0 || entry.readers?.length > 0)
     .map(([key, entry]) => ({ key, names: entry.names ?? [], readers: entry.readers ?? [] }));
+}
+
+/** `ignores` and the worktree folder, so a repository's own list of ignores still skips each worktree. */
+export function ignoresOf(config) {
+  const dir = config.worktree?.dir;
+  return dir ? [...config.ignores, `${dir.replace(/\/+$/, "")}/**`] : config.ignores;
 }
 
 export function enabled(map, id) {

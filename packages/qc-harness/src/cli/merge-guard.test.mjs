@@ -58,13 +58,25 @@ const MERGED = JSON.stringify({
   ],
 });
 
-test("with swarm.dispatch off, a merge is neither judged nor recorded", (t) => {
+test("with swarm.dispatch off, a merge is not judged, and the merge is recorded for the worktree check", (t) => {
   const ws = workspace(t);
   const { gh, calls } = fakeGh(MERGED);
   assert.equal(decide(shell(ws.off, "gh pr merge 60"), { gh }), null);
-  assert.equal(decide(shell(ws.off, "gh pr merge 60", "PostToolUse"), { gh }), null);
   assert.equal(decide(shell(ws.off, "gh api -X PUT repos/o/r/pulls/60/merge"), { gh }), null);
+  assert.equal(calls.length, 0, "a PreToolUse call reads nothing");
+  assert.equal(decide(shell(ws.off, "gh pr merge 60", "PostToolUse"), { gh }), null);
+  const records = readLedger(ws.ledgerOf(ws.off));
+  assert.deepEqual(records.map(({ type, pr, repo, branch }) => ({ type, pr, repo, branch })), [{ type: "merge", pr: 60, repo: "o/r", branch: "feat/62-x" }]);
+});
+
+test("with swarm.dispatch off and worktree.enforce false, a merge is neither judged nor recorded", (t) => {
+  const ws = workspace(t);
+  writeFileSync(path.join(ws.off, "qc.config.json"), JSON.stringify({ swarm: {}, worktree: { enforce: false } }));
+  const { gh, calls } = fakeGh(MERGED);
+  assert.equal(decide(shell(ws.off, "gh pr merge 60"), { gh }), null);
+  assert.equal(decide(shell(ws.off, "gh pr merge 60", "PostToolUse"), { gh }), null);
   assert.equal(calls.length, 0);
+  assert.equal(existsSync(ws.ledgerOf(ws.off)), false);
 });
 
 test("a merge without --match-head-commit is refused", (t) => {
@@ -325,4 +337,11 @@ test("a gh api call to a repos/ path whose body file quotes the mutation is allo
   writeFileSync(path.join(ws.on, "review.md"), "The bypass is the mergePullRequest mutation.");
   assert.equal(decide(shell(ws.on, "gh api repos/o/r/issues/64/comments -F body=@review.md")), null);
   assert.match(denied(decide(shell(ws.on, "gh api graphql -F query=@review.md"))) ?? "", /gh pr merge <n> --match-head-commit <sha>/);
+});
+
+test("with swarm.dispatch off, a merge whose command failed after GitHub merged is still recorded", (t) => {
+  const ws = workspace(t);
+  // `gh pr merge --delete-branch` exits non-zero when a worktree holds the branch, after the merge itself.
+  assert.equal(decide(shell(ws.off, "gh pr merge 60 --squash --delete-branch", "PostToolUseFailure"), { gh: fakeGh(MERGED).gh }), null);
+  assert.deepEqual(readLedger(ws.ledgerOf(ws.off)).map(({ type, pr }) => ({ type, pr })), [{ type: "merge", pr: 60 }]);
 });

@@ -68,6 +68,17 @@ async function addScripts(config) {
   return [{ to: file, status: "written" }];
 }
 
+/** Adds the worktree folder to `.gitignore` unless a line already names it, so no worktree shows in `git status`. QC-015. */
+async function ignoreWorktrees(config) {
+  const file = path.join(config.root, ".gitignore");
+  const dir = config.worktree.dir.replace(/\/+$/, "");
+  const text = existsSync(file) ? await readFile(file, "utf8") : "";
+  const spellings = new Set([dir, `${dir}/`, `/${dir}`, `/${dir}/`]);
+  if (text.split(/\r?\n/).some((line) => spellings.has(line.trim()))) return { to: file, status: "kept" };
+  await writeFile(file, `${text}${text === "" || text.endsWith("\n") ? "" : "\n"}${dir}/\n`);
+  return { to: file, status: "written" };
+}
+
 export async function runInit(config, args = []) {
   const force = args.includes("--force");
   const results = [];
@@ -83,6 +94,7 @@ export async function runInit(config, args = []) {
   // The docs and the CI workflow both tell a reader to run these, so `init` puts them
   // where a reader will look rather than leaving the instruction dangling.
   results.push(...(await addScripts(config)));
+  results.push(await ignoreWorktrees(config));
 
   for (const { to, status } of results) {
     console.log(`${status.padEnd(11)} ${path.relative(config.root, to)}`);

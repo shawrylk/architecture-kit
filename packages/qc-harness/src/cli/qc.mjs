@@ -27,9 +27,9 @@ const USAGE = `qc — architecture gates
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
   qc worktree add <name> <branch> [--from <ref>]
-                           fetch, add ../<name> beside the main checkout, install, print the path
+                           fetch, add .worktree/<name> in the main checkout, install, print the path
   qc worktree remove <name>
-                           refuse a dirty tree; delete it, then its branch once merged or pushed
+                           refuse a dirty tree; delete it, then its branch once merged, pushed, or a merged PR head
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
   qc doctor                the hooks and the lockfile must run the same harness
   qc config                print the resolved configuration
