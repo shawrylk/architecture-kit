@@ -1,18 +1,22 @@
 #!/usr/bin/env node
-// The PreToolUse trigger that refuses a Bash or PowerShell command which skips the git hooks, or
-// which runs a hook script by hand. It reads the command through the shell parsers and never runs it.
+// The PreToolUse trigger that refuses a Bash or PowerShell command which skips the git hooks, runs a hook script
+// by hand, or adds a worktree outside the worktree folder (QC-015). It reads the command and never runs it.
 
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_FILE } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
-import { powershellSegments } from "./powershell-command.mjs";
-import { commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
+import { locationTarget, powershellSegments } from "./powershell-command.mjs";
+import { cdTarget, commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
+import { nativePath } from "./workflow-place.mjs";
+import { keyOf } from "./worktree.mjs";
+import { worktreeRuleAt } from "./worktree-settings.mjs";
 
 const HOOK_SCRIPTS = [
   "work-order-guard.mjs", "budget-guard.mjs", "bash-edit-guard.mjs", "worktree-isolation.mjs", "pre-edit-guard.sh",
-  "report-stop.mjs", "plan-stop.mjs", "merge-guard.mjs", "issue-gate.mjs", "controller-guard.mjs",
+  "report-stop.mjs", "plan-stop.mjs", "merge-guard.mjs", "issue-gate.mjs", "controller-guard.mjs", "worktree-gate.mjs",
 ];
 const NO_VERIFY = "--no-verify";
 // The shortest prefix git could still expand to `--no-verify`.
@@ -28,6 +32,10 @@ const COMMIT_VALUE_FLAGS = new Set(["m", "F", "C", "c", "t"]);
 
 /** The parser for each guarded tool. */
 export const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments };
+/** The directory a segment moves to, read the way each parser's shell reads it. */
+const MOVES = new Map([[segmentsOf, cdTarget], [powershellSegments, locationTarget]]);
+/** The options of `git worktree add` whose value is the next word. */
+const WORKTREE_VALUE_OPTIONS = new Set(["-b", "-B", "--reason"]);
 /** A POSIX shell reads a command line from `-c`, alone or in a cluster of short flags: `-lc`, `-ic`, `-lic`, `-cl`. */
 const POSIX_COMMAND_FLAG = /^-[A-Za-z]*c[A-Za-z]*$/;
 const POWERSHELL_COMMAND_FLAG = /^-(c|command)$/i;
@@ -98,6 +106,29 @@ export function nestedCommand(segment) {
   return command === undefined ? null : { command, parse: shell.parse };
 }
 
+/** @returns the path that `git worktree add` names after its options, or null for another worktree command. */
+function worktreeAddPath(args) {
+  if (args[0] !== "add") return null;
+  for (let i = 1; i < args.length; i++) {
+    if (args[i] === "--") return args[i + 1] ?? null;
+    if (WORKTREE_VALUE_OPTIONS.has(args[i])) i++;
+    else if (!args[i].startsWith("-")) return args[i];
+  }
+  return null;
+}
+
+/** A path as a shell resolves it from `cwd`. PowerShell also reads a backslash as a separator on Linux and macOS. */
+function resolveFrom(cwd, spelled, parse) {
+  const word = parse === powershellSegments ? spelled.replace(/\\/g, "/") : spelled;
+  return path.resolve(cwd, nativePath(word.replace(/^~(?=$|[\\/])/, os.homedir())));
+}
+
+/** True when `target` is one folder directly under `folder`, as `qc worktree add` makes it. */
+function inFolder(folder, target) {
+  const parts = path.relative(keyOf(folder), keyOf(target)).split(path.sep);
+  return parts.length === 1 && parts[0] !== "" && parts[0] !== ".." && !path.isAbsolute(parts[0]);
+}
+
 const REASONS = {
   hooks:
     "the command skips the git hooks. The pre-commit and pre-push hooks are the gates: run the command " +
@@ -107,18 +138,32 @@ const REASONS = {
   script:
     "a hand run of a hook script writes a lease or a ledger record under a made-up session id, and that lease blocks later " +
     "edits in the worktree for hours. Test a hook only through its own suite (`node --test`), in temporary folders.",
+  worktree:
+    "a worktree lives in the worktree folder of the main checkout, so git ignores it and `qc worktree remove` finds it. " +
+    "Run `npx qc worktree add <name> <branch>` from the repository, or give `git worktree add` a path one level under that folder.",
 };
 
-/** @returns the reasons the command breaks a rule, in a stable order. */
-export function violations(command, parse = segmentsOf) {
+/**
+ * @param {{cwd: string, folder: string} | null} [place] the working directory and the worktree folder; null skips the worktree rule
+ * @returns the reasons the command breaks a rule, in a stable order.
+ */
+export function violations(command, parse = segmentsOf, place = null) {
   const segments = parse(command);
   const found = new Set();
+  let cwd = place?.cwd;
   for (const segment of segments) {
+    const moved = place ? MOVES.get(parse)?.(segment) : null;
+    if (moved != null) cwd = resolveFrom(cwd, moved, parse);
     const git = gitCall(segment);
     if (git && skipsHooks(git)) found.add("hooks");
     if (git && setsHooksPath(git)) found.add("hooksPath");
+    const added = place && git?.sub === "worktree" ? worktreeAddPath(git.args) : null;
+    if (added !== null) {
+      const from = git.dirs.filter(Boolean).reduce((dir, next) => resolveFrom(dir, next, parse), cwd);
+      if (!inFolder(place.folder, resolveFrom(from, added, parse))) found.add("worktree");
+    }
     const nested = nestedCommand(segment);
-    if (nested) for (const key of violations(nested.command, nested.parse)) found.add(key);
+    if (nested) for (const key of violations(nested.command, nested.parse, place && { ...place, cwd })) found.add(key);
   }
   if (!segments.some(runsTests) && segments.some(runsHookScript)) found.add("script");
   return Object.keys(REASONS).filter((key) => found.has(key));
@@ -129,15 +174,19 @@ export function decide(call) {
   const command = call.tool_input?.command;
   const parse = PARSERS[call.tool_name];
   if (!parse || typeof command !== "string") return null;
-  const root = checkoutRootOf(call.cwd ?? process.cwd());
+  const cwd = call.cwd ?? process.cwd();
+  const root = checkoutRootOf(cwd);
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
-  const found = violations(command, parse);
+  // The config is read only for a command that can add a worktree, so every other call stays cheap.
+  const rule = /\bworktree\b/i.test(command) ? worktreeRuleAt(cwd) : null;
+  const found = violations(command, parse, rule && { cwd: path.resolve(cwd), folder: rule.folder });
   if (found.length === 0) return null;
+  const reasonOf = (key) => (key === "worktree" ? `${REASONS.worktree} The folder is ${rule.folder}.` : REASONS[key]);
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
       permissionDecision: "deny",
-      permissionDecisionReason: `${call.tool_name} command guard: ${found.map((key) => REASONS[key]).join(" Also, ")}`,
+      permissionDecisionReason: `${call.tool_name} command guard: ${found.map(reasonOf).join(" Also, ")}`,
     },
   };
 }
