@@ -338,3 +338,10 @@ test("a gh api call to a repos/ path whose body file quotes the mutation is allo
   assert.equal(decide(shell(ws.on, "gh api repos/o/r/issues/64/comments -F body=@review.md")), null);
   assert.match(denied(decide(shell(ws.on, "gh api graphql -F query=@review.md"))) ?? "", /gh pr merge <n> --match-head-commit <sha>/);
 });
+
+test("with swarm.dispatch off, a merge whose command failed after GitHub merged is still recorded", (t) => {
+  const ws = workspace(t);
+  // `gh pr merge --delete-branch` exits non-zero when a worktree holds the branch, after the merge itself.
+  assert.equal(decide(shell(ws.off, "gh pr merge 60 --squash --delete-branch", "PostToolUseFailure"), { gh: fakeGh(MERGED).gh }), null);
+  assert.deepEqual(readLedger(ws.ledgerOf(ws.off)).map(({ type, pr }) => ({ type, pr })), [{ type: "merge", pr: 60 }]);
+});

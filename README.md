@@ -261,9 +261,10 @@ The keys go under `worktree`.
 
 Known limits:
 
-- A test run inside `.worktree/<name>/` can resolve a dependency that the worktree lacks from the `node_modules` of the main checkout, so the run hides the missing dependency. CI runs in a clean checkout and finds it.
+- A test run inside `.worktree/<name>/` can resolve a missing dependency from the `node_modules` of the main checkout. The run then hides the gap, and CI in a clean checkout finds it.
 - An `--auto` merge that has not merged when the command returns gets no settled record while `swarm.dispatch` is off, so the stop check does not see it.
 - The command guard reads the command text, with the same wrappers and the same blind spots as the merge guard.
+- The command guard sees only `Bash` and `PowerShell` calls. A worktree that another tool makes, such as `EnterWorktree` or an `Agent` call with `isolation: "worktree"`, passes it. When such a worktree holds the head of a merged pull request, the stop check names it with `git worktree remove <path>`.
 
 ### 9. Hold an orchestrator to the subagent workflow
 
