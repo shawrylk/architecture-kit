@@ -74,9 +74,11 @@ test("the tooling block turns every qc rule off, so a gate can name what it bans
   }
 });
 
-test("ignores come from the config", () => {
+test("ignores come from the config, and a repository list of its own still skips the worktree folder", () => {
   const blocks = preset({ config: config({ ignores: ["**/generated/**"] }) });
-  assert.deepEqual(blocks[0].ignores, ["**/generated/**"]);
+  assert.deepEqual(blocks[0].ignores, ["**/generated/**", ".worktree/**"]);
+  const moved = preset({ config: config({ ignores: [], worktree: { dir: "trees/" } }) });
+  assert.deepEqual(moved[0].ignores, ["trees/**"]);
 });
 
 test("the layer block is emitted only when a boundaries plugin is supplied", () => {

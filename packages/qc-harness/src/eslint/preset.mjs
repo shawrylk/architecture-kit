@@ -2,7 +2,7 @@
 // Thresholds are imported, never restated — quality-thresholds.json is their one home.
 
 import qc from "./index.mjs";
-import { enabled, load, readerEntries, thresholds } from "../config.mjs";
+import { enabled, ignoresOf, load, readerEntries, thresholds } from "../config.mjs";
 import { literalRegistries } from "../registries.mjs";
 
 /**
@@ -129,7 +129,7 @@ export function preset(options = {}) {
   const { tseslint, boundaries, sonarjs } = options.plugins ?? {};
 
   // No file carries its own exemption: a rule is switched off in config, where a reviewer sees it.
-  const blocks = [{ ignores: config.ignores }, { linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: "error" } }];
+  const blocks = [{ ignores: ignoresOf(config) }, { linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: "error" } }];
 
   const base = {
     files: ["**/*.{ts,tsx,mjs}"],

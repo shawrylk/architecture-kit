@@ -603,6 +603,12 @@ export function readerEntries(registry) {
     .map(([key, entry]) => ({ key, names: entry.names ?? [], readers: entry.readers ?? [] }));
 }
 
+/** `ignores` and the worktree folder, so a repository's own list of ignores still skips each worktree. */
+export function ignoresOf(config) {
+  const dir = config.worktree?.dir;
+  return dir ? [...config.ignores, `${dir.replace(/\/+$/, "")}/**`] : config.ignores;
+}
+
 export function enabled(map, id) {
   return map[id] !== false;
 }

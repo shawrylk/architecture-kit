@@ -42,7 +42,7 @@ import { checkAdrFormat } from "../gates/adr-format.mjs";
 import { checkConfigFloor } from "../gates/config-floor.mjs";
 import { defaults } from "../config.mjs";
 import { rules as lintRules } from "../eslint/index.mjs";
-import { adrLog, enabled, readerEntries, requiredHooks, thresholds } from "../config.mjs";
+import { adrLog, enabled, ignoresOf, readerEntries, requiredHooks, thresholds } from "../config.mjs";
 import { checkRegistryReaders } from "../gates/registry-readers.mjs";
 import { checkMigrationNumbers } from "../gates/migration-numbers.mjs";
 import { checkRegistryLiteral } from "../gates/registry-literal.mjs";
@@ -569,7 +569,7 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     .map((file) => relativeTo(config.root)(path.resolve(config.root, file)))
     .filter((rel) => !rel.startsWith("../") && !path.isAbsolute(rel));
   const pathspecs = perFile ? scopeOf(config, given) : undefined;
-  const tree = treeOf(await lister(config.root, { ignores: config.ignores, pathspecs }));
+  const tree = treeOf(await lister(config.root, { ignores: ignoresOf(config), pathspecs }));
 
   const roots = config.featureRoots.map((root) => path.join(config.root, root));
   const { features, contents } = await collect(config, tree, perFile ? given : undefined);

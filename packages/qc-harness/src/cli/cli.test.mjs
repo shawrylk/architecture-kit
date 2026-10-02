@@ -478,3 +478,28 @@ test("check follows an export const alias, and fails a file that aliases the hel
   );
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("init adds the worktree folder to an existing .gitignore once, and writes it to a new one", async () => {
+  const dir = repo();
+  writeFileSync(path.join(dir, ".gitignore"), "node_modules/");
+  await quiet(() => runInit(load(dir)));
+  await quiet(() => runInit(load(dir)));
+  assert.equal(readFileSync(path.join(dir, ".gitignore"), "utf8"), "node_modules/\n.worktree/\n");
+  const spelled = repo();
+  writeFileSync(path.join(spelled, ".gitignore"), "/.worktree\n");
+  await quiet(() => runInit(load(spelled)));
+  assert.equal(readFileSync(path.join(spelled, ".gitignore"), "utf8"), "/.worktree\n");
+  const fresh = repo();
+  await quiet(() => runInit(load(fresh)));
+  assert.equal(readFileSync(path.join(fresh, ".gitignore"), "utf8"), ".worktree/\n");
+  for (const root of [dir, spelled, fresh]) rmSync(root, { recursive: true, force: true });
+});
+
+test("check skips the worktree folder, even where git does not ignore it", async () => {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  write(dir, { "qc.config.json": ENGLISH_ON, ".gitignore": "", ".worktree/wt/docs/draft.md": "下書き\n", "docs/draft.md": "下書き\n" });
+  const { problems } = await runCheck(load(dir));
+  assert.deepEqual(englishPaths(problems), ["docs/draft.md"]);
+  rmSync(dir, { recursive: true, force: true });
+});
