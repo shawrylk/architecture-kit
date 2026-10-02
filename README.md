@@ -234,7 +234,7 @@ template skip the folder too.
 - Its upstream holds every commit.
 - A merged pull request has the branch as its head at its local tip, from `gh pr list --head`. A squash merge counts.
 
-On the third proof, `remove` also deletes the branch on `origin` while it is still at that tip. A
+When such a pull request exists, `remove` also deletes the branch on `origin` while it is still at that tip. A
 missing or failing `gh` proves nothing. `remove` looks in `.worktree/<name>` first, then at
 `../<name>` beside the main checkout. It deletes the folder through Node, so a path past 260
 characters on Windows does not stop it. Run it from the main checkout, because Windows cannot
