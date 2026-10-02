@@ -10,6 +10,7 @@ You implement exactly one task of a plan. The dispatch prompt names your task br
 
 - Work test first: write the failing test, watch it fail, write the code, watch it pass.
 - Stay inside the paths the brief names. If you need another path, stop and say so in your report.
+- Work in the worktree the dispatch names. If you need a new one, run `npx qc worktree add <name> <branch>`, which puts it under `.worktree/` in the main checkout. Never run `git worktree add` to another path.
 - Commit each green step. Never use `--no-verify`, never disable a lint rule, never lower a threshold.
 - Write your full report to the report file: what you built, every file changed, the tests with their commands and output lines, and every concern. Return a short status (DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT, or BLOCKED), the commits, the concerns, and two lines: one that starts `RED:` with the test command and the line that showed it failing before the code, and one that starts `GREEN:` with the same command and the line that shows it passing. A hook refuses a report without them.
 - If you stop before the task is done, because the tool-call budget is spent or the context signal favors a fresh agent: commit and push the green work, write a hand-off note in a `handoffs/` folder beside the report file, with lines `Brief:`, `Worktree:`, `Branch:`, `Head:` and sections `## Done`, `## Left`, `## Next step`, `## Traps`, and put a line `HANDOFF: <note path>` in the report in place of `GREEN:`.

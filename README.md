@@ -216,18 +216,54 @@ section turns the signal off. When the hook finds no transcript for an agent, it
 | `repeatEvery` | `20` | the hand-off note repeats after this many calls |
 | `handoffTypes` | `["sdd-implementer", "architecture:sdd-implementer", "general-purpose"]` | the types that get the hand-off note |
 
-Give each agent its own worktree beside the main checkout:
+Give each agent its own worktree under `.worktree/` in the main checkout (QC-015):
 
 ```bash
-npx qc worktree add fix-login fix/login          # fetch, add ../fix-login from origin/main, install, print the path
+npx qc worktree add fix-login fix/login          # fetch, add .worktree/fix-login from origin/main, install, print the path
 npx qc worktree remove fix-login                 # refuse a dirty tree; delete it, then the branch once safe
 ```
 
-`worktree.install` in `qc.config.json` is the install command, and the default is
-`pnpm install --frozen-lockfile`. `worktree.base` is the default `--from`, and the default is
-`origin/main`. `remove` deletes the branch only when `--from` holds it, or its upstream holds every
-commit. It deletes the folder through Node, so a path past 260 characters on Windows does not stop
-it. Both commands are idempotent.
+`add` makes git ignore the folder. When no rule ignores it, `add` writes `.worktree/` to
+`info/exclude` in the git common dir, so `git status` in the main checkout stays clean. `qc init`
+adds `.worktree/` to `.gitignore`. The file list of `qc check`, the eslint preset, and the jscpd
+template skip the folder too.
+
+`remove` deletes the branch when one of these holds:
+
+- `--from` holds the branch.
+- Its upstream holds every commit.
+- A merged pull request has the branch as its head at its local tip, from `gh pr list --head`. A squash merge counts.
+
+On the third proof, `remove` also deletes the branch on `origin` while it is still at that tip. A
+missing or failing `gh` proves nothing. `remove` looks in `.worktree/<name>` first, then at
+`../<name>` beside the main checkout. It deletes the folder through Node, so a path past 260
+characters on Windows does not stop it. Run it from the main checkout, because Windows cannot
+delete the current folder of a shell. Both commands are idempotent.
+
+Two hooks hold an agent to the folder. Each is on wherever `qc.config.json` is:
+
+| Hook | What it refuses |
+|---|---|
+| `PreToolUse` on `Bash` and `PowerShell` | a `git worktree add` whose path is not one folder directly under `.worktree/` of the main checkout. It resolves the path from the working directory, each `cd`, `Set-Location`, and `git -C`, and skips the options before the path. The reason names `npx qc worktree add <name> <branch>` |
+| `Stop` | the end of a turn while a pull request this session merged leaves a worktree on its head branch, a local branch with that name, or that branch on `origin`. The reason names `npx qc worktree remove <name>`, `git branch -D <branch>`, or `git push origin --delete <branch>`. A head that `protectedBranches` or `branches.allow` names is skipped. A repeat stop with the same list ends with a note |
+
+The stop check reads the merge record that the merge guard of section 11 writes. With
+`swarm.dispatch` off, the merge guard still writes the record and judges nothing.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `install` | `"pnpm install --frozen-lockfile"` | the command `add` runs in each new worktree |
+| `base` | `"origin/main"` | the default `--from`: the ref a branch starts at, and the ref `remove` checks a merge against |
+| `dir` | `".worktree"` | the folder in the main checkout that holds each worktree |
+| `enforce` | `true` | `false` turns off both hooks and the merge record of a repository with `swarm.dispatch` off |
+
+The keys go under `worktree`.
+
+Known limits:
+
+- A test run inside `.worktree/<name>/` can resolve a dependency that the worktree lacks from the `node_modules` of the main checkout, so the run hides the missing dependency. CI runs in a clean checkout and finds it.
+- An `--auto` merge that has not merged when the command returns gets no settled record while `swarm.dispatch` is off, so the stop check does not see it.
+- The command guard reads the command text, with the same wrappers and the same blind spots as the merge guard.
 
 ### 9. Hold an orchestrator to the subagent workflow
 
@@ -412,7 +448,7 @@ stopping the call they are judging; the session note skips the tool line instead
 With `swarm.dispatch` on, more hooks hold the subagent workflow to its conventions. Each one reads or
 writes one ledger: JSON lines in `<git common dir>/qc/ledger.jsonl`, shared by every worktree. The
 record types are `dispatch`, `stop`, `verdict`, `merge`, and `issue-update`. `qc ledger [branch]`
-prints them. Each check does nothing when `swarm.dispatch` is off in the repository it judges. That is the repository of the named worktree, and the repository of the working directory when no worktree is named.
+prints them. Each check does nothing when `swarm.dispatch` is off in the repository it judges. That is the repository of the named worktree, and the repository of the working directory when no worktree is named. The one exception is the merge record, which the worktree check of section 8 reads.
 
 | Check | Hook | What it refuses |
 |---|---|---|
