@@ -2,6 +2,7 @@
 // The trigger that holds `gh pr merge` to its review. Before the call it needs `--match-head-commit` and an
 // APPROVED review of `swarm.review.merge` for that sha. After the call it records the merge and its issues.
 // A merge that names another repository than the checkout's `origin` is that repository's own, so it passes.
+// With `swarm.dispatch` off, the record is still written for the worktree check of QC-015, and nothing is judged.
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,7 @@ import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
 import { appendRecord, latestVerdictFor, readLedger } from "./ledger.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
+import { worktreeRuleAt } from "./worktree-settings.mjs";
 
 const VIEW_FIELDS = "number,url,state,mergedAt,baseRefName,headRefName,body,closingIssuesReferences";
 const MAYBE_GH = /\bgh(?:\.exe)?\b/i;
@@ -138,6 +140,8 @@ export function decide(call, { gh = runGh } = {}) {
   } catch (error) {
     return event === "PreToolUse" ? context(`Merge guard is off: ${error.message}`) : null;
   }
+  // Only the record needs a ledger; the review check stays off with the workflow.
+  if (!workflow && event !== "PreToolUse") workflow = worktreeRuleAt(call.cwd ?? process.cwd());
   if (!workflow) return null;
   if (event === "PreToolUse") {
     const [found] = ghApiMerges(command, parse, { cwd: call.cwd ?? process.cwd() });
