@@ -272,14 +272,14 @@ The plugin ships four subagent types for `superpowers:subagent-driven-developmen
 
 | Type | Model | Effort | Tools | Role |
 |---|---|---|---|---|
-| `architecture:sdd-planner` | `opus` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | writes one plan and edits nothing else |
-| `architecture:sdd-implementer` | `sonnet` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
-| `architecture:sdd-reviewer` | `sonnet` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
-| `architecture:sdd-branch-reviewer` | `opus` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
+| `architecture:sdd-planner` | `gpt-6.1-sol` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | writes one plan and edits nothing else |
+| `architecture:sdd-implementer` | `gpt-6.1-sol` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
+| `architecture:sdd-reviewer` | `gpt-6.1-sol` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
+| `architecture:sdd-branch-reviewer` | `gpt-6.1-sol` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
 
-Sonnet runs the implementer and the task reviewer. Opus runs only the planner and the branch
-reviewer, whose job a task review cannot do: it judges cross-task interactions, security, and data
-migrations against the plan and the spec, over the whole branch's diff.
+Every role defaults to `gpt-6.1-sol` with `high` reasoning effort. The branch reviewer judges
+cross-task interactions, security, and data migrations against the plan and the spec, over the
+whole branch's diff.
 
 Each type lists its tools in a `tools:` allow-list. A subagent then starts without the tool schemas
 that no type uses: `Artifact`, the web tools, `Monitor`, `SendMessage`, the worktree tools, and every
@@ -345,20 +345,23 @@ names the workflow, the four types, the model tiers, and the one-implementer rul
 | `maxPromptChars` | `12000` | the longest prompt, in characters |
 | `slotMinutes` | `60` | when a slot with no stop expires |
 | `implementerSlots` | `1` | how many implementers run at once in a session; a positive whole number |
-| `models` | opus for the planner and the branch reviewer, sonnet for the implementer and the task reviewer, `["sonnet", "haiku"]` for `*` | the model families each type's named `model` may carry |
+| `models` | `["gpt-6.1-sol"]` for every role and `*` | the model families each type's named `model` may carry |
+
+`gpt-6.1-sol` is an exact model id; other GPT model ids are refused. Claude families remain
+available through explicit repository overrides in `models`. The role definitions keep `effort: high`.
 
 The bare names cover a copy of the agents in `~/.claude/agents`. A list replaces its default and
 does not extend it. To allow `Explore` with no model, list it beside the eight default names.
 
 `models` merges key by key with its default, so a repository can override one type without
-repeating the rest. A family matches a bare alias (`sonnet`) or a full model id
-(`claude-sonnet-...`), whichever it appears in, case-insensitive, so a new release under an
-existing family needs no kit change. `models` constrains only a dispatch that names a `model`; a
+repeating the rest. GPT model ids match exactly, case-insensitive. A Claude family matches a bare
+alias (`sonnet`) or a full model id (`claude-sonnet-...`), case-insensitive, so a new release under an
+existing Claude family needs no kit change. `models` constrains only a dispatch that names a `model`; a
 dispatch with no model still runs its type's frontmatter model, which `models` does not touch.
 
-A dispatch of an allowed type that names a full model id, such as `claude-sonnet-5`, gets a note:
+A dispatch of an allowed type that names a full Claude model id, such as `claude-sonnet-5`, gets a note:
 requests to different models share no prompt cache, so it pays the type's shared first-call prefix
-again. The note never refuses the dispatch.
+again. The note never refuses the dispatch. Naming the default `gpt-6.1-sol` adds no cache note.
 
 #### Measure a session's tokens
 

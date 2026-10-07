@@ -66,7 +66,7 @@ test("a checkout with no config, or a swarm section with no dispatch key, sees n
 test("the main session's dispatch with no model is refused, and one with a model passes", (t) => {
   const ws = workspace(t);
   assert.match(reasonOf(decide(agentCall(ws.on, { prompt: "p" }), ws.tmp)) ?? "", /names no model/);
-  assert.equal(decide(agentCall(ws.on, { prompt: "p", model: "sonnet" }), ws.tmp), null);
+  assert.equal(decide(agentCall(ws.on, { prompt: "p", model: "gpt-6.1-sol" }), ws.tmp), null);
 });
 
 test("a subagent's dispatch is left to its own definition", (t) => {
@@ -125,29 +125,12 @@ test("the tier guard refuses a type on the wrong family, naming the type, the mo
   assert.match(refused({ model: "opus", prompt: "p" }), /general-purpose/);
 });
 
-test("each allowed pair passes, including a full model id and a branch reviewer on opus", (t) => {
+test("every shipped role accepts GPT 6.1 Sol without a cache note", (t) => {
   const ws = workspace(t);
-  assert.equal(decide(agentCall(ws.on, { subagent_type: "architecture:sdd-planner", model: "opus", prompt: "p" }), ws.tmp), null);
-  assert.equal(
-    decide(agentCall(ws.on, { subagent_type: "architecture:sdd-branch-reviewer", model: "opus", prompt: "p" }), ws.tmp),
-    null,
-  );
-  assert.equal(
-    decide(agentCall(ws.on, { subagent_type: "architecture:sdd-reviewer", model: "sonnet", prompt: "p" }), ws.tmp),
-    null,
-  );
-  assert.equal(decide(agentCall(ws.on, { model: "haiku", prompt: "p" }), ws.tmp), null);
-  assert.equal(
-    decide(agentCall(ws.on, { subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "p" }), ws.tmp),
-    null,
-  );
-  decide(subagentEvent(ws.on, "architecture:sdd-implementer"), ws.tmp);
-  const pinned = decide(
-    agentCall(ws.on, { subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5", prompt: "p" }),
-    ws.tmp,
-  );
-  assert.equal(pinned.hookSpecificOutput.permissionDecision, undefined);
-  assert.match(pinned.hookSpecificOutput.additionalContext, /share no prompt cache/);
+  for (const subagent_type of ["architecture:sdd-planner", "architecture:sdd-branch-reviewer", "architecture:sdd-reviewer", "architecture:sdd-implementer"]) {
+    assert.equal(decide(agentCall(ws.on, { subagent_type, model: "gpt-6.1-sol", prompt: "p" }), ws.tmp), null, subagent_type);
+  }
+  assert.equal(decide(agentCall(ws.on, { model: "gpt-6.1-sol", prompt: "p" }), ws.tmp), null);
 });
 
 test("a repository's models override replaces one type's families and leaves the rest at default", (t) => {

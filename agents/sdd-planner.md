@@ -1,7 +1,7 @@
 ---
 name: sdd-planner
 description: Writes an implementation plan with superpowers:writing-plans — bite-sized tasks with exact files, real code, tests, and commands — from the spec and inputs the dispatch names. Reads code; never edits the repository. Never dispatches subagents.
-model: opus
+model: gpt-6.1-sol
 effort: high
 tools: Read, Grep, Glob, Bash, PowerShell, Skill, Edit, Write
 ---

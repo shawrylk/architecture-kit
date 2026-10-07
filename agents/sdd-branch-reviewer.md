@@ -1,7 +1,7 @@
 ---
 name: sdd-branch-reviewer
 description: Reviews a whole branch's diff against the plan and the spec, before merge, under superpowers:subagent-driven-development — cross-task interactions, security, data migrations, and anything no single task's review could see. Read-only. Never dispatches subagents.
-model: opus
+model: gpt-6.1-sol
 effort: high
 tools: Read, Grep, Glob, Bash, PowerShell
 ---

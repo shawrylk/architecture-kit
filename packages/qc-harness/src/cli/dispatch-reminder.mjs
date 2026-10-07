@@ -9,7 +9,7 @@ export const REMINDER =
   "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
   "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
   "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
-  "whole branch. The planner and the branch reviewer run on opus, the implementer and the task reviewer on sonnet. " +
+  "whole branch. All four roles default to gpt-6.1-sol with high reasoning effort. " +
   "Run one implementer at a time: a hook refuses a second while one runs. Name a model on any other dispatch, and " +
   "pass each brief as a file path. Name the worktree on a prompt line `Worktree: <path>`. A reviewer starts with " +
   "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`.";

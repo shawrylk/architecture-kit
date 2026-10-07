@@ -41,10 +41,10 @@ const ALWAYS_PRESENT = ["Read", "Bash"];
 const READ_TOOLS = ["Read", "Grep", "Glob", "Bash", "PowerShell"];
 const EDIT_TOOLS = [...READ_TOOLS, "Skill", "Edit", "Write"];
 const EXPECTED = {
-  "sdd-implementer": { model: "sonnet", effort: "high", tools: EDIT_TOOLS },
-  "sdd-planner": { model: "opus", effort: "high", tools: EDIT_TOOLS },
-  "sdd-reviewer": { model: "sonnet", effort: "high", tools: READ_TOOLS },
-  "sdd-branch-reviewer": { model: "opus", effort: "high", tools: READ_TOOLS },
+  "sdd-implementer": { model: "gpt-6.1-sol", effort: "high", tools: EDIT_TOOLS },
+  "sdd-planner": { model: "gpt-6.1-sol", effort: "high", tools: EDIT_TOOLS },
+  "sdd-reviewer": { model: "gpt-6.1-sol", effort: "high", tools: READ_TOOLS },
+  "sdd-branch-reviewer": { model: "gpt-6.1-sol", effort: "high", tools: READ_TOOLS },
 };
 // Fields Claude Code ignores on a plugin agent, and the one that drops a repository's CLAUDE.md and rules.
 const FORBIDDEN_FIELDS = ["disallowedTools", "hooks", "mcpServers", "permissionMode", "omitClaudeMd"];
