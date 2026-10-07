@@ -1,7 +1,7 @@
 ---
 name: sdd-implementer
 description: Implements one task of a plan under superpowers:subagent-driven-development, from the task brief the dispatch names. Writes code and tests, commits, and writes its full report to the report file. Never dispatches subagents.
-model: sonnet
+model: gpt-6.1-sol
 effort: high
 tools: Read, Grep, Glob, Bash, PowerShell, Skill, Edit, Write
 ---

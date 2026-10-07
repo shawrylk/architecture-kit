@@ -493,21 +493,20 @@ export const dispatchDefaults = {
   implementerSlots: 1,
   // The model families each type's named `model` may carry. `"*"` covers every other type.
   models: {
-    "sdd-planner": ["opus"],
-    "architecture:sdd-planner": ["opus"],
-    "sdd-branch-reviewer": ["opus"],
-    "architecture:sdd-branch-reviewer": ["opus"],
-    "sdd-implementer": ["sonnet"],
-    "architecture:sdd-implementer": ["sonnet"],
-    "sdd-reviewer": ["sonnet"],
-    "architecture:sdd-reviewer": ["sonnet"],
-    "*": ["sonnet", "haiku"],
+    "sdd-planner": ["gpt-6.1-sol"],
+    "architecture:sdd-planner": ["gpt-6.1-sol"],
+    "sdd-branch-reviewer": ["gpt-6.1-sol"],
+    "architecture:sdd-branch-reviewer": ["gpt-6.1-sol"],
+    "sdd-implementer": ["gpt-6.1-sol"],
+    "architecture:sdd-implementer": ["gpt-6.1-sol"],
+    "sdd-reviewer": ["gpt-6.1-sol"],
+    "architecture:sdd-reviewer": ["gpt-6.1-sol"],
+    "*": ["gpt-6.1-sol"],
   },
 };
 
-// The model families the guard knows. A model string's family is the first of these it
-// contains, lower-cased, so a new release under an existing family needs no kit change.
-export const MODEL_FAMILIES = ["opus", "sonnet", "haiku", "fable"];
+// GPT uses an exact model id; Claude families remain available for repository overrides.
+export const MODEL_FAMILIES = ["gpt-6.1-sol", "opus", "sonnet", "haiku", "fable"];
 
 // What each key of `swarm.explore` means when a repository omits it. The kit names no tool; a
 // repository lists its own index, call graph or summarizer in `tools` and `summarizer`.

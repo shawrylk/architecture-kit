@@ -27,10 +27,11 @@ function checkModels(models) {
   }
 }
 
-/** The first family name a model string contains, lower-cased. Null when it names none the guard knows. */
+/** An exact GPT model id or the first Claude family a model string contains, lower-cased. */
 export function familyOf(model) {
   const lower = model.toLowerCase();
-  return MODEL_FAMILIES.find((family) => lower.includes(family)) ?? null;
+  if (lower.startsWith("gpt-")) return MODEL_FAMILIES.includes(lower) ? lower : null;
+  return MODEL_FAMILIES.find((family) => !family.startsWith("gpt-") && lower.includes(family)) ?? null;
 }
 
 /** @returns the dispatch settings, or null when the section is absent; throws naming the key a repository got wrong. */
@@ -126,7 +127,7 @@ function modelRefusal(type, settings) {
   }
   return (
     `Dispatch guard: the dispatch names no model, so the ${type} agent runs on the session's model. ` +
-    `Pass \`model\` with the cheapest tier that fits the task, or dispatch one of: ${allowed}. ` +
+    `Pass \`model\` with the configured model, or dispatch one of: ${allowed}. ` +
     `To allow another type with no model, add it to ${KEY}.allowedTypes in qc.config.json.`
   );
 }

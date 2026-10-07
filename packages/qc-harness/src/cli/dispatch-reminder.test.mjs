@@ -49,6 +49,8 @@ test("the note names the workflow, the four types, the model tiers, and the one-
     "architecture:sdd-reviewer",
     "architecture:sdd-branch-reviewer",
     "one implementer at a time",
+    "gpt-6.1-sol",
+    "high reasoning effort",
     "Worktree: <path>",
     "VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>",
     "--match-head-commit <sha>",

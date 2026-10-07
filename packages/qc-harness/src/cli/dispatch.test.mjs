@@ -54,6 +54,16 @@ test("familyOf finds the first known family a model string contains, lower-cased
   assert.equal(familyOf("opus[1m]"), "opus");
   assert.equal(familyOf("OPUS"), "opus");
   assert.equal(familyOf("gpt-4"), null);
+  assert.equal(familyOf("GPT-6.1-SOL"), "gpt-6.1-sol");
+  assert.equal(familyOf("gpt-6.1-sol-other"), null);
+});
+
+test("every SDD role and the wildcard accept GPT 6.1 Sol by default and refuse another GPT model", () => {
+  const settings = dispatchSettings({ dispatch: {} });
+  for (const type of [...settings.allowedTypes, "general-purpose", "Explore"]) {
+    assert.equal(dispatchRefusal({ subagent_type: type, model: "gpt-6.1-sol" }, settings), null, type);
+    assert.match(dispatchRefusal({ subagent_type: type, model: "gpt-6-sol" }, settings) ?? "", /gpt-6\.1-sol/, type);
+  }
 });
 
 const on = dispatchSettings({ dispatch: { maxPromptChars: 20 } });
@@ -68,8 +78,8 @@ test("a dispatch with neither a model nor an allowed type is refused, and the re
 });
 
 test("a named model or an allowed type passes", () => {
-  assert.equal(dispatchRefusal({ subagent_type: "general-purpose", model: "sonnet", prompt: "p" }, on), null);
-  assert.equal(dispatchRefusal({ model: "haiku" }, on), null);
+  assert.equal(dispatchRefusal({ subagent_type: "general-purpose", model: "gpt-6.1-sol", prompt: "p" }, on), null);
+  assert.equal(dispatchRefusal({ model: "gpt-6.1-sol" }, on), null);
   assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-reviewer" }, on), null);
 });
 
@@ -80,11 +90,11 @@ test("a fork passes only as an allowed type, since it ignores the model", () => 
 });
 
 test("a prompt over the limit is refused, and a prompt at the limit passes", () => {
-  const reason = dispatchRefusal({ model: "haiku", prompt: "x".repeat(21) }, on) ?? "";
+  const reason = dispatchRefusal({ model: "gpt-6.1-sol", prompt: "x".repeat(21) }, on) ?? "";
   assert.match(reason, /21 characters/);
   assert.match(reason, /swarm\.dispatch\.maxPromptChars \(20\)/);
   assert.match(reason, /Write the brief to a file/);
-  assert.equal(dispatchRefusal({ model: "haiku", prompt: "x".repeat(20) }, on), null);
+  assert.equal(dispatchRefusal({ model: "gpt-6.1-sol", prompt: "x".repeat(20) }, on), null);
 });
 
 test("the model rule comes before the length rule", () => {
@@ -95,30 +105,28 @@ test("a planner on sonnet is refused, and an implementer on opus is refused", ()
   const planner = dispatchRefusal({ subagent_type: "architecture:sdd-planner", model: "sonnet" }, on) ?? "";
   assert.match(planner, /architecture:sdd-planner/);
   assert.match(planner, /"sonnet"/);
-  assert.match(planner, /opus/);
+  assert.match(planner, /gpt-6\.1-sol/);
   const implementer = dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "opus" }, on) ?? "";
   assert.match(implementer, /architecture:sdd-implementer/);
   assert.match(implementer, /"opus"/);
-  assert.match(implementer, /sonnet/);
+  assert.match(implementer, /gpt-6\.1-sol/);
 });
 
 test("a general-purpose dispatch on opus is refused, naming the wildcard's families", () => {
   const reason = dispatchRefusal({ model: "opus" }, on) ?? "";
   assert.match(reason, /general-purpose/);
-  assert.match(reason, /sonnet, haiku/);
+  assert.match(reason, /gpt-6\.1-sol/);
 });
 
 test("a model string with no known family is refused", () => {
   assert.match(dispatchRefusal({ model: "gpt-4" }, on) ?? "", /general-purpose/);
 });
 
-test("each allowed pair passes, including a full model id that resolves to its family", () => {
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-planner", model: "opus" }, on), null);
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-branch-reviewer", model: "opus" }, on), null);
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet" }, on), null);
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-reviewer", model: "sonnet" }, on), null);
-  assert.equal(dispatchRefusal({ model: "haiku" }, on), null);
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5" }, on), null);
+test("each shipped role accepts its configured model, bare and scoped", () => {
+  for (const type of on.allowedTypes) {
+    assert.equal(dispatchRefusal({ subagent_type: type, model: "gpt-6.1-sol" }, on), null, type);
+  }
+  assert.equal(dispatchRefusal({ model: "gpt-6.1-sol" }, on), null);
 });
 
 test("a fork keeps its current rule and never reaches the tier check", () => {
@@ -211,7 +219,7 @@ test("a shipped type that names a full model id gets a cache note, never a refus
   const settings = { ...dispatchDefaults };
   const note = dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5", prompt: "x" }, settings);
   assert.match(note, /share no prompt cache/);
-  assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "x" }, settings), null);
+  assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "gpt-6.1-sol", prompt: "x" }, settings), null);
   assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", prompt: "x" }, settings), null);
   assert.equal(dispatchNote({ subagent_type: "general-purpose", model: "claude-sonnet-5", prompt: "x" }, settings), null);
 });
