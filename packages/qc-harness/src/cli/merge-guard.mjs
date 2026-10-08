@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // The trigger that holds `gh pr merge` to its review. Before the call it needs `--match-head-commit` and an
-// APPROVED review of `swarm.review.merge` for that sha. After the call it records the merge and its issues.
+// APPROVED review of `swarm.review.merge` for that sha, or a head inside the direct lane of `swarm.direct`.
+// After the call it records the merge and its issues.
 // A merge that names another repository than the checkout's `origin` is that repository's own, so it passes.
 // With `swarm.dispatch` off, the record is still written for the worktree check of QC-015, and nothing is judged.
 
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { PARSERS } from "./bash-command-guard.mjs";
+import { mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
 import { appendRecord, latestVerdictFor, readLedger } from "./ledger.mjs";
@@ -25,23 +27,47 @@ const REVIEWER = { branch: "the branch reviewer (sdd-branch-reviewer)", task: "t
 const deny = (reason) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: text } });
 
-/** @returns the reason the first of `merges` may not run, or null when each pins an approved head. */
-export function mergeRefusal(merges, records, kind) {
+/**
+ * Judges each merge: an APPROVED review of `kind` on its head, or else the direct lane that `lane(sha)` decides.
+ * @returns `{ refusal }` for the first merge that may not run, or `{ refusal: null, direct }` with the lane notes.
+ */
+export function mergeVerdict(merges, records, kind, lane = null) {
+  const direct = [];
   for (const merge of merges) {
     if (!merge.sha) {
-      return `Merge guard: \`gh pr merge\` must pass \`--match-head-commit <sha>\` with the head the ${kind} review approved, so a push after the review cannot merge unreviewed. Add it.`;
+      return { refusal: `Merge guard: \`gh pr merge\` must pass \`--match-head-commit <sha>\` with the head the ${kind} review approved, so a push after the review cannot merge unreviewed. Add it.` };
     }
     const verdict = latestVerdictFor(records, merge.sha, [kind]);
-    if (verdict?.verdict !== "APPROVED") {
-      const latest = verdict ? ` (the latest is ${verdict.verdict})` : "";
-      return (
+    if (verdict?.verdict === "APPROVED") continue;
+    const fit = lane ? lane(merge.sha) : null;
+    if (fit && fit.problem === null) {
+      direct.push(fit.note);
+      continue;
+    }
+    const latest = verdict ? ` (the latest is ${verdict.verdict})` : "";
+    const laneNote = fit ? ` The direct lane of swarm.direct does not apply: ${fit.problem}.` : "";
+    return {
+      refusal:
         `Merge guard: the ledger holds no APPROVED ${kind} review of ${merge.sha}${latest}. ` +
         `Dispatch ${REVIEWER[kind]} on that head, and merge after it approves. ` +
-        "`qc ledger` lists the verdicts, and swarm.review.merge names the kind that counts."
-      );
-    }
+        "`qc ledger` lists the verdicts, and swarm.review.merge names the kind that counts." +
+        laneNote,
+    };
   }
-  return null;
+  return { refusal: null, direct };
+}
+
+/** @returns the reason the first of `merges` may not run, or null when each pins an approved head. */
+export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict(merges, records, kind, lane).refusal;
+
+/** The direct lane of one workflow, as `mergeVerdict` asks it. Null while `swarm.direct` is off. */
+function laneOf(workflow, records) {
+  const { direct } = workflow;
+  if (!direct) return null;
+  return (sha) => {
+    const fit = mergeLane({ root: workflow.root, base: workflow.base, direct, sha, records });
+    return fit.problem === null ? { problem: null, note: `Merge guard: ${sha} merges through the direct lane, with ${sizeLine(fit.size, direct)} and no review.` } : fit;
+  };
 }
 
 /**
@@ -158,21 +184,24 @@ export function decide(call, { gh = runGh } = {}) {
   if (merges.length === 0) return null;
   const { origin, own, other } = partition(merges, workflow.root);
   if (event === "PreToolUse") {
-    let refusal = null;
+    let verdict = { refusal: null, direct: [] };
     if (own.length > 0) {
       try {
-        refusal = mergeRefusal(own, readLedger(workflow.ledger), workflow.review.merge);
+        const records = readLedger(workflow.ledger);
+        verdict = mergeVerdict(own, records, workflow.review.merge, laneOf(workflow, records));
       } catch (error) {
-        refusal = `Merge guard: the ledger cannot be read (${error.message}), so no review can be checked. Fix the ledger file, and merge again.`;
+        verdict = { refusal: `Merge guard: the ledger cannot be read (${error.message}), so no review can be checked. Fix the ledger file, and merge again.` };
       }
     }
-    if (refusal) return deny(refusal);
-    return other.length > 0
-      ? context(
-          `Merge guard passes ${[...new Set(other.map((merge) => merge.repo))].join(", ")}: it is not this checkout's repository (${origin}), ` +
-            "so its reviews are not in this ledger. The guard records nothing for it.",
-        )
-      : null;
+    if (verdict.refusal) return deny(verdict.refusal);
+    const notes = [...verdict.direct];
+    if (other.length > 0) {
+      notes.push(
+        `Merge guard passes ${[...new Set(other.map((merge) => merge.repo))].join(", ")}: it is not this checkout's repository (${origin}), ` +
+          "so its reviews are not in this ledger. The guard records nothing for it.",
+      );
+    }
+    return notes.length > 0 ? context(notes.join(" ")) : null;
   }
   const notes = own.map((merge) => recordMerge(merge, call, workflow, gh)).filter(Boolean);
   return notes.length > 0 ? { systemMessage: notes.join(" ") } : null;

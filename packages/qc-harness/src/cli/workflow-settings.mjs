@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { CONFIG_FILE, load, merge, reviewDefaults } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { directSettings } from "./direct-lane.mjs";
 import { dispatchSettings } from "./dispatch.mjs";
 import { fileSafe } from "./edit-batch-state.mjs";
 import { ledgerFileOf } from "./ledger.mjs";
@@ -46,7 +47,14 @@ export function workflowAt(cwd) {
   const review = reviewSettings(config.swarm);
   const ledger = review ? ledgerFileOf(root) : null;
   if (!review || !ledger) return null;
-  return { root, ledger, review, protectedBranches: config.swarm.isolation?.protectedBranches ?? [] };
+  return {
+    root,
+    ledger,
+    review,
+    direct: directSettings(config.swarm),
+    base: config.worktree.base,
+    protectedBranches: config.swarm.isolation?.protectedBranches ?? [],
+  };
 }
 
 /** The workflow folder of one session under the OS temp folder. */

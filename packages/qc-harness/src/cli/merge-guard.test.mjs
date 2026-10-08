@@ -345,3 +345,44 @@ test("with swarm.dispatch off, a merge whose command failed after GitHub merged 
   assert.equal(decide(shell(ws.off, "gh pr merge 60 --squash --delete-branch", "PostToolUseFailure"), { gh: fakeGh(MERGED).gh }), null);
   assert.deepEqual(readLedger(ws.ledgerOf(ws.off)).map(({ type, pr }) => ({ type, pr })), [{ type: "merge", pr: 60 }]);
 });
+
+/** A checkout with the checks on, `origin/main` at its first commit, and a small fix on `feat/1-x`. */
+function laneRepo(t, config = { swarm: { dispatch: {} } }) {
+  const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-merge-lane-")));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
+  git("init", "-q", "-b", "main");
+  for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"]]) git("config", key, value);
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify(config));
+  writeFileSync(path.join(dir, "a.ts"), "one\ntwo\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "init");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("switch", "-q", "-c", "feat/1-x");
+  writeFileSync(path.join(dir, "a.ts"), "one\n2\n");
+  git("commit", "-q", "-am", "fix");
+  return { dir, head: git("rev-parse", "HEAD"), ledger: path.join(dir, ".git", "qc", "ledger.jsonl") };
+}
+
+test("a small head with no review merges through the direct lane, with a note", (t) => {
+  const { dir, head } = laneRepo(t);
+  const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`));
+  assert.equal(denied(output), null);
+  assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /merges through the direct lane, with 2 of 20 lines in 1 of 2 files and no review/);
+  assert.match(denied(decide(shell(dir, "gh pr merge 7 --squash"))) ?? "", /--match-head-commit <sha>/);
+});
+
+test("a review that asked for changes keeps a small head out of the direct lane", (t) => {
+  const { dir, head, ledger } = laneRepo(t);
+  appendRecord(ledger, verdict("task", "CHANGES_REQUIRED", head));
+  const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`))) ?? "";
+  assert.match(reason, /no APPROVED branch review/);
+  assert.match(reason, /The direct lane of swarm\.direct does not apply: the latest review of .* is CHANGES_REQUIRED/);
+});
+
+test("with swarm.direct false, a small head needs its review as before", (t) => {
+  const { dir, head } = laneRepo(t, { swarm: { dispatch: {}, direct: false } });
+  const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`))) ?? "";
+  assert.match(reason, /no APPROVED branch review/);
+  assert.doesNotMatch(reason, /direct lane/);
+});

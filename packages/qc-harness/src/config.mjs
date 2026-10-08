@@ -249,6 +249,8 @@ export const defaults = {
     dispatch: null,
     // Read only while `dispatch` is on. `reviewDefaults` fills each key it omits.
     review: null,
+    // Read only while `dispatch` is on, and on by default then. `false` turns it off; `directDefaults` fills each key it omits.
+    direct: null,
   },
 
   // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`.
@@ -549,6 +551,19 @@ export const reviewDefaults = {
   },
   // The agent types whose stop runs the plan check.
   plannerTypes: ["sdd-planner", "architecture:sdd-planner"],
+};
+
+// What each key of `swarm.direct` means when a repository omits it. A fix inside these limits skips the
+// subagent workflow: the main session edits it and merges it with no review. A list replaces its default.
+export const directDefaults = {
+  // The most changed lines, added plus deleted, of the branch against its merge base.
+  maxLines: 20,
+  // The most changed files of the branch against its merge base.
+  maxFiles: 2,
+  // Globs a direct fix may not touch. A change to one of these runs the subagent workflow.
+  excludes: ["schemas/**", "**/migrations/**"],
+  // Globs a direct fix may touch only with one APPROVED review of its head, of either kind.
+  reviewPaths: [],
 };
 
 function isPlainObject(value) {

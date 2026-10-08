@@ -117,3 +117,39 @@ test("Windows reads a path with no regard to case, so the other systems do not",
   }
   assert.equal(isControllerPath("src/A.ts", globs, "win32"), false);
 });
+
+/** The workspace, with `origin/main` at the first commit so the linked worktree's branch has a base. */
+function laneWorkspace(t, config) {
+  const ws = workspace(t, config);
+  git(ws.main, "update-ref", "refs/remotes/origin/main", "main");
+  return ws;
+}
+
+const small = { old_string: "a", new_string: "b" };
+
+test("a small edit on a branch passes through the direct lane, with a note of its size", (t) => {
+  const ws = laneWorkspace(t);
+  const output = decide(edit(ws.main, path.join(ws.linked, "src", "a.ts"), "Edit", { tool_input: { file_path: path.join(ws.linked, "src", "a.ts"), ...small } }));
+  assert.equal(denied(output), null);
+  assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /Direct lane: with this edit the branch changes 2 of 20 lines in 1 of 2 files/);
+});
+
+test("an edit that leaves the direct lane is refused with the reason", (t) => {
+  const ws = laneWorkspace(t);
+  const big = { old_string: "a\n".repeat(11), new_string: "b\n".repeat(11) };
+  const linked = path.join(ws.linked, "src", "a.ts");
+  assert.match(denied(decide(edit(ws.main, linked, "Edit", { tool_input: { file_path: linked, ...big } }))) ?? "", /does not apply: the branch changes 22 of 20 lines/);
+  const onMain = path.join(ws.main, "src", "a.ts");
+  assert.match(denied(decide(edit(ws.main, onMain, "Edit", { tool_input: { file_path: onMain, ...small } }))) ?? "", /main is a protected branch/);
+});
+
+test("with swarm.direct false, the refusal is the controller's alone", (t) => {
+  const ws = laneWorkspace(t, { swarm: { dispatch: {}, direct: false } });
+  const linked = path.join(ws.linked, "src", "a.ts");
+  assert.equal(
+    denied(decide(edit(ws.main, linked, "Edit", { tool_input: { file_path: linked, ...small } }))),
+    "Controller guard: while swarm.dispatch is on, the main session edits only swarm.review.controllerPaths " +
+      "(docs/**, *.md, qc.config.json, **/.claude/**), and src/a.ts is outside them. Write a brief and dispatch an implementer for this change. " +
+      "For a path the controller owns, add its glob to swarm.review.controllerPaths in qc.config.json.",
+  );
+});
