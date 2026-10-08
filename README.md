@@ -27,23 +27,21 @@ claude plugin marketplace add shawrylk/architecture-kit
 claude plugin install architecture@architecture-kit
 ```
 
-**The npm package** (gates, lint rules, the `qc` CLI) — as a pinned git dependency, since it is not
-published to a registry:
+**The npm package** (gates, lint rules, and the `qc` CLI):
 
 ```bash
-pnpm add -D github:shawrylk/architecture-kit#path:packages/qc-harness --save-exact
+pnpm add -D architecture-harness --save-exact
 ```
 
-pnpm resolves and lockfiles this to an exact commit, so a later `pnpm update architecture-harness`
-is the only thing that moves it. Continue with [Tutorial](#tutorial) below to wire it into a
-repository.
+The exact version and the lockfile keep the installed package fixed until you update it.
+Continue with [Tutorial](#tutorial) to set up your repository.
 
 ## Tutorial
 
 ### 1. Set up a repository
 
 ```bash
-pnpm add -D github:shawrylk/architecture-kit#path:packages/qc-harness --save-exact
+pnpm add -D architecture-harness --save-exact
 npx qc init            # decisions, architecture & enforcement docs, config, git hooks, CI
 npx qc install-hooks   # binds .githooks/pre-commit, commit-msg and pre-push
 ```
@@ -380,18 +378,18 @@ The `1h` column prices the same requests at the one-hour cache lifetime. A negat
 `experimental.cacheTtl`: in the measured sessions the one-hour lifetime cost more for all four types,
 and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are API list prices.
 
-### 10. Send a wide read or search to the repository's own tools
+### 10. Choose optional tools for code exploration
 
-A session spends most of its tokens on whole-file reads and wide searches, when a repository often
-has better tools: a semantic index, a call graph, a local summarizer. A `swarm.explore` section in
-`qc.config.json` turns on three hooks that hold a session to the repository's own list:
+GitNexus and CocoIndex are optional tools. You can use `Read`, `Grep`, or shell searches without either tool.
+A `swarm.explore` section in `qc.config.json` adds advice about long reads and searches.
+You can omit the section or leave `tools` empty. The kit requires no index, tool installation, or tool invocation.
 
 ```json
 {
   "swarm": {
     "explore": {
       "tools": [
-        { "name": "slm-rerank", "use": "find the files for a concept", "how": "slm-rerank -q \"<question>\" --stub -k 5" },
+        { "name": "CocoIndex", "use": "find the files for a concept", "how": "ccc search \"<question>\"" },
         { "name": "GitNexus", "use": "callers, callees, and blast radius", "how": "gitnexus context <symbol> -r <repo>" }
       ],
       "summarizer": "<command> | lfm-ask \"<question>\"",
@@ -410,16 +408,13 @@ A repository without the section sees no change. The kit names no tool; the repo
 own.
 
 Write each `how` as a shell command. The plugin's four agent types carry no MCP tool, so a subagent
-of those types runs a tool such as `slm-rerank`, `gitnexus`, or `ccc` through `Bash`.
+of those types runs an optional tool such as `gitnexus` or `ccc` through `Bash`.
 
-- **Read budget** — a `PreToolUse` hook on `Read` refuses a whole-file read (neither `offset` nor
-  `limit`) of a text file over `maxReadLines` lines, and the refusal names the tools. The guard
-  judges only a file in the session's own checkout: a file in no checkout, or in another one,
-  images, PDFs, notebooks, and `exempt` globs pass with no change, as does a
-  file within the budget. The same file read the same way passes on the very next attempt in the
-  session, so a real need for the whole file costs one retry, never a standing exemption.
-- **Search hint** — a `PostToolUse` hook on `Grep` adds context naming the tools when the answer
-  runs past `maxGrepLines` lines. It never refuses anything.
+- **Read hint**: a `PreToolUse` hook adds advice for a whole-file read over `maxReadLines` lines.
+  The read proceeds on the first attempt. The hint names configured tools as optional choices and suggests `offset` and `limit`.
+  Ranged reads, binary files, `exempt` globs, and files outside the session's checkout receive no hint.
+- **Search hint**: a `PostToolUse` hook suggests optional tools when a `Grep` answer exceeds `maxGrepLines` lines.
+  The search proceeds with its output unchanged. An empty tool list adds no search hint.
 - **Output excerpt** — a `PostToolUse` hook on `Bash` and `PowerShell` acts on a successful output
   over `maxOutputChars` characters. With `longOutput` at `"excerpt"`, and an output over twice
   `excerptChars`, it saves the whole output to `<scratchpad>/outputs/<tool use id>.txt` and shows
@@ -433,19 +428,19 @@ of those types runs a tool such as `slm-rerank`, `gitnexus`, or `ccc` through `B
   `swarm.dispatch` off). Each subagent gets each tool's `use` and `how` at its own `SubagentStart`,
   past a compaction included. `swarm.explore` with no `tools` adds nothing.
 
-The read budget and the search hint report a bad key in `swarm.explore` as context instead of
+The read hint and the search hint report a bad key in `swarm.explore` as context instead of
 stopping the call they are judging; the session note skips the tool line instead.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `tools` | `[]` | each `{ name, use, how }` the read budget and the search hint name |
+| `tools` | `[]` | optional `{ name, use, how }` entries for hints and session notes |
 | `summarizer` | `null` | the command the output hint names; `null` turns that hint off |
-| `maxReadLines` | `300` | the read budget, in lines |
+| `maxReadLines` | `300` | the read hint threshold, in lines |
 | `maxGrepLines` | `80` | the search hint's threshold, in lines |
 | `maxOutputChars` | `10000` | the output excerpt's and the output hint's threshold, in characters |
-| `exempt` | `[]` | globs the read budget never refuses |
+| `exempt` | `[]` | globs that skip the read hint |
 | `longOutput` | `"excerpt"` | `"excerpt"` saves a long output and shows an excerpt; `"hint"` only names the `summarizer` |
-| `excerptChars` | `4000`, or half of `maxOutputChars` when that is under 8000 | the excerpt's size: a quarter head, three quarters tail. One you set must be smaller than `maxOutputChars`; a config that breaks this switches the explore guard off and names the key |
+| `excerptChars` | `4000`, or half of `maxOutputChars` when that is under 8000 | the excerpt's size: a quarter head, three quarters tail. One you set must be smaller than `maxOutputChars`; a config that breaks this switches the explore hooks off and names the key |
 
 ### 11. Hold the workflow to its reviews
 

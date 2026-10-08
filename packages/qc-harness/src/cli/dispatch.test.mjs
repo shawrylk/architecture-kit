@@ -204,11 +204,11 @@ test("a refusal over a limit above 1 names the limit and each holder, and one at
 test("exploreToolLines gives one `- name: use (how)` line per tool, in config order", () => {
   assert.deepEqual(
     exploreToolLines([
-      { name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' },
+      { name: "CocoIndex", use: "find the files for a concept", how: 'ccc search "<question>"' },
       { name: "GitNexus", use: "callers and callees", how: "gitnexus context <symbol> -r repo" },
     ]),
     [
-      '- slm-rerank: find the files for a concept (slm-rerank -q "<question>" --stub -k 5)',
+      '- CocoIndex: find the files for a concept (ccc search "<question>")',
       "- GitNexus: callers and callees (gitnexus context <symbol> -r repo)",
     ],
   );

@@ -62,11 +62,12 @@ test("the note names the workflow, the four types, the model tiers, and the one-
 
 test("with swarm.explore also on, the note names its tools", (t) => {
   const [on] = checkouts(t, [
-    { swarm: { dispatch: {}, explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }, { name: "GitNexus", use: "u", how: "h" }] } } },
+    { swarm: { dispatch: {}, explore: { tools: [{ name: "CocoIndex", use: "u", how: "h" }, { name: "GitNexus", use: "u", how: "h" }] } } },
   ]);
   const text = decide(start(on, "startup")).hookSpecificOutput.additionalContext;
   assert.ok(text.startsWith(REMINDER));
-  assert.match(text, /slm-rerank, GitNexus/);
+  assert.match(text, /CocoIndex, GitNexus/);
+  assert.match(text, /optional/i);
 });
 
 test("with swarm.explore off, or naming no tools, the note is exactly REMINDER", (t) => {
@@ -79,18 +80,20 @@ test("with swarm.explore off, or naming no tools, the note is exactly REMINDER",
 });
 
 test("with swarm.explore on and swarm.dispatch off, the SessionStart note still names the tools", (t) => {
-  const [on] = checkouts(t, [{ swarm: { explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }] } } }]);
+  const [on] = checkouts(t, [{ swarm: { explore: { tools: [{ name: "CocoIndex", use: "u", how: "h" }] } } }]);
   const output = decide(start(on, "startup"));
   assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart");
-  assert.match(output.hookSpecificOutput.additionalContext, /slm-rerank/);
+  assert.match(output.hookSpecificOutput.additionalContext, /CocoIndex/);
+  assert.match(output.hookSpecificOutput.additionalContext, /optional/i);
   assert.ok(!output.hookSpecificOutput.additionalContext.startsWith(" "));
 });
 
 test("SubagentStart names the tools when swarm.explore is on, independent of swarm.dispatch", (t) => {
-  const [on] = checkouts(t, [{ swarm: { explore: { tools: [{ name: "slm-rerank", use: "u", how: "h" }] } } }]);
+  const [on] = checkouts(t, [{ swarm: { explore: { tools: [{ name: "CocoIndex", use: "u", how: "h" }] } } }]);
   const output = decide(subagentStart(on));
   assert.equal(output.hookSpecificOutput.hookEventName, "SubagentStart");
-  assert.match(output.hookSpecificOutput.additionalContext, /slm-rerank/);
+  assert.match(output.hookSpecificOutput.additionalContext, /CocoIndex/);
+  assert.match(output.hookSpecificOutput.additionalContext, /optional/i);
 });
 
 test("SubagentStart with no swarm.explore section, or none naming tools, is a no-op", (t) => {
@@ -152,7 +155,7 @@ test("SubagentStart gives each tool's use and command, in config order, since a 
       swarm: {
         explore: {
           tools: [
-            { name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' },
+            { name: "CocoIndex", use: "find the files for a concept", how: 'ccc search "<question>"' },
             { name: "GitNexus", use: "callers and callees", how: "gitnexus context <symbol> -r repo" },
           ],
         },
@@ -162,15 +165,15 @@ test("SubagentStart gives each tool's use and command, in config order, since a 
   assert.equal(
     decide(subagentStart(on)).hookSpecificOutput.additionalContext,
     [
-      "The repository's own explore tools, and how to run each:",
-      '- slm-rerank: find the files for a concept (slm-rerank -q "<question>" --stub -k 5)',
+      "Optional explore tools, and how to run each. Read, Grep, and shell searches remain available:",
+      '- CocoIndex: find the files for a concept (ccc search "<question>")',
       "- GitNexus: callers and callees (gitnexus context <symbol> -r repo)",
     ].join("\n"),
   );
 });
 
 test("a swarm.explore section that does not parse leaves SubagentStart silent and the session note as REMINDER", (t) => {
-  const [bad] = checkouts(t, [{ swarm: { dispatch: {}, explore: { tools: "slm-rerank" } } }]);
+  const [bad] = checkouts(t, [{ swarm: { dispatch: {}, explore: { tools: "CocoIndex" } } }]);
   assert.equal(decide(subagentStart(bad)), null);
   assert.equal(decide(start(bad, "startup")).hookSpecificOutput.additionalContext, REMINDER);
 });

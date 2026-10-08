@@ -37,14 +37,14 @@ function exploreToolsAt(cwd) {
 /** One added line naming `swarm.explore`'s tools, or "" when there are none. */
 function exploreLine(cwd) {
   const tools = exploreToolsAt(cwd);
-  return tools ? ` The repository's own explore tools: ${tools.map((tool) => tool.name).join(", ")}.` : "";
+  return tools ? ` Optional explore tools: ${tools.map((tool) => tool.name).join(", ")}. Read, Grep, and shell searches remain available.` : "";
 }
 
 /** A subagent may carry no MCP tool, so its note gives each tool's command, not only its name. */
 function decideSubagentStart(cwd) {
   const tools = exploreToolsAt(cwd);
   if (!tools) return null;
-  const lines = ["The repository's own explore tools, and how to run each:", ...exploreToolLines(tools)];
+  const lines = ["Optional explore tools, and how to run each. Read, Grep, and shell searches remain available:", ...exploreToolLines(tools)];
   return context("SubagentStart", lines.join("\n"));
 }
 
