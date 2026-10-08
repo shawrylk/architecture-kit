@@ -9,7 +9,7 @@ import { decide, excerptOf, replacedOutput } from "./explore-hint.mjs";
 
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
 
-const TOOLS = [{ name: "slm-rerank", use: "find the files for a concept", how: 'slm-rerank -q "<question>" --stub -k 5' }];
+const TOOLS = [{ name: "CocoIndex", use: "find the files for a concept", how: 'ccc search "<question>"' }];
 
 /** A checkout with `swarm.explore` on, and one with no config. */
 function workspace(t, explore = { tools: TOOLS, maxGrepLines: 5, maxOutputChars: 20, longOutput: "hint", summarizer: "lfm-ask" }) {
@@ -40,7 +40,13 @@ const lines = (n) => Array.from({ length: n }, (_, i) => `match ${i}`).join("\n"
 test("a Grep answer over maxGrepLines adds context naming the tools", (t) => {
   const ws = workspace(t);
   const text = contextOf(decide(call(ws.on, "Grep", lines(10))));
-  assert.match(text, /slm-rerank/);
+  assert.match(text, /CocoIndex/);
+  assert.match(text, /optional/i);
+});
+
+test("a long Grep answer with no tools keeps its output and receives no tool hint", (t) => {
+  const ws = workspace(t, { maxGrepLines: 5 });
+  assert.equal(decide(call(ws.on, "Grep", lines(10))), null);
 });
 
 test("a Grep answer at or under maxGrepLines sees no change", (t) => {
@@ -91,20 +97,23 @@ test("a bad key reports the error as context instead of a hint", (t) => {
 test("a Grep { content } shaped answer over maxGrepLines adds context naming the tools", (t) => {
   const ws = workspace(t);
   const text = contextOf(decide(call(ws.on, "Grep", { content: lines(10) })));
-  assert.match(text, /slm-rerank/);
+  assert.match(text, /CocoIndex/);
+  assert.match(text, /optional/i);
 });
 
 test("a Grep { matches } shaped answer over maxGrepLines adds context naming the tools", (t) => {
   const ws = workspace(t);
   const matches = Array.from({ length: 10 }, (_, i) => `match ${i}`);
   const text = contextOf(decide(call(ws.on, "Grep", { matches })));
-  assert.match(text, /slm-rerank/);
+  assert.match(text, /CocoIndex/);
+  assert.match(text, /optional/i);
 });
 
 test("a Grep answer of unknown shape counts real newlines and escaped \\n sequences", (t) => {
   const ws = workspace(t);
   const text = contextOf(decide(call(ws.on, "Grep", { blob: lines(10) })));
-  assert.match(text, /slm-rerank/);
+  assert.match(text, /CocoIndex/);
+  assert.match(text, /optional/i);
 });
 
 test("a Bash { stdout, stderr } shaped answer over maxOutputChars adds context naming the summarizer", (t) => {

@@ -43,8 +43,8 @@ function lineCountOf(text) {
 }
 
 const grepHint = (tools) =>
-  `Explore hint: this Grep answer runs long. The repository's own tools may answer faster: ` +
-  `${tools.map((tool) => tool.name).join(", ")}.`;
+  `Explore hint: this Grep answer runs long. Optional explore tools: ` +
+  `${tools.map((tool) => tool.name).join(", ")}. Grep and shell searches remain available.`;
 
 const outputHint = (summarizer) => `Explore hint: this output runs long. Pipe it through the summarizer instead: ${summarizer}`;
 
@@ -114,7 +114,7 @@ export function decide(call, tmp = os.tmpdir()) {
 
   const text = textOf(call.tool_response);
   if (tool === "Grep") {
-    return lineCountOf(text) > settings.maxGrepLines ? context(grepHint(settings.tools)) : null;
+    return settings.tools.length > 0 && lineCountOf(text) > settings.maxGrepLines ? context(grepHint(settings.tools)) : null;
   }
 
   if (text.length <= settings.maxOutputChars) return null;
