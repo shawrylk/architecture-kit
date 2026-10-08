@@ -117,33 +117,30 @@ export function editLane({ root, base, direct, protectedBranches, rel, toolName,
   return problem ? { problem } : { problem: null, size: sizeOf(changes) };
 }
 
-/** True when an implementer stopped at a commit between `fork` and `sha`: that branch runs the subagent workflow. */
-function implementerWork(root, fork, sha, records) {
-  const stops = records.filter((record) => record.type === "stop" && record.role === "implementer" && typeof record.head === "string");
-  if (stops.length === 0) return false;
-  const history = gitOut(root, "rev-list", `${fork}..${sha}`);
-  if (history === null) return true;
-  const shas = history.split(/\r?\n/).filter(Boolean);
-  return stops.some((stop) => shas.some((one) => shaMatches(stop.head, one)));
-}
+/** The verdicts and stops that name one of `shas`, the commits of the branch. */
+const onBranch = (records, shas, keep) => records.filter((record) => keep(record) && shas.some((one) => shaMatches(record.sha ?? record.head, one)));
 
 /**
- * Judges the merge of head `sha` with no review of the merge kind. Any verdict that is not APPROVED on the head
- * keeps the lane shut. @returns `{ problem }`, or `{ problem: null, size }` when the merge fits.
+ * Judges the merge of head `sha` with no review of the merge kind. The newest review of any commit on the branch
+ * must not ask for changes, so a later commit cannot leave a failed review behind.
+ * @returns `{ problem }`, or `{ problem: null, size }` when the merge fits.
  */
 export function mergeLane({ root, base, direct, sha, records }) {
-  const verdict = latestVerdictFor(records, sha, KINDS);
-  if (verdict && verdict.verdict !== "APPROVED") return { problem: `the latest review of ${sha} is ${verdict.verdict}` };
   const fork = gitOut(root, "merge-base", base, sha);
   if (!fork) return { problem: `git cannot find the merge base of ${base} and ${sha}` };
-  const changes = changesSince(root, fork, sha);
+  const history = gitOut(root, "rev-list", `${fork}..${sha}`);
+  const changes = history === null ? null : changesSince(root, fork, sha);
   if (!changes) return { problem: `git cannot diff ${sha} against ${base}` };
-  if (implementerWork(root, fork, sha, records)) return { problem: "an implementer committed on the branch, so it runs the subagent workflow" };
+  const shas = history.split(/\r?\n/).filter(Boolean);
+  const latest = onBranch(records, shas, (record) => record.type === "verdict" && KINDS.includes(record.kind)).at(-1);
+  if (latest && latest.verdict !== "APPROVED") return { problem: `the latest review on the branch, of ${latest.sha}, is ${latest.verdict}` };
+  const implementer = (record) => record.type === "stop" && record.role === "implementer" && typeof record.head === "string";
+  if (onBranch(records, shas, implementer).length > 0) return { problem: "an implementer committed on the branch, so it runs the subagent workflow" };
   const problem = sizeProblem(changes, direct);
   if (problem) return { problem };
   const reviewed = globMatcher(direct.reviewPaths);
   const needsReview = [...changes.keys()].find((file) => reviewed(file));
-  if (needsReview !== undefined && verdict?.verdict !== "APPROVED") {
+  if (needsReview !== undefined && latestVerdictFor(records, sha, KINDS)?.verdict !== "APPROVED") {
     return { problem: `${needsReview} matches ${KEY}.reviewPaths, so dispatch the task reviewer (sdd-reviewer) on ${sha}` };
   }
   return { problem: null, size: sizeOf(changes) };

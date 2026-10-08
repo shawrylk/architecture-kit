@@ -107,7 +107,7 @@ test("a review that is not APPROVED, an implementer commit, or a large head keep
   const root = repo(t);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
   const changes = [{ type: "verdict", kind: "task", verdict: "CHANGES_REQUIRED", sha }];
-  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: changes }).problem, /latest review of .* is CHANGES_REQUIRED/);
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: changes }).problem, /latest review on the branch, of .*, is CHANGES_REQUIRED/);
   const stop = [{ type: "stop", role: "implementer", head: sha, branch: "feat/1-x" }];
   assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: stop }).problem, /an implementer committed on the branch/);
   const big = commit(root, "src/b.ts", lines(30));
@@ -122,4 +122,14 @@ test("a head that touches a review path needs one APPROVED review of either kind
   assert.match(mergeLane({ root, base: BASE, direct, sha, records: [] }).problem, /src\/a\.ts matches swarm\.direct\.reviewPaths/);
   const approved = [{ type: "verdict", kind: "task", verdict: "APPROVED", sha }];
   assert.equal(mergeLane({ root, base: BASE, direct, sha, records: approved }).problem, null);
+});
+
+test("a commit after a review that asked for changes stays out of the lane until a review approves it", (t) => {
+  const root = repo(t);
+  const first = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
+  const records = [{ type: "verdict", kind: "task", verdict: "CHANGES_REQUIRED", sha: first }];
+  const second = commit(root, "src/a.ts", lines(10).replace("line 3", "line 3!"));
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: second, records }).problem, /CHANGES_REQUIRED/);
+  records.push({ type: "verdict", kind: "task", verdict: "APPROVED", sha: second });
+  assert.equal(mergeLane({ root, base: BASE, direct: directDefaults, sha: second, records }).problem, null);
 });

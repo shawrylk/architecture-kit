@@ -377,7 +377,7 @@ test("a review that asked for changes keeps a small head out of the direct lane"
   appendRecord(ledger, verdict("task", "CHANGES_REQUIRED", head));
   const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`))) ?? "";
   assert.match(reason, /no APPROVED branch review/);
-  assert.match(reason, /The direct lane of swarm\.direct does not apply: the latest review of .* is CHANGES_REQUIRED/);
+  assert.match(reason, /The direct lane of swarm\.direct does not apply: the latest review on the branch, of .*, is CHANGES_REQUIRED/);
 });
 
 test("with swarm.direct false, a small head needs its review as before", (t) => {

@@ -504,7 +504,7 @@ several small edits:
 | Hook | The lane covers |
 |---|---|
 | Controller guard | an edit on a branch that is not protected, where the branch diff, the untracked files, and the pending edit fit the limits. An `Edit` counts its old and its new lines, and a `Write` counts every line it writes |
-| Merge guard | a head that fits the limits, where no implementer stopped between the merge base and the head, and no review of the head asked for changes |
+| Merge guard | a head that fits the limits, where no implementer stopped between the merge base and the head, and the newest review of a commit on the branch did not ask for changes |
 
 A detached head, a missing base ref, and a git error close the lane, so the subagent workflow runs.
 A binary file counts as a changed file with no lines. Each refusal names the reason the lane does not apply.
