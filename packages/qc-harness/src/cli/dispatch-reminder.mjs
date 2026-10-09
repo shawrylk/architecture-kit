@@ -33,8 +33,15 @@ function directLine(cwd) {
   }
   return direct
     ? ` A fix of at most ${direct.maxLines} changed lines in ${direct.maxFiles} ${direct.maxFiles === 1 ? "file" : "files"} needs no subagent: edit it in the main session on a branch, ` +
-        "and merge it with `--match-head-commit <sha>` and no review. The guards measure the branch against its base (swarm.direct)."
+        `and merge it with \`--match-head-commit <sha>\`${reviewClause(direct.reviewPaths)} The guards measure the branch against its base (swarm.direct).`
     : "";
+}
+
+/** The end of the merge sentence: no review, or the one APPROVED review that `swarm.direct.reviewPaths` asks for. */
+function reviewClause(reviewPaths) {
+  if (reviewPaths.length === 0) return " and no review.";
+  if (reviewPaths.includes("**")) return ". Every direct merge needs one APPROVED review of the head (sdd-reviewer).";
+  return ". A merge needs one APPROVED review of the head (sdd-reviewer) when a changed path matches swarm.direct.reviewPaths.";
 }
 
 /** The explore tools, or null when the section is off, names none, or does not parse. */
