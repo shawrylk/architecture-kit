@@ -4,6 +4,10 @@
 import { runGh } from "./gh-run.mjs";
 import { originOf } from "./git-read.mjs";
 
+// The hook that asks has a 10 second limit, and a hook that the limit kills lets the call through. The two reads
+// together stay well under it, so a slow gh leaves the head unknown and the review refusal stands.
+const GH_TIMEOUT_MS = 3_000;
+const ORIGIN_TIMEOUT_MS = 1_000;
 const FAILED = new Set(["failure", "cancelled", "timed_out", "action_required"]);
 const short = (sha) => sha.slice(0, 7);
 
@@ -26,9 +30,9 @@ export function notGreenReason(runs) {
  */
 export function ciNotGreen(sha, cwd, { gh = runGh, origin = originOf } = {}) {
   if (typeof sha !== "string" || sha === "") return null;
-  const repo = origin(cwd);
+  const repo = origin(cwd, ORIGIN_TIMEOUT_MS);
   if (repo === null) return null;
-  const out = gh(["api", `repos/${repo}/commits/${sha}/check-runs?per_page=100`], { cwd });
+  const out = gh(["api", `repos/${repo}/commits/${sha}/check-runs?per_page=100`], { cwd, timeoutMs: GH_TIMEOUT_MS });
   if (out === null) return null;
   let runs;
   try {

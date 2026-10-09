@@ -49,3 +49,14 @@ test("ciNotGreen is null when the head is green, gh fails, the reply is not JSON
   assert.equal(ciNotGreen(SHA, "/c", { gh: () => reply(run("a", "completed", "failure")), origin: () => null }), null);
   assert.equal(ciNotGreen(null, "/c", { gh: () => reply(run("a", "completed", "failure")), origin }), null);
 });
+
+test("ciNotGreen bounds its reads so the whole gate stays under the hook's 10 second limit", () => {
+  let ghOptions;
+  let originTimeout;
+  const gh = (_args, options) => ((ghOptions = options), null);
+  const origin = (_cwd, timeoutMs) => ((originTimeout = timeoutMs), "o/r");
+  assert.equal(ciNotGreen(SHA, "/c", { gh, origin }), null, "a gh that timed out leaves the head unknown, so the review refusal stands");
+  assert.ok(ghOptions.timeoutMs > 0 && ghOptions.timeoutMs <= 3000, `gh timeout ${ghOptions.timeoutMs}`);
+  assert.ok(originTimeout > 0 && originTimeout <= 1000, `origin timeout ${originTimeout}`);
+  assert.ok(ghOptions.timeoutMs + originTimeout < 5000);
+});

@@ -23,9 +23,9 @@ export function repoOfSpelling(spelled) {
   return parts.length >= 2 ? parts.slice(-2).join("/").toLowerCase() : null;
 }
 
-/** The repository of the checkout's `origin` remote, or null when git cannot say. */
-export const originOf = (root) => {
-  const url = gitOutWithin(ORIGIN_TIMEOUT_MS, root, "remote", "get-url", "origin");
+/** The repository of the checkout's `origin` remote, or null when git cannot say or `timeoutMs` passes. */
+export const originOf = (root, timeoutMs = ORIGIN_TIMEOUT_MS) => {
+  const url = gitOutWithin(timeoutMs, root, "remote", "get-url", "origin");
   return url === null ? null : repoOfSpelling(url);
 };
 
