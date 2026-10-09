@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 export { keyOf as pathKey } from "./worktree.mjs";
 
 const GIT_TIMEOUT_MS = 10_000;
+const ORIGIN_TIMEOUT_MS = 5_000;
 
 /** @returns git's trimmed stdout, or null on a non-zero exit or after `timeoutMs`. */
 export function gitOutWithin(timeoutMs, cwd, ...args) {
@@ -15,6 +16,18 @@ export function gitOutWithin(timeoutMs, cwd, ...args) {
 
 /** @returns git's trimmed stdout, or null on a non-zero exit or a timeout. */
 export const gitOut = (cwd, ...args) => gitOutWithin(GIT_TIMEOUT_MS, cwd, ...args);
+
+/** `owner/repo` from a git remote URL in the https, ssh, or scp spelling, or from gh's `[HOST/]OWNER/REPO`; lower case. */
+export function repoOfSpelling(spelled) {
+  const parts = String(spelled).trim().replace(/\/+$/, "").replace(/\.git$/i, "").split(/[/:]/).filter(Boolean);
+  return parts.length >= 2 ? parts.slice(-2).join("/").toLowerCase() : null;
+}
+
+/** The repository of the checkout's `origin` remote, or null when git cannot say. */
+export const originOf = (root) => {
+  const url = gitOutWithin(ORIGIN_TIMEOUT_MS, root, "remote", "get-url", "origin");
+  return url === null ? null : repoOfSpelling(url);
+};
 
 /** @returns the full sha that `ref` names as a commit, or null when the repository holds none. */
 export const commitOf = (cwd, ref) => gitOut(cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`);
