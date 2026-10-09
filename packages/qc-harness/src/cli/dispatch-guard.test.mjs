@@ -52,7 +52,7 @@ const reasonOf = (output) =>
 const implementer = {
   subagent_type: "architecture:sdd-implementer",
   description: "Task 1",
-  prompt: "Read the brief at plans/task-1-brief.md.",
+  prompt: "Read the brief at plans/task-1-brief.md.\n## Product decisions\nNone.",
 };
 
 test("a checkout with no config, or a swarm section with no dispatch key, sees no change", (t) => {
@@ -131,7 +131,7 @@ test("the tier guard refuses a type on the wrong family, naming the type, the mo
 test("every shipped role accepts GPT 6.1 Sol without a cache note", (t) => {
   const ws = workspace(t);
   for (const subagent_type of ["architecture:sdd-planner", "architecture:sdd-branch-reviewer", "architecture:sdd-reviewer", "architecture:sdd-implementer"]) {
-    assert.equal(decide(agentCall(ws.on, { subagent_type, model: "gpt-6.1-sol", prompt: "p" }), ws.tmp), null, subagent_type);
+    assert.equal(decide(agentCall(ws.on, { subagent_type, model: "gpt-6.1-sol", prompt: implementer.prompt }), ws.tmp), null, subagent_type);
   }
   assert.equal(decide(agentCall(ws.on, { model: "gpt-6.1-sol", prompt: "p" }), ws.tmp), null);
 });

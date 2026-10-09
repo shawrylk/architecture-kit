@@ -336,7 +336,7 @@ test("a stop with no new commit writes a worktree and a branch but no head, so i
       cwd: ws.on,
       hook_event_name: "PreToolUse",
       tool_name: "Agent",
-      tool_input: { subagent_type: IMPLEMENTER, description: "t", prompt: `Worktree: ${a.dir}` },
+      tool_input: { subagent_type: IMPLEMENTER, description: "t", prompt: `Worktree: ${a.dir}\n## Product decisions\nNone.` },
     },
     ws.tmp,
   );

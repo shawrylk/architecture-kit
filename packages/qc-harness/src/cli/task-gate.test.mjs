@@ -54,7 +54,7 @@ const dispatch = (cwd, prompt, subagent_type = "architecture:sdd-implementer", e
   tool_input: { subagent_type, description: "Task", prompt },
   ...extra,
 });
-const taskPrompt = (worktree, more = "") => `Read the brief at C:/scratch/brief.md.\nWorktree: ${worktree}\n${more}`;
+const taskPrompt = (worktree, more = "") => `Read the brief at C:/scratch/brief.md.\nWorktree: ${worktree}\n${more}\n## Product decisions\nNone.`;
 const implementerStop = (ws, head, branch = "feat/1-x", handoff = null) =>
   appendRecord(ws.ledger, {
     type: "stop",
@@ -89,7 +89,7 @@ test("with swarm.dispatch off, the gate passes and writes nothing", (t) => {
 
 test("a dispatch with no worktree line is recorded as no task, and the session remembers the checkout", (t) => {
   const ws = workspace(t);
-  for (const call of [dispatch(ws.main, "Review the diff.", "architecture:sdd-reviewer"), dispatch(ws.main, "Read the brief.")]) {
+  for (const call of [dispatch(ws.main, "Review the diff.", "architecture:sdd-reviewer"), dispatch(ws.main, "Read the brief.\n## Product decisions\nNone.")]) {
     const task = judgeTask(call, ws.tmp);
     assert.equal(task.refusal, null);
     assert.equal(recordDispatch(task), null);

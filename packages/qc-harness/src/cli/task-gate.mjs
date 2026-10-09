@@ -4,12 +4,13 @@
 import os from "node:os";
 import path from "node:path";
 import { checkoutRootOf } from "./checkout-root.mjs";
-import { ciNotGreen } from "./ci-state.mjs";
+import { ciNotGreen, ciState as readCiState } from "./ci-state.mjs";
 import { typeOf } from "./dispatch.mjs";
 import { handoffPathOf, resolveHandoff } from "./handoff-note.mjs";
-import { branchAt, gitOut, linkedWorktrees, pathKey } from "./git-read.mjs";
+import { gitOutWithin, linkedWorktrees, pathKey } from "./git-read.mjs";
 import { appendRecord, latestVerdictFor, latestVerdictOn, readLedger, shaMatches } from "./ledger.mjs";
 import { resolveNamedWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
+import { READ_MS, branchOfCheckout, briefCheck, defaultReads, headOf, reviewerCheck } from "./review-gate.mjs";
 import { rememberSession, workflowAt } from "./workflow-settings.mjs";
 
 export { worktreeNamed };
@@ -33,6 +34,8 @@ const unreviewedRefusal = (branch, stopHead, head) =>
   `\`qc ledger ${branch}\` lists what is recorded.`;
 
 const HISTORY_LIMIT = 5000;
+// A read is capped, so the whole dispatch guard ends inside the Agent hook's 30 second limit.
+const gitRead = (cwd, ...args) => gitOutWithin(READ_MS, cwd, ...args);
 
 /**
  * The newest implementer stop in this branch's history that no later verdict on the branch covers,
@@ -79,7 +82,7 @@ export function continuedStop(records, branch, handoff) {
  * Only implementer commits need a review, so a controller commit after a reviewed head passes. `cwd` is any
  * checkout; `git` reads it, and `ci` answers why CI on a sha is not green, or null.
  */
-export function gateVerdict({ records, branch, head, reason, type, cwd, git = gitOut, handoff = null, ci = (sha) => ciNotGreen(sha, cwd) }) {
+export function gateVerdict({ records, branch, head, reason, type, cwd, git = gitRead, handoff = null, ci = (sha) => ciNotGreen(sha, cwd) }) {
   // A continuation of the newest stop's hand-off is the same task, so it is neither a fix round nor a new task.
   const continued = continuedStop(records, branch, handoff);
   const why = reason ?? (continued ? `continues the hand-off ${continued.handoff}` : null);
@@ -109,10 +112,10 @@ const taskTypeIn = (type, review) =>
 /**
  * Judges one main-session Agent call. The repository of the worktree the prompt names decides, and the
  * repository of the cwd decides only when the prompt names none.
- * `ci` replaces the CI read of the task gate, for a test.
+ * `ci`, `ciState`, and `reads` replace the CI and base reads, for a test.
  * @returns the refusal, or the record to write once the dispatch runs.
  */
-export function judgeTask(call, tmp = os.tmpdir(), { ci } = {}) {
+export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaultReads } = {}) {
   const cwd = call.cwd ?? process.cwd();
   let own;
   try {
@@ -153,14 +156,32 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci } = {}) {
     }
   }
   if (!workflow) return pass(null, null);
-  if (named === null || !taskTypeIn(type, workflow.review)) return pass(workflow, base);
+  let briefNote = null;
+  if (workflow.review.implementerTypes.includes(type)) {
+    const brief = briefCheck({ prompt, dirs: [cwd, ...(place ? [place.abs] : [])], review: workflow.review });
+    if (brief.refusal) return refuse(brief.refusal);
+    briefNote = brief.note;
+  }
+  if (named === null || !taskTypeIn(type, workflow.review)) return pass(workflow, base, briefNote);
   if (!workflow.review.implementerTypes.includes(type)) {
-    // A reviewer is never gated. Its worktree tells the stop which branch the verdict belongs to.
+    // A reviewer waits for its checks. Its worktree tells the stop which branch the verdict belongs to.
     if (!root) return pass(workflow, base);
-    return pass(workflow, { ...base, worktree: root, branch: branchAt(root), head: gitOut(root, "rev-parse", "HEAD") });
+    const branch = branchOfCheckout(root);
+    const head = headOf(root);
+    const state = ciState ?? (ci ? (sha) => ({ reason: ci(sha), unknown: null }) : (sha) => readCiState(sha, root));
+    let records = [];
+    let ledgerNote = null;
+    try {
+      records = readLedger(workflow.ledger);
+    } catch (error) {
+      ledgerNote = `Task gate could not read the ledger (${error.message}), so the one-review check did not run.`;
+    }
+    const checked = reviewerCheck({ type, prompt, review: workflow.review, base: workflow.base, records, root, branch, head, ciState: state, reads });
+    if (checked.refusal) return refuse(checked.refusal);
+    return pass(workflow, { ...base, worktree: root, branch, head }, [ledgerNote, checked.note].filter(Boolean).join(" ") || null);
   }
   const key = pathKey(abs);
-  const worktree = linkedWorktrees(workflow.root).find((entry) => pathKey(entry.path) === key);
+  const worktree = linkedWorktrees(workflow.root, READ_MS).find((entry) => pathKey(entry.path) === key);
   if (!worktree) {
     return refuse(`Task gate: the prompt names worktree "${named}", which is no linked worktree of this repository. Name the path \`git worktree list\` prints for the task's branch.`);
   }
@@ -178,7 +199,7 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci } = {}) {
   if (refusal) return refuse(refusal);
   const continues = handoff ? { handoff } : {};
   const unreviewed = ciPass ? { ciPass } : {};
-  return pass(workflow, { ...base, task: true, worktree: worktree.path, branch: worktree.branch, head: worktree.head, resumeReason: reason, ...continues, ...unreviewed });
+  return pass(workflow, { ...base, task: true, worktree: worktree.path, branch: worktree.branch, head: worktree.head, resumeReason: reason, ...continues, ...unreviewed }, briefNote);
 }
 
 /** Writes the dispatch record of a judged call. @returns a note for the session, or null. */
