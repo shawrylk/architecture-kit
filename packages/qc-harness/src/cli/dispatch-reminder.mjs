@@ -12,10 +12,12 @@ export const REMINDER =
   "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
   "whole branch. " +
   "Run one implementer at a time: a hook refuses a second. Name a model on any other dispatch, and " +
-  "pass each brief as a file path. Name the worktree on a prompt line `Worktree: <path>`. A reviewer starts with " +
+  "write each brief to a file and name its path on a prompt line `Brief: <path>`; a dispatch with no such line, or a missing file, is refused. " +
+  "Name the worktree on a prompt line `Worktree: <path>`; a reviewer whose worktree, branch, or head the gate cannot read is refused. A reviewer starts with " +
   "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`. " +
-  "Review a head only once CI on it is green: fix a CI failure first. After an APPROVED review, review each fix round " +
-  "once, by its increment: add `Reviewed: <sha>`.";
+  "Ask the user the product questions first, in one question, and record the answers under `## Product decisions` in each brief. " +
+  "Review a head only once CI on it is green, with the base merged in: fix a CI failure first, and merge `origin/<base>` at Step 0 of a fix round. " +
+  "A PR gets one branch review. After it, review each fix round once, by its increment: add `Reviewed: <sha>`, the last head a branch review named.";
 
 const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-reviewer"];
 

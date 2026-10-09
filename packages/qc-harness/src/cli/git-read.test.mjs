@@ -4,7 +4,7 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { branchAt, branchesAt, commitOf, gitOut, gitOutWithin, linkedWorktrees, pathKey } from "./git-read.mjs";
+import { branchAt, branchesAt, commitOf, gitOut, gitOutWithin, gitStatusWithin, isAncestor, linkedWorktrees, pathKey, remoteTip } from "./git-read.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 
@@ -91,4 +91,34 @@ test("a git call that outlives its timeout answers null", (t) => {
   assert.equal(gitOutWithin(200, main, ...slow), null);
   assert.ok(Date.now() - started < 2500);
   assert.equal(gitOutWithin(10_000, main, "rev-parse", "--is-inside-work-tree"), "true");
+});
+
+test("gitStatusWithin tells an exit status from a failed read", (t) => {
+  const { main, head } = repo(t);
+  assert.deepEqual(gitStatusWithin(5000, main, "rev-parse", "HEAD"), { status: 0, stdout: head });
+  assert.equal(gitStatusWithin(5000, main, "rev-parse", "--verify", "--quiet", "nope^{commit}").status, 1);
+  const slow = ["-c", 'alias.slow=!node -e "setTimeout(() => {}, 3000)"', "slow"];
+  assert.equal(typeof gitStatusWithin(200, main, ...slow).error, "string");
+});
+
+test("isAncestor answers true, false, or null for a failed read", (t) => {
+  const { main, linked, head } = repo(t);
+  writeFileSync(path.join(linked, "b.txt"), "b\n");
+  git(linked, "add", ".");
+  git(linked, "commit", "-q", "-m", "b");
+  const moved = git(linked, "rev-parse", "HEAD");
+  assert.equal(isAncestor(main, head, moved), true);
+  assert.equal(isAncestor(main, moved, head), false);
+  assert.equal(isAncestor(main, "0".repeat(40), moved), null);
+});
+
+test("remoteTip reads a branch tip from origin, and answers null when the remote or the branch is missing", (t) => {
+  const { main, head } = repo(t);
+  assert.equal(remoteTip(main, "origin", "main"), null);
+  const bare = path.join(path.dirname(main), "origin.git");
+  git(path.dirname(main), "init", "-q", "--bare", bare);
+  git(main, "remote", "add", "origin", bare);
+  git(main, "push", "-q", "origin", "main");
+  assert.equal(remoteTip(main, "origin", "main"), head);
+  assert.equal(remoteTip(main, "origin", "gone"), null);
 });

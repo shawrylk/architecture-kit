@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { decide as dispatchDecide } from "./dispatch-guard.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { gitOut } from "./git-read.mjs";
+import { BRIEF } from "./test-brief.mjs";
 import { continuedStop, gateRefusal, gateVerdict, judgeTask, noResumeReason, recordDispatch, worktreeNamed } from "./task-gate.mjs";
 import { sessionDirOf } from "./workflow-settings.mjs";
 
@@ -54,7 +55,7 @@ const dispatch = (cwd, prompt, subagent_type = "architecture:sdd-implementer", e
   tool_input: { subagent_type, description: "Task", prompt },
   ...extra,
 });
-const taskPrompt = (worktree, more = "") => `Read the brief at C:/scratch/brief.md.\nWorktree: ${worktree}\n${more}`;
+const taskPrompt = (worktree, more = "") => `Read the brief.\nBrief: ${BRIEF}\nWorktree: ${worktree}\n${more}`;
 const implementerStop = (ws, head, branch = "feat/1-x", handoff = null) =>
   appendRecord(ws.ledger, {
     type: "stop",
@@ -89,7 +90,7 @@ test("with swarm.dispatch off, the gate passes and writes nothing", (t) => {
 
 test("a dispatch with no worktree line is recorded as no task, and the session remembers the checkout", (t) => {
   const ws = workspace(t);
-  for (const call of [dispatch(ws.main, "Review the diff.", "architecture:sdd-reviewer"), dispatch(ws.main, "Read the brief.")]) {
+  for (const call of [dispatch(ws.main, "Plan it.", "architecture:sdd-planner"), dispatch(ws.main, `Read the brief.\nBrief: ${BRIEF}`)]) {
     const task = judgeTask(call, ws.tmp);
     assert.equal(task.refusal, null);
     assert.equal(recordDispatch(task), null);
@@ -368,11 +369,11 @@ test("a reviewer dispatch in another repository lands in that repository's ledge
   assert.equal(existsSync(ws.ledger), false);
 });
 
-test("a reviewer dispatch whose worktree does not exist passes and records no worktree", (t) => {
+test("a reviewer dispatch whose worktree does not exist is refused, and the refusal names the Worktree line", (t) => {
   const ws = workspace(t);
   const task = judgeTask(dispatch(ws.main, taskPrompt(path.join(ws.tmp, "nowhere")), "architecture:sdd-reviewer"), ws.tmp);
-  assert.equal(task.refusal, null);
-  assert.equal(task.record.worktree, null);
+  assert.match(task.refusal ?? "", /`Worktree: <path>`/);
+  assert.equal(task.record, null);
 });
 
 test("a worktree spelled as a Git Bash drive path resolves on Windows", { skip: process.platform !== "win32" }, (t) => {

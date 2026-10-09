@@ -22,7 +22,7 @@ const USAGE = `qc — architecture gates
                            Vale on the lines a diff adds to the docs, and on a PR body; needs the vale binary
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
-  qc ledger [branch]       the workflow ledger: dispatches, stops, verdicts, merges, issue updates
+  qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts

@@ -27,8 +27,8 @@ function onSubagent(call, dir, now) {
   }
 }
 
-/** The verdict on one hook event. @returns the hook output, or null to let the call run with no message. */
-export function decide(call, tmp = os.tmpdir(), now = Date.now()) {
+/** The verdict on one hook event. `reads` replaces the task gate's CI and base reads, for a test. @returns the hook output, or null to let the call run with no message. */
+export function decide(call, tmp = os.tmpdir(), now = Date.now(), reads = {}) {
   const dir = slotDirOf(call.session_id ?? "session", tmp);
   if (call.hook_event_name === "SubagentStart" || call.hook_event_name === "SubagentStop") {
     onSubagent(call, dir, now);
@@ -51,7 +51,7 @@ export function decide(call, tmp = os.tmpdir(), now = Date.now()) {
   const refusal = dispatchRefusal(input, settings);
   if (refusal) return deny(refusal);
   // The task gate judges before the slot is claimed, so a refused task holds no slot.
-  const task = judgeTask(call, tmp);
+  const task = judgeTask(call, tmp, reads);
   if (task.refusal) return deny(task.refusal);
   const note = dispatchNote(input, settings);
   const type = typeOf(input);

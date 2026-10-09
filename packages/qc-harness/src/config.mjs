@@ -559,6 +559,19 @@ export const reviewDefaults = {
   },
   // The agent types whose stop runs the plan check.
   plannerTypes: ["sdd-planner", "architecture:sdd-planner"],
+  // Refuse a branch-reviewer dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch.
+  oneBranchReview: true,
+  // Skill names, bare or after a `plugin:` prefix, that the model may not call. `[]` turns the check off.
+  codeReviewSkills: ["code-review"],
+  // Refuse a reviewer dispatch while CI on the head is red or running.
+  requireGreen: true,
+  // Refuse a reviewer dispatch when the head lacks the tip of `worktree.base`.
+  requireBase: true,
+  // Refuse an implementer dispatch whose brief has no `## Product decisions` heading.
+  productDecisions: true,
+  // Warn on an implementer brief with more numbered findings, or more named files. `0` turns a warning off.
+  roundFindings: 8,
+  roundFiles: 10,
 };
 
 // What each key of `swarm.direct` means when a repository omits it. A fix inside these limits skips the

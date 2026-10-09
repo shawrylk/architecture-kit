@@ -51,10 +51,11 @@ export function segmentsOf(command, { escape = POSIX_ESCAPE } = {}) {
     word = "";
     inWord = false;
   };
-  const endSegment = () => {
+  // A segment that ends at `(` holds a command whose argument is a subexpression, so `grouped` marks it.
+  const endSegment = (grouped = false) => {
     endWord();
     while (LINE_KEYWORDS.has(words[0])) words.shift();
-    if (words.length > 0 || redirects.length > 0) segments.push({ words, redirects });
+    if (words.length > 0 || redirects.length > 0) segments.push(grouped ? { words, redirects, grouped } : { words, redirects });
     words = [];
     redirects = [];
   };
@@ -94,7 +95,7 @@ export function segmentsOf(command, { escape = POSIX_ESCAPE } = {}) {
       endWord();
       i++;
     } else if (c === ";" || c === "(" || c === ")") {
-      endSegment();
+      endSegment(c === "(");
       i++;
     } else if (c === "|") {
       endSegment();
@@ -258,10 +259,16 @@ export function gitCall(segment) {
   return { sub: null, dirs, explicitDir, configs, args: [] };
 }
 
+/** The spelling of a location target that is a subexpression: not a literal path, so a guard cannot resolve it. */
+export const GROUPED_TARGET = "$(...)";
+
+/** The target of a location change that names none: home, unless a subexpression follows it. */
+export const homeOrGroup = (segment) => (segment.grouped ? GROUPED_TARGET : "~");
+
 /** @returns the directory a `cd` or `pushd` segment moves to, or null. */
 export function cdTarget(segment) {
   const [program, target] = commandWords(segment);
-  return program === "cd" || program === "pushd" ? (target ?? "~") : null;
+  return program === "cd" || program === "pushd" ? (target ?? homeOrGroup(segment)) : null;
 }
 
 const READ_PROGRAMS = new Set([
@@ -292,13 +299,62 @@ export function isReadOnly(segment) {
 /** False only when every segment is known to read, so an unknown program counts as a write. */
 export const mayWrite = (command) => !segmentsOf(command).every(isReadOnly);
 
-/** Every directory the command names through `cd` or `git -C`, in order, as written. */
-export function checkoutDirs(command) {
+const TREE_KEYS = { GIT_DIR: "gitDirs", GIT_WORK_TREE: "workTrees" };
+const PS_ENV = /^\$env:([A-Za-z_]\w*)(?:=(.*))?$/is;
+
+/** The git directories and work trees one segment sets: through `--git-dir` and `--work-tree`, its environment, `export`, `set`, and `$env:`. */
+function gitTrees(segment) {
+  const trees = { gitDirs: [], workTrees: [] };
+  const add = (name, value) => {
+    const key = TREE_KEYS[name.toUpperCase()];
+    if (key && value) trees[key].push(value);
+  };
+  const { words, env } = unwrap(segment.words);
+  for (const [name, value] of Object.entries(env)) add(name, value);
+  const [program, ...args] = words;
+  if (["export", "set", "setx"].includes(baseName(program ?? ""))) {
+    for (const arg of args) add(...(ASSIGNMENT.exec(arg)?.slice(1) ?? ["", ""]));
+  } else if (PS_ENV.test(program ?? "")) {
+    const [, name, inline] = PS_ENV.exec(program);
+    add(name, inline ?? (args[0] === "=" ? args[1] : undefined));
+  } else if (isGit(program)) {
+    for (let i = 0; i < args.length; i++) {
+      const [, option, inline] = /^(--git-dir|--work-tree)(?:=(.*))?$/s.exec(args[i]) ?? [];
+      if (option) add(option === "--git-dir" ? "GIT_DIR" : "GIT_WORK_TREE", inline ?? args[++i]);
+      else if (args[i] === "-C" || args[i] === "-c") i++;
+      else if (!args[i].startsWith("-")) break;
+    }
+  }
+  return trees;
+}
+
+/**
+ * @param locate the dialect's reader of a location change: `cdTarget` or `locationTarget`
+ * @returns every directory the segments name through a location change, `git -C` or a work tree, in order, as written.
+ *   A work tree counts because `checkout` and `restore` write there.
+ */
+export function checkoutDirsOf(segments, locate) {
   const dirs = [];
-  for (const segment of segmentsOf(command)) {
-    const cd = cdTarget(segment);
-    if (cd !== null) dirs.push(cd);
+  for (const segment of segments) {
+    const target = locate(segment);
+    if (target !== null) dirs.push(target);
     dirs.push(...(gitCall(segment)?.dirs ?? []).filter(Boolean));
+    dirs.push(...gitTrees(segment).workTrees);
   }
   return dirs;
 }
+
+/**
+ * @returns the `--git-dir` and `GIT_DIR` values of a command that sets no work tree. Their checkout cannot be told from
+ *   the command, so a caller reports them instead of dropping them.
+ */
+export function unresolvedGitDirsOf(segments) {
+  const all = segments.map(gitTrees);
+  return all.some((trees) => trees.workTrees.length > 0) ? [] : all.flatMap((trees) => trees.gitDirs);
+}
+
+/** Every directory the command names through `cd`, `git -C` or a work tree, in order, as written. */
+export const checkoutDirs = (command) => checkoutDirsOf(segmentsOf(command), cdTarget);
+
+/** The git directories a command sets with no work tree. */
+export const unresolvedGitDirs = (command) => unresolvedGitDirsOf(segmentsOf(command));

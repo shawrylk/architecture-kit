@@ -12,7 +12,9 @@ import { ledgerFileOf } from "./ledger.mjs";
 
 const KEY = "swarm.review";
 const MERGE_KINDS = ["branch", "task"];
-const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes"];
+const SWITCH_KEYS = ["oneBranchReview", "requireGreen", "requireBase", "productDecisions"];
+const LIMIT_KEYS = ["roundFindings", "roundFiles"];
+const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", ...SWITCH_KEYS, ...LIMIT_KEYS];
 const STATE_FILE = "state.json";
 
 const isNameList = (value) => Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "");
@@ -28,7 +30,8 @@ export function reviewSettings(swarm = {}) {
   }
   const unknown = Object.keys(raw).find((key) => !REVIEW_KEYS.includes(key));
   if (unknown !== undefined) throw new Error(`${KEY}.${unknown} in qc.config.json is not a review setting; the keys are ${REVIEW_KEYS.join(", ")}`);
-  const { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes } = merge(reviewDefaults, raw);
+  const merged = merge(reviewDefaults, raw);
+  const { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills } = merged;
   if (!MERGE_KINDS.includes(mergeKind)) throw wrong("merge", mergeKind, `one of ${MERGE_KINDS.join(", ")}`);
   if (!Number.isInteger(maxTaskCalls) || maxTaskCalls < 1) throw wrong("maxTaskCalls", maxTaskCalls, "a positive whole number");
   if (!isNameList(controllerPaths)) throw wrong("controllerPaths", controllerPaths, "a list of globs");
@@ -36,7 +39,15 @@ export function reviewSettings(swarm = {}) {
     if (!isNameList(reviewerTypes?.[kind])) throw wrong(`reviewerTypes.${kind}`, reviewerTypes?.[kind], "a list of agent types");
   }
   if (!isNameList(plannerTypes)) throw wrong("plannerTypes", plannerTypes, "a list of agent types");
-  return { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, implementerTypes: dispatch.implementerTypes };
+  if (!isNameList(codeReviewSkills)) throw wrong("codeReviewSkills", codeReviewSkills, "a list of skill names");
+  for (const key of SWITCH_KEYS) {
+    if (typeof merged[key] !== "boolean") throw wrong(key, merged[key], "true or false");
+  }
+  for (const key of LIMIT_KEYS) {
+    if (!Number.isInteger(merged[key]) || merged[key] < 0) throw wrong(key, merged[key], "a whole number, 0 or more");
+  }
+  const enforcement = Object.fromEntries([...SWITCH_KEYS, ...LIMIT_KEYS].map((key) => [key, merged[key]]));
+  return { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, ...enforcement, implementerTypes: dispatch.implementerTypes };
 }
 
 /** @returns the workflow of the checkout that holds `cwd`, or null when it has no config or the checks are off. */

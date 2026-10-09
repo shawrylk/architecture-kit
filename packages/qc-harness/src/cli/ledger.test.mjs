@@ -139,3 +139,49 @@ test("a dispatch that passed on a CI failure shows the sha and the reason in the
   });
   assert.match(line, /CI-PASS: 1234567 CI on 1234567: build ended failure/);
 });
+
+const cost = (agentId, role, branch, input, output, toolCalls, extra = {}) => ({
+  type: "cost",
+  session: "s",
+  agentId,
+  agentType: `sdd-${role}`,
+  role,
+  model: "m",
+  input,
+  output,
+  cacheRead: input * 10,
+  cacheCreation: input,
+  toolCalls,
+  branch,
+  head: null,
+  ...extra,
+});
+
+test("qc ledger --cost totals tokens and tool calls per branch and per role, with a grand total", (t) => {
+  const { main } = repo(t);
+  const file = ledgerFileOf(main);
+  appendRecord(file, cost("a1", "implementer", "feat/1-x", 10, 100, 5));
+  appendRecord(file, cost("a2", "implementer", "feat/1-x", 20, 200, 7));
+  appendRecord(file, cost("a3", "reviewer", "feat/1-x", 1, 2, 3));
+  appendRecord(file, cost("a4", "planner", null, 4, 5, 6));
+  // A resumed agent stops again with its whole transcript, so only its newest record counts.
+  appendRecord(file, cost("a1", "implementer", "feat/1-x", 15, 150, 9));
+  const all = spawnSync(process.execPath, [QC, "ledger", "--cost"], { cwd: main, encoding: "utf8" });
+  assert.equal(all.status, 0, all.stderr);
+  const lines = all.stdout.trim().split(/\r?\n/);
+  assert.match(lines.find((line) => /^feat\/1-x/.test(line)), /agents 3 {2}in 36 {2}out 352 {2}cache-read 360 {2}cache-write 36 {2}tools 19/);
+  assert.match(lines.find((line) => /^\s+implementer/.test(line)), /agents 2 {2}in 35 {2}out 350/);
+  assert.match(lines.find((line) => /^\s+reviewer/.test(line)), /agents 1 {2}in 1 /);
+  assert.match(lines.find((line) => /^\(no branch\)/.test(line)), /agents 1 {2}in 4 /);
+  assert.match(lines.at(-1), /^total .*agents 4 {2}in 40 {2}out 357 .*tools 25/);
+  const one = spawnSync(process.execPath, [QC, "ledger", "--cost", "feat/1-x"], { cwd: main, encoding: "utf8" });
+  assert.match(one.stdout, /total .*agents 3 /);
+  assert.doesNotMatch(one.stdout, /no branch/);
+  const none = spawnSync(process.execPath, [QC, "ledger", "--cost", "feat/none"], { cwd: main, encoding: "utf8" });
+  assert.match(none.stdout, /No cost record .* names feat\/none/);
+});
+
+test("a cost record prints as one line in the plain ledger listing", () => {
+  const line = formatRecord({ ...cost("a1", "implementer", "feat/1-x", 10, 100, 5), at: "2026-10-09T10:00:00.000Z" });
+  assert.match(line, /^2026-10-09T10:00:00.000Z {2}cost {10}implementer sdd-implementer a1 feat\/1-x in 10 out 100 .* tools 5$/);
+});

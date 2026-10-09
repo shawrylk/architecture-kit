@@ -353,3 +353,103 @@ test("a worktree add in a repository with no qc.config.json is not guarded", (t)
   }
   assert.equal(decide(bash(ws.plain, "git worktree add ../x")), null, "a session in it is not guarded either");
 });
+
+test("a worktree add is refused when its command text sets GIT_DIR, GIT_WORK_TREE, core.worktree, or core.bare in any segment", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  for (const command of [
+    `export GIT_DIR=${kit}/.git; git worktree add .worktree/x`,
+    `export GIT_WORK_TREE=${kit}; cd ${kit} && git worktree add .worktree/x`,
+    `env GIT_DIR=${kit}/.git bash -c 'cd ${kit}'; git worktree add .worktree/x`,
+    `git worktree add .worktree/x; export GIT_DIR=${kit}/.git`,
+    `export GIT_DIR=${kit}/.git; bash -c 'git worktree add .worktree/x'`,
+    `bash -c 'export GIT_DIR=${kit}/.git'; git worktree add .worktree/x`,
+    `git -c core.worktree=${kit} worktree add .worktree/x`,
+    `git -c core.bare=true worktree add .worktree/x`,
+    `git config core.worktree ${kit} && git worktree add .worktree/x`,
+    `set GIT_DIR=${kit}/.git && git worktree add .worktree/x`,
+    `export git_dir=${kit}/.git; git worktree add .worktree/x`,
+    `export GIT_COMMON_DIR=${kit}/.git; git worktree add .worktree/x`,
+    "git -c core.worktree=$(pwd) worktree add ../out",
+    "git --git-dir=$(pwd)/.git worktree add ../out",
+    "git --work-tree=$(pwd) worktree add ../out",
+  ]) {
+    explicitDirReason(decide(bash(ws.adopted, command)));
+  }
+  for (const command of [
+    `$env:GIT_DIR = "${kit}/.git"; git worktree add .worktree/x`,
+    `$env:GIT_WORK_TREE = "${kit}"; Set-Location ${kit}; git worktree add .worktree/x`,
+    `git -c core.worktree=${kit} worktree add .worktree/x`,
+    `$env:git_dir="${kit}/.git"; git worktree add .worktree/x`,
+  ]) {
+    explicitDirReason(decide(powershell(ws.adopted, command)));
+  }
+});
+
+test("a worktree add with none of those settings still passes, and so does a mention without a worktree add", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  assert.equal(decide(bash(ws.adopted, "git worktree add .worktree/x")), null);
+  assert.equal(decide(bash(ws.adopted, `export GIT_DIR=${kit}/.git; git status`)), null);
+  assert.equal(decide(bash(ws.adopted, `git -c core.bare=true status`)), null);
+  assert.equal(decide(bash(ws.plain, `export GIT_DIR=${kit}/.git; git worktree add ../x`)), null, "a repository with no qc.config.json is not guarded");
+});
+
+/** The refusal for a path that holds an unexpanded variable: it says to write the path literally. */
+const variableReason = (output) => {
+  const reason = reasonOf(output) ?? "";
+  assert.match(reason, /literally/, reason);
+  assert.match(reason, /variable/, reason);
+  return reason;
+};
+
+test("a worktree add after a -C, cd, or Set-Location path with an unexpanded variable is refused, and the reason says to write the path literally", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  for (const command of [
+    "git -C $K worktree add .worktree/x",
+    "git -C ${K} worktree add .worktree/x",
+    `git -C "$HOME/kit" worktree add .worktree/x`,
+    "cd $K && git worktree add .worktree/x",
+    "cd ${K}/sub && git worktree add .worktree/x",
+    "cd $(git rev-parse --show-toplevel) && git worktree add .worktree/x",
+    `bash -c 'cd $K && git worktree add .worktree/x'`,
+    "cd %K% && git worktree add .worktree/x",
+    `cd $K; cd sub; git worktree add .worktree/x`,
+    "cd `pwd` && git worktree add .worktree/x",
+    "cd $(pwd)/sub && git worktree add .worktree/x",
+    "pushd $(pwd) && git worktree add .worktree/x",
+    "git -C $(git rev-parse --show-toplevel) worktree add ../out",
+    "git -C `pwd` worktree add ../out",
+  ]) {
+    variableReason(decide(bash(ws.adopted, command)));
+  }
+  for (const command of [
+    "Set-Location $env:K; git worktree add .worktree/x",
+    "Set-Location $K; git worktree add .worktree/x",
+    "git -C $env:K worktree add .worktree/x",
+    "cd %K%; git worktree add .worktree/x",
+    "Set-Location (Join-Path $K 'sub'); git worktree add .worktree/x",
+    "Push-Location ($env:K + '\\sub'); git worktree add .worktree/x",
+    "Set-Location -Path (Join-Path $K sub); git worktree add .worktree/x",
+    "Set-Location -LiteralPath (Get-Location); git worktree add .worktree/x",
+    "cd (Resolve-Path ..); git worktree add .worktree/x",
+    "Set-Location $(Join-Path $K sub); git worktree add .worktree/x",
+    "git -C (Join-Path $K 'x') worktree add ../out",
+    "git -C $(Get-Location) worktree add ../out",
+  ]) {
+    variableReason(decide(powershell(ws.adopted, command)));
+  }
+  // A literal path after the variable names the repository again.
+  assert.equal(decide(bash(ws.adopted, `cd $K; cd ${kit} && git worktree add .worktree/x`)), null);
+});
+
+test("a variable in a path of a command that adds no worktree, or in the worktree path alone, is no refusal for it", (t) => {
+  const ws = twoRepos(t);
+  for (const command of ["cd $K && git status", "git -C $K worktree list", "cd $HOME && ls", "git worktree add .worktree/$NAME"]) {
+    assert.doesNotMatch(reasonOf(decide(bash(ws.adopted, command))) ?? "", /literally/, command);
+  }
+  const plain = ws.slash(ws.plain);
+  assert.equal(decide(bash(ws.plain, "cd $K && git worktree add ../x")), null, "a repository with no qc.config.json is not guarded");
+  assert.equal(decide(bash(ws.adopted, `git -C ${plain} worktree add ../x`)), null);
+});

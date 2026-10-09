@@ -24,23 +24,31 @@ export function notGreenReason(runs) {
 }
 
 /**
- * @returns the reason CI on `sha` is not green, as `CI on <short sha>: <why>`, or null when it is green or
- * unknown: gh fails, times out, answers with no check runs, or the checkout has no `origin`.
+ * What CI says about `sha`: `reason` names a run that failed or still runs, as `CI on <short sha>: <why>`.
+ * `unknown` says why nothing is known: no sha, no `origin`, a gh that fails or times out, a reply that does not parse, or no check runs.
  * `gh` and `origin` replace the real reads, for a test.
  */
-export function ciNotGreen(sha, cwd, { gh = runGh, origin = originOf } = {}) {
-  if (typeof sha !== "string" || sha === "") return null;
+export function ciState(sha, cwd, { gh = runGh, origin = originOf } = {}) {
+  const unknown = (why) => ({ reason: null, unknown: why });
+  if (typeof sha !== "string" || sha === "") return unknown("there is no commit to ask about");
   const repo = origin(cwd, ORIGIN_TIMEOUT_MS);
-  if (repo === null) return null;
+  if (repo === null) return unknown("the checkout has no readable origin");
   const out = gh(["api", `repos/${repo}/commits/${sha}/check-runs?per_page=100`], { cwd, timeoutMs: GH_TIMEOUT_MS });
-  if (out === null) return null;
+  if (out === null) return unknown("gh failed or timed out");
   let runs;
   try {
     runs = JSON.parse(out)?.check_runs;
   } catch {
-    return null;
+    return unknown("gh answered with text that is not JSON");
   }
-  if (!Array.isArray(runs)) return null;
+  if (!Array.isArray(runs)) return unknown("gh answered with no check_runs list");
+  if (runs.length === 0) return unknown(`${short(sha)} has no check runs`);
   const why = notGreenReason(runs);
-  return why === null ? null : `CI on ${short(sha)}: ${why}`;
+  return { reason: why === null ? null : `CI on ${short(sha)}: ${why}`, unknown: null };
 }
+
+/**
+ * @returns the reason CI on `sha` is not green, as `CI on <short sha>: <why>`, or null when it is green or
+ * unknown. `ciState` tells those two apart.
+ */
+export const ciNotGreen = (sha, cwd, deps) => ciState(sha, cwd, deps).reason;

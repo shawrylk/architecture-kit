@@ -133,3 +133,31 @@ export function agentTypeOf(transcript) {
     return null;
   }
 }
+
+/** The number of distinct tool calls in a transcript: each `tool_use` block counts once, whatever lines repeat its message. */
+export function toolCallsIn(file) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return 0;
+  }
+  const ids = new Set();
+  let anonymous = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.includes('"tool_use"')) continue;
+    let content;
+    try {
+      content = JSON.parse(line)?.message?.content;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block?.type !== "tool_use") continue;
+      if (typeof block.id === "string") ids.add(block.id);
+      else anonymous += 1;
+    }
+  }
+  return ids.size + anonymous;
+}

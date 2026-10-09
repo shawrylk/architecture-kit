@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { checkoutDirs, commandEnv, commandWords, gitCall, isReadOnly, mayWrite, segmentsOf } from "./shell-command.mjs";
+import { checkoutDirs, commandEnv, commandWords, gitCall, isReadOnly, mayWrite, segmentsOf, unresolvedGitDirs } from "./shell-command.mjs";
 
 const wordsOf = (command) => segmentsOf(command).map((segment) => segment.words);
 
@@ -236,4 +236,24 @@ test("a leading ! is dropped, so the negated command is read", () => {
   assert.deepEqual(segmentsOf("! gh pr merge 5").map((segment) => segment.words), [["gh", "pr", "merge", "5"]]);
   assert.deepEqual(segmentsOf("if ! git diff --quiet; then x; fi").map((segment) => segment.words)[0], ["git", "diff", "--quiet"]);
   assert.deepEqual(segmentsOf("echo !").map((segment) => segment.words), [["echo", "!"]]);
+});
+
+test("a work tree counts as a checkout directory, through the option, the environment, or an export", () => {
+  assert.deepEqual(checkoutDirs("git --work-tree=/w checkout main"), ["/w"]);
+  assert.deepEqual(checkoutDirs("git --work-tree /w restore f"), ["/w"]);
+  assert.deepEqual(checkoutDirs("GIT_WORK_TREE=/w git checkout main"), ["/w"]);
+  assert.deepEqual(checkoutDirs("export GIT_WORK_TREE=/w; git checkout main"), ["/w"]);
+  assert.deepEqual(checkoutDirs("git -C /a --work-tree=/w checkout main"), ["/a", "/w"]);
+  assert.deepEqual(checkoutDirs("git --work-tree"), [], "a bare option yields no empty directory");
+  assert.deepEqual(checkoutDirs("git -C"), []);
+});
+
+test("a git dir with no work tree is reported as unresolved, and one with a work tree is not", () => {
+  assert.deepEqual(unresolvedGitDirs("git --git-dir=/r/.git checkout main"), ["/r/.git"]);
+  assert.deepEqual(unresolvedGitDirs("git --git-dir /r/.git checkout main"), ["/r/.git"]);
+  assert.deepEqual(unresolvedGitDirs("GIT_DIR=/r/.git git checkout main"), ["/r/.git"]);
+  assert.deepEqual(unresolvedGitDirs("export GIT_DIR=/r/.git; git checkout main"), ["/r/.git"]);
+  assert.deepEqual(unresolvedGitDirs("git --git-dir=/r/.git --work-tree=/w checkout main"), []);
+  assert.deepEqual(unresolvedGitDirs("git -C /a status"), []);
+  assert.deepEqual(unresolvedGitDirs("git --git-dir"), [], "a bare option has no value to report");
 });

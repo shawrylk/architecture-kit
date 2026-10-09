@@ -71,6 +71,14 @@ recorded.
 | An issue that a merge names is closed, or has a comment after the merge | `issue-gate.mjs`, on `Stop` |
 | The controller edits only its own paths, or a small fix inside the direct lane, whose limits come from the base | `controller-guard.mjs`, through `direct-lane.mjs` |
 | A plan task names its files, a test step, and a commit step, within the budget | `qc plan-check`, and `plan-stop.mjs` |
+| A branch is reviewed whole once; a later review names `Reviewed: <sha>`, the last head a branch review named, and reads the increment (`swarm.review.oneBranchReview`) | `dispatch-guard.mjs`, on `Agent` |
+| A model never calls a code-review skill: dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review` (`codeReviewSkills`) | `skill-guard.mjs`, on `Skill` |
+| A review runs on a green head: CI on the head is not red or running (`requireGreen`) | `dispatch-guard.mjs`, on `Agent` |
+| A review runs on a head that holds the tip of `worktree.base`: merge the base first (`requireBase`) | `dispatch-guard.mjs`, on `Agent` |
+| An implementer prompt names its brief on a `Brief: <path>` line, and the brief holds a `## Product decisions` section with the user's rulings, or `none` (`productDecisions`). A reviewer prompt names a `Worktree: <path>` whose branch and head the gate can read | `dispatch-guard.mjs`, on `Agent` |
+| An implementer brief stays within `roundFindings` findings and `roundFiles` files; a larger round splits in parallel on disjoint paths (a warning) | `dispatch-guard.mjs`, on `Agent` |
+| Each subagent stop records its tokens and tool calls by role; `qc ledger --cost [branch]` totals them | `cost-stop.mjs`, on `SubagentStop` |
+| A typecheck that fails only with `TS2307` runs once more before the stop reports red | `hooks/stop-gate.sh`, on `Stop` |
 
 ## Worktrees — QC-015
 
@@ -79,6 +87,9 @@ These hooks are on wherever `qc.config.json` is. `"worktree": { "enforce": false
 | Rule | Check |
 |---|---|
 | A worktree is one folder directly under `worktree.dir` of the main checkout | `bash-command-guard.mjs`, on `PreToolUse` of `Bash` and `PowerShell` |
+| `git worktree add` runs where the guard can name the repository: no `GIT_DIR`, `GIT_COMMON_DIR`, `GIT_WORK_TREE`, `core.worktree`, or `core.bare` anywhere in the command; use `-C`, `cd`, or `Set-Location` | `bash-command-guard.mjs`, on `PreToolUse` of `Bash` and `PowerShell` |
+| A `-C`, `cd`, or `Set-Location` path before `git worktree add` is a literal path, with no variable, command substitution, or subexpression: write the path literally | `bash-command-guard.mjs`, on `PreToolUse` of `Bash` and `PowerShell` |
+| A shell write names its checkout: a `--work-tree` directory counts, and a `--git-dir` with no work tree is reported as unresolved (a warning) | `bash-edit-guard.mjs`, on `PostToolUse` of `Bash` and `PowerShell` |
 | A pull request this session merged leaves no worktree, local branch, or remote branch on its head | `worktree-gate.mjs`, on `Stop`, from the merge record of `merge-guard.mjs` |
 | A squash-merged branch is deleted | `qc worktree remove`, on a merged pull request whose head is the branch at its tip |
 

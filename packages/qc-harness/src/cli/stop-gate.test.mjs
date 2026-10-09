@@ -275,3 +275,83 @@ test("the memory file holds a hash of the failure text, not the text", (t) => {
   assert.match(stored.trim(), /^[0-9a-f]{64}$/);
   assert.ok(!stored.includes("ADR-0099"));
 });
+
+/**
+ * A workspace whose typecheck is `npx tsc`, answered by a stub `npx` first on the PATH. `runs` lists each run's exit code and output;
+ * a run past the list repeats the last. `count()` is the number of times the gate ran the typecheck.
+ */
+function tscWorkspace(t, runs) {
+  const ws = workspace(t, { codes: {}, withDoctor: false });
+  const base = path.dirname(ws.tmpDir);
+  const repo = path.join(base, "repo");
+  mkdirSync(path.join(repo, "node_modules", ".bin"), { recursive: true });
+  writeFileSync(path.join(repo, "node_modules", ".bin", "tsc"), "");
+  const stubDir = path.join(base, "stub");
+  mkdirSync(stubDir, { recursive: true });
+  runs.forEach((run, i) => {
+    writeFileSync(path.join(stubDir, `run-${i + 1}.code`), String(run.code));
+    writeFileSync(path.join(stubDir, `run-${i + 1}.out`), run.out);
+  });
+  const counter = path.join(stubDir, "count");
+  writeFileSync(
+    path.join(stubDir, "npx"),
+    [
+      "#!/usr/bin/env bash",
+      `[ "$1" = tsc ] || exit 0`,
+      `n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "${counter}"`,
+      `while [ ! -f "${stubDir}/run-$n.code" ]; do n=$((n - 1)); done`,
+      `cat "${stubDir}/run-$n.out"`,
+      `exit $(cat "${stubDir}/run-$n.code")`,
+    ].join("\n") + "\n",
+    { mode: 0o755 },
+  );
+  const run = (input = {}) => ws.run(input, { PATH: `${stubDir}${path.delimiter}${process.env.PATH}` });
+  const count = () => (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0);
+  return { run, count };
+}
+
+const TS2307 = "src/a.ts(1,22): error TS2307: Cannot find module 'zod' or its corresponding type declarations.\n";
+const TS2322 = "src/b.ts(4,7): error TS2322: Type 'string' is not assignable to type 'number'.\n";
+
+test("a typecheck that fails only with TS2307 runs once more, and a second pass ends the stop green", (t) => {
+  const gate = tscWorkspace(t, [{ code: 2, out: TS2307 }, { code: 0, out: "" }]);
+  const result = gate.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(gate.count(), 2);
+});
+
+test("a typecheck that still fails with TS2307 on the second run blocks, with the second run's text", (t) => {
+  const gate = tscWorkspace(t, [{ code: 2, out: TS2307 }, { code: 2, out: TS2307.replace("zod", "hono") }]);
+  const result = gate.run();
+  assert.equal(result.status, 2);
+  assert.equal(gate.count(), 2);
+  assert.match(result.stderr, /typecheck failed/);
+  assert.match(result.stderr, /hono/);
+});
+
+test("a TS2322 next to a TS2307 does not retry, and a TS2322 alone does not either", (t) => {
+  for (const out of [TS2322 + TS2307, TS2322]) {
+    const gate = tscWorkspace(t, [{ code: 2, out }, { code: 0, out: "" }]);
+    const result = gate.run();
+    assert.equal(result.status, 2);
+    assert.equal(gate.count(), 1);
+    assert.match(result.stderr, /TS2322/);
+  }
+});
+
+test("a large TS2322 log does not retry, since the early exit of the filter must not read as a pipe failure", (t) => {
+  const out = TS2322.repeat(20_000);
+  const gate = tscWorkspace(t, [{ code: 2, out }, { code: 0, out: "" }]);
+  const result = gate.run();
+  assert.equal(result.status, 2);
+  assert.equal(gate.count(), 1);
+});
+
+test("a failing typecheck with no error line does not retry, and a passing one runs once", (t) => {
+  const broken = tscWorkspace(t, [{ code: 1, out: "tsc: command crashed\n" }, { code: 0, out: "" }]);
+  assert.equal(broken.run().status, 2);
+  assert.equal(broken.count(), 1);
+  const green = tscWorkspace(t, [{ code: 0, out: "" }]);
+  assert.equal(green.run().status, 0);
+  assert.equal(green.count(), 1);
+});

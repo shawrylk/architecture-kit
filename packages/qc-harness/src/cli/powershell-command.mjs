@@ -1,7 +1,7 @@
 // A fragment that reads a PowerShell command the way shell-command.mjs reads a POSIX one, for the
 // Bash edit guard. It shares that parser and its git vocabulary, and an unknown name counts as a write.
 
-import { GIT_READS, commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
+import { GIT_READS, checkoutDirsOf, commandWords, gitCall, homeOrGroup, segmentsOf, unresolvedGitDirsOf } from "./shell-command.mjs";
 
 const DIALECT = { escape: "`" };
 
@@ -27,10 +27,10 @@ export function locationTarget(segment) {
   const [program, ...args] = commandWords(segment);
   if (!LOCATION_NAMES.has(program?.toLowerCase())) return null;
   for (let i = 0; i < args.length; i++) {
-    if (PATH_PARAMETERS.has(args[i].toLowerCase())) return args[i + 1] ?? "~";
+    if (PATH_PARAMETERS.has(args[i].toLowerCase())) return args[i + 1] ?? homeOrGroup(segment);
     if (!args[i].startsWith("-")) return args[i];
   }
-  return "~";
+  return homeOrGroup(segment);
 }
 
 function isReadOnly(segment) {
@@ -48,13 +48,8 @@ function isReadOnly(segment) {
 /** False only when every segment is known to read, so an unknown command counts as a write. */
 export const mayWrite = (command) => !segmentsOf(command, DIALECT).every(isReadOnly);
 
-/** Every directory the command names through a location change or `git -C`, in order, as written. */
-export function checkoutDirs(command) {
-  const dirs = [];
-  for (const segment of segmentsOf(command, DIALECT)) {
-    const target = locationTarget(segment);
-    if (target !== null) dirs.push(target);
-    dirs.push(...(gitCall(segment)?.dirs ?? []).filter(Boolean));
-  }
-  return dirs;
-}
+/** Every directory the command names through a location change, `git -C` or a work tree, in order, as written. */
+export const checkoutDirs = (command) => checkoutDirsOf(powershellSegments(command), locationTarget);
+
+/** The git directories a command sets with no work tree. */
+export const unresolvedGitDirs = (command) => unresolvedGitDirsOf(powershellSegments(command));
