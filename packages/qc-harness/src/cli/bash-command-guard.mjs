@@ -46,6 +46,10 @@ const NESTED = Object.fromEntries([
 ]);
 
 export const programName = (word) => path.basename(word ?? "").toLowerCase().replace(/\.exe$/, "");
+/** Git reads the repository from these settings, wherever the command spells them. */
+const REPOSITORY_SETTING = /GIT_DIR|GIT_WORK_TREE|core\.worktree|core\.bare/i;
+/** A shell variable or command substitution in a path: `$K`, `${K}`, `$env:K`, `$(cmd)`, a backtick, or `%K%`. */
+const UNEXPANDED = /[$`]|%[A-Za-z_][^%\s]*%/;
 const isNoVerify = (arg) => arg.length >= NO_VERIFY_MIN && NO_VERIFY.startsWith(arg);
 
 /** True when a commit or push names `--no-verify`, or a commit names `-n` alone or in a flag cluster. */
@@ -142,9 +146,13 @@ const REASONS = {
     "a hand run of a hook script writes a lease or a ledger record under a made-up session id, and that lease blocks later " +
     "edits in the worktree for hours. Test a hook only through its own suite (`node --test`), in temporary folders.",
   explicitDir:
-    "`--git-dir`, `GIT_DIR`, `--work-tree`, and `GIT_WORK_TREE` make git read the repository from a path it resolves after every `-C`, " +
-    "so this guard cannot tell which repository gets the worktree. Run `git worktree add` from inside the target repository instead: " +
+    "`--git-dir`, `GIT_DIR`, `--work-tree`, `GIT_WORK_TREE`, `core.worktree`, and `core.bare` make git read the repository from a path it resolves " +
+    "after every `-C`, so this guard cannot tell which repository gets the worktree. It looks for them in the whole command, in any order. " +
+    "Run `git worktree add` from inside the target repository instead: " +
     "use `-C <repository>`, `cd <repository>`, or `Set-Location <repository>`, and drop the git directory and work tree settings.",
+  variable:
+    "a `-C`, `cd`, or `Set-Location` path holds a variable the guard cannot expand (`$K`, `${K}`, `$env:K`, `%K%`, or a command substitution), " +
+    "so it cannot tell which repository gets the worktree. Write the path literally.",
   worktree:
     "a worktree lives in the worktree folder of the main checkout, so git ignores it and `qc worktree remove` finds it. " +
     "Run `npx qc worktree add <name> <branch>` from the repository, or give `git worktree add` a path one level under that folder.",
@@ -172,17 +180,27 @@ function folderFor(place, from) {
 export function violations(command, parse = segmentsOf, place = null, refused = []) {
   const segments = parse(command);
   const found = new Set();
+  const scoped = Boolean(place) && (place.scoped === true || REPOSITORY_SETTING.test(command));
   let cwd = place?.cwd;
+  // A move into a path with a variable leaves the repository unknown, until a literal absolute path names it again.
+  let unknown = place?.unknown === true;
   for (const segment of segments) {
     const moved = place ? MOVES.get(parse)?.(segment) : null;
-    if (moved != null) cwd = resolveFrom(cwd, moved, parse);
+    if (moved != null && UNEXPANDED.test(moved)) {
+      unknown = true;
+    } else if (moved != null) {
+      cwd = resolveFrom(cwd, moved, parse);
+      if (path.isAbsolute(spelledPath(moved, parse))) unknown = false;
+    }
     const git = gitCall(segment);
     if (git && skipsHooks(git)) found.add("hooks");
     if (git && setsHooksPath(git)) found.add("hooksPath");
     const added = place && git?.sub === "worktree" ? worktreeAddPath(git.args) : null;
-    if (added !== null && git.explicitDir) {
+    if (added !== null && (scoped || git.explicitDir)) {
       // The session is guarded, because `place` exists only then.
       found.add("explicitDir");
+    } else if (added !== null && (unknown || git.dirs.some((dir) => UNEXPANDED.test(dir)))) {
+      found.add("variable");
     } else if (added !== null) {
       const from = git.dirs.filter(Boolean).reduce((dir, next) => resolveFrom(dir, next, parse), cwd);
       const folder = folderFor(place, from);
@@ -192,7 +210,7 @@ export function violations(command, parse = segmentsOf, place = null, refused = 
       }
     }
     const nested = nestedCommand(segment);
-    if (nested) for (const key of violations(nested.command, nested.parse, place && { ...place, cwd }, refused)) found.add(key);
+    if (nested) for (const key of violations(nested.command, nested.parse, place && { ...place, cwd, scoped, unknown }, refused)) found.add(key);
   }
   if (!segments.some(runsTests) && segments.some(runsHookScript)) found.add("script");
   return Object.keys(REASONS).filter((key) => found.has(key));
