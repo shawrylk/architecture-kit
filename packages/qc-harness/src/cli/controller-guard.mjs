@@ -45,12 +45,12 @@ export function decide(call, platform = process.platform) {
   const rel = path.relative(fileRoot, file).replaceAll("\\", "/");
   const { controllerPaths } = workflow.review;
   if (isControllerPath(rel, controllerPaths, platform)) return null;
-  const { direct } = workflow;
-  const lane = direct
-    ? editLane({ root: fileRoot, base: workflow.base, direct, protectedBranches: workflow.protectedBranches, rel, toolName: call.tool_name, input })
+  // The checkout's `swarm.direct` only turns the lane off; `editLane` reads the limits from the base.
+  const lane = workflow.direct
+    ? editLane({ root: fileRoot, base: workflow.base, protectedBranches: workflow.protectedBranches, rel, toolName: call.tool_name, input })
     : workflow.directProblem && { problem: workflow.directProblem };
   if (lane && lane.problem === null) {
-    return context(`Direct lane: with this edit the branch changes ${sizeLine(lane.size, direct)}, so the fix needs no implementer. Merge it with \`--match-head-commit <sha>\`.`);
+    return context(`Direct lane: with this edit the branch changes ${sizeLine(lane.size, lane.direct)}, so the fix needs no implementer. Merge it with \`--match-head-commit <sha>\`.`);
   }
   const laneNote = lane ? ` The direct lane of swarm.direct does not apply: ${lane.problem}.` : "";
   return deny(

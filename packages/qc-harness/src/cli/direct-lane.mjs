@@ -72,6 +72,25 @@ function gitBy(budgetMs) {
 
 const gitFailed = (git, what) => (git.late?.() ? `git ran past the ${LANE_BUDGET_MS} ms budget of the lane` : what);
 
+/**
+ * The limits of `swarm.direct` in `qc.config.json` at `base`, read through `git`. A branch cannot loosen its own
+ * limits, so the lane never reads the checkout's file. @returns `{ direct }`, or `{ problem }` naming why the lane is closed.
+ */
+function directAtBase(root, base, git) {
+  const text = git(root, "show", `${base}:${CONFIG_FILE}`);
+  if (text === null) return { problem: gitFailed(git, `git cannot read ${CONFIG_FILE} at ${base}`) };
+  try {
+    const direct = directSettings(JSON.parse(text).swarm);
+    return direct ? { direct } : { problem: `${KEY} is false at ${base}` };
+  } catch (error) {
+    return { problem: error instanceof SyntaxError ? `${CONFIG_FILE} at ${base} is not JSON` : error.message };
+  }
+}
+
+// The checkout also sets `worktree.base` and `swarm.isolation.protectedBranches`, so a branch that edits the file could point `base` at looser settings.
+const touchesConfig = (changes) => [...changes.keys()].some((file) => file.toLowerCase() === CONFIG_FILE);
+const CONFIG_PROBLEM = `${CONFIG_FILE} changes on the branch, so it runs the subagent workflow`;
+
 function startsWithNul(file) {
   const fd = openSync(file, "r");
   try {
@@ -152,38 +171,50 @@ export function sizeProblem(changes, direct) {
 
 /**
  * Judges one main-session edit of `rel` in the checkout at `root`. The branch diff and the pending edit together
- * must fit, on a branch that is not protected. @returns `{ problem }`, or `{ problem: null, size }` when it fits.
+ * must fit the limits at `base`, on a branch that is not protected, and neither may touch `qc.config.json`.
+ * @returns `{ problem }`, or `{ problem: null, size, direct }` when it fits.
  */
-export function editLane({ root, base, direct, protectedBranches, rel, toolName, input, budgetMs = LANE_BUDGET_MS }) {
+export function editLane({ root, base, protectedBranches, rel, toolName, input, budgetMs = LANE_BUDGET_MS }) {
   const git = gitBy(budgetMs);
   const branch = git(root, "branch", "--show-current");
   if (branch === null) return { problem: gitFailed(git, "git cannot name the checked-out branch") };
   if (branch === "") return { problem: "the checkout has a detached head" };
   if (protectedBranches.includes(branch)) return { problem: `${branch} is a protected branch, so start a branch for the fix` };
   const fork = git(root, "merge-base", base, "HEAD");
-  const changes = fork ? changesSince(root, fork, { maxFiles: direct.maxFiles, git }) : null;
+  if (!fork) return { problem: gitFailed(git, `git cannot diff the branch against ${base}`) };
+  const settings = directAtBase(root, base, git);
+  if (!settings.direct) return settings;
+  const { direct } = settings;
+  const changes = changesSince(root, fork, { maxFiles: direct.maxFiles, git });
   if (!changes) return { problem: gitFailed(git, `git cannot diff the branch against ${base}`) };
   const old = toolName === "Write" || toolName === "NotebookEdit" ? fileLines(root, rel) : undefined;
   const replaced = old === undefined ? 0 : old;
   const before = changes.has(rel) ? changes.get(rel) : 0;
   changes.set(rel, before === null || replaced === null ? null : before + replaced + pendingLines(toolName, input));
+  if (touchesConfig(changes)) return { problem: CONFIG_PROBLEM };
   const problem = sizeProblem(changes, direct);
-  return problem ? { problem } : { problem: null, size: sizeOf(changes) };
+  return problem ? { problem } : { problem: null, size: sizeOf(changes), direct };
 }
 
 /**
  * Judges the merge of head `sha` with no review of the merge kind. A record belongs to the branch when it names
  * a commit of the branch, or the name of a local branch at `sha`, so an amend or a rebase cannot drop it.
  * The newest review on the branch must not ask for changes, and no implementer may have worked on it.
- * @returns `{ problem }`, or `{ problem: null, size }` when the merge fits.
+ * The limits come from `base`, and a change to `qc.config.json` closes the lane.
+ * @returns `{ problem }`, or `{ problem: null, size, direct, review }` when the merge fits. `review` is the
+ * APPROVED verdict that a path of `reviewPaths` needed, or null.
  */
-export function mergeLane({ root, base, direct, protectedBranches = [], sha, records, budgetMs = LANE_BUDGET_MS }) {
+export function mergeLane({ root, base, protectedBranches = [], sha, records, budgetMs = LANE_BUDGET_MS }) {
   const git = gitBy(budgetMs);
   const fork = git(root, "merge-base", base, sha);
   if (!fork) return { problem: gitFailed(git, `git cannot find the merge base of ${base} and ${sha}`) };
+  const settings = directAtBase(root, base, git);
+  if (!settings.direct) return settings;
+  const { direct } = settings;
   const history = git(root, "rev-list", `${fork}..${sha}`);
   const changes = history === null ? null : changesSince(root, fork, { head: sha, git });
   if (!changes) return { problem: gitFailed(git, `git cannot diff ${sha} against ${base}`) };
+  if (touchesConfig(changes)) return { problem: CONFIG_PROBLEM };
   const shas = history.split(/\r?\n/).filter(Boolean);
   if (shas.length === 0) return { problem: `${sha} has no commit past ${base}, so the lane cannot measure what the PR merges` };
   const branches = branchesAt(root, sha, git);
@@ -202,8 +233,9 @@ export function mergeLane({ root, base, direct, protectedBranches = [], sha, rec
   if (problem) return { problem };
   const reviewed = pathMatcher(direct.reviewPaths);
   const needsReview = [...changes.keys()].find((file) => reviewed(file));
-  if (needsReview !== undefined && latestVerdictFor(records, sha, KINDS)?.verdict !== "APPROVED") {
+  const approval = needsReview === undefined ? null : latestVerdictFor(records, sha, KINDS);
+  if (needsReview !== undefined && approval?.verdict !== "APPROVED") {
     return { problem: `${needsReview} matches ${KEY}.reviewPaths, so dispatch the task reviewer (sdd-reviewer) on ${sha}` };
   }
-  return { problem: null, size: sizeOf(changes) };
+  return { problem: null, size: sizeOf(changes), direct, review: approval };
 }

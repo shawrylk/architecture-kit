@@ -22,9 +22,9 @@ function workspace(t, dispatchConfig = { swarm: { dispatch: {} } }) {
     git(main, "config", key, value);
   }
   writeFileSync(path.join(main, "a.txt"), "a\n");
+  if (dispatchConfig !== null) writeFileSync(path.join(main, "qc.config.json"), JSON.stringify(dispatchConfig));
   git(main, "add", ".");
   git(main, "commit", "-q", "-m", "init");
-  writeFileSync(path.join(main, "qc.config.json"), JSON.stringify(dispatchConfig));
   const linked = path.join(base, "linked");
   git(main, "worktree", "add", "-q", "-b", "feat/1-x", linked);
   const scratch = path.join(base, "scratch");
@@ -160,4 +160,26 @@ test("a wrong swarm.direct closes the lane and keeps the guard on", (t) => {
   const reason = denied(decide(edit(ws.main, linked, "Edit", { tool_input: { file_path: linked, ...small } }))) ?? "";
   assert.match(reason, /^Controller guard: while swarm.dispatch is on/);
   assert.match(reason, /does not apply: swarm.direct.maxLines in qc.config.json must be a positive whole number/);
+});
+
+test("the lane reads its limits from the base, and names a base that holds no config", (t) => {
+  const ws = laneWorkspace(t, { swarm: { dispatch: {}, direct: { maxLines: 5 } } });
+  const linked = path.join(ws.linked, "src", "a.ts");
+  writeFileSync(path.join(ws.main, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, direct: { maxLines: 500 } } }));
+  const output = decide(edit(ws.main, linked, "Edit", { tool_input: { file_path: linked, ...small } }));
+  assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /the branch changes 2 of 5 lines in 1 of 2 files/);
+  writeFileSync(path.join(ws.linked, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, direct: { maxLines: 500 } } }));
+  const loosened = decide(edit(ws.main, linked, "Edit", { tool_input: { file_path: linked, ...small } }));
+  assert.match(denied(loosened) ?? "", /does not apply: qc\.config\.json changes on the branch, so it runs the subagent workflow/);
+  const bare = laneWorkspace(t, null);
+  writeFileSync(path.join(bare.main, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  const closed = decide(edit(bare.main, path.join(bare.linked, "src", "a.ts"), "Edit", { tool_input: { file_path: path.join(bare.linked, "src", "a.ts"), ...small } }));
+  assert.match(denied(closed) ?? "", /does not apply: git cannot read qc\.config\.json at origin\/main/);
+});
+
+test("a pending edit of qc.config.json leaves the lane when the controller does not own the file", (t) => {
+  const ws = laneWorkspace(t, { swarm: { dispatch: {}, review: { controllerPaths: ["docs/**"] } } });
+  const config = path.join(ws.linked, "qc.config.json");
+  const reason = denied(decide(edit(ws.main, config, "Edit", { tool_input: { file_path: config, ...small } }))) ?? "";
+  assert.match(reason, /does not apply: qc\.config\.json changes on the branch, so it runs the subagent workflow/);
 });

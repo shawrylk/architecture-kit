@@ -71,8 +71,8 @@ function prBaseOf(merge, cwd, gh, timeoutMs) {
 }
 
 /**
- * The direct lane of one workflow, as `mergeVerdict` asks it. Null while `swarm.direct` is false; a wrong value
- * names itself. The lane measures against `worktree.base`, so a PR into another base stays out of it.
+ * The direct lane of one workflow, as `mergeVerdict` asks it. Null while the checkout's `swarm.direct` is false; a wrong
+ * value names itself. The lane takes its limits from `worktree.base`, so a PR into another base stays out of it.
  * The merges of one call share one time budget.
  */
 function laneOf(workflow, records, cwd, gh) {
@@ -80,13 +80,14 @@ function laneOf(workflow, records, cwd, gh) {
   if (!direct) return directProblem ? () => ({ problem: directProblem }) : null;
   const deadline = Date.now() + LANE_BUDGET_MS;
   return (merge) => {
-    const fit = mergeLane({ root: workflow.root, base, direct, protectedBranches: workflow.protectedBranches, sha: merge.sha, records, budgetMs: deadline - Date.now() });
+    const fit = mergeLane({ root: workflow.root, base, protectedBranches: workflow.protectedBranches, sha: merge.sha, records, budgetMs: deadline - Date.now() });
     if (fit.problem !== null) return fit;
     const left = deadline - Date.now();
     const prBase = left > 0 ? prBaseOf(merge, cwd, gh, left) : null;
     if (prBase === null) return { problem: "gh cannot read the base branch of the PR within the time budget of the lane" };
     if (prBase !== base && `origin/${prBase}` !== base) return { problem: `the PR merges into ${prBase}, and the lane measures against ${base}` };
-    return { problem: null, note: `Merge guard: ${merge.sha} merges through the direct lane, with ${sizeLine(fit.size, direct)} and no review.` };
+    const reviewed = fit.review ? `the APPROVED ${fit.review.kind} review of ${fit.review.sha}` : "no review";
+    return { problem: null, note: `Merge guard: ${merge.sha} merges through the direct lane, with ${sizeLine(fit.size, fit.direct)} and ${reviewed}.` };
   };
 }
 
