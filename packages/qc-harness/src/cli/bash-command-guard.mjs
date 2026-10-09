@@ -148,7 +148,7 @@ const REASONS = {
 
 /**
  * The worktree folder that judges `git worktree add`: the one of the repository the command targets. A `cd`,
- * `Set-Location`, `-C`, `--git-dir`, or `--work-tree` into a repository names it, and else the session's own
+ * `Set-Location`, `-C`, or `--git-dir` into a repository names it, and else the session's own
  * repository does. The path that `add` names never decides, because git adds the worktree to the repository
  * of the working directory wherever the path is. `null` means the targeted repository is not guarded.
  */
@@ -177,8 +177,10 @@ export function violations(command, parse = segmentsOf, place = null, refused = 
     if (git && setsHooksPath(git)) found.add("hooksPath");
     const added = place && git?.sub === "worktree" ? worktreeAddPath(git.args) : null;
     if (added !== null) {
-      const from = git.dirs.filter(Boolean).reduce((dir, next) => resolveFrom(dir, next, parse), cwd);
-      const folder = folderFor(place, from);
+      const move = (dirs) => dirs.filter(Boolean).reduce((dir, next) => resolveFrom(dir, next, parse), cwd);
+      const from = move(git.dirs);
+      const repo = git.gitDir ? resolveFrom(move(git.dirs.slice(0, git.gitDir.after)), git.gitDir.dir, parse) : from;
+      const folder = folderFor(place, repo);
       if (folder !== null && !inFolder(folder, resolveFrom(from, added, parse))) {
         found.add("worktree");
         refused.push(folder);

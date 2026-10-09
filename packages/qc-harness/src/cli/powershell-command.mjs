@@ -1,7 +1,7 @@
 // A fragment that reads a PowerShell command the way shell-command.mjs reads a POSIX one, for the
 // Bash edit guard. It shares that parser and its git vocabulary, and an unknown name counts as a write.
 
-import { GIT_READS, commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
+import { GIT_READS, commandWords, gitCall, gitDirsOf, segmentsOf } from "./shell-command.mjs";
 
 const DIALECT = { escape: "`" };
 
@@ -54,7 +54,7 @@ export function checkoutDirs(command) {
   for (const segment of segmentsOf(command, DIALECT)) {
     const target = locationTarget(segment);
     if (target !== null) dirs.push(target);
-    dirs.push(...(gitCall(segment)?.dirs ?? []).filter(Boolean));
+    dirs.push(...gitDirsOf(gitCall(segment)));
   }
   return dirs;
 }

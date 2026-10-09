@@ -236,28 +236,35 @@ const isGit = (word) => /(^|[\\/])git(\.exe)?$/i.test(word ?? "");
 const repoOfGitDir = (value) => (/(^|[\\/])\.git[\\/]*$/.test(value) ? `${value.replace(/[\\/]+$/, "")}/..` : value);
 
 /**
- * @returns the git subcommand, each directory that names the repository, each `-c` setting and the words after
- *   the subcommand, or null when the segment is no git call. The directories come from `GIT_DIR` and
- *   `GIT_WORK_TREE`, then from `-C`, `--git-dir`, and `--work-tree` in the order written.
+ * @returns the git subcommand, each `-C` directory, the repository that `--git-dir` or `GIT_DIR` names, each `-c`
+ *   setting and the words after the subcommand, or null when the segment is no git call. `gitDir` holds that
+ *   repository's directory and the count of `-C` directories written before it, because git resolves it after them,
+ *   and is null with no such setting. `--work-tree` and `GIT_WORK_TREE` are ignored: they never change the
+ *   repository, which git finds from the working directory.
  */
 export function gitCall(segment) {
   const [program, ...words] = commandWords(segment);
   if (!isGit(program)) return null;
-  const { GIT_DIR: gitDir, GIT_WORK_TREE: workTree } = commandEnv(segment);
-  const dirs = [gitDir && repoOfGitDir(gitDir), workTree].filter(Boolean);
+  const { GIT_DIR: env } = commandEnv(segment);
+  const dirs = [];
+  let gitDir = env ? { dir: repoOfGitDir(env), after: 0 } : null;
   const configs = [];
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
-    const long = /^--(git-dir|work-tree)(?:=(.*))?$/s.exec(word);
+    const long = /^--git-dir(?:=(.*))?$/s.exec(word);
     if (word === "-C") dirs.push(words[++i]);
     else if (long) {
-      const value = long[2] ?? words[++i];
-      if (value) dirs.push(long[1] === "git-dir" ? repoOfGitDir(value) : value);
-    } else if (word === "-c") configs.push(words[++i]);
-    else if (!word.startsWith("-")) return { sub: word, dirs, configs, args: words.slice(i + 1) };
+      const value = long[1] ?? words[++i];
+      if (value) gitDir = { dir: repoOfGitDir(value), after: dirs.length };
+    } else if (word === "--work-tree") i++;
+    else if (word === "-c") configs.push(words[++i]);
+    else if (!word.startsWith("-")) return { sub: word, dirs, gitDir, configs, args: words.slice(i + 1) };
   }
-  return { sub: null, dirs, configs, args: [] };
+  return { sub: null, dirs, gitDir, configs, args: [] };
 }
+
+/** Every directory a git call names: its `-C` directories and the repository of its `--git-dir`, as written. */
+export const gitDirsOf = (git) => [...(git?.dirs ?? []), git?.gitDir?.dir].filter(Boolean);
 
 /** @returns the directory a `cd` or `pushd` segment moves to, or null. */
 export function cdTarget(segment) {
@@ -299,7 +306,7 @@ export function checkoutDirs(command) {
   for (const segment of segmentsOf(command)) {
     const cd = cdTarget(segment);
     if (cd !== null) dirs.push(cd);
-    dirs.push(...(gitCall(segment)?.dirs ?? []).filter(Boolean));
+    dirs.push(...gitDirsOf(gitCall(segment)));
   }
   return dirs;
 }
