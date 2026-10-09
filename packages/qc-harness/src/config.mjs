@@ -493,21 +493,29 @@ export const dispatchDefaults = {
   slotMinutes: 60,
   // How many implementers run at once in a session. Each needs paths of its own, and a worktree.
   implementerSlots: 1,
-  // The model families each type's named `model` may carry. `"*"` covers every other type.
-  models: {
-    "sdd-planner": ["gpt-6.1-sol"],
-    "architecture:sdd-planner": ["gpt-6.1-sol"],
-    "sdd-branch-reviewer": ["gpt-6.1-sol"],
-    "architecture:sdd-branch-reviewer": ["gpt-6.1-sol"],
-    "sdd-implementer": ["gpt-6.1-sol"],
-    "architecture:sdd-implementer": ["gpt-6.1-sol"],
-    "sdd-reviewer": ["gpt-6.1-sol"],
-    "architecture:sdd-reviewer": ["gpt-6.1-sol"],
-    "*": ["gpt-6.1-sol"],
-  },
+  // The model families each type's named `model` may carry, over the runtime's own in `runtimeModels`.
+  models: {},
 };
 
-// GPT uses an exact model id; Claude families remain available for repository overrides.
+const roleModels = (planning, working, other) => ({
+  "sdd-planner": planning,
+  "architecture:sdd-planner": planning,
+  "sdd-branch-reviewer": planning,
+  "architecture:sdd-branch-reviewer": planning,
+  "sdd-implementer": working,
+  "architecture:sdd-implementer": working,
+  "sdd-reviewer": working,
+  "architecture:sdd-reviewer": working,
+  "*": other,
+});
+
+// The default `swarm.dispatch.models` of each runtime that can run a session. A runtime calls only its own models.
+export const runtimeModels = {
+  claude: roleModels(["opus"], ["sonnet"], ["sonnet", "haiku"]),
+  codex: roleModels(["gpt-6.1-sol"], ["gpt-6.1-sol"], ["gpt-6.1-sol"]),
+};
+
+// GPT uses an exact model id; a Claude family matches any model id that contains it.
 export const MODEL_FAMILIES = ["gpt-6.1-sol", "opus", "sonnet", "haiku", "fable"];
 
 // What each key of `swarm.explore` means when a repository omits it. The kit names no tool; a

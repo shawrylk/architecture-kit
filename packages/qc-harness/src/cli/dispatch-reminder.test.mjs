@@ -5,7 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { REMINDER, decide } from "./dispatch-reminder.mjs";
+import { runtimeModels } from "../config.mjs";
+import { REMINDER, decide, modelsLine } from "./dispatch-reminder.mjs";
+
+// The checkouts below run under Codex, whatever runtime runs the test.
+process.env.QC_RUNTIME = "codex";
+const BASE = `${REMINDER}${modelsLine({ models: runtimeModels.codex, runtime: "codex" })}`;
 
 const NOTE = fileURLToPath(new URL("./dispatch-reminder.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
@@ -37,11 +42,11 @@ test("with the section on, every start adds the note, a compaction included", (t
   for (const source of ["startup", "resume", "clear", "compact", "fork"]) {
     const output = decide(start(on, source));
     assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart", source);
-    assert.equal(output.hookSpecificOutput.additionalContext, REMINDER, source);
+    assert.equal(output.hookSpecificOutput.additionalContext, BASE, source);
   }
 });
 
-test("the note names the workflow, the four types, the model tiers, and the one-implementer rule, in a short text", () => {
+test("the note names the workflow, the four types, and the one-implementer rule, in a short text", () => {
   for (const word of [
     "superpowers:subagent-driven-development",
     "architecture:sdd-planner",
@@ -49,8 +54,6 @@ test("the note names the workflow, the four types, the model tiers, and the one-
     "architecture:sdd-reviewer",
     "architecture:sdd-branch-reviewer",
     "one implementer at a time",
-    "gpt-6.1-sol",
-    "high reasoning effort",
     "Worktree: <path>",
     "VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>",
     "--match-head-commit <sha>",
@@ -65,18 +68,18 @@ test("with swarm.explore also on, the note names its tools", (t) => {
     { swarm: { dispatch: {}, explore: { tools: [{ name: "CocoIndex", use: "u", how: "h" }, { name: "GitNexus", use: "u", how: "h" }] } } },
   ]);
   const text = decide(start(on, "startup")).hookSpecificOutput.additionalContext;
-  assert.ok(text.startsWith(REMINDER));
+  assert.ok(text.startsWith(BASE));
   assert.match(text, /CocoIndex, GitNexus/);
   assert.match(text, /optional/i);
 });
 
-test("with swarm.explore off, or naming no tools, the note is exactly REMINDER", (t) => {
+test("with swarm.explore off, or naming no tools, the note is exactly the base note", (t) => {
   const [off, empty] = checkouts(t, [
     { swarm: { direct: false, dispatch: {} } },
     { swarm: { direct: false, dispatch: {}, explore: { tools: [] } } },
   ]);
-  assert.equal(decide(start(off, "startup")).hookSpecificOutput.additionalContext, REMINDER);
-  assert.equal(decide(start(empty, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+  assert.equal(decide(start(off, "startup")).hookSpecificOutput.additionalContext, BASE);
+  assert.equal(decide(start(empty, "startup")).hookSpecificOutput.additionalContext, BASE);
 });
 
 test("with swarm.explore on and swarm.dispatch off, the SessionStart note still names the tools", (t) => {
@@ -113,7 +116,7 @@ test("the hook runs as its own process and prints the note as JSON, or nothing w
   const run = (cwd) => spawnSync(process.execPath, [NOTE], { input: JSON.stringify(start(cwd, "startup")), encoding: "utf8" });
   const noted = run(on);
   assert.equal(noted.status, 0, noted.stderr);
-  assert.equal(JSON.parse(noted.stdout).hookSpecificOutput.additionalContext, REMINDER);
+  assert.equal(JSON.parse(noted.stdout).hookSpecificOutput.additionalContext, BASE);
   const silent = run(plain);
   assert.equal(silent.status, 0, silent.stderr);
   assert.equal(silent.stdout, "");
@@ -138,15 +141,15 @@ test("hooks.json also runs the note on SubagentStart, all matchers, beside the e
   );
 });
 
-test("a limit above 1 adds one line stating it, and a limit of 1 leaves the note as REMINDER", (t) => {
+test("a limit above 1 adds one line stating it, and a limit of 1 leaves the note as the base note", (t) => {
   const [three, one] = checkouts(t, [
     { swarm: { dispatch: { implementerSlots: 3 } } },
     { swarm: { direct: false, dispatch: { implementerSlots: 1 } } },
   ]);
   const text = decide(start(three, "startup")).hookSpecificOutput.additionalContext;
-  assert.ok(text.startsWith(REMINDER));
+  assert.ok(text.startsWith(BASE));
   assert.match(text, /up to 3 implementers at once/);
-  assert.equal(decide(start(one, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+  assert.equal(decide(start(one, "startup")).hookSpecificOutput.additionalContext, BASE);
 });
 
 test("SubagentStart gives each tool's use and command, in config order, since a plugin agent carries no MCP tool", (t) => {
@@ -172,16 +175,16 @@ test("SubagentStart gives each tool's use and command, in config order, since a 
   );
 });
 
-test("a swarm.explore section that does not parse leaves SubagentStart silent and the session note as REMINDER", (t) => {
+test("a swarm.explore section that does not parse leaves SubagentStart silent and the session note as the base note", (t) => {
   const [bad] = checkouts(t, [{ swarm: { direct: false, dispatch: {}, explore: { tools: "CocoIndex" } } }]);
   assert.equal(decide(subagentStart(bad)), null);
-  assert.equal(decide(start(bad, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+  assert.equal(decide(start(bad, "startup")).hookSpecificOutput.additionalContext, BASE);
 });
 
-test("with the direct lane on by default, the note names its limits after REMINDER", (t) => {
+test("with the direct lane on by default, the note names its limits after the base note", (t) => {
   const [lane, custom] = checkouts(t, [{ swarm: { dispatch: {} } }, { swarm: { dispatch: {}, direct: { maxLines: 5, maxFiles: 1 } } }]);
   const text = decide(start(lane, "startup")).hookSpecificOutput.additionalContext;
-  assert.ok(text.startsWith(REMINDER));
+  assert.ok(text.startsWith(BASE));
   assert.match(text, /at most 20 changed lines in 2 files needs no subagent/);
   assert.match(text, /--match-head-commit <sha>/);
   assert.match(decide(start(custom, "startup")).hookSpecificOutput.additionalContext, /at most 5 changed lines in 1 file needs/);
@@ -190,7 +193,7 @@ test("with the direct lane on by default, the note names its limits after REMIND
 test("a swarm.direct section that does not parse names the key and leaves the rest of the note", (t) => {
   const [bad] = checkouts(t, [{ swarm: { dispatch: {}, direct: { maxLines: 0 } } }]);
   const text = decide(start(bad, "startup")).hookSpecificOutput.additionalContext;
-  assert.ok(text.startsWith(REMINDER));
+  assert.ok(text.startsWith(BASE));
   assert.match(text, /Direct lane is off: swarm\.direct\.maxLines/);
 });
 
@@ -235,4 +238,13 @@ test("a local swarm.direct of false turns the direct lane note off, whatever the
   git("update-ref", "refs/remotes/origin/main", "HEAD");
   writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, direct: false } }));
   assert.doesNotMatch(decide(start(dir, "startup")).hookSpecificOutput.additionalContext, /needs no subagent/);
+});
+
+test("the models line names each role's models for the runtime, and how to dispatch it", () => {
+  const claude = modelsLine({ models: runtimeModels.claude, runtime: "claude" });
+  assert.match(claude, /the claude runtime: sdd-planner opus, sdd-implementer sonnet, sdd-reviewer sonnet, sdd-branch-reviewer opus\./);
+  assert.match(claude, /Name that model on each dispatch/);
+  const codex = modelsLine({ models: runtimeModels.codex, runtime: "codex" });
+  assert.match(codex, /the codex runtime: sdd-planner gpt-6\.1-sol, sdd-implementer gpt-6\.1-sol/);
+  assert.match(modelsLine({ models: {}, runtime: null }), /unknown runtime \(set QC_RUNTIME to claude or codex\): sdd-planner the session's model/);
 });

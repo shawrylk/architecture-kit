@@ -10,10 +10,20 @@ export const REMINDER =
   "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
   "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
   "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
-  "whole branch. All four roles default to gpt-6.1-sol with high reasoning effort. " +
+  "whole branch. " +
   "Run one implementer at a time: a hook refuses a second while one runs. Name a model on any other dispatch, and " +
   "pass each brief as a file path. Name the worktree on a prompt line `Worktree: <path>`. A reviewer starts with " +
   "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`.";
+
+const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-reviewer"];
+
+/** One added line naming each role's models for the session's runtime, so a dispatch names the right one. */
+export function modelsLine({ models, runtime }) {
+  const roles = ROLES.map((role) => `${role} ${(models[`architecture:${role}`] ?? models[role] ?? models["*"] ?? ["the session's model"]).join(" or ")}`);
+  const how = runtime === "claude" ? "Name that model on each dispatch: the guard refuses a role dispatch with no model." : "A role with no named model inherits the session's.";
+  const where = runtime ? `the ${runtime} runtime` : "an unknown runtime (set QC_RUNTIME to claude or codex)";
+  return ` Models for ${where}: ${roles.join(", ")}. ${how}`;
+}
 
 const context = (eventName, text) => ({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
 
@@ -81,7 +91,7 @@ function decideSessionStart(call) {
   }
   const explore = exploreLine(cwd);
   if (!dispatch) return explore === "" ? null : context("SessionStart", explore.trim());
-  return context("SessionStart", `${REMINDER}${slotsLine(dispatch)}${directLine(cwd)}${explore}`);
+  return context("SessionStart", `${REMINDER}${modelsLine(dispatch)}${slotsLine(dispatch)}${directLine(cwd)}${explore}`);
 }
 
 /** @returns the hook output, or null when there is nothing to add for this event. */

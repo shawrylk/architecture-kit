@@ -3,7 +3,7 @@
 
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { CONFIG_FILE, MODEL_FAMILIES, dispatchDefaults, exploreDefaults, load, merge } from "../config.mjs";
+import { CONFIG_FILE, MODEL_FAMILIES, dispatchDefaults, exploreDefaults, load, merge, runtimeModels } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
 const KEY = "swarm.dispatch";
@@ -34,17 +34,31 @@ export function familyOf(model) {
   return MODEL_FAMILIES.find((family) => !family.startsWith("gpt-") && lower.includes(family)) ?? null;
 }
 
+/** The SDD role types, whose definitions say `model: inherit`. */
+const ROLE_TYPES = Object.keys(runtimeModels.claude).filter((type) => type !== WILDCARD_TYPE);
+
+/**
+ * The runtime that runs this session, from a positive signal: `QC_RUNTIME`, then Claude Code's `CLAUDECODE`
+ * or `CLAUDE_PROJECT_DIR`, then any `CODEX_` variable. Null when none is set, or when `QC_RUNTIME` names no
+ * runtime the kit knows. Claude Code sets `CLAUDECODE` in its shells, but a hook process gets only
+ * `CLAUDE_PROJECT_DIR`.
+ */
+export function runtimeOf(env = process.env) {
+  const named = typeof env.QC_RUNTIME === "string" ? env.QC_RUNTIME.trim().toLowerCase() : "";
+  if (named !== "") return Object.hasOwn(runtimeModels, named) ? named : null;
+  if (env.CLAUDECODE === "1" || (env.CLAUDE_PROJECT_DIR ?? "") !== "") return "claude";
+  return Object.keys(env).some((key) => key.startsWith("CODEX_")) ? "codex" : null;
+}
+
 /** @returns the dispatch settings, or null when the section is absent; throws naming the key a repository got wrong. */
-export function dispatchSettings(swarm = {}) {
+export function dispatchSettings(swarm = {}, runtime = runtimeOf()) {
   const raw = swarm.dispatch;
   if (raw === undefined || raw === null || raw === false) return null;
   if (typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${KEY} in qc.config.json must be an object, got ${JSON.stringify(raw)}`);
   }
-  const { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, implementerSlots, models } = merge(
-    dispatchDefaults,
-    raw,
-  );
+  const defaults = { ...dispatchDefaults, models: (runtime && runtimeModels[runtime]) ?? {} };
+  const { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, implementerSlots, models } = merge(defaults, raw);
   if (!isNameList(allowedTypes)) throw wrong("allowedTypes", allowedTypes, "a list of agent types");
   if (!isNameList(implementerTypes)) throw wrong("implementerTypes", implementerTypes, "a list of agent types");
   if (!Number.isInteger(maxPromptChars) || maxPromptChars < 1) {
@@ -55,14 +69,14 @@ export function dispatchSettings(swarm = {}) {
     throw wrong("implementerSlots", implementerSlots, "a positive whole number");
   }
   checkModels(models);
-  return { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, implementerSlots, models };
+  return { allowedTypes, implementerTypes, maxPromptChars, slotMinutes, implementerSlots, models, runtime };
 }
 
 /** @returns the settings of the checkout that holds `cwd`, or null when it has no config or no section. */
-export function dispatchSettingsAt(cwd) {
+export function dispatchSettingsAt(cwd, runtime = runtimeOf()) {
   const root = checkoutRootOf(cwd);
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
-  return dispatchSettings(load(root).swarm);
+  return dispatchSettings(load(root).swarm, runtime);
 }
 
 const isToolEntry = (entry) =>
@@ -143,9 +157,22 @@ function tierRefusal(type, model, families) {
   );
 }
 
+const runtimeRefusal = (type) =>
+  `Dispatch guard: the session's runtime is unknown, so ${KEY}.models lists no model for ${type}. ` +
+  "Set QC_RUNTIME to claude or codex, or list the type in swarm.dispatch.models in qc.config.json.";
+
+/** Under Claude Code a role's definition inherits the session's model, so the dispatch names the role's tier. */
+function inheritRefusal(type, families) {
+  return (
+    `Dispatch guard: ${type} inherits the session's model unless the dispatch names one. ` +
+    `Pass \`model\` with ${families.join(" or ")}, the tier of this role.`
+  );
+}
+
 /** @returns the reason a named model breaks its type's tier, or null when it fits. */
 function tierRefusalFor(type, model, settings) {
   const families = settings.models[type] ?? settings.models[WILDCARD_TYPE];
+  if (!families) return runtimeRefusal(type);
   const family = familyOf(model);
   if (family && families.includes(family)) return null;
   return tierRefusal(type, model, families);
@@ -157,6 +184,9 @@ export function dispatchRefusal(input, settings) {
   const model = typeof input.model === "string" ? input.model.trim() : "";
   const allowed = settings.allowedTypes.includes(type);
   if (!allowed && (type === FORK || model === "")) return modelRefusal(type, settings);
+  if (model === "" && settings.runtime === "claude" && ROLE_TYPES.includes(type) && Object.hasOwn(settings.models, type)) {
+    return inheritRefusal(type, settings.models[type]);
+  }
   if (model !== "" && type !== FORK) {
     const refusal = tierRefusalFor(type, model, settings);
     if (refusal) return refusal;
@@ -174,8 +204,8 @@ export function dispatchNote(input, settings) {
   if (MODEL_FAMILIES.includes(model.toLowerCase())) return null;
   return (
     `Dispatch note: ${type} sets its own model, and "${model}" is a full model id. Requests to different models share no prompt cache, ` +
-    `so this dispatch pays the type's shared first-call prefix again when the id differs from the definition's model. ` +
-    "A dispatch of this type with no `model` shares one cache with the others."
+    `so this dispatch pays the type's shared first-call prefix again when other dispatches of the type use another id. ` +
+    "Name the bare family, such as `sonnet`, to share one cache with them."
   );
 }
 

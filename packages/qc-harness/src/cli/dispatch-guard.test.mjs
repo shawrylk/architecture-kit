@@ -11,6 +11,9 @@ const GUARD = fileURLToPath(new URL("./dispatch-guard.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
 
 /** A checkout that turns the guard on, one whose swarm section has no dispatch key, one with no config, and a temp folder. */
+// The guard process below runs under Codex, whatever runtime runs the test.
+process.env.QC_RUNTIME = "codex";
+
 function workspace(t, dispatch = { maxPromptChars: 80 }) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-dispatch-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
@@ -176,6 +179,19 @@ test("the hook runs as its own process and prints its refusal as JSON", (t) => {
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(reasonOf(JSON.parse(result.stdout)) ?? "", /names no model/);
+});
+
+test("a hook process under Claude Code sees only CLAUDE_PROJECT_DIR, and still refuses a role dispatch with no model", (t) => {
+  const ws = workspace(t);
+  const { QC_RUNTIME, CLAUDECODE, ...inherited } = process.env;
+  const env = Object.fromEntries(Object.entries(inherited).filter(([key]) => !key.startsWith("CODEX_")));
+  const result = spawnSync(process.execPath, [GUARD], {
+    input: JSON.stringify(agentCall(ws.on, implementer)),
+    env: { ...env, CLAUDE_PROJECT_DIR: ws.on, TEMP: ws.tmp, TMP: ws.tmp, TMPDIR: ws.tmp },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(reasonOf(JSON.parse(result.stdout)) ?? "", /inherits the session's model.*Pass `model` with sonnet/);
 });
 
 test("hooks.json runs the guard on Agent, SubagentStart and SubagentStop", () => {
