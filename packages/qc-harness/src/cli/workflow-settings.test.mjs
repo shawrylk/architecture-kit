@@ -53,6 +53,14 @@ test("a bad key throws and names it", () => {
     ["on", /swarm\.review in qc\.config\.json must be an object/],
     [{ mergeKind: "task" }, /swarm\.review\.mergeKind/],
     [{ merge: "task", maxTaskCall: 5 }, /swarm\.review\.maxTaskCall/],
+    [{ oneBranchReview: "yes" }, /swarm\.review\.oneBranchReview/],
+    [{ requireGreen: 1 }, /swarm\.review\.requireGreen/],
+    [{ requireBase: null }, /swarm\.review\.requireBase/],
+    [{ productDecisions: "on" }, /swarm\.review\.productDecisions/],
+    [{ codeReviewSkills: "code-review" }, /swarm\.review\.codeReviewSkills/],
+    [{ codeReviewSkills: [""] }, /swarm\.review\.codeReviewSkills/],
+    [{ roundFindings: -1 }, /swarm\.review\.roundFindings/],
+    [{ roundFiles: 1.5 }, /swarm\.review\.roundFiles/],
   ]) {
     assert.throws(() => reviewSettings({ dispatch: {}, review }), key);
   }
@@ -76,4 +84,20 @@ test("a hook whose cwd holds no config reads the checkout its session remembered
   assert.ok(existsSync(path.join(sessionDirOf("s-1", tmp), "state.json")));
   assert.equal(workflowOf(call, tmp).root, dirs[0]);
   assert.equal(workflowOf({ session_id: "s-2", cwd: outside }, tmp), null);
+});
+
+test("the enforcement keys default on, and a repository switches each one off", () => {
+  const settings = reviewSettings({ dispatch: {} });
+  assert.deepEqual(
+    [settings.oneBranchReview, settings.codeReviewSkills, settings.requireGreen, settings.requireBase, settings.productDecisions, settings.roundFindings, settings.roundFiles],
+    [true, ["code-review"], true, true, true, 8, 10],
+  );
+  const off = reviewSettings({
+    dispatch: {},
+    review: { oneBranchReview: false, codeReviewSkills: [], requireGreen: false, requireBase: false, productDecisions: false, roundFindings: 0, roundFiles: 0 },
+  });
+  assert.deepEqual(
+    [off.oneBranchReview, off.codeReviewSkills, off.requireGreen, off.requireBase, off.productDecisions, off.roundFindings, off.roundFiles],
+    [false, [], false, false, false, 0, 0],
+  );
 });
