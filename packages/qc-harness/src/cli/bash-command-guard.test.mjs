@@ -370,6 +370,9 @@ test("a worktree add is refused when its command text sets GIT_DIR, GIT_WORK_TRE
     `set GIT_DIR=${kit}/.git && git worktree add .worktree/x`,
     `export git_dir=${kit}/.git; git worktree add .worktree/x`,
     `export GIT_COMMON_DIR=${kit}/.git; git worktree add .worktree/x`,
+    "git -c core.worktree=$(pwd) worktree add ../out",
+    "git --git-dir=$(pwd)/.git worktree add ../out",
+    "git --work-tree=$(pwd) worktree add ../out",
   ]) {
     explicitDirReason(decide(bash(ws.adopted, command)));
   }
