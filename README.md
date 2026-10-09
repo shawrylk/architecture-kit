@@ -164,7 +164,7 @@ needs nothing further — it already cannot reach another work order's files.
 
 A shell write does not reach the edit guard, so a `PostToolUse` hook on Bash and PowerShell runs
 `git status` in each checkout the command named (its directory, `cd <dir>`, `Set-Location <dir>`,
-`git -C <dir>`). It reports each changed path outside the declared paths, and each change on a
+`git -C <dir>`, or a `--work-tree` or `GIT_WORK_TREE` directory, which `checkout` and `restore` write to). It names a `--git-dir` or `GIT_DIR` with no work tree as unresolved. It reports each changed path outside the declared paths, and each change on a
 protected branch that git does not ignore. It warns and never reverts. A command that only reads
 skips the check. For PowerShell, only known read verbs (`Get-*`, `Test-Path`, `Select-String`,
 `Format-*`, and so on) and git reads skip it. An unknown command or a script block never does.
@@ -243,6 +243,8 @@ Two hooks hold an agent to the folder. Each is on wherever `qc.config.json` is:
 | Hook | What it refuses |
 |---|---|
 | `PreToolUse` on `Bash` and `PowerShell` | a `git worktree add` whose path is not one folder directly under `.worktree/` of the main checkout. It resolves the path from the working directory, each `cd`, `Set-Location`, and `git -C`, and skips the options before the path. The reason names `npx qc worktree add <name> <branch>` |
+| `PreToolUse` on `Bash` and `PowerShell` | a `git worktree add` whose command text holds `GIT_DIR`, `GIT_WORK_TREE`, `core.worktree`, or `core.bare` anywhere, in any segment and any order: `export`, `env`, `set`, `$env:`, or `git -c`. Git then reads the repository from a path the guard cannot resolve. Run `git worktree add` from inside the target repository, with `-C`, `cd`, or `Set-Location` |
+| `PreToolUse` on `Bash` and `PowerShell` | a `git worktree add` after a `-C`, `cd`, or `Set-Location` path that holds an unexpanded variable (`$K`, `${K}`, `$env:K`, `%K%`, or a command substitution). The guard cannot know the repository, so write the path literally. A repository with no `qc.config.json` stays unguarded |
 | `Stop` | the end of a turn while a pull request this session merged leaves a worktree on its head branch, a local branch with that name, or that branch on `origin`. The reason names `npx qc worktree remove <name>`, `git branch -D <branch>`, or `git push origin --delete <branch>`. A head that `protectedBranches` or `branches.allow` names is skipped. A repeat stop with the same list ends with a note |
 
 The stop check reads the merge record that the merge guard of section 11 writes. With
@@ -456,7 +458,7 @@ stopping the call they are judging; the session note skips the tool line instead
 
 With `swarm.dispatch` on, more hooks hold the subagent workflow to its conventions. Each one reads or
 writes one ledger: JSON lines in `<git common dir>/qc/ledger.jsonl`, shared by every worktree. The
-record types are `dispatch`, `stop`, `verdict`, `merge`, and `issue-update`. `qc ledger [branch]`
+record types are `dispatch`, `stop`, `verdict`, `merge`, `issue-update`, and `cost`. `qc ledger [--cost] [branch]`
 prints them. Each check does nothing when `swarm.dispatch` is off in the repository it judges. That is the repository of the named worktree, and the repository of the working directory when no worktree is named. The one exception is the merge record, which the worktree check of section 8 reads.
 
 | Check | Hook | What it refuses |
@@ -469,6 +471,27 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
 | Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths`, unless the direct lane covers it |
 | Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
+| One branch review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an `sdd-branch-reviewer` dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch. Add the line, so the review reads only the increment. Key `oneBranchReview` |
+| Code-review skill | `PreToolUse` on `Skill`, `skill-guard.mjs` | a model call to a skill that `codeReviewSkills` names, bare or after a `plugin:` prefix. Dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review`, which never reaches this hook |
+| Green head | `PreToolUse` on `Agent` | a reviewer dispatch, task or branch kind, while CI on the head is red or running. A head with no check runs passes with a note, and so does a `gh` failure. Wait for green, or fix the head. Key `requireGreen` |
+| Current head | the same | a reviewer dispatch when the head lacks the tip of `worktree.base`. Merge the base into the branch first: Step 0 of a fix round. Key `requireBase` |
+| Product decisions | the same | an implementer dispatch whose brief has no `## Product decisions` heading. Ask the user in one question, then write the rulings, or the word `none`. Key `productDecisions` |
+| Round size | the same | nothing: it warns on an implementer brief with more numbered findings (lines that start `1. `) than `roundFindings`, or more distinct file paths than `roundFiles`. Split the round in parallel on disjoint paths, with sub-branches in separate worktrees. `0` turns a limit off |
+| Cost record | `SubagentStop`, `cost-stop.mjs` | nothing: it appends a `cost` record with the agent's tokens by kind, its tool calls, its role, and the branch and head of its dispatch. A transcript that does not read records nothing. `qc ledger --cost [branch]` totals them per branch and per role |
+| Typecheck retry | `Stop`, `hooks/stop-gate.sh` | nothing: when the typecheck fails and every `error TS` line is `TS2307`, the gate runs it once more and judges the second run, because a concurrent `pnpm install` causes that error |
+
+The `swarm.review` keys that these rows name:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `oneBranchReview` | `true` | refuse a branch review with no `Reviewed: <sha>` line once a branch verdict exists |
+| `codeReviewSkills` | `["code-review"]` | skill names the model may not call; `[]` turns the check off |
+| `requireGreen` | `true` | refuse a reviewer dispatch while CI on the head is red or running |
+| `requireBase` | `true` | refuse a reviewer dispatch when the head lacks the tip of `worktree.base` |
+| `productDecisions` | `true` | refuse an implementer brief with no `## Product decisions` heading |
+| `roundFindings` | `8` | warn on a brief with more numbered findings; `0` turns it off |
+| `roundFiles` | `10` | warn on a brief that names more distinct file paths; `0` turns it off |
+
 
 The hooks read these markers:
 
