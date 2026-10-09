@@ -141,6 +141,10 @@ const REASONS = {
   script:
     "a hand run of a hook script writes a lease or a ledger record under a made-up session id, and that lease blocks later " +
     "edits in the worktree for hours. Test a hook only through its own suite (`node --test`), in temporary folders.",
+  explicitDir:
+    "`--git-dir`, `GIT_DIR`, `--work-tree`, and `GIT_WORK_TREE` make git read the repository from a path it resolves after every `-C`, " +
+    "so this guard cannot tell which repository gets the worktree. Run `git worktree add` from inside the target repository instead: " +
+    "use `-C <repository>`, `cd <repository>`, or `Set-Location <repository>`, and drop the git directory and work tree settings.",
   worktree:
     "a worktree lives in the worktree folder of the main checkout, so git ignores it and `qc worktree remove` finds it. " +
     "Run `npx qc worktree add <name> <branch>` from the repository, or give `git worktree add` a path one level under that folder.",
@@ -148,7 +152,7 @@ const REASONS = {
 
 /**
  * The worktree folder that judges `git worktree add`: the one of the repository the command targets. A `cd`,
- * `Set-Location`, `-C`, or `--git-dir` into a repository names it, and else the session's own
+ * `Set-Location`, or `-C` into a repository names it, and else the session's own
  * repository does. The path that `add` names never decides, because git adds the worktree to the repository
  * of the working directory wherever the path is. `null` means the targeted repository is not guarded.
  */
@@ -176,11 +180,12 @@ export function violations(command, parse = segmentsOf, place = null, refused = 
     if (git && skipsHooks(git)) found.add("hooks");
     if (git && setsHooksPath(git)) found.add("hooksPath");
     const added = place && git?.sub === "worktree" ? worktreeAddPath(git.args) : null;
-    if (added !== null) {
-      const move = (dirs) => dirs.filter(Boolean).reduce((dir, next) => resolveFrom(dir, next, parse), cwd);
-      const from = move(git.dirs);
-      const repo = git.gitDir ? resolveFrom(move(git.dirs.slice(0, git.gitDir.after)), git.gitDir.dir, parse) : from;
-      const folder = folderFor(place, repo);
+    if (added !== null && git.explicitDir) {
+      // The session is guarded, because `place` exists only then.
+      found.add("explicitDir");
+    } else if (added !== null) {
+      const from = git.dirs.filter(Boolean).reduce((dir, next) => resolveFrom(dir, next, parse), cwd);
+      const folder = folderFor(place, from);
       if (folder !== null && !inFolder(folder, resolveFrom(from, added, parse))) {
         found.add("worktree");
         refused.push(folder);

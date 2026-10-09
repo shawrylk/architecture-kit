@@ -32,28 +32,28 @@ test("a redirect target is recorded apart from the words, and a descriptor copy 
   assert.deepEqual(segmentsOf("cat log >> all.log")[0].redirects, ["all.log"]);
 });
 
-test("a git call reads --git-dir and a GIT_DIR prefix as the repository, after the -C directories written before it", () => {
-  const gitDirOf = (command) => gitCall(segmentsOf(command)[0]).gitDir;
-  assert.deepEqual(gitDirOf("git --git-dir=/r/.git status"), { dir: "/r/.git/..", after: 0 });
-  assert.deepEqual(gitDirOf("git --git-dir /r/.git status"), { dir: "/r/.git/..", after: 0 });
-  assert.deepEqual(gitDirOf("git --git-dir=/bare.git status"), { dir: "/bare.git", after: 0 });
-  assert.deepEqual(gitDirOf("GIT_DIR=/r/.git git status"), { dir: "/r/.git/..", after: 0 });
-  assert.deepEqual(gitDirOf("git -C /a --git-dir=/r/.git status"), { dir: "/r/.git/..", after: 1 });
-  assert.deepEqual(gitDirOf("GIT_DIR=/x/.git git --git-dir=/r/.git status"), { dir: "/r/.git/..", after: 0 }, "the flag wins");
-  assert.equal(gitDirOf("git status"), null);
-  assert.deepEqual(gitCall(segmentsOf("git -C /a --git-dir=/r/.git status")[0]).dirs, ["/a"]);
-});
-
-test("a git call ignores --work-tree and GIT_WORK_TREE: they never change the repository", () => {
-  for (const command of ["git --work-tree=/r status", "git --work-tree /r status", "GIT_WORK_TREE=/r git status"]) {
-    const git = gitCall(segmentsOf(command)[0]);
-    assert.deepEqual([git.sub, git.dirs, git.gitDir], ["status", [], null], command);
+test("a git call flags an explicit git dir or work tree, and does not resolve it", () => {
+  const explicitOf = (command) => gitCall(segmentsOf(command)[0]).explicitDir;
+  for (const command of [
+    "git --git-dir=/r/.git status",
+    "git --git-dir /r/.git status",
+    "GIT_DIR=/r/.git git status",
+    "env GIT_DIR=/r/.git git status",
+    "git -C /a --git-dir=/r/.git status",
+    "git --work-tree=/r status",
+    "git --work-tree /r status",
+    "GIT_WORK_TREE=/r git status",
+  ]) {
+    assert.equal(explicitOf(command), true, command);
   }
+  for (const command of ["git status", "git -C /a status", "git -c core.x=y status"]) assert.equal(explicitOf(command), false, command);
+  assert.deepEqual(gitCall(segmentsOf("git -C /a --git-dir /r/.git status")[0]).dirs, ["/a"], "the git dir is no checkout directory");
+  assert.equal(gitCall(segmentsOf("git --git-dir /r/.git status")[0]).sub, "status", "the value is not the subcommand");
 });
 
 test("a git call names its subcommand and every -C directory", () => {
   const [segment] = segmentsOf(`GIT_PAGER=cat git -C "C:/a b" -c core.x=y --no-pager commit -m x`);
-  assert.deepEqual(gitCall(segment), { sub: "commit", dirs: ["C:/a b"], gitDir: null, configs: ["core.x=y"], args: ["-m", "x"] });
+  assert.deepEqual(gitCall(segment), { sub: "commit", dirs: ["C:/a b"], explicitDir: false, configs: ["core.x=y"], args: ["-m", "x"] });
   assert.equal(gitCall(segmentsOf("gitk --all")[0]), null);
 });
 
@@ -118,11 +118,11 @@ test("a git call carries each -c setting and the words after its subcommand", ()
   assert.deepEqual(gitCall(segment), {
     sub: "commit",
     dirs: ["repo"],
-    gitDir: null,
+    explicitDir: false,
     configs: ["core.hooksPath=/dev/null"],
     args: ["-m", "a b", "--no-verify"],
   });
-  assert.deepEqual(gitCall(segmentsOf("git --version")[0]), { sub: null, dirs: [], gitDir: null, configs: [], args: [] });
+  assert.deepEqual(gitCall(segmentsOf("git --version")[0]), { sub: null, dirs: [], explicitDir: false, configs: [], args: [] });
 });
 
 test("the PowerShell escape keeps a backslash literal and escapes with a backtick", () => {

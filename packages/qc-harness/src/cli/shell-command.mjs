@@ -232,39 +232,31 @@ export const commandEnv = (segment) => unwrap(segment.words).env;
 
 const isGit = (word) => /(^|[\\/])git(\.exe)?$/i.test(word ?? "");
 
-/** The directory of the repository that a `--git-dir` value names: the parent of a `.git` directory, else the value. */
-const repoOfGitDir = (value) => (/(^|[\\/])\.git[\\/]*$/.test(value) ? `${value.replace(/[\\/]+$/, "")}/..` : value);
-
 /**
- * @returns the git subcommand, each `-C` directory, the repository that `--git-dir` or `GIT_DIR` names, each `-c`
- *   setting and the words after the subcommand, or null when the segment is no git call. `gitDir` holds that
- *   repository's directory and the count of `-C` directories written before it, because git resolves it after them,
- *   and is null with no such setting. `--work-tree` and `GIT_WORK_TREE` are ignored: they never change the
- *   repository, which git finds from the working directory.
+ * @returns the git subcommand, each `-C` directory, each `-c` setting and the words after the subcommand, or null
+ *   when the segment is no git call. `explicitDir` is true when the call names a git directory or a work tree, through
+ *   `--git-dir`, `--work-tree`, `GIT_DIR` or `GIT_WORK_TREE`. It is never resolved: git reads a relative one from the
+ *   working directory after every `-C`, so no later reader can know which repository it picks.
  */
 export function gitCall(segment) {
   const [program, ...words] = commandWords(segment);
   if (!isGit(program)) return null;
-  const { GIT_DIR: env } = commandEnv(segment);
+  const { GIT_DIR, GIT_WORK_TREE } = commandEnv(segment);
+  let explicitDir = Boolean(GIT_DIR || GIT_WORK_TREE);
   const dirs = [];
-  let gitDir = env ? { dir: repoOfGitDir(env), after: 0 } : null;
   const configs = [];
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
-    const long = /^--git-dir(?:=(.*))?$/s.exec(word);
     if (word === "-C") dirs.push(words[++i]);
-    else if (long) {
-      const value = long[1] ?? words[++i];
-      if (value) gitDir = { dir: repoOfGitDir(value), after: dirs.length };
-    } else if (word === "--work-tree") i++;
+    else if (word === "--git-dir" || word === "--work-tree") {
+      explicitDir = true;
+      i++;
+    } else if (/^--(git-dir|work-tree)=/.test(word)) explicitDir = true;
     else if (word === "-c") configs.push(words[++i]);
-    else if (!word.startsWith("-")) return { sub: word, dirs, gitDir, configs, args: words.slice(i + 1) };
+    else if (!word.startsWith("-")) return { sub: word, dirs, explicitDir, configs, args: words.slice(i + 1) };
   }
-  return { sub: null, dirs, gitDir, configs, args: [] };
+  return { sub: null, dirs, explicitDir, configs, args: [] };
 }
-
-/** Every directory a git call names: its `-C` directories and the repository of its `--git-dir`, as written. */
-export const gitDirsOf = (git) => [...(git?.dirs ?? []), git?.gitDir?.dir].filter(Boolean);
 
 /** @returns the directory a `cd` or `pushd` segment moves to, or null. */
 export function cdTarget(segment) {
@@ -306,7 +298,7 @@ export function checkoutDirs(command) {
   for (const segment of segmentsOf(command)) {
     const cd = cdTarget(segment);
     if (cd !== null) dirs.push(cd);
-    dirs.push(...gitDirsOf(gitCall(segment)));
+    dirs.push(...(gitCall(segment)?.dirs ?? []));
   }
   return dirs;
 }
