@@ -15,8 +15,8 @@ const KINDS = ["task", "branch"];
 const GITLINK_MODE = "160000";
 const SNIFF_BYTES = 8_000;
 const MAX_TEXT_BYTES = 1_000_000;
-// Well under the 10 s timeout of a PreToolUse hook: a hook that times out lets its call run unchecked.
-export const LANE_BUDGET_MS = 4_000;
+// Under the 10 s timeout of a PreToolUse hook, for all git and gh reads of one call: a hook that times out lets its call run.
+export const LANE_BUDGET_MS = 6_000;
 
 const isGlobList = (value) => Array.isArray(value) && value.every((glob) => typeof glob === "string" && glob !== "");
 const isCount = (value) => Number.isInteger(value) && value >= 1;
@@ -163,7 +163,8 @@ export function editLane({ root, base, direct, protectedBranches, rel, toolName,
   const fork = git(root, "merge-base", base, "HEAD");
   const changes = fork ? changesSince(root, fork, { maxFiles: direct.maxFiles, git }) : null;
   if (!changes) return { problem: gitFailed(git, `git cannot diff the branch against ${base}`) };
-  const replaced = toolName === "Write" || toolName === "NotebookEdit" ? fileLines(root, rel) ?? 0 : 0;
+  const old = toolName === "Write" || toolName === "NotebookEdit" ? fileLines(root, rel) : undefined;
+  const replaced = old === undefined ? 0 : old;
   const before = changes.has(rel) ? changes.get(rel) : 0;
   changes.set(rel, before === null || replaced === null ? null : before + replaced + pendingLines(toolName, input));
   const problem = sizeProblem(changes, direct);
@@ -173,24 +174,30 @@ export function editLane({ root, base, direct, protectedBranches, rel, toolName,
 /**
  * Judges the merge of head `sha` with no review of the merge kind. A record belongs to the branch when it names
  * a commit of the branch, or the name of a local branch at `sha`, so an amend or a rebase cannot drop it.
- * The newest review on the branch must not ask for changes, and no implementer may have committed on it.
+ * The newest review on the branch must not ask for changes, and no implementer may have worked on it.
  * @returns `{ problem }`, or `{ problem: null, size }` when the merge fits.
  */
-export function mergeLane({ root, base, direct, sha, records, budgetMs = LANE_BUDGET_MS }) {
+export function mergeLane({ root, base, direct, protectedBranches = [], sha, records, budgetMs = LANE_BUDGET_MS }) {
   const git = gitBy(budgetMs);
   const fork = git(root, "merge-base", base, sha);
   if (!fork) return { problem: gitFailed(git, `git cannot find the merge base of ${base} and ${sha}`) };
   const history = git(root, "rev-list", `${fork}..${sha}`);
   const changes = history === null ? null : changesSince(root, fork, { head: sha, git });
   if (!changes) return { problem: gitFailed(git, `git cannot diff ${sha} against ${base}`) };
+  const shas = history.split(/\r?\n/).filter(Boolean);
+  if (shas.length === 0) return { problem: `${sha} has no commit past ${base}, so the lane cannot measure what the PR merges` };
   const branches = branchesAt(root, sha, git);
   if (branches.length === 0) return { problem: gitFailed(git, `no local branch points at ${sha}, so the ledger cannot be tied to its branch`) };
-  const shas = history.split(/\r?\n/).filter(Boolean);
+  const guarded = branches.find((branch) => protectedBranches.includes(branch));
+  if (guarded !== undefined) return { problem: `${sha} is the head of the protected branch ${guarded}` };
   const ours = (record) => branches.includes(record.branch) || shas.some((one) => shaMatches(record.sha ?? record.head, one));
   const latest = records.filter((record) => record.type === "verdict" && KINDS.includes(record.kind) && ours(record)).at(-1);
   if (latest && latest.verdict !== "APPROVED") return { problem: `the latest review on the branch, of ${latest.sha}, is ${latest.verdict}` };
-  const implementer = (record) => record.type === "stop" && record.role === "implementer" && typeof record.head === "string" && ours(record);
-  if (records.some(implementer)) return { problem: "an implementer committed on the branch, so it runs the subagent workflow" };
+  const committed = (record) => record.type === "stop" && record.role === "implementer" && typeof record.head === "string";
+  const dispatched = (record) => record.type === "dispatch" && record.task === true;
+  if (records.some((record) => (committed(record) || dispatched(record)) && ours(record))) {
+    return { problem: "an implementer worked on the branch, so it runs the subagent workflow" };
+  }
   const problem = sizeProblem(changes, direct);
   if (problem) return { problem };
   const reviewed = pathMatcher(direct.reviewPaths);

@@ -61,7 +61,7 @@ export function workflowAt(cwd) {
     review,
     direct,
     directProblem,
-    base: config.worktree.base,
+    base: config.worktree?.base ?? "origin/main",
     protectedBranches: config.swarm.isolation?.protectedBranches ?? [],
   };
 }

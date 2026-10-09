@@ -109,7 +109,7 @@ test("a review that is not APPROVED, an implementer commit, or a large head keep
   const changes = [{ type: "verdict", kind: "task", verdict: "CHANGES_REQUIRED", sha }];
   assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: changes }).problem, /latest review on the branch, of .*, is CHANGES_REQUIRED/);
   const stop = [{ type: "stop", role: "implementer", head: sha, branch: "feat/1-x" }];
-  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: stop }).problem, /an implementer committed on the branch/);
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: stop }).problem, /an implementer worked on the branch/);
   const big = commit(root, "src/b.ts", lines(30));
   assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: big, records: [] }).problem, /32 of 20 lines/);
   assert.match(mergeLane({ root, base: "origin/none", direct: directDefaults, sha, records: [] }).problem, /merge base of origin\/none/);
@@ -143,7 +143,7 @@ test("an amend after a review that asked for changes, or after an implementer co
   git(root, "commit", "-q", "--amend", "-am", "amended");
   const amended = git(root, "rev-parse", "HEAD");
   assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: amended, records: verdicts }).problem, /CHANGES_REQUIRED/);
-  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: amended, records: stops }).problem, /an implementer committed/);
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: amended, records: stops }).problem, /an implementer worked/);
 });
 
 test("a head that no local branch points at stays out of the lane", (t) => {
@@ -176,4 +176,21 @@ test("a Write over a file counts the lines it replaces", (t) => {
   const root = repo(t);
   const write = editLane({ root, base: BASE, direct: directDefaults, protectedBranches: [], rel: "src/a.ts", toolName: "Write", input: { content: lines(11) } });
   assert.match(write.problem, /21 of 20 lines/);
+});
+
+test("a head with no commit past the base, the head of a protected branch, or a branch an implementer was sent to stays out of the lane", (t) => {
+  const root = repo(t);
+  const fork = git(root, "rev-parse", "HEAD");
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: fork, records: [] }).problem, /has no commit past origin\/main/);
+  const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, protectedBranches: ["feat/1-x"], sha, records: [] }).problem, /head of the protected branch feat\/1-x/);
+  const sent = [{ type: "dispatch", task: true, branch: "feat/1-x", head: fork }];
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: sent }).problem, /an implementer worked on the branch/);
+});
+
+test("a Write over a tracked binary has no size the lane can judge", (t) => {
+  const root = repo(t);
+  commit(root, "src/lib.dll", Buffer.from([0, 1, 2, 3]));
+  const write = editLane({ root, base: BASE, direct: directDefaults, protectedBranches: [], rel: "src/lib.dll", toolName: "Write", input: { content: "x" } });
+  assert.match(write.problem, /src\/lib\.dll is a binary file/);
 });

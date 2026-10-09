@@ -366,8 +366,10 @@ function laneRepo(t, config = { swarm: { dispatch: {} } }) {
 
 test("a small head with no review merges through the direct lane, with a note", (t) => {
   const { dir, head } = laneRepo(t);
-  const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`));
+  const { gh, calls } = fakeGh(JSON.stringify({ baseRefName: "main" }));
+  const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh });
   assert.equal(denied(output), null);
+  assert.deepEqual(calls[0].args, ["pr", "view", "7", "--json", "baseRefName"]);
   assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /merges through the direct lane, with 2 of 20 lines in 1 of 2 files and no review/);
   assert.match(denied(decide(shell(dir, "gh pr merge 7 --squash"))) ?? "", /--match-head-commit <sha>/);
 });
@@ -392,4 +394,11 @@ test("a wrong swarm.direct closes the lane and keeps the merge guard on", (t) =>
   const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`))) ?? "";
   assert.match(reason, /no APPROVED branch review/);
   assert.match(reason, /does not apply: swarm.direct.maxLines/);
+});
+
+test("a PR into another base, or a PR whose base gh cannot read, stays out of the direct lane", (t) => {
+  const { dir, head } = laneRepo(t);
+  const merge = shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`);
+  assert.match(denied(decide(merge, { gh: fakeGh(JSON.stringify({ baseRefName: "release/2.0" })).gh })) ?? "", /the PR merges into release\/2\.0, and the lane measures against origin\/main/);
+  assert.match(denied(decide(merge, { gh: fakeGh(null).gh })) ?? "", /gh cannot read the base branch of the PR/);
 });

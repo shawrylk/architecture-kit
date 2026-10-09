@@ -8,7 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { PARSERS } from "./bash-command-guard.mjs";
-import { mergeLane, sizeLine } from "./direct-lane.mjs";
+import { LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
 import { appendRecord, latestVerdictFor, readLedger } from "./ledger.mjs";
@@ -28,7 +28,7 @@ const deny = (reason) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", p
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: text } });
 
 /**
- * Judges each merge: an APPROVED review of `kind` on its head, or else the direct lane that `lane(sha)` decides.
+ * Judges each merge: an APPROVED review of `kind` on its head, or else the direct lane that `lane(merge)` decides.
  * @returns `{ refusal }` for the first merge that may not run, or `{ refusal: null, direct }` with the lane notes.
  */
 export function mergeVerdict(merges, records, kind, lane = null) {
@@ -39,7 +39,7 @@ export function mergeVerdict(merges, records, kind, lane = null) {
     }
     const verdict = latestVerdictFor(records, merge.sha, [kind]);
     if (verdict?.verdict === "APPROVED") continue;
-    const fit = lane ? lane(merge.sha) : null;
+    const fit = lane ? lane(merge) : null;
     if (fit && fit.problem === null) {
       direct.push(fit.note);
       continue;
@@ -60,13 +60,33 @@ export function mergeVerdict(merges, records, kind, lane = null) {
 /** @returns the reason the first of `merges` may not run, or null when each pins an approved head. */
 export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict(merges, records, kind, lane).refusal;
 
-/** The direct lane of one workflow, as `mergeVerdict` asks it. Null while `swarm.direct` is false; a wrong value names itself. */
-function laneOf(workflow, records) {
-  const { direct, directProblem } = workflow;
+/** The base branch the PR of `merge` merges into, as gh reads it before the merge, or null. */
+function prBaseOf(merge, cwd, gh, timeoutMs) {
+  const args = ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName"];
+  try {
+    return JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null")?.baseRefName ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The direct lane of one workflow, as `mergeVerdict` asks it. Null while `swarm.direct` is false; a wrong value
+ * names itself. The lane measures against `worktree.base`, so a PR into another base stays out of it.
+ * The merges of one call share one time budget.
+ */
+function laneOf(workflow, records, cwd, gh) {
+  const { direct, directProblem, base } = workflow;
   if (!direct) return directProblem ? () => ({ problem: directProblem }) : null;
-  return (sha) => {
-    const fit = mergeLane({ root: workflow.root, base: workflow.base, direct, sha, records });
-    return fit.problem === null ? { problem: null, note: `Merge guard: ${sha} merges through the direct lane, with ${sizeLine(fit.size, direct)} and no review.` } : fit;
+  const deadline = Date.now() + LANE_BUDGET_MS;
+  return (merge) => {
+    const fit = mergeLane({ root: workflow.root, base, direct, protectedBranches: workflow.protectedBranches, sha: merge.sha, records, budgetMs: deadline - Date.now() });
+    if (fit.problem !== null) return fit;
+    const left = deadline - Date.now();
+    const prBase = left > 0 ? prBaseOf(merge, cwd, gh, left) : null;
+    if (prBase === null) return { problem: "gh cannot read the base branch of the PR within the time budget of the lane" };
+    if (prBase !== base && `origin/${prBase}` !== base) return { problem: `the PR merges into ${prBase}, and the lane measures against ${base}` };
+    return { problem: null, note: `Merge guard: ${merge.sha} merges through the direct lane, with ${sizeLine(fit.size, direct)} and no review.` };
   };
 }
 
@@ -188,7 +208,7 @@ export function decide(call, { gh = runGh } = {}) {
     if (own.length > 0) {
       try {
         const records = readLedger(workflow.ledger);
-        verdict = mergeVerdict(own, records, workflow.review.merge, laneOf(workflow, records));
+        verdict = mergeVerdict(own, records, workflow.review.merge, laneOf(workflow, records, call.cwd ?? process.cwd(), gh));
       } catch (error) {
         verdict = { refusal: `Merge guard: the ledger cannot be read (${error.message}), so no review can be checked. Fix the ledger file, and merge again.` };
       }
