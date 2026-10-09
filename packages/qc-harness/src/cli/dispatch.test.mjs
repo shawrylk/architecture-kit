@@ -1,7 +1,10 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { defaults, dispatchDefaults, merge } from "../config.mjs";
-import { dispatchNote, dispatchRefusal, dispatchSettings, exploreSettings, exploreToolLines, familyOf, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
+import { defaults, dispatchDefaults, merge, runtimeModels } from "../config.mjs";
+import { dispatchNote, dispatchRefusal, dispatchSettings, exploreSettings, exploreToolLines, familyOf, isImplementer, runtimeOf, slotRefusal, typeOf } from "./dispatch.mjs";
+
+// The settings below default to Codex, whatever runtime runs the test.
+process.env.QC_RUNTIME = "codex";
 
 test("a swarm section with no dispatch key keeps the guard off", () => {
   assert.equal(dispatchSettings({}), null);
@@ -11,7 +14,8 @@ test("a swarm section with no dispatch key keeps the guard off", () => {
 });
 
 test("an empty dispatch section turns the guard on with every default", () => {
-  assert.deepEqual(dispatchSettings(merge(defaults, { swarm: { dispatch: {} } }).swarm), dispatchDefaults);
+  const expected = { ...dispatchDefaults, models: runtimeModels.codex, runtime: "codex" };
+  assert.deepEqual(dispatchSettings(merge(defaults, { swarm: { dispatch: {} } }).swarm), expected);
 });
 
 test("a list in the section replaces its default rather than extending it", () => {
@@ -45,7 +49,7 @@ test("a wrong value names its key", () => {
 test("a repository's models merges key by key with the defaults", () => {
   const settings = dispatchSettings({ dispatch: { models: { "architecture:sdd-planner": ["sonnet"] } } });
   assert.deepEqual(settings.models["architecture:sdd-planner"], ["sonnet"]);
-  assert.deepEqual(settings.models["architecture:sdd-implementer"], dispatchDefaults.models["architecture:sdd-implementer"]);
+  assert.deepEqual(settings.models["architecture:sdd-implementer"], runtimeModels.codex["architecture:sdd-implementer"]);
 });
 
 test("familyOf finds the first known family a model string contains, lower-cased", () => {
@@ -237,4 +241,35 @@ test("an excerptChars the repository sets must be smaller than maxOutputChars", 
   for (const excerptChars of [20, 21]) {
     assert.throws(() => exploreSettings({ explore: { maxOutputChars: 20, excerptChars } }), /swarm\.explore\.excerptChars .*smaller than maxOutputChars \(20\)/);
   }
+});
+
+test("the runtime comes from QC_RUNTIME, then CLAUDECODE, then a CODEX_ variable, and is null with no signal", () => {
+  assert.equal(runtimeOf({ QC_RUNTIME: "Codex", CLAUDECODE: "1" }), "codex");
+  assert.equal(runtimeOf({ QC_RUNTIME: "other", CLAUDECODE: "1" }), null);
+  assert.equal(runtimeOf({ CLAUDECODE: "1", CODEX_HOME: "x" }), "claude");
+  assert.equal(runtimeOf({ CODEX_HOME: "x" }), "codex");
+  assert.equal(runtimeOf({}), null);
+});
+
+test("under Claude Code each role takes its Claude tier, and a role dispatch must name it", () => {
+  const settings = dispatchSettings({ dispatch: {} }, "claude");
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "p" }, settings), null);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-branch-reviewer", model: "opus", prompt: "p" }, settings), null);
+  assert.match(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "gpt-6.1-sol" }, settings) ?? "", /may run only on sonnet/);
+  assert.match(dispatchRefusal({ subagent_type: "architecture:sdd-planner", prompt: "p" }, settings) ?? "", /inherits the session's model.*Pass `model` with opus/);
+  assert.equal(dispatchRefusal({ subagent_type: "Explore", model: "haiku", prompt: "p" }, settings), null);
+});
+
+test("under Codex a role dispatch with no model inherits the session's GPT model", () => {
+  const settings = dispatchSettings({ dispatch: {} }, "codex");
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", prompt: "p" }, settings), null);
+  assert.match(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet" }, settings) ?? "", /may run only on gpt-6\.1-sol/);
+});
+
+test("an unknown runtime refuses a named model with no listed families, and a repository's models still apply", () => {
+  const unknown = dispatchSettings({ dispatch: {} }, null);
+  assert.match(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet" }, unknown) ?? "", /runtime is unknown.*QC_RUNTIME/);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", prompt: "p" }, unknown), null);
+  const listed = dispatchSettings({ dispatch: { models: { "architecture:sdd-implementer": ["sonnet"] } } }, null);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "p" }, listed), null);
 });

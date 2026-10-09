@@ -3,8 +3,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { dispatchDefaults } from "../config.mjs";
-import { familyOf } from "./dispatch.mjs";
+import { dispatchDefaults, runtimeModels } from "../config.mjs";
 import { REMINDER } from "./dispatch-reminder.mjs";
 
 const AGENTS = fileURLToPath(new URL("../../../../agents/", import.meta.url));
@@ -41,10 +40,10 @@ const ALWAYS_PRESENT = ["Read", "Bash"];
 const READ_TOOLS = ["Read", "Grep", "Glob", "Bash", "PowerShell"];
 const EDIT_TOOLS = [...READ_TOOLS, "Skill", "Edit", "Write"];
 const EXPECTED = {
-  "sdd-implementer": { model: "gpt-6.1-sol", effort: "high", tools: EDIT_TOOLS },
-  "sdd-planner": { model: "gpt-6.1-sol", effort: "high", tools: EDIT_TOOLS },
-  "sdd-reviewer": { model: "gpt-6.1-sol", effort: "high", tools: READ_TOOLS },
-  "sdd-branch-reviewer": { model: "gpt-6.1-sol", effort: "high", tools: READ_TOOLS },
+  "sdd-implementer": { model: "inherit", effort: "high", tools: EDIT_TOOLS },
+  "sdd-planner": { model: "inherit", effort: "high", tools: EDIT_TOOLS },
+  "sdd-reviewer": { model: "inherit", effort: "high", tools: READ_TOOLS },
+  "sdd-branch-reviewer": { model: "inherit", effort: "high", tools: READ_TOOLS },
 };
 // Fields Claude Code ignores on a plugin agent, and the one that drops a repository's CLAUDE.md and rules.
 const FORBIDDEN_FIELDS = ["disallowedTools", "hooks", "mcpServers", "permissionMode", "omitClaudeMd"];
@@ -81,7 +80,7 @@ function readmeToolsOf(markdown) {
 
 const frontOf = (name) => frontmatterOf(path.join(AGENTS, `${name}.md`));
 
-test("each subagent type runs on its model tier at its effort, with its own tool list", () => {
+test("each subagent type inherits the session model, has a model in every runtime, and keeps its effort and tool list", () => {
   assert.deepEqual(
     readdirSync(AGENTS).sort(),
     Object.keys(EXPECTED).map((name) => `${name}.md`).sort(),
@@ -94,9 +93,10 @@ test("each subagent type runs on its model tier at its effort, with its own tool
     assert.equal(front.effort, want.effort, name);
     assert.ok(front.description.length > 0, name);
     assert.deepEqual(listOf(front.tools), want.tools, name);
-    const family = familyOf(front.model);
-    assert.ok(dispatchDefaults.models[name]?.includes(family), name);
-    assert.ok(dispatchDefaults.models[`${PLUGIN}:${name}`]?.includes(family), name);
+    for (const models of Object.values(runtimeModels)) {
+      assert.ok(models[name]?.length > 0, name);
+      assert.deepEqual(models[`${PLUGIN}:${name}`], models[name], name);
+    }
   }
 });
 

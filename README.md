@@ -270,14 +270,25 @@ The plugin ships four subagent types for `superpowers:subagent-driven-developmen
 
 | Type | Model | Effort | Tools | Role |
 |---|---|---|---|---|
-| `architecture:sdd-planner` | `gpt-6.1-sol` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | writes one plan and edits nothing else |
-| `architecture:sdd-implementer` | `gpt-6.1-sol` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
-| `architecture:sdd-reviewer` | `gpt-6.1-sol` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
-| `architecture:sdd-branch-reviewer` | `gpt-6.1-sol` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
+| `architecture:sdd-planner` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | writes one plan and edits nothing else |
+| `architecture:sdd-implementer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
+| `architecture:sdd-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
+| `architecture:sdd-branch-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
 
-Every role defaults to `gpt-6.1-sol` with `high` reasoning effort. The branch reviewer judges
-cross-task interactions, security, and data migrations against the plan and the spec, over the
-whole branch's diff.
+Every role says `model: inherit` and `effort: high`, so a subagent runs on the model family of
+the session that dispatches it. The dispatch guard picks each role's models from the runtime:
+
+| Runtime | Signal | Planner and branch reviewer | Implementer and task reviewer | Other types |
+|---|---|---|---|---|
+| `claude` | `CLAUDECODE=1` | `opus` | `sonnet` | `sonnet`, `haiku` |
+| `codex` | any `CODEX_` variable | `gpt-6.1-sol` | `gpt-6.1-sol` | `gpt-6.1-sol` |
+
+`QC_RUNTIME=claude` or `QC_RUNTIME=codex` overrides the signal. Under Claude Code, a role dispatch
+must name its model, so a role never inherits the orchestrator's Opus by accident. Under Codex, a
+role dispatch with no model inherits the session's GPT model. With no signal, the runtime is
+unknown: a dispatch that names a model is refused unless the repository lists that type in
+`models`. The branch reviewer judges cross-task interactions, security, and data migrations against
+the plan and the spec, over the whole branch's diff.
 
 Each type lists its tools in a `tools:` allow-list. A subagent then starts without the tool schemas
 that no type uses: `Artifact`, the web tools, `Monitor`, `SendMessage`, the worktree tools, and every
@@ -334,7 +345,7 @@ A limit over 1 fits a repository whose work orders own disjoint paths. Each impl
 its own worktree.
 
 A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
-names the workflow, the four types, the model tiers, and the one-implementer rule. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule.
+names the workflow, the four types, each role's models for the session's runtime, and the one-implementer rule. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -343,23 +354,21 @@ names the workflow, the four types, the model tiers, and the one-implementer rul
 | `maxPromptChars` | `12000` | the longest prompt, in characters |
 | `slotMinutes` | `60` | when a slot with no stop expires |
 | `implementerSlots` | `1` | how many implementers run at once in a session; a positive whole number |
-| `models` | `["gpt-6.1-sol"]` for every role and `*` | the model families each type's named `model` may carry |
+| `models` | the runtime's table above | the model families each type's named `model` may carry |
 
-`gpt-6.1-sol` is an exact model id; other GPT model ids are refused. Claude families remain
-available through explicit repository overrides in `models`. The role definitions keep `effort: high`.
+`gpt-6.1-sol` is an exact model id; other GPT model ids are refused.
 
 The bare names cover a copy of the agents in `~/.claude/agents`. A list replaces its default and
 does not extend it. To allow `Explore` with no model, list it beside the eight default names.
 
-`models` merges key by key with its default, so a repository can override one type without
-repeating the rest. GPT model ids match exactly, case-insensitive. A Claude family matches a bare
+`models` merges key by key with the runtime's default, so a repository can override one type
+without repeating the rest. An override applies under every runtime. GPT model ids match exactly, case-insensitive. A Claude family matches a bare
 alias (`sonnet`) or a full model id (`claude-sonnet-...`), case-insensitive, so a new release under an
-existing Claude family needs no kit change. `models` constrains only a dispatch that names a `model`; a
-dispatch with no model still runs its type's frontmatter model, which `models` does not touch.
+existing Claude family needs no kit change.
 
 A dispatch of an allowed type that names a full Claude model id, such as `claude-sonnet-5`, gets a note:
 requests to different models share no prompt cache, so it pays the type's shared first-call prefix
-again. The note never refuses the dispatch. Naming the default `gpt-6.1-sol` adds no cache note.
+again. The note never refuses the dispatch. Naming a bare family, such as `sonnet` or `gpt-6.1-sol`, adds no cache note.
 
 #### Measure a session's tokens
 

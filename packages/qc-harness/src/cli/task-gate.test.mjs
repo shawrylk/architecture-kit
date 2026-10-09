@@ -10,6 +10,9 @@ import { gitOut } from "./git-read.mjs";
 import { continuedStop, gateRefusal, judgeTask, noResumeReason, recordDispatch, worktreeNamed } from "./task-gate.mjs";
 import { sessionDirOf } from "./workflow-settings.mjs";
 
+// The guard processes below run under Codex, whatever runtime runs the test.
+process.env.QC_RUNTIME = "codex";
+
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 
 /** A checkout with the checks on and a linked worktree on feat/1-x, one without the checks, and a temp folder. */

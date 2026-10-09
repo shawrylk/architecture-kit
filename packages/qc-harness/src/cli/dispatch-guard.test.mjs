@@ -11,6 +11,9 @@ const GUARD = fileURLToPath(new URL("./dispatch-guard.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
 
 /** A checkout that turns the guard on, one whose swarm section has no dispatch key, one with no config, and a temp folder. */
+// The guard process below runs under Codex, whatever runtime runs the test.
+process.env.QC_RUNTIME = "codex";
+
 function workspace(t, dispatch = { maxPromptChars: 80 }) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-dispatch-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
