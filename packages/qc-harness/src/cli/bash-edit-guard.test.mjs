@@ -136,3 +136,22 @@ test("porcelain output names each changed path, and both sides of a rename", () 
   const status = [" M src/a.ts", "?? docs/new file.md", "R  lib/new.ts", "lib/old.ts", ""].join("\u0000");
   assert.deepEqual(changedPaths(status), ["src/a.ts", "docs/new file.md", "lib/new.ts", "lib/old.ts"]);
 });
+
+test("a --work-tree directory is a checkout the command could have changed", async (t) => {
+  const ws = workspace(t);
+  ws.put(ws.linked, "docs/b.md");
+  const slash = (dir) => dir.replaceAll("\\", "/");
+  const output = await report(bash(ws.outside, `git --work-tree=${slash(ws.linked)} checkout -- docs`), ws.linked);
+  assert.match(contextOf(output), /docs\/b\.md: outside the work order's declared paths/);
+});
+
+test("a git dir with no work tree is reported as unresolved, not dropped", async (t) => {
+  const ws = workspace(t);
+  const slash = (dir) => dir.replaceAll("\\", "/");
+  const text = contextOf(await report(bash(ws.outside, `git --git-dir=${slash(ws.primary)}/.git checkout main`), ws.linked));
+  assert.match(text, /git directory with no work tree/);
+  assert.ok(text.includes(`${slash(ws.primary)}/.git`), text);
+  assert.match(text, /cannot tell which checkout/);
+  const withTree = await report(bash(ws.outside, `git --git-dir=${slash(ws.primary)}/.git --work-tree=${slash(ws.outside)} checkout main`), ws.linked);
+  assert.doesNotMatch(contextOf(withTree), /git directory with no work tree/);
+});

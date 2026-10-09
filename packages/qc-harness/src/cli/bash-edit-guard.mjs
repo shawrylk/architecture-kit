@@ -144,25 +144,28 @@ export async function report(call, projectRoot) {
   const findings = [];
   const isMainSession = !(typeof call.agent_id === "string" && call.agent_id !== "");
   for (const root of checkoutsOf(cwd, command, dialect)) findings.push(...(await findingsIn(root, manifest, project, isMainSession)));
-  if (findings.length === 0) return null;
+  const unresolved = dialect.unresolvedGitDirs(command);
+  if (findings.length === 0 && unresolved.length === 0) return null;
 
   const listed = findings.slice(0, MAX_LISTED).map((line) => `- ${line}`);
   if (findings.length > MAX_LISTED) listed.push(`- and ${findings.length - MAX_LISTED} more`);
-  return {
-    hookSpecificOutput: {
-      hookEventName: "PostToolUse",
-      additionalContext: [
-        "Bash edit guard: the checkout holds uncommitted changes that the swarm rules do not allow.",
-        ...listed,
-        ...(findings.some((line) => line.includes(CONTROLLER_RULE))
-          ? ["Dispatch an implementer for a change outside the controller paths. Revert a change only if you made it by mistake. The guard does not revert anything."]
-          : [
-              "Revert a change only if your work order made it and should not have. " +
-                "For any other change, stop and tell the orchestrator. The guard does not revert anything.",
-            ]),
-      ].join("\n"),
-    },
-  };
+  const lines = [];
+  if (findings.length > 0) {
+    lines.push("Bash edit guard: the checkout holds uncommitted changes that the swarm rules do not allow.", ...listed);
+    lines.push(
+      findings.some((line) => line.includes(CONTROLLER_RULE))
+        ? "Dispatch an implementer for a change outside the controller paths. Revert a change only if you made it by mistake. The guard does not revert anything."
+        : "Revert a change only if your work order made it and should not have. " +
+            "For any other change, stop and tell the orchestrator. The guard does not revert anything.",
+    );
+  }
+  if (unresolved.length > 0) {
+    lines.push(
+      `Bash edit guard: the command names a git directory with no work tree (${unresolved.join(", ")}), ` +
+        "so the guard cannot tell which checkout it changed. Run `git status` in that repository.",
+    );
+  }
+  return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: lines.join("\n") } };
 }
 
 async function readStdin() {
