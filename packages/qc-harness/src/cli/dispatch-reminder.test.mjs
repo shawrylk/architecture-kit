@@ -33,7 +33,7 @@ test("a checkout with no config, or no dispatch section, gets no note", (t) => {
 });
 
 test("with the section on, every start adds the note, a compaction included", (t) => {
-  const [on] = checkouts(t, [{ swarm: { dispatch: {} } }]);
+  const [on] = checkouts(t, [{ swarm: { direct: false, dispatch: {} } }]);
   for (const source of ["startup", "resume", "clear", "compact", "fork"]) {
     const output = decide(start(on, source));
     assert.equal(output.hookSpecificOutput.hookEventName, "SessionStart", source);
@@ -72,8 +72,8 @@ test("with swarm.explore also on, the note names its tools", (t) => {
 
 test("with swarm.explore off, or naming no tools, the note is exactly REMINDER", (t) => {
   const [off, empty] = checkouts(t, [
-    { swarm: { dispatch: {} } },
-    { swarm: { dispatch: {}, explore: { tools: [] } } },
+    { swarm: { direct: false, dispatch: {} } },
+    { swarm: { direct: false, dispatch: {}, explore: { tools: [] } } },
   ]);
   assert.equal(decide(start(off, "startup")).hookSpecificOutput.additionalContext, REMINDER);
   assert.equal(decide(start(empty, "startup")).hookSpecificOutput.additionalContext, REMINDER);
@@ -109,7 +109,7 @@ test("a config error reaches the session as context", (t) => {
 });
 
 test("the hook runs as its own process and prints the note as JSON, or nothing with no config", (t) => {
-  const [on, plain] = checkouts(t, [{ swarm: { dispatch: {} } }, null]);
+  const [on, plain] = checkouts(t, [{ swarm: { direct: false, dispatch: {} } }, null]);
   const run = (cwd) => spawnSync(process.execPath, [NOTE], { input: JSON.stringify(start(cwd, "startup")), encoding: "utf8" });
   const noted = run(on);
   assert.equal(noted.status, 0, noted.stderr);
@@ -141,7 +141,7 @@ test("hooks.json also runs the note on SubagentStart, all matchers, beside the e
 test("a limit above 1 adds one line stating it, and a limit of 1 leaves the note as REMINDER", (t) => {
   const [three, one] = checkouts(t, [
     { swarm: { dispatch: { implementerSlots: 3 } } },
-    { swarm: { dispatch: { implementerSlots: 1 } } },
+    { swarm: { direct: false, dispatch: { implementerSlots: 1 } } },
   ]);
   const text = decide(start(three, "startup")).hookSpecificOutput.additionalContext;
   assert.ok(text.startsWith(REMINDER));
@@ -173,7 +173,23 @@ test("SubagentStart gives each tool's use and command, in config order, since a 
 });
 
 test("a swarm.explore section that does not parse leaves SubagentStart silent and the session note as REMINDER", (t) => {
-  const [bad] = checkouts(t, [{ swarm: { dispatch: {}, explore: { tools: "CocoIndex" } } }]);
+  const [bad] = checkouts(t, [{ swarm: { direct: false, dispatch: {}, explore: { tools: "CocoIndex" } } }]);
   assert.equal(decide(subagentStart(bad)), null);
   assert.equal(decide(start(bad, "startup")).hookSpecificOutput.additionalContext, REMINDER);
+});
+
+test("with the direct lane on by default, the note names its limits after REMINDER", (t) => {
+  const [lane, custom] = checkouts(t, [{ swarm: { dispatch: {} } }, { swarm: { dispatch: {}, direct: { maxLines: 5, maxFiles: 1 } } }]);
+  const text = decide(start(lane, "startup")).hookSpecificOutput.additionalContext;
+  assert.ok(text.startsWith(REMINDER));
+  assert.match(text, /at most 20 changed lines in 2 files needs no subagent/);
+  assert.match(text, /--match-head-commit <sha>/);
+  assert.match(decide(start(custom, "startup")).hookSpecificOutput.additionalContext, /at most 5 changed lines in 1 file needs/);
+});
+
+test("a swarm.direct section that does not parse names the key and leaves the rest of the note", (t) => {
+  const [bad] = checkouts(t, [{ swarm: { dispatch: {}, direct: { maxLines: 0 } } }]);
+  const text = decide(start(bad, "startup")).hookSpecificOutput.additionalContext;
+  assert.ok(text.startsWith(REMINDER));
+  assert.match(text, /Direct lane is off: swarm\.direct\.maxLines/);
 });

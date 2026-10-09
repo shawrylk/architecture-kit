@@ -3,6 +3,7 @@
 // and fork, because a rule held only in the conversation is lost to a compaction.
 
 import { fileURLToPath } from "node:url";
+import { directSettingsAt } from "./direct-lane.mjs";
 import { dispatchSettingsAt, exploreSettingsAt, exploreToolLines } from "./dispatch.mjs";
 
 export const REMINDER =
@@ -21,6 +22,20 @@ const slotsLine = ({ implementerSlots }) =>
   implementerSlots > 1
     ? ` This repository allows up to ${implementerSlots} implementers at once, each in its own worktree, so the one-at-a-time rule above does not apply. A hook refuses one over the limit.`
     : "";
+
+/** One added line for the direct lane of `swarm.direct`, or "" when it is off. */
+function directLine(cwd) {
+  let direct;
+  try {
+    direct = directSettingsAt(cwd);
+  } catch (error) {
+    return ` Direct lane is off: ${error.message}`;
+  }
+  return direct
+    ? ` A fix of at most ${direct.maxLines} changed lines in ${direct.maxFiles} ${direct.maxFiles === 1 ? "file" : "files"} needs no subagent: edit it in the main session on a branch, ` +
+        "and merge it with `--match-head-commit <sha>` and no review. The guards measure the branch against its base (swarm.direct)."
+    : "";
+}
 
 /** The explore tools, or null when the section is off, names none, or does not parse. */
 function exploreToolsAt(cwd) {
@@ -59,7 +74,7 @@ function decideSessionStart(call) {
   }
   const explore = exploreLine(cwd);
   if (!dispatch) return explore === "" ? null : context("SessionStart", explore.trim());
-  return context("SessionStart", `${REMINDER}${slotsLine(dispatch)}${explore}`);
+  return context("SessionStart", `${REMINDER}${slotsLine(dispatch)}${directLine(cwd)}${explore}`);
 }
 
 /** @returns the hook output, or null when there is nothing to add for this event. */

@@ -18,12 +18,12 @@ export function expandHome(env) {
 }
 
 /** @returns gh's stdout on exit 0, or null when gh fails, times out, or is not installed. */
-export function runGh(args, { cwd = process.cwd(), env = {} } = {}) {
+export function runGh(args, { cwd = process.cwd(), env = {}, timeoutMs = GH_TIMEOUT_MS } = {}) {
   const result = spawnSync("gh", args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
-    timeout: GH_TIMEOUT_MS,
+    timeout: timeoutMs,
     env: { ...process.env, ...expandHome(env) },
   });
   return result.status === 0 ? (result.stdout ?? "") : null;

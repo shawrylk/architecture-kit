@@ -455,9 +455,9 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:`. A report with a `HANDOFF: <path>` line needs neither; it needs a note at that path with `Brief:`, `Worktree:`, `Branch:`, and `Head:` lines and non-empty `## Done`, `## Left`, and `## Next step` sections. The stop records the note's path |
 | Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review. An implementer whose prompt has the `HANDOFF: <path>` line of the newest implementer stop on the branch continues that task and passes; the next implementer after it needs a review, and a review of the later head covers both stops |
 | Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line or continues the newest stop's hand-off. The ledger records the reason or the note. A resume through `SendMessage` passes |
-| Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names. A `gh api` call to a merge endpoint is refused outright. So is a `gh api` call that holds the `mergePullRequest` mutation in an argument or in a readable query file, and a query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A merge that names a repository other than `origin` passes with a note, whether it names it with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
+| Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names and that the direct lane does not cover. A `gh api` call to a merge endpoint is refused outright. So is a `gh api` call that holds the `mergePullRequest` mutation in an argument or in a readable query file, and a query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A merge that names a repository other than `origin` passes with a note, whether it names it with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
 | Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
-| Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths` |
+| Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths`, unless the direct lane covers it |
 | Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
 
 The hooks read these markers:
@@ -491,6 +491,40 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 | `plannerTypes` | the plugin's planner, bare and scoped | the agent types whose report runs the plan check |
 
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
+
+#### The direct lane for a small fix
+
+A small fix skips the subagent workflow. The main session edits it on a branch, and merges it with
+`--match-head-commit <sha>` and no review. The lane is on while `swarm.dispatch` is on, and
+`"direct": false` under `swarm` turns it off.
+
+The hooks measure the branch against the merge base of `worktree.base`, so a large change cannot pass as
+several small edits:
+
+| Hook | The lane covers |
+|---|---|
+| Controller guard | an edit on a branch that is not protected, where the branch diff, the untracked files, and the pending edit fit the limits. An `Edit` counts its old and its new lines, and a `Write` counts the lines it writes and the lines it replaces |
+| Merge guard | a head that fits the limits, on a PR into the branch of `worktree.base`, where no implementer worked on the branch, and the newest review on the branch did not ask for changes. A record belongs to the branch when it names a commit of the branch, or the name of a local branch at the head, so an amend or a rebase keeps it |
+
+These cases close the lane, so the subagent workflow runs:
+
+- A detached head, a missing base ref, a git error, or a head that no local branch points at.
+- A head with no commit past the base, or the head of a protected branch.
+- A PR into another base, or a PR whose base `gh` cannot read.
+- A binary file, a text file over 1 MB, or a submodule, because the lane cannot judge its size.
+- A lane check that runs past its budget of 6 seconds. The budget keeps each hook call inside the timeout of the hook.
+- A wrong value under `swarm.direct`. The other guards keep their checks, and each refusal names the wrong key.
+
+Each refusal names the reason the lane does not apply.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `maxLines` | `20` | the most changed lines, added plus deleted |
+| `maxFiles` | `2` | the most changed files |
+| `excludes` | `["schemas/**", "**/migrations/**"]` | globs a direct fix may not touch |
+| `reviewPaths` | `[]` | globs a direct fix may touch only with one APPROVED review of its head, of either kind |
+
+The keys go under `swarm.direct`. A list replaces its default.
 
 Known limits:
 

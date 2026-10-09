@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// The PreToolUse trigger that keeps the main session a controller while `swarm.dispatch` is on: it edits only `swarm.review.controllerPaths`.
-// It guards Write, Edit, MultiEdit and NotebookEdit; a shell write is only reported, by `bash-edit-guard.mjs`.
+// The PreToolUse trigger that keeps the main session a controller while `swarm.dispatch` is on: it edits only `swarm.review.controllerPaths`,
+// or a small fix inside `swarm.direct`. It guards the edit tools; a shell write is only reported, by `bash-edit-guard.mjs`.
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { globMatcher } from "../glob.mjs";
+import { pathMatcher } from "../glob.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { editLane, sizeLine } from "./direct-lane.mjs";
 import { pathKey } from "./git-read.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
@@ -20,11 +21,8 @@ function sameRepository(a, b) {
   return left !== null && right !== null && pathKey(left) === pathKey(right);
 }
 
-/** True when `rel` matches a controller glob. Windows paths ignore case, so both sides are lowercased there. */
-export function isControllerPath(rel, controllerPaths, platform = process.platform) {
-  if (platform !== "win32") return globMatcher(controllerPaths)(rel);
-  return globMatcher(controllerPaths.map((glob) => glob.toLowerCase()))(rel.toLowerCase());
-}
+/** True when `rel` matches a controller glob, with no case on Windows. */
+export const isControllerPath = (rel, controllerPaths, platform = process.platform) => pathMatcher(controllerPaths, platform)(rel);
 
 /** The verdict on one edit. @returns the hook output, or null to let the edit run with no message. */
 export function decide(call, platform = process.platform) {
@@ -47,10 +45,19 @@ export function decide(call, platform = process.platform) {
   const rel = path.relative(fileRoot, file).replaceAll("\\", "/");
   const { controllerPaths } = workflow.review;
   if (isControllerPath(rel, controllerPaths, platform)) return null;
+  const { direct } = workflow;
+  const lane = direct
+    ? editLane({ root: fileRoot, base: workflow.base, direct, protectedBranches: workflow.protectedBranches, rel, toolName: call.tool_name, input })
+    : workflow.directProblem && { problem: workflow.directProblem };
+  if (lane && lane.problem === null) {
+    return context(`Direct lane: with this edit the branch changes ${sizeLine(lane.size, direct)}, so the fix needs no implementer. Merge it with \`--match-head-commit <sha>\`.`);
+  }
+  const laneNote = lane ? ` The direct lane of swarm.direct does not apply: ${lane.problem}.` : "";
   return deny(
     `Controller guard: while swarm.dispatch is on, the main session edits only swarm.review.controllerPaths (${controllerPaths.join(", ")}), ` +
       `and ${rel} is outside them. Write a brief and dispatch an implementer for this change. ` +
-      "For a path the controller owns, add its glob to swarm.review.controllerPaths in qc.config.json.",
+      "For a path the controller owns, add its glob to swarm.review.controllerPaths in qc.config.json." +
+      laneNote,
   );
 }
 

@@ -22,9 +22,9 @@ export const commitOf = (cwd, ref) => gitOut(cwd, "rev-parse", "--verify", "--qu
 /** @returns the branch checked out at `dir`, or null on a detached head. */
 export const branchAt = (dir) => gitOut(dir, "branch", "--show-current") || null;
 
-/** @returns the local branches whose head is `sha`, in ref order. */
-export const branchesAt = (cwd, sha) =>
-  (gitOut(cwd, "for-each-ref", "--points-at", sha, "--format=%(refname:short)", "refs/heads") ?? "").split(/\r?\n/).filter(Boolean);
+/** @returns the local branches whose head is `sha`, in ref order. `read` replaces `gitOut`, for a time budget. */
+export const branchesAt = (cwd, sha, read = gitOut) =>
+  (read(cwd, "for-each-ref", "--points-at", sha, "--format=%(refname:short)", "refs/heads") ?? "").split(/\r?\n/).filter(Boolean);
 
 /** @returns each linked worktree of the repository at `root`, with its branch and head; the primary checkout is left out. */
 export function linkedWorktrees(root) {
