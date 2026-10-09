@@ -503,11 +503,17 @@ several small edits:
 
 | Hook | The lane covers |
 |---|---|
-| Controller guard | an edit on a branch that is not protected, where the branch diff, the untracked files, and the pending edit fit the limits. An `Edit` counts its old and its new lines, and a `Write` counts every line it writes |
-| Merge guard | a head that fits the limits, where no implementer stopped between the merge base and the head, and the newest review of a commit on the branch did not ask for changes |
+| Controller guard | an edit on a branch that is not protected, where the branch diff, the untracked files, and the pending edit fit the limits. An `Edit` counts its old and its new lines, and a `Write` counts the lines it writes and the lines it replaces |
+| Merge guard | a head that fits the limits, where no implementer committed on the branch, and the newest review on the branch did not ask for changes. A record belongs to the branch when it names a commit of the branch, or the name of a local branch at the head, so an amend or a rebase keeps it |
 
-A detached head, a missing base ref, and a git error close the lane, so the subagent workflow runs.
-A binary file counts as a changed file with no lines. Each refusal names the reason the lane does not apply.
+These cases close the lane, so the subagent workflow runs:
+
+- A detached head, a missing base ref, a git error, or a head that no local branch points at.
+- A binary file, a text file over 1 MB, or a submodule, because the lane cannot judge its size.
+- A lane check that runs past its budget of 4 seconds, which keeps it inside the timeout of the hook.
+- A wrong value under `swarm.direct`. The other guards keep their checks, and each refusal names the wrong key.
+
+Each refusal names the reason the lane does not apply.
 
 | Key | Default | Meaning |
 |---|---|---|

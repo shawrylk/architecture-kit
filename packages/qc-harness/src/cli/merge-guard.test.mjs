@@ -386,3 +386,10 @@ test("with swarm.direct false, a small head needs its review as before", (t) => 
   assert.match(reason, /no APPROVED branch review/);
   assert.doesNotMatch(reason, /direct lane/);
 });
+
+test("a wrong swarm.direct closes the lane and keeps the merge guard on", (t) => {
+  const { dir, head } = laneRepo(t, { swarm: { dispatch: {}, direct: { maxLines: 0 } } });
+  const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`))) ?? "";
+  assert.match(reason, /no APPROVED branch review/);
+  assert.match(reason, /does not apply: swarm.direct.maxLines/);
+});

@@ -60,10 +60,10 @@ export function mergeVerdict(merges, records, kind, lane = null) {
 /** @returns the reason the first of `merges` may not run, or null when each pins an approved head. */
 export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict(merges, records, kind, lane).refusal;
 
-/** The direct lane of one workflow, as `mergeVerdict` asks it. Null while `swarm.direct` is off. */
+/** The direct lane of one workflow, as `mergeVerdict` asks it. Null while `swarm.direct` is false; a wrong value names itself. */
 function laneOf(workflow, records) {
-  const { direct } = workflow;
-  if (!direct) return null;
+  const { direct, directProblem } = workflow;
+  if (!direct) return directProblem ? () => ({ problem: directProblem }) : null;
   return (sha) => {
     const fit = mergeLane({ root: workflow.root, base: workflow.base, direct, sha, records });
     return fit.problem === null ? { problem: null, note: `Merge guard: ${sha} merges through the direct lane, with ${sizeLine(fit.size, direct)} and no review.` } : fit;

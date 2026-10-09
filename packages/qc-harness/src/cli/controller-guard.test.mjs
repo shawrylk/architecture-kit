@@ -153,3 +153,11 @@ test("with swarm.direct false, the refusal is the controller's alone", (t) => {
       "For a path the controller owns, add its glob to swarm.review.controllerPaths in qc.config.json.",
   );
 });
+
+test("a wrong swarm.direct closes the lane and keeps the guard on", (t) => {
+  const ws = laneWorkspace(t, { swarm: { dispatch: {}, direct: { maxLines: 0 } } });
+  const linked = path.join(ws.linked, "src", "a.ts");
+  const reason = denied(decide(edit(ws.main, linked, "Edit", { tool_input: { file_path: linked, ...small } }))) ?? "";
+  assert.match(reason, /^Controller guard: while swarm.dispatch is on/);
+  assert.match(reason, /does not apply: swarm.direct.maxLines in qc.config.json must be a positive whole number/);
+});

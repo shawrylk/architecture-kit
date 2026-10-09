@@ -47,11 +47,20 @@ export function workflowAt(cwd) {
   const review = reviewSettings(config.swarm);
   const ledger = review ? ledgerFileOf(root) : null;
   if (!review || !ledger) return null;
+  // A wrong `swarm.direct` closes the lane only: the guards that read this workflow keep their checks.
+  let direct = null;
+  let directProblem = null;
+  try {
+    direct = directSettings(config.swarm);
+  } catch (error) {
+    directProblem = error.message;
+  }
   return {
     root,
     ledger,
     review,
-    direct: directSettings(config.swarm),
+    direct,
+    directProblem,
     base: config.worktree.base,
     protectedBranches: config.swarm.isolation?.protectedBranches ?? [],
   };

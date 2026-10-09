@@ -21,3 +21,10 @@ export function globMatcher(globs) {
   const patterns = globs.map(globToRegExp);
   return (rel) => patterns.some((pattern) => pattern.test(rel) || pattern.test(`/${rel}`));
 }
+
+/** A `globMatcher` over file paths. Windows paths ignore case, so both sides are lowercased there. */
+export function pathMatcher(globs, platform = process.platform) {
+  if (platform !== "win32") return globMatcher(globs);
+  const matches = globMatcher(globs.map((glob) => glob.toLowerCase()));
+  return (rel) => matches(rel.toLowerCase());
+}

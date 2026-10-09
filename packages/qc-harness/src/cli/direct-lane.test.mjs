@@ -133,3 +133,47 @@ test("a commit after a review that asked for changes stays out of the lane until
   records.push({ type: "verdict", kind: "task", verdict: "APPROVED", sha: second });
   assert.equal(mergeLane({ root, base: BASE, direct: directDefaults, sha: second, records }).problem, null);
 });
+
+test("an amend after a review that asked for changes, or after an implementer commit, stays out of the lane", (t) => {
+  const root = repo(t);
+  const first = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
+  const verdicts = [{ type: "verdict", kind: "task", verdict: "CHANGES_REQUIRED", sha: first, branch: "feat/1-x" }];
+  const stops = [{ type: "stop", role: "implementer", head: first, branch: "feat/1-x" }];
+  writeFileSync(path.join(root, "src", "a.ts"), lines(10).replace("line 3", "line 3!"));
+  git(root, "commit", "-q", "--amend", "-am", "amended");
+  const amended = git(root, "rev-parse", "HEAD");
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: amended, records: verdicts }).problem, /CHANGES_REQUIRED/);
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: amended, records: stops }).problem, /an implementer committed/);
+});
+
+test("a head that no local branch points at stays out of the lane", (t) => {
+  const root = repo(t);
+  const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
+  git(root, "reset", "-q", "--hard", "HEAD~1");
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: [] }).problem, /no local branch points at/);
+});
+
+test("a binary file, a submodule, or an untracked binary has no size the lane can judge", (t) => {
+  const root = repo(t);
+  writeFileSync(path.join(root, "src", "lib.dll"), Buffer.from([0, 1, 2, 3]));
+  assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /src\/lib\.dll is a binary file/);
+  const binary = commit(root, "src/lib.dll", Buffer.from([0, 1, 2, 3]));
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: binary, records: [] }).problem, /src\/lib\.dll is a binary file/);
+  git(root, "reset", "-q", "--hard", "HEAD~1");
+  git(root, "update-index", "--add", "--cacheinfo", `160000,${git(root, "rev-parse", "HEAD")},vendor/sub`);
+  git(root, "commit", "-q", "-m", "submodule");
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha: git(root, "rev-parse", "HEAD"), records: [] }).problem, /vendor\/sub is a binary file, a large file, or a submodule/);
+});
+
+test("a lane that runs out of time closes", (t) => {
+  const root = repo(t);
+  const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
+  assert.match(editLane({ root, base: BASE, direct: directDefaults, protectedBranches: [], rel: "src/a.ts", toolName: "Edit", input: {}, budgetMs: 0 }).problem, /budget of the lane/);
+  assert.match(mergeLane({ root, base: BASE, direct: directDefaults, sha, records: [], budgetMs: 0 }).problem, /budget of the lane/);
+});
+
+test("a Write over a file counts the lines it replaces", (t) => {
+  const root = repo(t);
+  const write = editLane({ root, base: BASE, direct: directDefaults, protectedBranches: [], rel: "src/a.ts", toolName: "Write", input: { content: lines(11) } });
+  assert.match(write.problem, /21 of 20 lines/);
+});
