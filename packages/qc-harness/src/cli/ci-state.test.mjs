@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { ciNotGreen, notGreenReason } from "./ci-state.mjs";
+import { ciNotGreen, ciState, notGreenReason } from "./ci-state.mjs";
 
 const SHA = "a".repeat(40);
 const run = (name, status, conclusion = null) => ({ name, status, conclusion });
@@ -59,4 +59,18 @@ test("ciNotGreen bounds its reads so the whole gate stays under the hook's 10 se
   assert.ok(ghOptions.timeoutMs > 0 && ghOptions.timeoutMs <= 3000, `gh timeout ${ghOptions.timeoutMs}`);
   assert.ok(originTimeout > 0 && originTimeout <= 1000, `origin timeout ${originTimeout}`);
   assert.ok(ghOptions.timeoutMs + originTimeout < 5000);
+});
+
+test("ciState separates a head that is not green, a green head, and a head it cannot read", () => {
+  const origin = () => "o/r";
+  const state = (gh, from = origin) => ciState(SHA, "/c", { gh, origin: from });
+  assert.deepEqual(state(() => reply(run("a", "completed", "success"))), { reason: null, unknown: null });
+  assert.match(state(() => reply(run("build", "in_progress"))).reason, /^CI on aaaaaaa: build is in_progress/);
+  assert.match(state(() => reply()).unknown, /no check runs/);
+  assert.match(state(() => null).unknown, /gh/);
+  assert.match(state(() => "not json").unknown, /gh/);
+  assert.match(state(() => "{}").unknown, /gh/);
+  assert.match(state(() => reply(), () => null).unknown, /origin/);
+  assert.match(ciState("", "/c", { gh: () => null, origin }).unknown, /no commit/);
+  for (const answer of [state(() => null), state(() => reply())]) assert.equal(answer.reason, null);
 });
