@@ -495,8 +495,13 @@ The keys go under `swarm.review`. A list replaces its default, and `reviewerType
 #### The direct lane for a small fix
 
 A small fix skips the subagent workflow. The main session edits it on a branch, and merges it with
-`--match-head-commit <sha>` and no review. The lane is on while `swarm.dispatch` is on, and
-`"direct": false` under `swarm` turns it off.
+`--match-head-commit <sha>` and no review, unless a changed path matches `reviewPaths`. Then the merge needs
+one APPROVED review of its head. The lane is on while `swarm.dispatch` is on, and `"direct": false` under
+`swarm` turns it off.
+
+The lane reads its limits from `qc.config.json` at `worktree.base`, never from the checkout. A branch cannot
+loosen the limits it merges under. The checkout's `"direct": false` still turns the lane off, and a missing,
+unreadable, or wrong `swarm.direct` at the base closes it.
 
 The hooks measure the branch against the merge base of `worktree.base`, so a large change cannot pass as
 several small edits:
@@ -513,7 +518,9 @@ These cases close the lane, so the subagent workflow runs:
 - A PR into another base, or a PR whose base `gh` cannot read.
 - A binary file, a text file over 1 MB, or a submodule, because the lane cannot judge its size.
 - A lane check that runs past its budget of 6 seconds. The budget keeps each hook call inside the timeout of the hook.
-- A wrong value under `swarm.direct`. The other guards keep their checks, and each refusal names the wrong key.
+- A wrong value under `swarm.direct`, in the checkout or at the base. The other guards keep their checks, and each refusal names the wrong key.
+- A base with no `qc.config.json`, a base file that is not JSON, or `"direct": false` at the base.
+- A change to `qc.config.json` at the repository root, in the branch diff or in the pending edit. The file also sets `worktree.base` and `protectedBranches`, so the branch that edits it runs the subagent workflow.
 
 Each refusal names the reason the lane does not apply.
 
@@ -522,7 +529,7 @@ Each refusal names the reason the lane does not apply.
 | `maxLines` | `20` | the most changed lines, added plus deleted |
 | `maxFiles` | `2` | the most changed files |
 | `excludes` | `["schemas/**", "**/migrations/**"]` | globs a direct fix may not touch |
-| `reviewPaths` | `[]` | globs a direct fix may touch only with one APPROVED review of its head, of either kind |
+| `reviewPaths` | `[]` | globs a direct fix may touch only with one APPROVED review of its head, of either kind. The merge guard names that review in its note |
 
 The keys go under `swarm.direct`. A list replaces its default.
 
