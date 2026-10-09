@@ -50,6 +50,7 @@ export const programName = (word) => path.basename(word ?? "").toLowerCase().rep
 const REPOSITORY_SETTING = /GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE|core\.worktree|core\.bare/i;
 /** A shell variable or command substitution in a path: `$K`, `${K}`, `$env:K`, `$(cmd)`, a backtick, or `%K%`. */
 const UNEXPANDED = /[$`]|%[A-Za-z_][^%\s]*%/;
+const WORKTREE_ADD = /\bworktree\s+add\b/i;
 const isNoVerify = (arg) => arg.length >= NO_VERIFY_MIN && NO_VERIFY.startsWith(arg);
 
 /** True when a commit or push names `--no-verify`, or a commit names `-n` alone or in a flag cluster. */
@@ -196,6 +197,8 @@ export function violations(command, parse = segmentsOf, place = null, refused = 
     if (git && skipsHooks(git)) found.add("hooks");
     if (git && setsHooksPath(git)) found.add("hooksPath");
     const added = place && git?.sub === "worktree" ? worktreeAddPath(git.args) : null;
+    // A subexpression after `-C` ends the git segment, so the `worktree add` after it never parses as git.
+    if (place && git?.sub === null && git.dirs.some((dir) => !dir || UNEXPANDED.test(dir)) && WORKTREE_ADD.test(command)) found.add("variable");
     if (added !== null && (scoped || git.explicitDir)) {
       // The session is guarded, because `place` exists only then.
       found.add("explicitDir");

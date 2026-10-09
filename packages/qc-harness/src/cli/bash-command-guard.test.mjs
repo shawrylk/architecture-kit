@@ -416,6 +416,8 @@ test("a worktree add after a -C, cd, or Set-Location path with an unexpanded var
     "cd `pwd` && git worktree add .worktree/x",
     "cd $(pwd)/sub && git worktree add .worktree/x",
     "pushd $(pwd) && git worktree add .worktree/x",
+    "git -C $(git rev-parse --show-toplevel) worktree add ../out",
+    "git -C `pwd` worktree add ../out",
   ]) {
     variableReason(decide(bash(ws.adopted, command)));
   }
@@ -430,6 +432,8 @@ test("a worktree add after a -C, cd, or Set-Location path with an unexpanded var
     "Set-Location -LiteralPath (Get-Location); git worktree add .worktree/x",
     "cd (Resolve-Path ..); git worktree add .worktree/x",
     "Set-Location $(Join-Path $K sub); git worktree add .worktree/x",
+    "git -C (Join-Path $K 'x') worktree add ../out",
+    "git -C $(Get-Location) worktree add ../out",
   ]) {
     variableReason(decide(powershell(ws.adopted, command)));
   }
