@@ -49,4 +49,5 @@ test("the checkout directories are each location change and each git -C director
     ["C:\\repo\\a", "C:\\b c", "..\\d", "C:\\e"],
   );
   assert.deepEqual(checkoutDirs("Get-ChildItem"), []);
+  assert.deepEqual(checkoutDirs("Set-Content f x; git -C"), []);
 });

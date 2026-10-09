@@ -54,7 +54,7 @@ export function checkoutDirs(command) {
   for (const segment of segmentsOf(command, DIALECT)) {
     const target = locationTarget(segment);
     if (target !== null) dirs.push(target);
-    dirs.push(...(gitCall(segment)?.dirs ?? []));
+    dirs.push(...(gitCall(segment)?.dirs ?? []).filter(Boolean));
   }
   return dirs;
 }

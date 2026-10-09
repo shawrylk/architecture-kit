@@ -298,7 +298,7 @@ export function checkoutDirs(command) {
   for (const segment of segmentsOf(command)) {
     const cd = cdTarget(segment);
     if (cd !== null) dirs.push(cd);
-    dirs.push(...(gitCall(segment)?.dirs ?? []));
+    dirs.push(...(gitCall(segment)?.dirs ?? []).filter(Boolean));
   }
   return dirs;
 }

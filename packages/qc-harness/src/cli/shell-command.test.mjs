@@ -111,6 +111,7 @@ test("the checkout directories are every cd target and every git -C directory, i
     "/repo/d",
   ]);
   assert.deepEqual(checkoutDirs("ls"), []);
+  assert.deepEqual(checkoutDirs("echo x > f; git -C"), []);
 });
 
 test("a git call carries each -c setting and the words after its subcommand", () => {
