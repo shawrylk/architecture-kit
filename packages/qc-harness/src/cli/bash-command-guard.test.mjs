@@ -234,3 +234,58 @@ test("inside a linked worktree, the folder is the main checkout's", (t) => {
   assert.equal(decide(bash(linked, "git worktree add ../x")), null);
   assert.ok(outsideFolder(decide(bash(linked, "git worktree add x"))), "a worktree nested in a worktree is refused");
 });
+
+/** The adopted checkout plus a second adopted checkout, `kit`, and a checkout with no config. Forward slashes, as a Bash command spells a path. */
+function twoRepos(t) {
+  const ws = workspace(t);
+  const kit = path.join(path.dirname(ws.adopted), "kit");
+  mkdirSync(kit);
+  execFileSync("git", ["init", "-q"], { cwd: kit, stdio: "pipe" });
+  writeFileSync(path.join(kit, "qc.config.json"), "{}");
+  return { ...ws, kit, slash: (dir) => dir.replaceAll("\\", "/") };
+}
+
+test("a worktree add judges the repository the command targets, through -C, cd, or Set-Location", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  for (const command of [
+    `git -C ${kit} worktree add ${kit}/.worktree/x -b feat/x`,
+    `git -C ${kit} worktree add .worktree/x`,
+    `cd ${kit} && git worktree add .worktree/x`,
+    `cd ${kit} && git worktree add ${kit}/.worktree/x`,
+    `bash -c 'cd ${kit} && git worktree add .worktree/x'`,
+  ]) {
+    assert.equal(decide(bash(ws.adopted, command)), null, command);
+  }
+  for (const command of [`Set-Location ${kit}; git worktree add .worktree/x`, `Set-Location ${kit}; git worktree add ${kit}/.worktree/x`, `git -C ${kit} worktree add .worktree/x`]) {
+    assert.equal(decide(powershell(ws.adopted, command)), null, command);
+  }
+});
+
+test("a worktree add in the targeted repository is still held to that repository's folder, and the deny names it", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  for (const command of [`git -C ${kit} worktree add ../x`, `git -C ${kit} worktree add ${ws.slash(ws.adopted)}/.worktree/x`, `cd ${kit} && git worktree add x`]) {
+    const reason = reasonOf(decide(bash(ws.adopted, command))) ?? "";
+    assert.match(reason, /npx qc worktree add <name> <branch>/, command);
+    assert.ok(reason.includes(`The folder is ${path.join(ws.kit, ".worktree")}.`), `${command}: ${reason}`);
+  }
+});
+
+test("an absolute worktree path inside another checkout is judged by that checkout's folder", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  assert.equal(decide(bash(ws.adopted, `git worktree add ${kit}/.worktree/x`)), null);
+  const reason = reasonOf(decide(bash(ws.adopted, `git worktree add ${kit}/x`))) ?? "";
+  assert.ok(reason.includes(`The folder is ${path.join(ws.kit, ".worktree")}.`), reason);
+  assert.ok(outsideFolder(decide(bash(ws.adopted, "git worktree add ../x"))), "a relative path stays with the session's repository");
+});
+
+test("a worktree add in a repository with no qc.config.json is not guarded", (t) => {
+  const ws = twoRepos(t);
+  const plain = ws.slash(ws.plain);
+  for (const command of [`git -C ${plain} worktree add ../x`, `cd ${plain} && git worktree add ../x`, `git worktree add ${plain}/x`]) {
+    assert.equal(decide(bash(ws.adopted, command)), null, command);
+  }
+  assert.equal(decide(bash(ws.plain, "git worktree add ../x")), null, "a session in it is not guarded either");
+});

@@ -117,11 +117,14 @@ function worktreeAddPath(args) {
   return null;
 }
 
-/** A path as a shell resolves it from `cwd`. PowerShell also reads a backslash as a separator on Linux and macOS. */
-function resolveFrom(cwd, spelled, parse) {
+/** A path as the shell spells it, in the form of this platform. PowerShell also reads a backslash as a separator on Linux and macOS. */
+function spelledPath(spelled, parse) {
   const word = parse === powershellSegments ? spelled.replace(/\\/g, "/") : spelled;
-  return path.resolve(cwd, nativePath(word.replace(/^~(?=$|[\\/])/, os.homedir())));
+  return nativePath(word.replace(/^~(?=$|[\\/])/, os.homedir()));
 }
+
+/** A path as a shell resolves it from `cwd`. */
+const resolveFrom = (cwd, spelled, parse) => path.resolve(cwd, spelledPath(spelled, parse));
 
 /** True when `target` is one folder directly under `folder`, as `qc worktree add` makes it. */
 function inFolder(folder, target) {
@@ -144,10 +147,28 @@ const REASONS = {
 };
 
 /**
- * @param {{cwd: string, folder: string} | null} [place] the working directory and the worktree folder; null skips the worktree rule
+ * The worktree folder that judges `git worktree add`: the one of the repository the command targets. A `cd`,
+ * `Set-Location`, or `-C` into a repository names it. Without one, the checkout that holds an absolute path
+ * names it, and else the session's own repository does. `null` means the targeted repository is not guarded.
+ */
+function folderFor(place, from, added, parse) {
+  const worked = place.folderAt(from);
+  if (worked !== undefined && path.resolve(from) !== path.resolve(place.cwd)) return worked;
+  const spelled = spelledPath(added, parse);
+  const named = path.isAbsolute(spelled) ? place.folderAt(path.dirname(spelled)) : undefined;
+  // `undefined` means no checkout holds the place, and `null` means one does that is not guarded.
+  if (named !== undefined) return named;
+  return worked === undefined ? place.folder : worked;
+}
+
+/**
+ * @param {{cwd: string, folder: string, folderAt: (dir: string) => string | null | undefined} | null} [place] the working directory,
+ *   the session's worktree folder, and the folder of the repository that holds a directory (`undefined` when none does, `null` when
+ *   it is not guarded); null skips the worktree rule
+ * @param {string[]} [refused] receives the folder of each refused worktree path
  * @returns the reasons the command breaks a rule, in a stable order.
  */
-export function violations(command, parse = segmentsOf, place = null) {
+export function violations(command, parse = segmentsOf, place = null, refused = []) {
   const segments = parse(command);
   const found = new Set();
   let cwd = place?.cwd;
@@ -160,13 +181,22 @@ export function violations(command, parse = segmentsOf, place = null) {
     const added = place && git?.sub === "worktree" ? worktreeAddPath(git.args) : null;
     if (added !== null) {
       const from = git.dirs.filter(Boolean).reduce((dir, next) => resolveFrom(dir, next, parse), cwd);
-      if (!inFolder(place.folder, resolveFrom(from, added, parse))) found.add("worktree");
+      const folder = folderFor(place, from, added, parse);
+      if (folder !== null && !inFolder(folder, resolveFrom(from, added, parse))) {
+        found.add("worktree");
+        refused.push(folder);
+      }
     }
     const nested = nestedCommand(segment);
-    if (nested) for (const key of violations(nested.command, nested.parse, place && { ...place, cwd })) found.add(key);
+    if (nested) for (const key of violations(nested.command, nested.parse, place && { ...place, cwd }, refused)) found.add(key);
   }
   if (!segments.some(runsTests) && segments.some(runsHookScript)) found.add("script");
   return Object.keys(REASONS).filter((key) => found.has(key));
+}
+
+/** The worktree folder of the repository that holds `dir`: undefined when none does, null when it has no config or turns the rule off. */
+function folderAt(dir) {
+  return checkoutRootOf(dir) === null ? undefined : (worktreeRuleAt(dir)?.folder ?? null);
 }
 
 /** The verdict on one Bash or PowerShell call. @returns the hook output, or null to let the call run with no message. */
@@ -179,9 +209,11 @@ export function decide(call) {
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
   // The config is read only for a command that can add a worktree, so every other call stays cheap.
   const rule = /\bworktree\b/i.test(command) ? worktreeRuleAt(cwd) : null;
-  const found = violations(command, parse, rule && { cwd: path.resolve(cwd), folder: rule.folder });
+  const refused = [];
+  const place = rule && { cwd: path.resolve(cwd), folder: rule.folder, folderAt };
+  const found = violations(command, parse, place, refused);
   if (found.length === 0) return null;
-  const reasonOf = (key) => (key === "worktree" ? `${REASONS.worktree} The folder is ${rule.folder}.` : REASONS[key]);
+  const reasonOf = (key) => (key === "worktree" ? `${REASONS.worktree} The folder is ${[...new Set(refused)].join(" or ")}.` : REASONS[key]);
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
