@@ -5,7 +5,7 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync,
 import path from "node:path";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
-export const RECORD_TYPES = ["dispatch", "stop", "verdict", "merge", "issue-update"];
+export const RECORD_TYPES = ["dispatch", "stop", "verdict", "merge", "issue-update", "cost"];
 const MIN_SHA = 7;
 const HEX = /^[0-9a-f]+$/;
 
@@ -119,14 +119,55 @@ const SUMMARIES = {
       (r.issues ?? []).map((issue) => `${issue.repo}#${issue.number}`).join(" ") || "no issue"
     }`,
   "issue-update": (r) => `${r.repo}#${r.number} ${r.how} after ${r.prRepo}#${r.pr}`,
+  cost: (r) =>
+    `${r.role} ${r.agentType} ${r.agentId} ${r.branch ?? "(no branch)"} in ${r.input} out ${r.output} cache-read ${r.cacheRead} cache-write ${r.cacheCreation} tools ${r.toolCalls}`,
 };
 
 /** One line of `qc ledger`: the time, the type, and the fields that say what happened. */
 export const formatRecord = (record) =>
   `${record.at}  ${record.type.padEnd(12)}  ${SUMMARIES[record.type](record).replace(/\s+/g, " ").trim()}`;
 
-/** `qc ledger [branch]`: every record, or those that name the branch. @returns the exit code */
-export function runLedger(config, [branch] = []) {
+const COST_KEYS = ["input", "output", "cacheRead", "cacheCreation", "toolCalls"];
+const emptyTotal = () => ({ agents: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, toolCalls: 0 });
+
+/** The cost records, one per agent: a resumed agent stops again with its whole transcript, so its newest record replaces the older. */
+function latestCosts(records) {
+  const latest = new Map();
+  for (const record of records) if (record.type === "cost") latest.set(`${record.session}/${record.agentId}`, record);
+  return [...latest.values()];
+}
+
+/** The token and tool-call totals of the cost records, per branch and per role. @returns the lines to print */
+export function costReport(records) {
+  const costs = latestCosts(records);
+  if (costs.length === 0) return [];
+  const total = emptyTotal();
+  const groups = new Map();
+  const group = (key) => {
+    if (!groups.has(key)) groups.set(key, emptyTotal());
+    return groups.get(key);
+  };
+  for (const record of costs) {
+    const branch = record.branch ?? "(no branch)";
+    for (const target of [total, group(branch), group(`${branch}\u0000${record.role}`)]) {
+      target.agents += 1;
+      for (const key of COST_KEYS) target[key] += record[key] ?? 0;
+    }
+  }
+  const line = (label, t) =>
+    `${label.padEnd(34)} agents ${t.agents}  in ${t.input}  out ${t.output}  cache-read ${t.cacheRead}  cache-write ${t.cacheCreation}  tools ${t.toolCalls}`;
+  const lines = [...groups.keys()].sort().map((key) => {
+    const [branch, role] = key.split("\u0000");
+    return line(role === undefined ? branch : `  ${role}`, groups.get(key));
+  });
+  lines.push(line("total", total));
+  return lines;
+}
+
+/** `qc ledger [--cost] [branch]`: every record, or those that name the branch, or the cost totals. @returns the exit code */
+export function runLedger(config, args = []) {
+  const cost = args.includes("--cost");
+  const [branch] = args.filter((arg) => arg !== "--cost");
   const root = checkoutRootOf(config.root ?? process.cwd());
   const file = root ? ledgerFileOf(root) : null;
   if (!file) {
@@ -134,6 +175,12 @@ export function runLedger(config, [branch] = []) {
     return 1;
   }
   const records = readLedger(file).filter((record) => branch === undefined || record.branch === branch);
+  if (cost) {
+    const lines = costReport(records);
+    for (const line of lines) console.log(line);
+    if (lines.length === 0) console.log(branch ? `No cost record in ${file} names ${branch}.` : `The ledger at ${file} holds no cost record.`);
+    return 0;
+  }
   for (const record of records) console.log(formatRecord(record));
   if (records.length === 0) console.log(branch ? `No record in ${file} names ${branch}.` : `The ledger at ${file} is empty.`);
   return 0;

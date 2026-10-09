@@ -71,3 +71,21 @@ test("each workflow script is silent in a checkout without swarm.dispatch", (t) 
     assert.equal(result.stdout, "", script);
   }
 });
+
+test("cost-stop.mjs runs on every SubagentStop, and is silent in a checkout without swarm.dispatch", (t) => {
+  assert.deepEqual(matchersOf("SubagentStop", "cost-stop.mjs"), [undefined]);
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-cost-hooks-")));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q"], { cwd: base, stdio: "pipe" });
+  writeFileSync(path.join(base, "qc.config.json"), JSON.stringify({ swarm: {} }));
+  const transcript = path.join(base, "agent.jsonl");
+  writeFileSync(path.join(base, "agent.jsonl"), `${JSON.stringify({ type: "assistant", message: { id: "m", model: "m", usage: { input_tokens: 1, output_tokens: 1 } } })}\n`);
+  const result = spawnSync(process.execPath, [path.join(CLI, "cost-stop.mjs")], {
+    input: JSON.stringify({ session_id: "s", cwd: base, hook_event_name: "SubagentStop", agent_id: "a", agent_type: "sdd-implementer", agent_transcript_path: transcript }),
+    env: { ...process.env, TEMP: base, TMP: base, TMPDIR: base },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(existsSync(path.join(base, ".git", "qc", "ledger.jsonl")), false);
+});

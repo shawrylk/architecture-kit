@@ -13,6 +13,7 @@ import {
   readRequests,
   requestOf,
   subagentTranscriptOf,
+  toolCallsIn,
 } from "./transcript-usage.mjs";
 
 function folder(t) {
@@ -135,4 +136,12 @@ test("agentTypeOf reads the type from the meta file beside a transcript", (t) =>
   assert.equal(agentTypeOf(file), null);
   writeFileSync(path.join(base, "agent-a1.meta.json"), JSON.stringify({ agentType: "architecture:sdd-reviewer" }));
   assert.equal(agentTypeOf(file), "architecture:sdd-reviewer");
+});
+
+test("toolCallsIn counts each tool_use id once, and a file that does not read has none", (t) => {
+  const file = path.join(folder(t), "t.jsonl");
+  const line = (ids) => JSON.stringify({ type: "assistant", message: { id: "m", content: ids.map((id) => ({ type: "tool_use", id })) } });
+  writeFileSync(file, [line(["a"]), line(["a", "b"]), line([]), "not json with tool_use", JSON.stringify({ type: "user", message: { content: "tool_use" } })].join("\n"));
+  assert.equal(toolCallsIn(file), 2);
+  assert.equal(toolCallsIn(path.join(folder(t), "missing.jsonl")), 0);
 });
