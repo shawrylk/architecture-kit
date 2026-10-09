@@ -148,16 +148,13 @@ const REASONS = {
 
 /**
  * The worktree folder that judges `git worktree add`: the one of the repository the command targets. A `cd`,
- * `Set-Location`, or `-C` into a repository names it. Without one, the checkout that holds an absolute path
- * names it, and else the session's own repository does. `null` means the targeted repository is not guarded.
+ * `Set-Location`, `-C`, `--git-dir`, or `--work-tree` into a repository names it, and else the session's own
+ * repository does. The path that `add` names never decides, because git adds the worktree to the repository
+ * of the working directory wherever the path is. `null` means the targeted repository is not guarded.
  */
-function folderFor(place, from, added, parse) {
+function folderFor(place, from) {
+  // `undefined` means no checkout holds `from`, and `null` means one does that is not guarded.
   const worked = place.folderAt(from);
-  if (worked !== undefined && path.resolve(from) !== path.resolve(place.cwd)) return worked;
-  const spelled = spelledPath(added, parse);
-  const named = path.isAbsolute(spelled) ? place.folderAt(path.dirname(spelled)) : undefined;
-  // `undefined` means no checkout holds the place, and `null` means one does that is not guarded.
-  if (named !== undefined) return named;
   return worked === undefined ? place.folder : worked;
 }
 
@@ -181,7 +178,7 @@ export function violations(command, parse = segmentsOf, place = null, refused = 
     const added = place && git?.sub === "worktree" ? worktreeAddPath(git.args) : null;
     if (added !== null) {
       const from = git.dirs.filter(Boolean).reduce((dir, next) => resolveFrom(dir, next, parse), cwd);
-      const folder = folderFor(place, from, added, parse);
+      const folder = folderFor(place, from);
       if (folder !== null && !inFolder(folder, resolveFrom(from, added, parse))) {
         found.add("worktree");
         refused.push(folder);

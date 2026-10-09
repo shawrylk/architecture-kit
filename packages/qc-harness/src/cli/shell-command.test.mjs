@@ -32,6 +32,18 @@ test("a redirect target is recorded apart from the words, and a descriptor copy 
   assert.deepEqual(segmentsOf("cat log >> all.log")[0].redirects, ["all.log"]);
 });
 
+test("a git call reads --git-dir, --work-tree, and a GIT_DIR prefix as the directory of the repository", () => {
+  const dirsOf = (command) => gitCall(segmentsOf(command)[0]).dirs;
+  assert.deepEqual(dirsOf("git --git-dir=/r/.git status"), ["/r/.git/.."]);
+  assert.deepEqual(dirsOf("git --git-dir /r/.git status"), ["/r/.git/.."]);
+  assert.deepEqual(dirsOf("git --git-dir=/bare.git status"), ["/bare.git"]);
+  assert.deepEqual(dirsOf("git --work-tree=/r status"), ["/r"]);
+  assert.deepEqual(dirsOf("git --work-tree /r status"), ["/r"]);
+  assert.deepEqual(dirsOf("GIT_DIR=/r/.git git status"), ["/r/.git/.."]);
+  assert.deepEqual(dirsOf("GIT_WORK_TREE=/r git status"), ["/r"]);
+  assert.deepEqual(dirsOf("git -C /a --git-dir=/r/.git status"), ["/a", "/r/.git/.."]);
+});
+
 test("a git call names its subcommand and every -C directory", () => {
   const [segment] = segmentsOf(`GIT_PAGER=cat git -C "C:/a b" -c core.x=y --no-pager commit -m x`);
   assert.deepEqual(gitCall(segment), { sub: "commit", dirs: ["C:/a b"], configs: ["core.x=y"], args: ["-m", "x"] });
