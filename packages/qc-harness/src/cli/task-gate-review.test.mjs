@@ -140,39 +140,80 @@ test("each review check is a swarm.review key, and a repository switches it off"
   assert.equal(judge(ws, BRANCH_REVIEWER, reviewPrompt(ws), red).refusal, null);
 });
 
-const withBrief = (text) => `Brief: ${text}\n## Product decisions\nNone.`;
-const implement = (ws, prompt) => judge(ws, IMPLEMENTER, `${prompt}\nWorktree: ${ws.linked}`);
+const briefIn = (ws, name, text = "# Brief\n\n## Product decisions\n\nNone.\n") => {
+  const file = path.join(ws.base, name);
+  writeFileSync(file, text);
+  return file;
+};
+const implement = (ws, prompt, brief = briefIn(ws, "brief.md")) => judge(ws, IMPLEMENTER, `${prompt}\nBrief: ${brief}\nWorktree: ${ws.linked}`);
 
-test("an implementer brief with no Product decisions heading is refused, and the heading passes it", (t) => {
+test("an implementer dispatch with no Brief line, or a Brief line whose file is missing, is refused, and the refusal names the line", (t) => {
   const ws = workspace(t);
-  assert.match(implement(ws, "Read the brief.").refusal ?? "", /## Product decisions/);
-  assert.equal(implement(ws, withBrief("plans/b.md")).refusal, null);
+  const none = judge(ws, IMPLEMENTER, `Do the work.\n## Product decisions\nNone.\nWorktree: ${ws.linked}`).refusal ?? "";
+  assert.match(none, /`Brief: <path>`/);
+  const missing = implement(ws, "Do the work.", path.join(ws.base, "gone.md")).refusal ?? "";
+  assert.match(missing, /`Brief: <path>`/);
+  assert.match(missing, /gone\.md/);
+  assert.equal(implement(ws, "Do the work.").refusal, null);
   assert.equal(judge(ws, TASK_REVIEWER, reviewPrompt(ws)).refusal, null);
 });
 
-test("the brief file decides: its heading passes the dispatch, and its absence refuses it", (t) => {
+test("the brief file decides: its section passes the dispatch, and a missing or empty section refuses it", (t) => {
   const ws = workspace(t);
-  const good = path.join(ws.base, "good-brief.md");
-  const bad = path.join(ws.base, "bad-brief.md");
-  writeFileSync(good, "# Brief\n\n## Product decisions\n\nNone.\n");
-  writeFileSync(bad, "# Brief\n\nDo it.\n");
-  assert.equal(implement(ws, `Read the brief at ${good}.`).refusal, null);
-  const refusal = implement(ws, `Read the brief at ${bad}.`).refusal ?? "";
+  const bad = briefIn(ws, "bad-brief.md", "# Brief\n\nDo it.\n");
+  const empty = briefIn(ws, "empty-brief.md", "# Brief\n\n## Product decisions\n\n## Findings\n1. x\n");
+  assert.equal(implement(ws, "Read it.", briefIn(ws, "good-brief.md")).refusal, null);
+  const refusal = implement(ws, "Read it.", bad).refusal ?? "";
   assert.match(refusal, /bad-brief\.md/);
   assert.match(refusal, /## Product decisions/);
+  assert.match(implement(ws, "Read it.", empty).refusal ?? "", /empty-brief\.md.*empty|empty.*empty-brief\.md/);
 });
 
 test("a long brief file warns and still passes, and the warning reaches the session", (t) => {
   const ws = workspace(t);
-  const brief = path.join(ws.base, "long-brief.md");
   const findings = Array.from({ length: 9 }, (_unused, index) => `${index + 1}. finding ${index}`).join("\n");
-  writeFileSync(brief, `## Product decisions\nNone.\n${findings}\n`);
-  const task = implement(ws, `Read the brief at ${brief}.`);
+  const brief = briefIn(ws, "long-brief.md", `## Product decisions\nNone.\n${findings}\n`);
+  const task = implement(ws, "Read it.", brief);
   assert.equal(task.refusal, null);
   assert.match(task.note ?? "", /9 numbered findings/);
-  const output = decide(call(ws, IMPLEMENTER, `Read the brief at ${brief}.\nWorktree: ${ws.linked}`), ws.tmp, Date.now(), { ciState: green });
+  const output = decide(call(ws, IMPLEMENTER, `Read it.\nBrief: ${brief}\nWorktree: ${ws.linked}`), ws.tmp, Date.now(), { ciState: green });
   assert.match(output.hookSpecificOutput.additionalContext, /disjoint paths/);
   assert.equal(output.hookSpecificOutput.permissionDecision, undefined);
+});
+
+// A reviewer whose checkout the gate cannot read skips every check, so it is refused.
+
+test("a reviewer prompt with no Worktree line, or one that names no checkout, is refused, and the refusal names the line", (t) => {
+  const ws = workspace(t);
+  const red = { ciState: () => ({ reason: "CI on 1234567: build ended failure", unknown: null }) };
+  for (const type of [BRANCH_REVIEWER, TASK_REVIEWER]) {
+    for (const prompt of ["Review the branch.", `Review it.\nWorktree: ${path.join(ws.base, "gone")}`]) {
+      const refusal = judge(ws, type, prompt, red).refusal ?? "";
+      assert.match(refusal, /^Task gate:/, type);
+      assert.match(refusal, /`Worktree: <path>`/, type);
+    }
+  }
+});
+
+test("a reviewer on a detached head is refused, and the refusal names the Worktree line", (t) => {
+  const ws = workspace(t);
+  git(ws.linked, "checkout", "-q", "--detach");
+  for (const type of [BRANCH_REVIEWER, TASK_REVIEWER]) {
+    const refusal = judge(ws, type, reviewPrompt(ws)).refusal ?? "";
+    assert.match(refusal, /`Worktree: <path>`/, type);
+    assert.match(refusal, /checked-out branch/, type);
+  }
+});
+
+test("a reviewer in a repository with no swarm workflow is not judged, with or without a Worktree line", (t) => {
+  const ws = workspace(t);
+  const outside = path.join(ws.base, "outside");
+  mkdirSync(outside);
+  git(outside, "init", "-q");
+  for (const prompt of ["Review it.", `Review it.\nWorktree: ${outside}`]) {
+    const task = judgeTask({ ...call(ws, BRANCH_REVIEWER, prompt), cwd: outside }, ws.tmp, { ciState: green });
+    assert.equal(task.refusal, null, prompt);
+  }
 });
 
 test("the dispatch guard refuses a reviewer and claims no slot for it", (t) => {

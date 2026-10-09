@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { branchOf, decide, verdictOf } from "./report-stop.mjs";
 import { judgeTask } from "./task-gate.mjs";
+import { BRIEF } from "./test-brief.mjs";
 import { rememberSession } from "./workflow-settings.mjs";
 
 const HOOK = fileURLToPath(new URL("./report-stop.mjs", import.meta.url));
@@ -336,7 +337,7 @@ test("a stop with no new commit writes a worktree and a branch but no head, so i
       cwd: ws.on,
       hook_event_name: "PreToolUse",
       tool_name: "Agent",
-      tool_input: { subagent_type: IMPLEMENTER, description: "t", prompt: `Worktree: ${a.dir}\n## Product decisions\nNone.` },
+      tool_input: { subagent_type: IMPLEMENTER, description: "t", prompt: `Brief: ${BRIEF}\nWorktree: ${a.dir}` },
     },
     ws.tmp,
   );

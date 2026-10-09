@@ -10,7 +10,7 @@ import { handoffPathOf, resolveHandoff } from "./handoff-note.mjs";
 import { gitOutWithin, linkedWorktrees, pathKey } from "./git-read.mjs";
 import { appendRecord, latestVerdictFor, latestVerdictOn, readLedger, shaMatches } from "./ledger.mjs";
 import { resolveNamedWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
-import { READ_MS, branchOfCheckout, briefCheck, defaultReads, headOf, reviewerCheck } from "./review-gate.mjs";
+import { READ_MS, branchOfCheckout, briefCheck, defaultReads, headOf, reviewerCheck, unreadableRefusal } from "./review-gate.mjs";
 import { rememberSession, workflowAt } from "./workflow-settings.mjs";
 
 export { worktreeNamed };
@@ -162,10 +162,12 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
     if (brief.refusal) return refuse(brief.refusal);
     briefNote = brief.note;
   }
-  if (named === null || !taskTypeIn(type, workflow.review)) return pass(workflow, base, briefNote);
+  if (!taskTypeIn(type, workflow.review)) return pass(workflow, base, briefNote);
   if (!workflow.review.implementerTypes.includes(type)) {
-    // A reviewer waits for its checks. Its worktree tells the stop which branch the verdict belongs to.
-    if (!root) return pass(workflow, base);
+    // A reviewer waits for its checks. Its worktree tells the stop which branch the verdict belongs to,
+    // and a checkout the gate cannot read would skip every check, so that refuses.
+    if (named === null) return refuse(unreadableRefusal(type, "the prompt has no `Worktree:` line"));
+    if (!root) return refuse(unreadableRefusal(type, `no git checkout exists at "${named}"`));
     const branch = branchOfCheckout(root);
     const head = headOf(root);
     const state = ciState ?? (ci ? (sha) => ({ reason: ci(sha), unknown: null }) : (sha) => readCiState(sha, root));
@@ -180,6 +182,7 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
     if (checked.refusal) return refuse(checked.refusal);
     return pass(workflow, { ...base, worktree: root, branch, head }, [ledgerNote, checked.note].filter(Boolean).join(" ") || null);
   }
+  if (named === null) return pass(workflow, base, briefNote);
   const key = pathKey(abs);
   const worktree = linkedWorktrees(workflow.root, READ_MS).find((entry) => pathKey(entry.path) === key);
   if (!worktree) {

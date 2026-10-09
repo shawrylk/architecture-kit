@@ -14,7 +14,7 @@ const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.
 // The guard process below runs under Codex, whatever runtime runs the test.
 process.env.QC_RUNTIME = "codex";
 
-function workspace(t, dispatch = { maxPromptChars: 80 }) {
+function workspace(t, dispatch = { maxPromptChars: 300 }) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-dispatch-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const on = path.join(base, "on");
@@ -28,6 +28,9 @@ function workspace(t, dispatch = { maxPromptChars: 80 }) {
   mkdirSync(tmp);
   mkdirSync(path.join(on, "src"));
   writeFileSync(path.join(on, "qc.config.json"), JSON.stringify({ swarm: { dispatch } }));
+  writeFileSync(path.join(on, "brief.md"), "## Product decisions\n\nNone.\n");
+  const identity = ["-c", "user.name=qc", "-c", "user.email=qc@example.com", "-c", "commit.gpgsign=false"];
+  execFileSync("git", [...identity, "commit", "-q", "--allow-empty", "-m", "init"], { cwd: on, stdio: "pipe" });
   writeFileSync(path.join(off, "qc.config.json"), JSON.stringify({ swarm: { toolCallBudget: 50 } }));
   return { on, off, plain, tmp, slots: path.join(tmp, "architecture-kit", "dispatch") };
 }
@@ -52,8 +55,10 @@ const reasonOf = (output) =>
 const implementer = {
   subagent_type: "architecture:sdd-implementer",
   description: "Task 1",
-  prompt: "Read the brief at plans/task-1-brief.md.\n## Product decisions\nNone.",
+  prompt: "Brief: brief.md",
 };
+/** A reviewer prompt that names the checkout, so the task gate can read its branch and head. */
+const reviewerOf = (ws, subagent_type) => ({ subagent_type, prompt: `Worktree: ${ws.on}` });
 
 test("a checkout with no config, or a swarm section with no dispatch key, sees no change", (t) => {
   const ws = workspace(t);
@@ -87,8 +92,8 @@ test("the config of the checkout that holds the cwd decides", (t) => {
 
 test("a prompt over the limit is refused, and the refusal claims no slot", (t) => {
   const ws = workspace(t);
-  const long = { ...implementer, prompt: "x".repeat(81) };
-  assert.match(reasonOf(decide(agentCall(ws.on, long), ws.tmp)) ?? "", /81 characters/);
+  const long = { ...implementer, prompt: "x".repeat(301) };
+  assert.match(reasonOf(decide(agentCall(ws.on, long), ws.tmp)) ?? "", /301 characters/);
   assert.equal(existsSync(ws.slots), false);
   assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
 });
@@ -116,7 +121,7 @@ test("a stop in a worktree with no config still frees the slot", (t) => {
 test("a planner and a reviewer run beside an implementer", (t) => {
   const ws = workspace(t);
   decide(agentCall(ws.on, implementer), ws.tmp);
-  assert.equal(decide(agentCall(ws.on, { subagent_type: "architecture:sdd-reviewer", prompt: "p" }), ws.tmp), null);
+  assert.equal(reasonOf(decide(agentCall(ws.on, reviewerOf(ws, "architecture:sdd-reviewer")), ws.tmp)), null);
   assert.equal(decide(agentCall(ws.on, { subagent_type: "architecture:sdd-planner", prompt: "p" }), ws.tmp), null);
 });
 
@@ -131,7 +136,10 @@ test("the tier guard refuses a type on the wrong family, naming the type, the mo
 test("every shipped role accepts GPT 6.1 Sol without a cache note", (t) => {
   const ws = workspace(t);
   for (const subagent_type of ["architecture:sdd-planner", "architecture:sdd-branch-reviewer", "architecture:sdd-reviewer", "architecture:sdd-implementer"]) {
-    assert.equal(decide(agentCall(ws.on, { subagent_type, model: "gpt-6.1-sol", prompt: implementer.prompt }), ws.tmp), null, subagent_type);
+    const prompt = subagent_type.endsWith("reviewer") ? reviewerOf(ws, subagent_type).prompt : implementer.prompt;
+    const output = decide(agentCall(ws.on, { subagent_type, model: "gpt-6.1-sol", prompt }), ws.tmp);
+    assert.equal(reasonOf(output), null, subagent_type);
+    assert.doesNotMatch(output?.hookSpecificOutput?.additionalContext ?? "", /cache/i, subagent_type);
   }
   assert.equal(decide(agentCall(ws.on, { model: "gpt-6.1-sol", prompt: "p" }), ws.tmp), null);
 });

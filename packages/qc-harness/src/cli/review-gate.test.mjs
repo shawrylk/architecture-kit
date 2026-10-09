@@ -4,7 +4,7 @@ import { reviewDefaults } from "../config.mjs";
 import {
   baseCheck,
   briefCheck,
-  briefPathsIn,
+  briefPathOf,
   countFindings,
   countFiles,
   reviewedShaOf,
@@ -60,6 +60,32 @@ test("a second branch review with no Reviewed line is refused, and the refusal n
 
 test("a second branch review that carries a Reviewed line passes", () => {
   assert.equal(check({ records: [branchVerdict], prompt: branchPrompt("Reviewed: ccccccc") }).refusal, null);
+});
+
+test("the refusal and the Reviewed line speak of the last head a branch review named", () => {
+  assert.match(check({ records: [branchVerdict] }).refusal, /the last head a branch review named/);
+});
+
+test("a Reviewed sha that no branch verdict on the branch names is refused, and the refusal names the right one", () => {
+  const { refusal } = check({ records: [branchVerdict], prompt: branchPrompt("Reviewed: 1234567") });
+  assert.match(refusal, /^Task gate:/);
+  assert.match(refusal, /1234567/);
+  assert.match(refusal, /Reviewed: ccccccc/);
+  assert.match(refusal, /the last head a branch review named/);
+});
+
+test("a Reviewed sha matches a branch verdict of either verdict, and only one on this branch", () => {
+  const changes = { ...branchVerdict, verdict: "CHANGES_REQUIRED", sha: "d".repeat(40) };
+  assert.equal(check({ records: [branchVerdict, changes], prompt: branchPrompt("Reviewed: ddddddd") }).refusal, null);
+  assert.equal(check({ records: [branchVerdict, changes], prompt: branchPrompt("Reviewed: ccccccc") }).refusal, null);
+  const other = { ...branchVerdict, branch: "feat/2-y", sha: "e".repeat(40) };
+  assert.match(check({ records: [branchVerdict, other], prompt: branchPrompt("Reviewed: eeeeeee") }).refusal ?? "", /Reviewed: ccccccc/);
+  const task = { ...branchVerdict, kind: "task", sha: "f".repeat(40) };
+  assert.match(check({ records: [branchVerdict, task], prompt: branchPrompt("Reviewed: fffffff") }).refusal ?? "", /Reviewed: ccccccc/);
+});
+
+test("a Reviewed line with no branch verdict on the branch passes, since the ledger has nothing to match", () => {
+  assert.equal(check({ prompt: branchPrompt("Reviewed: 1234567") }).refusal, null);
 });
 
 test("the task reviewer is not held to one review", () => {
@@ -156,10 +182,15 @@ test("requireBase off never reads the base", () => {
   assert.equal(check({ reads, review: { ...review, requireBase: false, reviewerTypes: { task: [], branch: ["sdd-branch-reviewer"] } } }).refusal, null);
 });
 
-test("a reviewer with no head is not judged on CI or base, and says so", () => {
-  const result = check({ head: null });
-  assert.equal(result.refusal, null);
-  assert.match(result.note, /no head/);
+test("a reviewer of either kind whose head or branch cannot be read is refused, and the refusal names the Worktree line", () => {
+  for (const type of ["sdd-reviewer", "sdd-branch-reviewer"]) {
+    for (const over of [{ head: null }, { branch: null }]) {
+      const { refusal } = check({ type, ...over, ciState: () => assert.fail("CI asked"), reads: {} });
+      assert.match(refusal, /^Task gate:/);
+      assert.match(refusal, /Worktree: <path>/);
+      assert.match(refusal, /checked-out branch/);
+    }
+  }
 });
 
 test("the base check runs before CI, so a stale head is not sent to wait on a red run", () => {
@@ -173,7 +204,9 @@ const brief = (...sections) => sections.join("\n");
 const files = (n) => Array.from({ length: n }, (_unused, index) => `src/file${index}.ts`).join(", ");
 const findings = (n) => Array.from({ length: n }, (_unused, index) => `${index + 1}. fix thing ${index}`).join("\n");
 const onBrief = (file) => file.replaceAll("\\", "/").endsWith("/plans/brief.md");
-const briefCheckOf = (text, over = {}) => briefCheck({ prompt: "Read the brief at /plans/brief.md.", dirs: ["/w"], review, exists: (file) => onBrief(file), read: () => text, ...over });
+const briefCheckOf = (text, over = {}) =>
+  briefCheck({ prompt: "Read it.\nBrief: /plans/brief.md\nReport: /plans/report.md", dirs: ["/w"], review, exists: onBrief, read: () => text, ...over });
+const offAll = { ...review, productDecisions: false, roundFindings: 0, roundFiles: 0 };
 
 test("a brief with a Product decisions heading passes, with no note when it is under the limits", () => {
   assert.deepEqual(briefCheckOf(brief("# Brief", "## Product decisions", "None.", "1. one", `Files: ${files(3)}`)), { refusal: null, note: null });
@@ -190,22 +223,48 @@ test("a brief with no Product decisions heading is refused, and the refusal name
   assert.equal(briefCheckOf("### Product decisions\nx").refusal !== null, true);
 });
 
-test("a prompt with no brief file is the brief itself", () => {
-  const prompt = "Do the work.\n## Product decisions\nNone.";
-  assert.equal(briefCheck({ prompt, dirs: ["/w"], review, exists: () => false, read: () => assert.fail("read") }).refusal, null);
-  assert.match(briefCheck({ prompt: "Do the work.", dirs: ["/w"], review, exists: () => false, read: () => "" }).refusal, /the prompt/);
+test("a Product decisions heading with no text before the next heading, or the end, is refused", () => {
+  for (const text of ["## Product decisions\n", "## Product decisions\n\n  \n", "## Product decisions\n\n## Findings\n1. a", "# Brief\n## Product decisions\r\n\r\n# Next\r\nx"]) {
+    const { refusal } = briefCheckOf(text);
+    assert.match(refusal ?? "", /^Task gate:.*empty/, JSON.stringify(text));
+    assert.match(refusal, /## Product decisions/);
+    assert.match(refusal, /`none`/);
+  }
 });
 
-test("the brief is the first .md path that exists, and a hand-off note is not the brief", () => {
-  const read = (file) => (file.endsWith("note.md") ? "no heading" : file.endsWith("brief.md") ? "## Product decisions\nNone." : assert.fail(file));
-  const exists = (file) => file.endsWith("note.md") || file.endsWith("brief.md");
-  const withNote = "HANDOFF: /plans/note.md\nBrief: /plans/brief.md\nReport: /plans/report.md";
-  assert.equal(briefCheck({ prompt: withNote, dirs: ["/w"], review, exists, read }).refusal, null);
-  const missingFirst = "Report: /plans/report.md\nBrief: /plans/brief.md";
-  assert.equal(briefCheck({ prompt: missingFirst, dirs: ["/w"], review, exists: onBrief, read }).refusal, null);
+test("the text under the heading is a ruling or the word none, and a sub-heading is text", () => {
+  assert.equal(briefCheckOf("## Product decisions\nnone\n## Findings").refusal, null);
+  assert.equal(briefCheckOf("## Product decisions\n- A reviewer with no head is refused.\n").refusal, null);
+  assert.equal(briefCheckOf("## Product decisions\n### Ruling\nx").refusal, null);
 });
 
-test("a relative brief path is found under each directory, and a Git Bash drive path in Windows spelling", () => {
+test("a prompt with no Brief line is refused, and the refusal names the line, even when the prompt holds the heading", () => {
+  const prompt = "Do the work. See /plans/brief.md.\n## Product decisions\nNone.";
+  const { refusal } = briefCheck({ prompt, dirs: ["/w"], review, exists: () => assert.fail("looked"), read: () => assert.fail("read") });
+  assert.match(refusal, /^Task gate:/);
+  assert.match(refusal, /`Brief: <path>`/);
+});
+
+test("a Brief line whose file is missing or unreadable is refused, and the refusal names the line and the path", () => {
+  const missing = briefCheck({ prompt: "Brief: /plans/gone.md", dirs: ["/w"], review, exists: () => false, read: () => assert.fail("read") });
+  assert.match(missing.refusal, /`Brief: <path>`/);
+  assert.match(missing.refusal, /\/plans\/gone\.md/);
+  const read = () => {
+    throw new Error("EACCES");
+  };
+  const unreadable = briefCheck({ prompt: "Brief: /plans/brief.md", dirs: ["/w"], review, exists: () => true, read });
+  assert.match(unreadable.refusal, /`Brief: <path>`/);
+  assert.match(unreadable.refusal, /EACCES/);
+});
+
+test("the brief is the path on the Brief line, and no other .md path or the hand-off note is", () => {
+  const read = (file) => (file.endsWith("brief.md") ? "## Product decisions\nNone." : assert.fail(file));
+  const exists = (file) => file.endsWith("note.md") || file.endsWith("brief.md") || file.endsWith("report.md");
+  const prompt = "Report: /plans/report.md\nHANDOFF: /plans/note.md\nBrief: /plans/brief.md\nSee /plans/other.md";
+  assert.equal(briefCheck({ prompt, dirs: ["/w"], review, exists, read }).refusal, null);
+});
+
+test("a relative Brief path is found under each directory, and a Git Bash drive path in Windows spelling", () => {
   const seen = [];
   const exists = (file) => (seen.push(file), false);
   briefCheck({ prompt: "Brief: plans/b.md", dirs: ["/w/a", "/w/b"], review, exists, read: () => "" });
@@ -214,16 +273,24 @@ test("a relative brief path is found under each directory, and a Git Bash drive 
   assert.ok(seen[1].replaceAll("\\", "/").endsWith("/w/b/plans/b.md"));
 });
 
-test("a brief that cannot be read counts as no brief, so the prompt decides", () => {
-  const exists = () => true;
-  const read = () => {
-    throw new Error("EACCES");
-  };
-  assert.match(briefCheck({ prompt: "Brief: /plans/brief.md", dirs: ["/w"], review, exists, read }).refusal, /the prompt/);
+test("a quoted Brief path, a Windows path, and a short-name path are read as written", () => {
+  for (const spelled of ['"/plans/brief.md"', "`/plans/brief.md`", "  /plans/brief.md  ", "/plans/brief.md"]) {
+    assert.equal(briefCheckOf("## Product decisions\nNone.", { prompt: `Brief: ${spelled}` }).refusal, null, spelled);
+  }
+  assert.equal(briefPathOf("Brief: C:\\Users\\NGUYEN~1\\s\\brief.md\nReport: /r/report.md"), "C:\\Users\\NGUYEN~1\\s\\brief.md");
+  assert.equal(briefPathOf("a\n  brief: /b/x.md"), "/b/x.md");
+  assert.equal(briefPathOf("The Brief: is inline /b/x.md"), null);
+  assert.equal(briefPathOf("Brief:"), null);
+  assert.equal(briefPathOf(""), null);
 });
 
-test("productDecisions off never refuses a brief", () => {
+test("productDecisions off never refuses a brief for its heading", () => {
   assert.equal(briefCheckOf("no heading", { review: { ...review, productDecisions: false } }).refusal, null);
+});
+
+test("with every brief check off, the brief is not read and no Brief line is needed", () => {
+  const result = briefCheck({ prompt: "Do it.", dirs: ["/w"], review: offAll, exists: () => assert.fail("looked"), read: () => assert.fail("read") });
+  assert.deepEqual(result, { refusal: null, note: null });
 });
 
 test("a brief over the findings limit warns and names the split", () => {
@@ -245,7 +312,7 @@ test("a brief over the files limit warns, and one at the limit does not", () => 
 
 test("a limit of 0 turns its warning off", () => {
   const off = { ...review, roundFindings: 0, roundFiles: 0 };
-  assert.equal(briefCheckOf(brief("## Product decisions", findings(30), files(30)), { review: off }).note, null);
+  assert.equal(briefCheckOf(brief("## Product decisions", "None.", findings(30), files(30)), { review: off }).note, null);
 });
 
 test("a refused brief reports no round-size note", () => {
@@ -264,10 +331,4 @@ test("a file is a path with a separator or a known extension; a URL, a version, 
   assert.equal(countFiles("see https://github.com/o/r/issues/1 and e.g. v0.20.4, i.e. the 1.5x speed"), 0);
   assert.equal(countFiles("docs/a.md, `packages/x/y.json`, (hooks/hooks.json)."), 3);
   assert.equal(countFiles("README.md and README.md"), 1);
-});
-
-test("briefPathsIn lists each .md path in order, once", () => {
-  assert.deepEqual(briefPathsIn("a /c/two.md, plans/three.md and /c/two.md"), ["/c/two.md", "plans/three.md"]);
-  assert.deepEqual(briefPathsIn("Brief: C:\\Users\\NGUYEN~1\\s\\brief.md\nReport: /r/report.md\nBrief: C:\\Users\\NGUYEN~1\\s\\brief.md"), ["C:\\Users\\NGUYEN~1\\s\\brief.md", "/r/report.md"]);
-  assert.deepEqual(briefPathsIn("no paths here, readme.mdx is not one"), []);
 });
