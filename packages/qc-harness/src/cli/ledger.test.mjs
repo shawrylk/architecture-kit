@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   appendRecord,
   commonDirOf,
+  formatRecord,
   lastTaskDispatchOn,
   latestVerdictFor,
   latestVerdictOn,
@@ -124,4 +125,17 @@ test("an append after a torn last line keeps the new record whole", (t) => {
   assert.deepEqual(readLedger(file).map((record) => record.type), ["stop", "verdict"]);
   appendRecord(file, { type: "stop", role: "task" });
   assert.equal(readLedger(file).length, 3, "a file that ends in a newline gets no blank line");
+});
+
+test("a dispatch that passed on a CI failure shows the sha and the reason in the ledger line", () => {
+  const line = formatRecord({
+    at: "t",
+    type: "dispatch",
+    agentType: "sdd-implementer",
+    task: true,
+    branch: "feat/1-x",
+    head: "abcdef1234",
+    ciPass: { sha: "1234567890abcdef", reason: "CI on 1234567: build ended failure" },
+  });
+  assert.match(line, /CI-PASS: 1234567 CI on 1234567: build ended failure/);
 });

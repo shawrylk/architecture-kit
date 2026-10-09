@@ -108,6 +108,8 @@ const short = (sha) => (typeof sha === "string" ? sha.slice(0, MIN_SHA) : "");
 const SUMMARIES = {
   dispatch: (r) =>
     `${r.agentType} ${r.task ? `${r.branch} ${short(r.head)}` : "(no task)"}${r.resumeReason ? ` NO-RESUME: ${r.resumeReason}` : ""}${
+      r.ciPass ? ` CI-PASS: ${short(r.ciPass.sha)} ${r.ciPass.reason}` : ""
+    }${
       r.handoff ? ` HANDOFF: ${r.handoff}` : ""
     }`,
   stop: (r) => `${r.role} ${r.agentType} ${r.agentId}${r.plan ? ` ${r.plan}` : ""}${r.handoff ? ` HANDOFF: ${r.handoff}` : ""}`,
