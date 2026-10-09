@@ -35,6 +35,9 @@ const commit = (root, file, text) => {
   return git(root, "rev-parse", "HEAD");
 };
 
+/** The commit `origin/main` names: the base commit a PR merges into. */
+const oidOf = (root) => git(root, "rev-parse", BASE);
+
 const edit = (root, rel, input) =>
   editLane({ root, base: BASE, protectedBranches: ["main"], rel, toolName: "Edit", input });
 
@@ -99,7 +102,7 @@ test("a protected branch, a detached head, or a missing base ref leaves the lane
 test("a small head with no review merges through the lane", (t) => {
   const root = repo(t);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
-  const fit = mergeLane({ root, base: BASE, sha, records: [] });
+  const fit = mergeLane({ root, baseOid: oidOf(root), sha, records: [] });
   assert.equal(fit.problem, null);
   assert.deepEqual(fit.size, { files: 1, lines: 2 });
 });
@@ -108,20 +111,20 @@ test("a review that is not APPROVED, an implementer commit, or a large head keep
   const root = repo(t);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
   const changes = [{ type: "verdict", kind: "task", verdict: "CHANGES_REQUIRED", sha }];
-  assert.match(mergeLane({ root, base: BASE, sha, records: changes }).problem, /latest review on the branch, of .*, is CHANGES_REQUIRED/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: changes }).problem, /latest review on the branch, of .*, is CHANGES_REQUIRED/);
   const stop = [{ type: "stop", role: "implementer", head: sha, branch: "feat/1-x" }];
-  assert.match(mergeLane({ root, base: BASE, sha, records: stop }).problem, /an implementer worked on the branch/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: stop }).problem, /an implementer worked on the branch/);
   const big = commit(root, "src/b.ts", lines(30));
-  assert.match(mergeLane({ root, base: BASE, sha: big, records: [] }).problem, /32 of 20 lines/);
-  assert.match(mergeLane({ root, base: "origin/none", sha, records: [] }).problem, /merge base of origin\/none/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha: big, records: [] }).problem, /32 of 20 lines/);
+  assert.match(mergeLane({ root, baseOid: "1".repeat(40), sha, records: [] }).problem, /is not in this repository, so run `git fetch`/);
 });
 
 test("a head that touches a review path needs one APPROVED review of either kind", (t) => {
   const root = repo(t, { dispatch: {}, direct: { reviewPaths: ["src/**"] } });
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
-  assert.match(mergeLane({ root, base: BASE, sha, records: [] }).problem, /src\/a\.ts matches swarm\.direct\.reviewPaths/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /src\/a\.ts matches swarm\.direct\.reviewPaths/);
   const approved = [{ type: "verdict", kind: "task", verdict: "APPROVED", sha }];
-  assert.equal(mergeLane({ root, base: BASE, sha, records: approved }).problem, null);
+  assert.equal(mergeLane({ root, baseOid: oidOf(root), sha, records: approved }).problem, null);
 });
 
 test("a commit after a review that asked for changes stays out of the lane until a review approves it", (t) => {
@@ -129,9 +132,9 @@ test("a commit after a review that asked for changes stays out of the lane until
   const first = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
   const records = [{ type: "verdict", kind: "task", verdict: "CHANGES_REQUIRED", sha: first }];
   const second = commit(root, "src/a.ts", lines(10).replace("line 3", "line 3!"));
-  assert.match(mergeLane({ root, base: BASE, sha: second, records }).problem, /CHANGES_REQUIRED/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha: second, records }).problem, /CHANGES_REQUIRED/);
   records.push({ type: "verdict", kind: "task", verdict: "APPROVED", sha: second });
-  assert.equal(mergeLane({ root, base: BASE, sha: second, records }).problem, null);
+  assert.equal(mergeLane({ root, baseOid: oidOf(root), sha: second, records }).problem, null);
 });
 
 test("an amend after a review that asked for changes, or after an implementer commit, stays out of the lane", (t) => {
@@ -142,15 +145,15 @@ test("an amend after a review that asked for changes, or after an implementer co
   writeFileSync(path.join(root, "src", "a.ts"), lines(10).replace("line 3", "line 3!"));
   git(root, "commit", "-q", "--amend", "-am", "amended");
   const amended = git(root, "rev-parse", "HEAD");
-  assert.match(mergeLane({ root, base: BASE, sha: amended, records: verdicts }).problem, /CHANGES_REQUIRED/);
-  assert.match(mergeLane({ root, base: BASE, sha: amended, records: stops }).problem, /an implementer worked/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha: amended, records: verdicts }).problem, /CHANGES_REQUIRED/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha: amended, records: stops }).problem, /an implementer worked/);
 });
 
 test("a head that no local branch points at stays out of the lane", (t) => {
   const root = repo(t);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
   git(root, "reset", "-q", "--hard", "HEAD~1");
-  assert.match(mergeLane({ root, base: BASE, sha, records: [] }).problem, /no local branch points at/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /no local branch points at/);
 });
 
 test("a binary file, a submodule, or an untracked binary has no size the lane can judge", (t) => {
@@ -158,18 +161,18 @@ test("a binary file, a submodule, or an untracked binary has no size the lane ca
   writeFileSync(path.join(root, "src", "lib.dll"), Buffer.from([0, 1, 2, 3]));
   assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /src\/lib\.dll is a binary file/);
   const binary = commit(root, "src/lib.dll", Buffer.from([0, 1, 2, 3]));
-  assert.match(mergeLane({ root, base: BASE, sha: binary, records: [] }).problem, /src\/lib\.dll is a binary file/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha: binary, records: [] }).problem, /src\/lib\.dll is a binary file/);
   git(root, "reset", "-q", "--hard", "HEAD~1");
   git(root, "update-index", "--add", "--cacheinfo", `160000,${git(root, "rev-parse", "HEAD")},vendor/sub`);
   git(root, "commit", "-q", "-m", "submodule");
-  assert.match(mergeLane({ root, base: BASE, sha: git(root, "rev-parse", "HEAD"), records: [] }).problem, /vendor\/sub is a binary file, a large file, or a submodule/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha: git(root, "rev-parse", "HEAD"), records: [] }).problem, /vendor\/sub is a binary file, a large file, or a submodule/);
 });
 
 test("a lane that runs out of time closes", (t) => {
   const root = repo(t);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
   assert.match(editLane({ root, base: BASE, protectedBranches: [], rel: "src/a.ts", toolName: "Edit", input: {}, budgetMs: 0 }).problem, /budget of the lane/);
-  assert.match(mergeLane({ root, base: BASE, sha, records: [], budgetMs: 0 }).problem, /budget of the lane/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [], budgetMs: 0 }).problem, /budget of the lane/);
 });
 
 test("a Write over a file counts the lines it replaces", (t) => {
@@ -181,11 +184,11 @@ test("a Write over a file counts the lines it replaces", (t) => {
 test("a head with no commit past the base, the head of a protected branch, or a branch an implementer was sent to stays out of the lane", (t) => {
   const root = repo(t);
   const fork = git(root, "rev-parse", "HEAD");
-  assert.match(mergeLane({ root, base: BASE, sha: fork, records: [] }).problem, /has no commit past origin\/main/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha: fork, records: [] }).problem, /has no commit past the PR base/);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
-  assert.match(mergeLane({ root, base: BASE, protectedBranches: ["feat/1-x"], sha, records: [] }).problem, /head of the protected branch feat\/1-x/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), protectedBranches: ["feat/1-x"], sha, records: [] }).problem, /head of the protected branch feat\/1-x/);
   const sent = [{ type: "dispatch", task: true, branch: "feat/1-x", head: fork }];
-  assert.match(mergeLane({ root, base: BASE, sha, records: sent }).problem, /an implementer worked on the branch/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: sent }).problem, /an implementer worked on the branch/);
 });
 
 test("a Write over a tracked binary has no size the lane can judge", (t) => {
@@ -203,17 +206,17 @@ test("the lane judges with the limits of the base, not the limits of the checkou
   const fit = edit(root, "src/a.ts", big);
   assert.match(fit.problem, /changes 6 of 5 lines in 1 of 2 files/);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "x\n".repeat(5)));
-  assert.match(mergeLane({ root, base: BASE, sha, records: [] }).problem, /changes 7 of 5 lines/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /changes 7 of 5 lines/);
 });
 
 test("a base that sets reviewPaths holds a merge to its review, though the checkout drops the setting", (t) => {
   const root = repo(t, withDirect({ reviewPaths: ["**"] }));
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
   writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
-  const loose = mergeLane({ root, base: BASE, sha, records: [] });
+  const loose = mergeLane({ root, baseOid: oidOf(root), sha, records: [] });
   assert.match(loose.problem, /src\/a\.ts matches swarm\.direct\.reviewPaths/);
   const approved = [{ type: "verdict", kind: "task", verdict: "APPROVED", sha }];
-  const fit = mergeLane({ root, base: BASE, sha, records: approved });
+  const fit = mergeLane({ root, baseOid: oidOf(root), sha, records: approved });
   assert.equal(fit.problem, null);
   assert.equal(fit.review.kind, "task");
   assert.equal(fit.review.sha, sha);
@@ -222,19 +225,21 @@ test("a base that sets reviewPaths holds a merge to its review, though the check
 test("a base with no qc.config.json closes the lane", (t) => {
   const root = repo(t, undefined, null);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
-  assert.match(mergeLane({ root, base: BASE, sha, records: [] }).problem, /git cannot read qc\.config\.json at origin\/main/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /git cannot read qc\.config\.json at the PR base/);
   assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /git cannot read qc\.config\.json at origin\/main/);
 });
 
-test("a base config that is not JSON, or holds a wrong swarm.direct, closes the lane and names the cause", (t) => {
+test("a base config that is not JSON, or holds a wrong swarm or swarm.direct, closes the lane and names the cause", (t) => {
   for (const [config, cause] of [
-    ["{ not json", /qc\.config\.json at origin\/main is not JSON/],
-    ["null", /qc\.config\.json at origin\/main is not a JSON object/],
+    ["{ not json", /qc\.config\.json at (?:origin\/main|the PR base) is not JSON/],
+    ["null", /qc\.config\.json at (?:origin\/main|the PR base) is not a JSON object/],
+    [JSON.stringify({ swarm: null }), /swarm in qc\.config\.json at (?:origin\/main|the PR base) must be an object, got null/],
+    [JSON.stringify({ swarm: [] }), /swarm in qc\.config\.json at (?:origin\/main|the PR base) must be an object, got \[\]/],
     [JSON.stringify({ swarm: { direct: { maxLines: 0 } } }), /swarm\.direct\.maxLines in qc\.config\.json must be a positive whole number/],
   ]) {
     const root = repo(t, undefined, config);
     const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
-    assert.match(mergeLane({ root, base: BASE, sha, records: [] }).problem, cause);
+    assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, cause);
     assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, cause);
   }
 });
@@ -242,14 +247,14 @@ test("a base config that is not JSON, or holds a wrong swarm.direct, closes the 
 test("a base that sets swarm.direct to false closes the lane", (t) => {
   const root = repo(t, withDirect(false));
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
-  assert.match(mergeLane({ root, base: BASE, sha, records: [] }).problem, /swarm\.direct is false at origin\/main/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /swarm\.direct is false at the PR base/);
   assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /swarm\.direct is false at origin\/main/);
 });
 
 test("a branch that changes qc.config.json leaves the lane, and so does a pending edit of it", (t) => {
   const root = repo(t);
   const sha = commit(root, "qc.config.json", JSON.stringify({ swarm: { dispatch: {}, direct: { maxLines: 500 } } }));
-  assert.match(mergeLane({ root, base: BASE, sha, records: [] }).problem, /qc\.config\.json changes on the branch, so it runs the subagent workflow/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /qc\.config\.json changes on the branch, so it runs the subagent workflow/);
   assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /qc\.config\.json changes on the branch, so it runs the subagent workflow/);
   const clean = repo(t);
   assert.match(edit(clean, "qc.config.json", { old_string: "{", new_string: "{ " }).problem, /qc\.config\.json changes on the branch/);
@@ -259,5 +264,26 @@ test("a branch that changes qc.config.json leaves the lane, and so does a pendin
 test("a config change in a folder below the root does not close the lane", (t) => {
   const root = repo(t);
   const sha = commit(root, "pkg/qc.config.json", "{}\n");
-  assert.equal(mergeLane({ root, base: BASE, sha, records: [] }).problem, null);
+  assert.equal(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, null);
+});
+
+test("a merge with no base commit, or a base commit the repository lacks, closes the lane", (t) => {
+  const root = repo(t);
+  const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
+  assert.match(mergeLane({ root, baseOid: undefined, sha, records: [] }).problem, /no base commit/);
+  assert.match(mergeLane({ root, baseOid: "origin/main", sha, records: [] }).problem, /no base commit/);
+  assert.match(mergeLane({ root, baseOid: "1".repeat(40), sha, records: [] }).problem, /the PR base commit 111111111111 is not in this repository, so run `git fetch`/);
+});
+
+test("the lane measures the merge from the base commit it is given, not from a local ref", (t) => {
+  const root = repo(t, withDirect({ reviewPaths: ["**"] }));
+  git(root, "switch", "-q", "-c", "tip", BASE);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  git(root, "commit", "-q", "-am", "loosen");
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
+  const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
+  const loose = mergeLane({ root, baseOid: git(root, "rev-parse", BASE), sha, records: [] });
+  assert.equal(loose.problem, null, "the local ref is the base here");
+  const strict = mergeLane({ root, baseOid: git(root, "rev-parse", `${BASE}~1`), sha, records: [] });
+  assert.match(strict.problem, /qc\.config\.json changes on the branch/);
 });
