@@ -34,14 +34,19 @@ export function familyOf(model) {
   return MODEL_FAMILIES.find((family) => !family.startsWith("gpt-") && lower.includes(family)) ?? null;
 }
 
+/** The SDD role types, whose definitions say `model: inherit`. */
+const ROLE_TYPES = Object.keys(runtimeModels.claude).filter((type) => type !== WILDCARD_TYPE);
+
 /**
- * The runtime that runs this session, from a positive signal: `QC_RUNTIME`, then Claude Code's `CLAUDECODE`,
- * then any `CODEX_` variable. Null when none is set, or when `QC_RUNTIME` names no runtime the kit knows.
+ * The runtime that runs this session, from a positive signal: `QC_RUNTIME`, then Claude Code's `CLAUDECODE`
+ * or `CLAUDE_PROJECT_DIR`, then any `CODEX_` variable. Null when none is set, or when `QC_RUNTIME` names no
+ * runtime the kit knows. Claude Code sets `CLAUDECODE` in its shells, but a hook process gets only
+ * `CLAUDE_PROJECT_DIR`.
  */
 export function runtimeOf(env = process.env) {
   const named = typeof env.QC_RUNTIME === "string" ? env.QC_RUNTIME.trim().toLowerCase() : "";
   if (named !== "") return Object.hasOwn(runtimeModels, named) ? named : null;
-  if (env.CLAUDECODE === "1") return "claude";
+  if (env.CLAUDECODE === "1" || (env.CLAUDE_PROJECT_DIR ?? "") !== "") return "claude";
   return Object.keys(env).some((key) => key.startsWith("CODEX_")) ? "codex" : null;
 }
 
@@ -179,7 +184,7 @@ export function dispatchRefusal(input, settings) {
   const model = typeof input.model === "string" ? input.model.trim() : "";
   const allowed = settings.allowedTypes.includes(type);
   if (!allowed && (type === FORK || model === "")) return modelRefusal(type, settings);
-  if (model === "" && settings.runtime === "claude" && Object.hasOwn(settings.models, type)) {
+  if (model === "" && settings.runtime === "claude" && ROLE_TYPES.includes(type) && Object.hasOwn(settings.models, type)) {
     return inheritRefusal(type, settings.models[type]);
   }
   if (model !== "" && type !== FORK) {
@@ -199,8 +204,8 @@ export function dispatchNote(input, settings) {
   if (MODEL_FAMILIES.includes(model.toLowerCase())) return null;
   return (
     `Dispatch note: ${type} sets its own model, and "${model}" is a full model id. Requests to different models share no prompt cache, ` +
-    `so this dispatch pays the type's shared first-call prefix again when the id differs from the definition's model. ` +
-    "A dispatch of this type with no `model` shares one cache with the others."
+    `so this dispatch pays the type's shared first-call prefix again when other dispatches of the type use another id. ` +
+    "Name the bare family, such as `sonnet`, to share one cache with them."
   );
 }
 

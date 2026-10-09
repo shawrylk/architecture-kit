@@ -20,7 +20,7 @@ const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-rev
 /** One added line naming each role's models for the session's runtime, so a dispatch names the right one. */
 export function modelsLine({ models, runtime }) {
   const roles = ROLES.map((role) => `${role} ${(models[`architecture:${role}`] ?? models[role] ?? models["*"] ?? ["the session's model"]).join(" or ")}`);
-  const how = runtime === "claude" ? "Name that model on each dispatch: a role with no model inherits the session's." : "A role with no named model inherits the session's.";
+  const how = runtime === "claude" ? "Name that model on each dispatch: the guard refuses a role dispatch with no model." : "A role with no named model inherits the session's.";
   const where = runtime ? `the ${runtime} runtime` : "an unknown runtime (set QC_RUNTIME to claude or codex)";
   return ` Models for ${where}: ${roles.join(", ")}. ${how}`;
 }

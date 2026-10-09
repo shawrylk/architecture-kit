@@ -181,6 +181,19 @@ test("the hook runs as its own process and prints its refusal as JSON", (t) => {
   assert.match(reasonOf(JSON.parse(result.stdout)) ?? "", /names no model/);
 });
 
+test("a hook process under Claude Code sees only CLAUDE_PROJECT_DIR, and still refuses a role dispatch with no model", (t) => {
+  const ws = workspace(t);
+  const { QC_RUNTIME, CLAUDECODE, ...inherited } = process.env;
+  const env = Object.fromEntries(Object.entries(inherited).filter(([key]) => !key.startsWith("CODEX_")));
+  const result = spawnSync(process.execPath, [GUARD], {
+    input: JSON.stringify(agentCall(ws.on, implementer)),
+    env: { ...env, CLAUDE_PROJECT_DIR: ws.on, TEMP: ws.tmp, TMP: ws.tmp, TMPDIR: ws.tmp },
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(reasonOf(JSON.parse(result.stdout)) ?? "", /inherits the session's model.*Pass `model` with sonnet/);
+});
+
 test("hooks.json runs the guard on Agent, SubagentStart and SubagentStop", () => {
   const { hooks } = JSON.parse(readFileSync(HOOKS, "utf8"));
   const matchersOf = (entries) =>

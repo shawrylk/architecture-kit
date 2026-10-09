@@ -280,14 +280,15 @@ the session that dispatches it. The dispatch guard picks each role's models from
 
 | Runtime | Signal | Planner and branch reviewer | Implementer and task reviewer | Other types |
 |---|---|---|---|---|
-| `claude` | `CLAUDECODE=1` | `opus` | `sonnet` | `sonnet`, `haiku` |
+| `claude` | `CLAUDECODE=1` or `CLAUDE_PROJECT_DIR` | `opus` | `sonnet` | `sonnet`, `haiku` |
 | `codex` | any `CODEX_` variable | `gpt-6.1-sol` | `gpt-6.1-sol` | `gpt-6.1-sol` |
 
-`QC_RUNTIME=claude` or `QC_RUNTIME=codex` overrides the signal. Under Claude Code, a role dispatch
-must name its model, so a role never inherits the orchestrator's Opus by accident. Under Codex, a
-role dispatch with no model inherits the session's GPT model. With no signal, the runtime is
-unknown: a dispatch that names a model is refused unless the repository lists that type in
-`models`. The branch reviewer judges cross-task interactions, security, and data migrations against
+Claude Code sets `CLAUDECODE` in its shells, and a hook process gets `CLAUDE_PROJECT_DIR`.
+`QC_RUNTIME=claude` or `QC_RUNTIME=codex` overrides the signal. Under Claude Code, the guard
+refuses a role dispatch with no model, so a role never inherits the orchestrator's Opus by
+accident. Under Codex, a role dispatch with no model inherits the session's GPT model. With no
+signal, the runtime is unknown: a dispatch that names a model is refused unless the repository lists
+that type, or `*`, in `models`. The branch reviewer judges cross-task interactions, security, and data migrations against
 the plan and the spec, over the whole branch's diff.
 
 Each type lists its tools in a `tools:` allow-list. A subagent then starts without the tool schemas

@@ -243,12 +243,19 @@ test("an excerptChars the repository sets must be smaller than maxOutputChars", 
   }
 });
 
-test("the runtime comes from QC_RUNTIME, then CLAUDECODE, then a CODEX_ variable, and is null with no signal", () => {
+test("the runtime comes from QC_RUNTIME, then CLAUDECODE or CLAUDE_PROJECT_DIR, then a CODEX_ variable, and is null with no signal", () => {
   assert.equal(runtimeOf({ QC_RUNTIME: "Codex", CLAUDECODE: "1" }), "codex");
   assert.equal(runtimeOf({ QC_RUNTIME: "other", CLAUDECODE: "1" }), null);
   assert.equal(runtimeOf({ CLAUDECODE: "1", CODEX_HOME: "x" }), "claude");
+  assert.equal(runtimeOf({ CLAUDE_PROJECT_DIR: "/repo", CODEX_HOME: "x" }), "claude");
+  assert.equal(runtimeOf({ CLAUDE_PROJECT_DIR: "", CODEX_HOME: "x" }), "codex");
   assert.equal(runtimeOf({ CODEX_HOME: "x" }), "codex");
   assert.equal(runtimeOf({}), null);
+});
+
+test("under Claude Code the no-model refusal covers only the four roles, not another type a repository lists", () => {
+  const settings = dispatchSettings({ dispatch: { allowedTypes: [...dispatchDefaults.allowedTypes, "Explore"], models: { Explore: ["haiku"] } } }, "claude");
+  assert.equal(dispatchRefusal({ subagent_type: "Explore", prompt: "p" }, settings), null);
 });
 
 test("under Claude Code each role takes its Claude tier, and a role dispatch must name it", () => {
