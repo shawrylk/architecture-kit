@@ -71,3 +71,10 @@ test("each workflow script is silent in a checkout without swarm.dispatch", (t) 
     assert.equal(result.stdout, "", script);
   }
 });
+
+test("hooks.json runs the skill guard on the Skill tool, and gives the dispatch guard time for its git and gh reads", () => {
+  assert.deepEqual(matchersOf("PreToolUse", "skill-guard.mjs"), ["Skill"]);
+  const entry = hooks.PreToolUse.find((candidate) => candidate.hooks.some((hook) => hook.command.includes("/dispatch-guard.mjs\"")));
+  assert.equal(entry.matcher, "Agent");
+  assert.equal(entry.hooks.find((hook) => hook.command.includes("/dispatch-guard.mjs\"")).timeout, 30);
+});
