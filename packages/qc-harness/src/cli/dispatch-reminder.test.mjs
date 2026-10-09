@@ -60,7 +60,7 @@ test("the note names the workflow, the four types, and the one-implementer rule,
   ]) {
     assert.ok(REMINDER.includes(word), word);
   }
-  assert.ok(REMINDER.length < 800, `${REMINDER.length} characters`);
+  assert.ok(REMINDER.length < 1300, `${REMINDER.length} characters`);
 });
 
 test("the note says to review a green head only, to fix CI first, and to review a fix round by its increment", () => {
@@ -69,6 +69,10 @@ test("the note says to review a green head only, to fix CI first, and to review 
     /fix a CI failure first/,
     /`Reviewed: <sha>`/,
     /review each fix round once, by its increment/,
+    /product questions first, in one question/,
+    /`## Product decisions`/,
+    /merge `origin\/<base>` at Step 0 of a fix round/,
+    /A PR gets one branch review/,
   ]) {
     assert.match(REMINDER, phrase);
   }

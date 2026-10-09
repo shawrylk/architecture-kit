@@ -78,3 +78,16 @@ test("hooks.json runs the skill guard on the Skill tool, and gives the dispatch 
   assert.equal(entry.matcher, "Agent");
   assert.equal(entry.hooks.find((hook) => hook.command.includes("/dispatch-guard.mjs\"")).timeout, 30);
 });
+
+test("the skill guard is silent without swarm.dispatch, and denies a code-review skill with it", (t) => {
+  const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-skill-hooks-")));
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  execFileSync("git", ["init", "-q"], { cwd: base, stdio: "pipe" });
+  const run = (config) => {
+    writeFileSync(path.join(base, "qc.config.json"), JSON.stringify(config));
+    const event = { session_id: "s", cwd: base, hook_event_name: "PreToolUse", tool_name: "Skill", tool_input: { skill: "code-review" } };
+    return spawnSync(process.execPath, [path.join(CLI, "skill-guard.mjs")], { input: JSON.stringify(event), encoding: "utf8" });
+  };
+  assert.equal(run({ swarm: {} }).stdout, "");
+  assert.equal(JSON.parse(run({ swarm: { dispatch: {} } }).stdout).hookSpecificOutput.permissionDecision, "deny");
+});

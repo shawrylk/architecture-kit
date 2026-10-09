@@ -14,8 +14,9 @@ export const REMINDER =
   "Run one implementer at a time: a hook refuses a second. Name a model on any other dispatch, and " +
   "pass each brief as a file path. Name the worktree on a prompt line `Worktree: <path>`. A reviewer starts with " +
   "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`. " +
-  "Review a head only once CI on it is green: fix a CI failure first. After an APPROVED review, review each fix round " +
-  "once, by its increment: add `Reviewed: <sha>`.";
+  "Ask the user the product questions first, in one question, and record the answers under `## Product decisions` in each brief. " +
+  "Review a head only once CI on it is green, with the base merged in: fix a CI failure first, and merge `origin/<base>` at Step 0 of a fix round. " +
+  "A PR gets one branch review. After an APPROVED review, review each fix round once, by its increment: add `Reviewed: <sha>`.";
 
 const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-reviewer"];
 
