@@ -339,6 +339,14 @@ test("a TS2322 next to a TS2307 does not retry, and a TS2322 alone does not eith
   }
 });
 
+test("a large TS2322 log does not retry, since the early exit of the filter must not read as a pipe failure", (t) => {
+  const out = TS2322.repeat(20_000);
+  const gate = tscWorkspace(t, [{ code: 2, out }, { code: 0, out: "" }]);
+  const result = gate.run();
+  assert.equal(result.status, 2);
+  assert.equal(gate.count(), 1);
+});
+
 test("a failing typecheck with no error line does not retry, and a passing one runs once", (t) => {
   const broken = tscWorkspace(t, [{ code: 1, out: "tsc: command crashed\n" }, { code: 0, out: "" }]);
   assert.equal(broken.run().status, 2);

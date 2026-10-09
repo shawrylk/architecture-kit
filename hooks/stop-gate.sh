@@ -75,7 +75,8 @@ if [ -f "$ROOT/node_modules/.bin/tsc" ]; then
   npx tsc -b --pretty false >"$LOGS/tsc" 2>&1 || TSC_FAILED=1
   # A concurrent `pnpm install` makes a module vanish for a moment, which tsc reports as TS2307.
   # When that is the only error, run it once more and judge the second run.
-  if [ -n "$TSC_FAILED" ] && grep -q 'error TS' "$LOGS/tsc" && ! grep 'error TS' "$LOGS/tsc" | grep -qv 'error TS2307'; then
+  # The filter reads the whole log: an early exit would SIGPIPE the upstream grep, and pipefail reads that as no match.
+  if [ -n "$TSC_FAILED" ] && grep -q 'error TS' "$LOGS/tsc" && ! grep 'error TS' "$LOGS/tsc" | grep -v 'error TS2307' >/dev/null; then
     TSC_FAILED=""
     npx tsc -b --pretty false >"$LOGS/tsc" 2>&1 || TSC_FAILED=1
   fi
