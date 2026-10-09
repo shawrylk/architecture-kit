@@ -209,3 +209,30 @@ test("the direct lane note says when a merge needs a review", (t) => {
   assert.match(all, /--match-head-commit <sha>`\. Every direct merge needs one APPROVED review of the head \(sdd-reviewer\)\./);
   assert.doesNotMatch(all, /no review/);
 });
+
+test("the direct lane note reads the limits at worktree.base, and the checkout's when that read fails", (t) => {
+  const [dir] = checkouts(t, [{ swarm: { dispatch: {}, direct: { maxLines: 5, reviewPaths: ["**"] } } }]);
+  const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe" });
+  for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"]]) git("config", key, value);
+  git("add", ".");
+  git("commit", "-q", "-m", "init");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, direct: { maxLines: 500 } } }));
+  const noteOf = () => decide(start(dir, "startup")).hookSpecificOutput.additionalContext;
+  const text = noteOf();
+  assert.match(text, /at most 5 changed lines in 2 files needs no subagent/);
+  assert.match(text, /Every direct merge needs one APPROVED review/);
+  git("update-ref", "-d", "refs/remotes/origin/main");
+  assert.match(noteOf(), /at most 500 changed lines in 2 files needs no subagent/);
+});
+
+test("a local swarm.direct of false turns the direct lane note off, whatever the base says", (t) => {
+  const [dir] = checkouts(t, [{ swarm: { dispatch: {} } }]);
+  const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe" });
+  for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"]]) git("config", key, value);
+  git("add", ".");
+  git("commit", "-q", "-m", "init");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, direct: false } }));
+  assert.doesNotMatch(decide(start(dir, "startup")).hookSpecificOutput.additionalContext, /needs no subagent/);
+});

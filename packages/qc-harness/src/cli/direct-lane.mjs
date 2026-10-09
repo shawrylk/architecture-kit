@@ -17,6 +17,7 @@ const SNIFF_BYTES = 8_000;
 const MAX_TEXT_BYTES = 1_000_000;
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const PR_BASE = "the PR base";
+const NOTE_READ_MS = 2_000;
 // Under the 10 s timeout of a PreToolUse hook, for all git and gh reads of one call: a hook that times out lets its call run.
 export const LANE_BUDGET_MS = 6_000;
 
@@ -39,11 +40,24 @@ export function directSettings(swarm = {}) {
   return settings;
 }
 
-/** @returns the lane's limits of the checkout that holds `cwd`, or null when it has no config or the lane is off. */
-export function directSettingsAt(cwd) {
+/**
+ * @returns the lane's limits for the checkout that holds `cwd`, or null when it has no config or the lane is off. The
+ * checkout's `swarm.direct` can turn the lane off. The limits are the ones at `worktree.base` when one git read gets
+ * them, as the lane judges, and the checkout's own when it does not. The read waits `readMs` at most.
+ */
+export function directSettingsAt(cwd, { readMs = NOTE_READ_MS } = {}) {
   const root = checkoutRootOf(cwd);
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
-  return directSettings(load(root).swarm);
+  const config = load(root);
+  const local = directSettings(config.swarm);
+  if (!local) return null;
+  const text = gitOutWithin(readMs, root, "show", `${config.worktree?.base ?? "origin/main"}:${CONFIG_FILE}`);
+  if (text === null) return local;
+  try {
+    return directSettings(JSON.parse(text).swarm);
+  } catch {
+    return local;
+  }
 }
 
 /** The lines of a text as git counts them: a last line with no newline still counts. */
