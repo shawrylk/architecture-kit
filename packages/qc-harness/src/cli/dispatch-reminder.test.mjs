@@ -63,6 +63,17 @@ test("the note names the workflow, the four types, and the one-implementer rule,
   assert.ok(REMINDER.length < 800, `${REMINDER.length} characters`);
 });
 
+test("the note says to review a green head only, to fix CI first, and to review a fix round by its increment", () => {
+  for (const phrase of [
+    /only once CI on it is green/,
+    /fix a CI failure first/,
+    /`Reviewed: <sha>`/,
+    /review each fix round once, by its increment/,
+  ]) {
+    assert.match(REMINDER, phrase);
+  }
+});
+
 test("with swarm.explore also on, the note names its tools", (t) => {
   const [on] = checkouts(t, [
     { swarm: { dispatch: {}, explore: { tools: [{ name: "CocoIndex", use: "u", how: "h" }, { name: "GitNexus", use: "u", how: "h" }] } } },

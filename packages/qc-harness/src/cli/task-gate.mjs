@@ -4,6 +4,7 @@
 import os from "node:os";
 import path from "node:path";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { ciNotGreen } from "./ci-state.mjs";
 import { typeOf } from "./dispatch.mjs";
 import { handoffPathOf, resolveHandoff } from "./handoff-note.mjs";
 import { branchAt, gitOut, linkedWorktrees, pathKey } from "./git-read.mjs";
@@ -27,6 +28,7 @@ const fixRoundRefusal = (branch, sha, type) =>
 const unreviewedRefusal = (branch, stopHead, head) =>
   `Task gate: an implementer stopped on ${branch} at ${short(stopHead)}, and no review in the ledger names ${short(stopHead)} or a later commit. ` +
   `Dispatch the task reviewer on ${short(head)} first; its first line \`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>\` records the review. ` +
+  `The review runs once CI on the head is green: when CI on ${short(stopHead)} has failed or still runs, the next implementer continues the task and this gate passes it. ` +
   `If that stop handed off, its report named \`HANDOFF: <note path>\`; the same line in the next implementer prompt continues the task. ` +
   `\`qc ledger ${branch}\` lists what is recorded.`;
 
@@ -72,21 +74,31 @@ export function continuedStop(records, branch, handoff) {
 }
 
 /**
- * @returns the reason an implementer may not start on `branch` now, or null. Only implementer commits need a
- * review, so a controller commit after a reviewed head passes. `cwd` is any checkout; `git` reads it.
+ * The task gate's answer for an implementer on `branch`: `refusal` is the reason it may not start now, or null.
+ * `ciPass` is `{ sha, reason }` when an unreviewed stop head passes because CI on it is not green, else absent.
+ * Only implementer commits need a review, so a controller commit after a reviewed head passes. `cwd` is any
+ * checkout; `git` reads it, and `ci` answers why CI on a sha is not green, or null.
  */
-export function gateRefusal({ records, branch, head, reason, type, cwd, git = gitOut, handoff = null }) {
+export function gateVerdict({ records, branch, head, reason, type, cwd, git = gitOut, handoff = null, ci = (sha) => ciNotGreen(sha, cwd) }) {
   // A continuation of the newest stop's hand-off is the same task, so it is neither a fix round nor a new task.
   const continued = continuedStop(records, branch, handoff);
   const why = reason ?? (continued ? `continues the hand-off ${continued.handoff}` : null);
   const last = latestVerdictOn(records, branch);
-  if (last?.verdict === "CHANGES_REQUIRED" && why === null) return fixRoundRefusal(branch, last.sha, type);
+  if (last?.verdict === "CHANGES_REQUIRED" && why === null) return { refusal: fixRoundRefusal(branch, last.sha, type) };
   const unreviewed = unreviewedImplementerStop({ records, branch, head, cwd, git });
-  if (unreviewed && unreviewed !== continued) return unreviewedRefusal(branch, unreviewed.head, head);
+  if (unreviewed && unreviewed !== continued) {
+    // A head that CI failed changes before a review, so a review now would be spent on a commit that is replaced.
+    const notGreen = ci(unreviewed.head);
+    if (notGreen === null) return { refusal: unreviewedRefusal(branch, unreviewed.head, head) };
+    return { refusal: null, ciPass: { sha: unreviewed.head, reason: notGreen } };
+  }
   const current = latestVerdictFor(records, head, ["task", "branch"]);
-  if (current?.verdict === "CHANGES_REQUIRED" && why === null) return fixRoundRefusal(branch, current.sha, type);
-  return null;
+  if (current?.verdict === "CHANGES_REQUIRED" && why === null) return { refusal: fixRoundRefusal(branch, current.sha, type) };
+  return { refusal: null };
 }
+
+/** @returns the reason an implementer may not start on `branch` now, or null. `gateVerdict` has the inputs. */
+export const gateRefusal = (input) => gateVerdict(input).refusal;
 
 const pass = (workflow, record, note = null) => ({ refusal: null, workflow, record, note });
 const refuse = (refusal) => ({ refusal, workflow: null, record: null, note: null });
@@ -97,9 +109,10 @@ const taskTypeIn = (type, review) =>
 /**
  * Judges one main-session Agent call. The repository of the worktree the prompt names decides, and the
  * repository of the cwd decides only when the prompt names none.
+ * `ci` replaces the CI read of the task gate, for a test.
  * @returns the refusal, or the record to write once the dispatch runs.
  */
-export function judgeTask(call, tmp = os.tmpdir()) {
+export function judgeTask(call, tmp = os.tmpdir(), { ci } = {}) {
   const cwd = call.cwd ?? process.cwd();
   let own;
   try {
@@ -161,10 +174,11 @@ export function judgeTask(call, tmp = os.tmpdir()) {
   const reason = noResumeReason(prompt);
   const spelled = handoffPathOf(prompt);
   const handoff = spelled === null ? null : resolveHandoff(spelled, cwd);
-  const refusal = gateRefusal({ records, branch: worktree.branch, head: worktree.head, reason, type, cwd: workflow.root, handoff });
+  const { refusal, ciPass } = gateVerdict({ records, branch: worktree.branch, head: worktree.head, reason, type, cwd: workflow.root, handoff, ...(ci ? { ci } : {}) });
   if (refusal) return refuse(refusal);
   const continues = handoff ? { handoff } : {};
-  return pass(workflow, { ...base, task: true, worktree: worktree.path, branch: worktree.branch, head: worktree.head, resumeReason: reason, ...continues });
+  const unreviewed = ciPass ? { ciPass } : {};
+  return pass(workflow, { ...base, task: true, worktree: worktree.path, branch: worktree.branch, head: worktree.head, resumeReason: reason, ...continues, ...unreviewed });
 }
 
 /** Writes the dispatch record of a judged call. @returns a note for the session, or null. */

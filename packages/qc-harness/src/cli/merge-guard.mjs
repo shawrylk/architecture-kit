@@ -5,12 +5,12 @@
 // A merge that names another repository than the checkout's `origin` is that repository's own, so it passes.
 // With `swarm.dispatch` off, the record is still written for the worktree check of QC-015, and nothing is judged.
 
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { PARSERS } from "./bash-command-guard.mjs";
 import { LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
+import { originOf, repoOfSpelling } from "./git-read.mjs";
 import { appendRecord, latestVerdictFor, readLedger } from "./ledger.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
@@ -19,7 +19,6 @@ const VIEW_FIELDS = "number,url,state,mergedAt,baseRefName,headRefName,body,clos
 const MAYBE_GH = /\bgh(?:\.exe)?\b/i;
 const BODY_REF = /(?<![\w/#])#(\d+)\b/g;
 const REF_LINE = /^\s*(?:[-*]\s+)?(?:refs|closes|fixes|resolves)\b/i;
-const ORIGIN_TIMEOUT_MS = 5_000;
 const PR_URL = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/;
 const POST_EVENTS = new Set(["PostToolUse", "PostToolUseFailure"]);
 const REVIEWER = { branch: "the branch reviewer (sdd-branch-reviewer)", task: "the task reviewer (sdd-reviewer)" };
@@ -110,18 +109,6 @@ export function namedIssues(pr, repo) {
     if (REF_LINE.test(line)) for (const match of line.matchAll(BODY_REF)) add(repo, Number(match[1]));
   }
   return [...found.values()];
-}
-
-/** `owner/repo` from a git remote URL in the https, ssh, or scp spelling, or from gh's `[HOST/]OWNER/REPO`; lower case. */
-function repoOfSpelling(spelled) {
-  const parts = String(spelled).trim().replace(/\/+$/, "").replace(/\.git$/i, "").split(/[/:]/).filter(Boolean);
-  return parts.length >= 2 ? parts.slice(-2).join("/").toLowerCase() : null;
-}
-
-/** The repository of the checkout's `origin` remote, or null when git cannot say. */
-function originOf(root) {
-  const result = spawnSync("git", ["remote", "get-url", "origin"], { cwd: root, encoding: "utf8", windowsHide: true, timeout: ORIGIN_TIMEOUT_MS });
-  return result.status === 0 ? repoOfSpelling(result.stdout) : null;
 }
 
 /** Splits the merges into those of this checkout's repository and those that name another repository. */

@@ -234,3 +234,122 @@ test("inside a linked worktree, the folder is the main checkout's", (t) => {
   assert.equal(decide(bash(linked, "git worktree add ../x")), null);
   assert.ok(outsideFolder(decide(bash(linked, "git worktree add x"))), "a worktree nested in a worktree is refused");
 });
+
+/** The adopted checkout plus a second adopted checkout, `kit`, and a checkout with no config. Forward slashes, as a Bash command spells a path. */
+function twoRepos(t) {
+  const ws = workspace(t);
+  const kit = path.join(path.dirname(ws.adopted), "kit");
+  mkdirSync(kit);
+  execFileSync("git", ["init", "-q"], { cwd: kit, stdio: "pipe" });
+  writeFileSync(path.join(kit, "qc.config.json"), "{}");
+  return { ...ws, kit, slash: (dir) => dir.replaceAll("\\", "/") };
+}
+
+test("a worktree add judges the repository the command targets, through -C, cd, or Set-Location", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  for (const command of [
+    `git -C ${kit} worktree add ${kit}/.worktree/x -b feat/x`,
+    `git -C ${kit} worktree add .worktree/x`,
+    `cd ${kit} && git worktree add .worktree/x`,
+    `cd ${kit} && git worktree add ${kit}/.worktree/x`,
+    `bash -c 'cd ${kit} && git worktree add .worktree/x'`,
+  ]) {
+    assert.equal(decide(bash(ws.adopted, command)), null, command);
+  }
+  for (const command of [`Set-Location ${kit}; git worktree add .worktree/x`, `Set-Location ${kit}; git worktree add ${kit}/.worktree/x`, `git -C ${kit} worktree add .worktree/x`]) {
+    assert.equal(decide(powershell(ws.adopted, command)), null, command);
+  }
+});
+
+test("a worktree add in the targeted repository is still held to that repository's folder, and the deny names it", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  for (const command of [`git -C ${kit} worktree add ../x`, `git -C ${kit} worktree add ${ws.slash(ws.adopted)}/.worktree/x`, `cd ${kit} && git worktree add x`]) {
+    const reason = reasonOf(decide(bash(ws.adopted, command))) ?? "";
+    assert.match(reason, /npx qc worktree add <name> <branch>/, command);
+    assert.ok(reason.includes(`The folder is ${path.join(ws.kit, ".worktree")}.`), `${command}: ${reason}`);
+  }
+});
+
+test("an absolute worktree path alone does not name the repository: git adds to the session's repository", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  for (const command of [`git worktree add ${kit}/.worktree/x`, `git worktree add ${kit}/x`, `git worktree add ../x`]) {
+    const reason = reasonOf(decide(bash(ws.adopted, command))) ?? "";
+    assert.ok(reason.includes(`The folder is ${path.join(ws.adopted, ".worktree")}.`), `${command}: ${reason}`);
+  }
+  assert.equal(decide(bash(ws.adopted, `git worktree add ${ws.slash(ws.adopted)}/.worktree/x`)), null);
+});
+
+/** The refusal for an explicit git directory or work tree: it says to run `git worktree add` from inside the target repository. */
+const explicitDirReason = (output) => {
+  const reason = reasonOf(output) ?? "";
+  assert.match(reason, /--git-dir|GIT_DIR|--work-tree|GIT_WORK_TREE/, reason);
+  assert.match(reason, /from inside the target repository/, reason);
+  assert.match(reason, /-C/, reason);
+  return reason;
+};
+
+test("a worktree add with --git-dir, GIT_DIR, --work-tree, or GIT_WORK_TREE is refused from a guarded session", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  const plain = ws.slash(ws.plain);
+  const adopted = ws.slash(ws.adopted);
+  for (const command of [
+    `git --git-dir=${kit}/.git worktree add ${kit}/.worktree/x`,
+    `git --git-dir ${kit}/.git worktree add ${kit}/.worktree/x`,
+    `GIT_DIR=${kit}/.git git worktree add ${kit}/.worktree/x`,
+    `git -C ${kit} --git-dir=${kit}/.git worktree add .worktree/x`,
+    `git -C ${plain} --git-dir=${kit}/.git worktree add ${kit}/.worktree/x`,
+    `git --git-dir=${kit}/.git worktree add ../x`,
+    `GIT_DIR=${kit}/.git git worktree add ../x`,
+    `git --git-dir=${kit}/.git worktree add .worktree/x`,
+    `GIT_DIR=${kit}/.git git worktree add .worktree/x`,
+    `cd ${plain} && git --git-dir=${kit}/.git worktree add .worktree/x`,
+    `git -C ${plain} --git-dir=${adopted}/.git worktree add ../x`,
+    `git --git-dir=${plain}/.git worktree add ../x`,
+    `git --git-dir=${adopted}/.git worktree add ${adopted}/.worktree/x`,
+    `env GIT_DIR=${kit}/.git git worktree add ../x`,
+    `bash -c 'git --git-dir=${kit}/.git worktree add ../x'`,
+    `git --work-tree=${plain} worktree add ../x`,
+    `git --work-tree ${plain} worktree add ../x`,
+    `GIT_WORK_TREE=${plain} git worktree add ../x`,
+    `git --work-tree=${kit} worktree add ../x`,
+    `GIT_WORK_TREE=${kit} git worktree add ../x`,
+    `git --work-tree=${plain} worktree add .worktree/x`,
+  ]) {
+    explicitDirReason(decide(bash(ws.adopted, command)));
+  }
+  explicitDirReason(decide(powershell(ws.adopted, `git --git-dir=${kit}/.git worktree add ../x`)));
+});
+
+test("git resolves a relative git dir from the working directory after every -C, so these probes are refused", (t) => {
+  const ws = twoRepos(t);
+  const adopted = ws.slash(ws.adopted);
+  const plain = ws.slash(ws.plain);
+  // Real git adds ../x1 as a worktree of `adopted` from these.
+  for (const command of [
+    `cd ${plain} && git --git-dir=.git -C ${adopted} worktree add ../x1`,
+    `cd ${plain} && GIT_DIR=.git git -C ${adopted} worktree add ../x1`,
+  ]) {
+    explicitDirReason(decide(bash(ws.adopted, command)));
+  }
+});
+
+test("an explicit git dir on a command other than worktree add is not refused by the worktree rule", (t) => {
+  const ws = twoRepos(t);
+  const kit = ws.slash(ws.kit);
+  for (const command of [`git --git-dir=${kit}/.git status`, `git --git-dir=${kit}/.git worktree list`, `GIT_DIR=${kit}/.git git log`]) {
+    assert.equal(decide(bash(ws.adopted, command)), null, command);
+  }
+});
+
+test("a worktree add in a repository with no qc.config.json is not guarded", (t) => {
+  const ws = twoRepos(t);
+  const plain = ws.slash(ws.plain);
+  for (const command of [`git -C ${plain} worktree add ../x`, `cd ${plain} && git worktree add ../x`]) {
+    assert.equal(decide(bash(ws.adopted, command)), null, command);
+  }
+  assert.equal(decide(bash(ws.plain, "git worktree add ../x")), null, "a session in it is not guarded either");
+});

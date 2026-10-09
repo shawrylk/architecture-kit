@@ -233,21 +233,29 @@ export const commandEnv = (segment) => unwrap(segment.words).env;
 const isGit = (word) => /(^|[\\/])git(\.exe)?$/i.test(word ?? "");
 
 /**
- * @returns the git subcommand, each `-C` directory, each `-c` setting and the words after the
- *   subcommand, or null when the segment is no git call.
+ * @returns the git subcommand, each `-C` directory, each `-c` setting and the words after the subcommand, or null
+ *   when the segment is no git call. `explicitDir` is true when the call names a git directory or a work tree, through
+ *   `--git-dir`, `--work-tree`, `GIT_DIR` or `GIT_WORK_TREE`. It is never resolved: git reads a relative one from the
+ *   working directory after every `-C`, so no later reader can know which repository it picks.
  */
 export function gitCall(segment) {
   const [program, ...words] = commandWords(segment);
   if (!isGit(program)) return null;
+  const { GIT_DIR, GIT_WORK_TREE } = commandEnv(segment);
+  let explicitDir = Boolean(GIT_DIR || GIT_WORK_TREE);
   const dirs = [];
   const configs = [];
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
     if (word === "-C") dirs.push(words[++i]);
+    else if (word === "--git-dir" || word === "--work-tree") {
+      explicitDir = true;
+      i++;
+    } else if (/^--(git-dir|work-tree)=/.test(word)) explicitDir = true;
     else if (word === "-c") configs.push(words[++i]);
-    else if (!word.startsWith("-")) return { sub: word, dirs, configs, args: words.slice(i + 1) };
+    else if (!word.startsWith("-")) return { sub: word, dirs, explicitDir, configs, args: words.slice(i + 1) };
   }
-  return { sub: null, dirs, configs, args: [] };
+  return { sub: null, dirs, explicitDir, configs, args: [] };
 }
 
 /** @returns the directory a `cd` or `pushd` segment moves to, or null. */

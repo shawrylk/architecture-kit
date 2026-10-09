@@ -11,9 +11,11 @@ export const REMINDER =
   "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
   "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
   "whole branch. " +
-  "Run one implementer at a time: a hook refuses a second while one runs. Name a model on any other dispatch, and " +
+  "Run one implementer at a time: a hook refuses a second. Name a model on any other dispatch, and " +
   "pass each brief as a file path. Name the worktree on a prompt line `Worktree: <path>`. A reviewer starts with " +
-  "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`.";
+  "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`. " +
+  "Review a head only once CI on it is green: fix a CI failure first. After an APPROVED review, review each fix round " +
+  "once, by its increment: add `Reviewed: <sha>`.";
 
 const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-reviewer"];
 

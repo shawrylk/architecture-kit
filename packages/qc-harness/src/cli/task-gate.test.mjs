@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { decide as dispatchDecide } from "./dispatch-guard.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { gitOut } from "./git-read.mjs";
-import { continuedStop, gateRefusal, judgeTask, noResumeReason, recordDispatch, worktreeNamed } from "./task-gate.mjs";
+import { continuedStop, gateRefusal, gateVerdict, judgeTask, noResumeReason, recordDispatch, worktreeNamed } from "./task-gate.mjs";
 import { sessionDirOf } from "./workflow-settings.mjs";
 
 // The guard processes below run under Codex, whatever runtime runs the test.
@@ -507,4 +507,62 @@ test("a later verdict on the branch ends the continuation, whatever commit it na
   verdict(ws, "abc1234", "CHANGES_REQUIRED");
   assert.equal(continuedStop(readLedger(ws.ledger), "feat/1-x", note), null);
   assert.match(refusalOf(ws, `HANDOFF: ${note}`) ?? "", /CHANGES_REQUIRED/);
+});
+
+test("a stop head with CI that is not green lets the next implementer continue, and the dispatch record holds the reason", (t) => {
+  const ws = workspace(t);
+  recordDispatch(judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp));
+  const moved = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, moved);
+  const asked = [];
+  const ci = (sha) => {
+    asked.push(sha);
+    return `CI on ${sha.slice(0, 7)}: build ended failure`;
+  };
+  const task = judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci });
+  assert.equal(task.refusal, null);
+  assert.deepEqual(asked, [moved]);
+  assert.deepEqual(task.record.ciPass, { sha: moved, reason: `CI on ${moved.slice(0, 7)}: build ended failure` });
+  recordDispatch(task);
+  const [, written] = readLedger(ws.ledger).filter((record) => record.type === "dispatch");
+  assert.deepEqual(written.ciPass, task.record.ciPass);
+});
+
+test("a stop head with green or unknown CI keeps the refusal, and the refusal says the review waits for green CI", (t) => {
+  const ws = workspace(t);
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  const refusal = judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci: () => null }).refusal;
+  assert.match(refusal ?? "", /no review in the ledger/);
+  assert.match(refusal ?? "", /once CI on the head is green/);
+});
+
+test("the CI pass does not skip a review that is already on record", (t) => {
+  const ws = workspace(t);
+  const moved = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, moved);
+  verdict(ws, moved);
+  let asked = 0;
+  const task = judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci: () => (asked += 1, "red") });
+  assert.equal(task.refusal, null);
+  assert.equal(asked, 0);
+  assert.equal(task.record.ciPass, undefined);
+});
+
+test("a CI pass does not lift a CHANGES_REQUIRED fix round", (t) => {
+  const ws = workspace(t);
+  const moved = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, moved);
+  verdict(ws, moved, "CHANGES_REQUIRED");
+  assert.match(judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci: () => "red" }).refusal ?? "", /CHANGES_REQUIRED/);
+});
+
+test("gateVerdict reports the stop and the reason of a CI pass, and gateRefusal still answers with the refusal alone", (t) => {
+  const ws = workspace(t);
+  const moved = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, moved);
+  const input = { records: readLedger(ws.ledger), branch: "feat/1-x", head: moved, reason: null, type: "sdd-implementer", cwd: ws.linked };
+  assert.deepEqual(gateVerdict({ ...input, ci: () => "red" }), { refusal: null, ciPass: { sha: moved, reason: "red" } });
+  assert.match(gateVerdict({ ...input, ci: () => null }).refusal ?? "", /no review/);
+  assert.match(gateRefusal({ ...input, ci: () => null }) ?? "", /no review/);
+  assert.equal(gateRefusal({ ...input, ci: () => "red" }), null);
 });

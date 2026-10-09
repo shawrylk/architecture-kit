@@ -155,3 +155,14 @@ test("no type pins a prompt cache lifetime, so a user's own setting decides it",
     assert.equal(front.cacheTtl, undefined, `${name} sets cacheTtl`);
   }
 });
+
+test("both reviewers review only the increment when the dispatch carries a Reviewed line, and still put the verdict first", () => {
+  for (const name of ["sdd-reviewer", "sdd-branch-reviewer"]) {
+    const text = readFileSync(path.join(AGENTS, `${name}.md`), "utf8").replace(/\r/g, "");
+    assert.match(text, /`Reviewed: <sha>`/, name);
+    assert.match(text, /<sha>\.\.<head>/, name);
+    assert.match(text, /only that increment|only the increment/i, name);
+    assert.match(text, /Without the line, review as before/, name);
+    assert.ok(text.indexOf("`Reviewed: <sha>`") < text.indexOf("`VERDICT: APPROVED <sha>`"), `${name} keeps the verdict line rule last`);
+  }
+});
