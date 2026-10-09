@@ -369,6 +369,7 @@ test("a worktree add is refused when its command text sets GIT_DIR, GIT_WORK_TRE
     `git config core.worktree ${kit} && git worktree add .worktree/x`,
     `set GIT_DIR=${kit}/.git && git worktree add .worktree/x`,
     `export git_dir=${kit}/.git; git worktree add .worktree/x`,
+    `export GIT_COMMON_DIR=${kit}/.git; git worktree add .worktree/x`,
   ]) {
     explicitDirReason(decide(bash(ws.adopted, command)));
   }
@@ -412,6 +413,9 @@ test("a worktree add after a -C, cd, or Set-Location path with an unexpanded var
     `bash -c 'cd $K && git worktree add .worktree/x'`,
     "cd %K% && git worktree add .worktree/x",
     `cd $K; cd sub; git worktree add .worktree/x`,
+    "cd `pwd` && git worktree add .worktree/x",
+    "cd $(pwd)/sub && git worktree add .worktree/x",
+    "pushd $(pwd) && git worktree add .worktree/x",
   ]) {
     variableReason(decide(bash(ws.adopted, command)));
   }
@@ -420,6 +424,12 @@ test("a worktree add after a -C, cd, or Set-Location path with an unexpanded var
     "Set-Location $K; git worktree add .worktree/x",
     "git -C $env:K worktree add .worktree/x",
     "cd %K%; git worktree add .worktree/x",
+    "Set-Location (Join-Path $K 'sub'); git worktree add .worktree/x",
+    "Push-Location ($env:K + '\\sub'); git worktree add .worktree/x",
+    "Set-Location -Path (Join-Path $K sub); git worktree add .worktree/x",
+    "Set-Location -LiteralPath (Get-Location); git worktree add .worktree/x",
+    "cd (Resolve-Path ..); git worktree add .worktree/x",
+    "Set-Location $(Join-Path $K sub); git worktree add .worktree/x",
   ]) {
     variableReason(decide(powershell(ws.adopted, command)));
   }

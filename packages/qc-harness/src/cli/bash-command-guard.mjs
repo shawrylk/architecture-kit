@@ -47,7 +47,7 @@ const NESTED = Object.fromEntries([
 
 export const programName = (word) => path.basename(word ?? "").toLowerCase().replace(/\.exe$/, "");
 /** Git reads the repository from these settings, wherever the command spells them. */
-const REPOSITORY_SETTING = /GIT_DIR|GIT_WORK_TREE|core\.worktree|core\.bare/i;
+const REPOSITORY_SETTING = /GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE|core\.worktree|core\.bare/i;
 /** A shell variable or command substitution in a path: `$K`, `${K}`, `$env:K`, `$(cmd)`, a backtick, or `%K%`. */
 const UNEXPANDED = /[$`]|%[A-Za-z_][^%\s]*%/;
 const isNoVerify = (arg) => arg.length >= NO_VERIFY_MIN && NO_VERIFY.startsWith(arg);
@@ -146,7 +146,7 @@ const REASONS = {
     "a hand run of a hook script writes a lease or a ledger record under a made-up session id, and that lease blocks later " +
     "edits in the worktree for hours. Test a hook only through its own suite (`node --test`), in temporary folders.",
   explicitDir:
-    "`--git-dir`, `GIT_DIR`, `--work-tree`, `GIT_WORK_TREE`, `core.worktree`, and `core.bare` make git read the repository from a path it resolves " +
+    "`--git-dir`, `GIT_DIR`, `GIT_COMMON_DIR`, `--work-tree`, `GIT_WORK_TREE`, `core.worktree`, and `core.bare` make git read the repository from a path it resolves " +
     "after every `-C`, so this guard cannot tell which repository gets the worktree. It looks for them in the whole command, in any order. " +
     "Run `git worktree add` from inside the target repository instead: " +
     "use `-C <repository>`, `cd <repository>`, or `Set-Location <repository>`, and drop the git directory and work tree settings.",

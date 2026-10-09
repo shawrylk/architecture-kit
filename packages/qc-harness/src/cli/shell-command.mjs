@@ -51,10 +51,11 @@ export function segmentsOf(command, { escape = POSIX_ESCAPE } = {}) {
     word = "";
     inWord = false;
   };
-  const endSegment = () => {
+  // A segment that ends at `(` holds a command whose argument is a subexpression, so `grouped` marks it.
+  const endSegment = (grouped = false) => {
     endWord();
     while (LINE_KEYWORDS.has(words[0])) words.shift();
-    if (words.length > 0 || redirects.length > 0) segments.push({ words, redirects });
+    if (words.length > 0 || redirects.length > 0) segments.push(grouped ? { words, redirects, grouped } : { words, redirects });
     words = [];
     redirects = [];
   };
@@ -94,7 +95,7 @@ export function segmentsOf(command, { escape = POSIX_ESCAPE } = {}) {
       endWord();
       i++;
     } else if (c === ";" || c === "(" || c === ")") {
-      endSegment();
+      endSegment(c === "(");
       i++;
     } else if (c === "|") {
       endSegment();
@@ -258,10 +259,16 @@ export function gitCall(segment) {
   return { sub: null, dirs, explicitDir, configs, args: [] };
 }
 
+/** The spelling of a location target that is a subexpression: not a literal path, so a guard cannot resolve it. */
+export const GROUPED_TARGET = "$(...)";
+
+/** The target of a location change that names none: home, unless a subexpression follows it. */
+export const homeOrGroup = (segment) => (segment.grouped ? GROUPED_TARGET : "~");
+
 /** @returns the directory a `cd` or `pushd` segment moves to, or null. */
 export function cdTarget(segment) {
   const [program, target] = commandWords(segment);
-  return program === "cd" || program === "pushd" ? (target ?? "~") : null;
+  return program === "cd" || program === "pushd" ? (target ?? homeOrGroup(segment)) : null;
 }
 
 const READ_PROGRAMS = new Set([
