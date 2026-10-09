@@ -65,7 +65,7 @@ recorded.
 |---|---|
 | A review states its verdict and the sha it reviewed on its first line | `report-stop.mjs`, on `SubagentHandback` and `SubagentStop` |
 | An implementer reports the failing test before the passing one | `report-stop.mjs` |
-| A task is reviewed before the next implementer starts on its branch | `dispatch-guard.mjs`, through `task-gate.mjs` |
+| A task is reviewed before the next implementer starts on its branch, unless CI on the stop head is not green: the review runs once CI is green | `dispatch-guard.mjs`, through `task-gate.mjs` |
 | A fix round goes back to the implementer that wrote the task | `dispatch-guard.mjs`, through `task-gate.mjs` |
 | A merge pins the head that an APPROVED review named, or a head inside the direct lane, whose limits come from the commit the PR merges into | `merge-guard.mjs`, through `direct-lane.mjs` |
 | An issue that a merge names is closed, or has a comment after the merge | `issue-gate.mjs`, on `Stop` |
