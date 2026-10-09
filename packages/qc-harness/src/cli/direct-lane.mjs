@@ -15,6 +15,9 @@ const KINDS = ["task", "branch"];
 const GITLINK_MODE = "160000";
 const SNIFF_BYTES = 8_000;
 const MAX_TEXT_BYTES = 1_000_000;
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+const PR_BASE = "the PR base";
+const NOTE_READ_MS = 2_000;
 // Under the 10 s timeout of a PreToolUse hook, for all git and gh reads of one call: a hook that times out lets its call run.
 export const LANE_BUDGET_MS = 6_000;
 
@@ -37,11 +40,24 @@ export function directSettings(swarm = {}) {
   return settings;
 }
 
-/** @returns the lane's limits of the checkout that holds `cwd`, or null when it has no config or the lane is off. */
-export function directSettingsAt(cwd) {
+/**
+ * @returns the lane's limits for the checkout that holds `cwd`, or null when it has no config or the lane is off. The
+ * checkout's `swarm.direct` can turn the lane off. The limits are the ones at `worktree.base` when one git read gets
+ * them, as the lane judges, and the checkout's own when it does not. The read waits `readMs` at most.
+ */
+export function directSettingsAt(cwd, { readMs = NOTE_READ_MS } = {}) {
   const root = checkoutRootOf(cwd);
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
-  return directSettings(load(root).swarm);
+  const config = load(root);
+  const local = directSettings(config.swarm);
+  if (!local) return null;
+  const text = gitOutWithin(readMs, root, "show", `${config.worktree?.base ?? "origin/main"}:${CONFIG_FILE}`);
+  if (text === null) return local;
+  try {
+    return directSettings(JSON.parse(text).swarm);
+  } catch {
+    return local;
+  }
 }
 
 /** The lines of a text as git counts them: a last line with no newline still counts. */
@@ -71,6 +87,32 @@ function gitBy(budgetMs) {
 }
 
 const gitFailed = (git, what) => (git.late?.() ? `git ran past the ${LANE_BUDGET_MS} ms budget of the lane` : what);
+
+/**
+ * The limits of `swarm.direct` in `qc.config.json` at the commit `base`, read through `git`. A branch cannot loosen its own
+ * limits, so the lane never reads the checkout's file. `label` names the base in a problem.
+ * @returns `{ direct }`, or `{ problem }` naming why the lane is closed.
+ */
+function directAtBase(root, base, git, label = base) {
+  const text = git(root, "show", `${base}:${CONFIG_FILE}`);
+  if (text === null) return { problem: gitFailed(git, `git cannot read ${CONFIG_FILE} at ${label}`) };
+  try {
+    const config = JSON.parse(text);
+    if (config === null || typeof config !== "object" || Array.isArray(config)) return { problem: `${CONFIG_FILE} at ${label} is not a JSON object` };
+    const { swarm } = config;
+    if (swarm !== undefined && (swarm === null || typeof swarm !== "object" || Array.isArray(swarm))) {
+      return { problem: `swarm in ${CONFIG_FILE} at ${label} must be an object, got ${JSON.stringify(swarm)}` };
+    }
+    const direct = directSettings(swarm);
+    return direct ? { direct } : { problem: `${KEY} is false at ${label}` };
+  } catch (error) {
+    return { problem: error instanceof SyntaxError ? `${CONFIG_FILE} at ${label} is not JSON` : error.message };
+  }
+}
+
+// The checkout also sets `worktree.base` and `swarm.isolation.protectedBranches`, so a branch that edits the file could point `base` at looser settings.
+const touchesConfig = (changes) => [...changes.keys()].some((file) => file.toLowerCase() === CONFIG_FILE);
+const CONFIG_PROBLEM = `${CONFIG_FILE} changes on the branch, so it runs the subagent workflow`;
 
 function startsWithNul(file) {
   const fd = openSync(file, "r");
@@ -152,40 +194,57 @@ export function sizeProblem(changes, direct) {
 
 /**
  * Judges one main-session edit of `rel` in the checkout at `root`. The branch diff and the pending edit together
- * must fit, on a branch that is not protected. @returns `{ problem }`, or `{ problem: null, size }` when it fits.
+ * must fit the limits at `base`, on a branch that is not protected, and neither may touch `qc.config.json`.
+ * @returns `{ problem }`, or `{ problem: null, size, direct }` when it fits.
  */
-export function editLane({ root, base, direct, protectedBranches, rel, toolName, input, budgetMs = LANE_BUDGET_MS }) {
+export function editLane({ root, base, protectedBranches, rel, toolName, input, budgetMs = LANE_BUDGET_MS }) {
   const git = gitBy(budgetMs);
   const branch = git(root, "branch", "--show-current");
   if (branch === null) return { problem: gitFailed(git, "git cannot name the checked-out branch") };
   if (branch === "") return { problem: "the checkout has a detached head" };
   if (protectedBranches.includes(branch)) return { problem: `${branch} is a protected branch, so start a branch for the fix` };
   const fork = git(root, "merge-base", base, "HEAD");
-  const changes = fork ? changesSince(root, fork, { maxFiles: direct.maxFiles, git }) : null;
+  if (!fork) return { problem: gitFailed(git, `git cannot diff the branch against ${base}`) };
+  const settings = directAtBase(root, base, git);
+  if (!settings.direct) return settings;
+  const { direct } = settings;
+  const changes = changesSince(root, fork, { maxFiles: direct.maxFiles, git });
   if (!changes) return { problem: gitFailed(git, `git cannot diff the branch against ${base}`) };
   const old = toolName === "Write" || toolName === "NotebookEdit" ? fileLines(root, rel) : undefined;
   const replaced = old === undefined ? 0 : old;
   const before = changes.has(rel) ? changes.get(rel) : 0;
   changes.set(rel, before === null || replaced === null ? null : before + replaced + pendingLines(toolName, input));
+  if (touchesConfig(changes)) return { problem: CONFIG_PROBLEM };
   const problem = sizeProblem(changes, direct);
-  return problem ? { problem } : { problem: null, size: sizeOf(changes) };
+  return problem ? { problem } : { problem: null, size: sizeOf(changes), direct };
 }
 
 /**
  * Judges the merge of head `sha` with no review of the merge kind. A record belongs to the branch when it names
  * a commit of the branch, or the name of a local branch at `sha`, so an amend or a rebase cannot drop it.
  * The newest review on the branch must not ask for changes, and no implementer may have worked on it.
- * @returns `{ problem }`, or `{ problem: null, size }` when the merge fits.
+ * `baseOid` is the commit the PR merges into, as GitHub names it: the lane reads the limits at that commit and
+ * measures the branch from its merge base with it, so no local ref decides. A change to `qc.config.json` closes the lane.
+ * @returns `{ problem }`, or `{ problem: null, size, direct, review }` when the merge fits. `review` is the
+ * APPROVED verdict that a path of `reviewPaths` needed, or null.
  */
-export function mergeLane({ root, base, direct, protectedBranches = [], sha, records, budgetMs = LANE_BUDGET_MS }) {
+export function mergeLane({ root, baseOid, protectedBranches = [], sha, records, budgetMs = LANE_BUDGET_MS }) {
+  if (typeof baseOid !== "string" || !OBJECT_ID.test(baseOid)) return { problem: "gh returned no base commit for the PR, so the lane cannot tell what the PR merges into" };
   const git = gitBy(budgetMs);
-  const fork = git(root, "merge-base", base, sha);
-  if (!fork) return { problem: gitFailed(git, `git cannot find the merge base of ${base} and ${sha}`) };
+  if (git(root, "cat-file", "-e", `${baseOid}^{commit}`) === null) {
+    return { problem: gitFailed(git, `the PR base commit ${baseOid.slice(0, 12)} is not in this repository, so run \`git fetch\``) };
+  }
+  const fork = git(root, "merge-base", baseOid, sha);
+  if (!fork) return { problem: gitFailed(git, `git cannot find the merge base of ${PR_BASE} and ${sha}`) };
+  const settings = directAtBase(root, baseOid, git, PR_BASE);
+  if (!settings.direct) return settings;
+  const { direct } = settings;
   const history = git(root, "rev-list", `${fork}..${sha}`);
   const changes = history === null ? null : changesSince(root, fork, { head: sha, git });
-  if (!changes) return { problem: gitFailed(git, `git cannot diff ${sha} against ${base}`) };
+  if (!changes) return { problem: gitFailed(git, `git cannot diff ${sha} against ${PR_BASE}`) };
+  if (touchesConfig(changes)) return { problem: CONFIG_PROBLEM };
   const shas = history.split(/\r?\n/).filter(Boolean);
-  if (shas.length === 0) return { problem: `${sha} has no commit past ${base}, so the lane cannot measure what the PR merges` };
+  if (shas.length === 0) return { problem: `${sha} has no commit past ${PR_BASE}, so the lane cannot measure what the PR merges` };
   const branches = branchesAt(root, sha, git);
   if (branches.length === 0) return { problem: gitFailed(git, `no local branch points at ${sha}, so the ledger cannot be tied to its branch`) };
   const guarded = branches.find((branch) => protectedBranches.includes(branch));
@@ -202,8 +261,9 @@ export function mergeLane({ root, base, direct, protectedBranches = [], sha, rec
   if (problem) return { problem };
   const reviewed = pathMatcher(direct.reviewPaths);
   const needsReview = [...changes.keys()].find((file) => reviewed(file));
-  if (needsReview !== undefined && latestVerdictFor(records, sha, KINDS)?.verdict !== "APPROVED") {
+  const approval = needsReview === undefined ? null : latestVerdictFor(records, sha, KINDS);
+  if (needsReview !== undefined && approval?.verdict !== "APPROVED") {
     return { problem: `${needsReview} matches ${KEY}.reviewPaths, so dispatch the task reviewer (sdd-reviewer) on ${sha}` };
   }
-  return { problem: null, size: sizeOf(changes) };
+  return { problem: null, size: sizeOf(changes), direct, review: approval };
 }
