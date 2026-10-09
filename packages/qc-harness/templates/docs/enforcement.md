@@ -67,7 +67,7 @@ recorded.
 | An implementer reports the failing test before the passing one | `report-stop.mjs` |
 | A task is reviewed before the next implementer starts on its branch | `dispatch-guard.mjs`, through `task-gate.mjs` |
 | A fix round goes back to the implementer that wrote the task | `dispatch-guard.mjs`, through `task-gate.mjs` |
-| A merge pins the head that an APPROVED review named, or a head inside the direct lane, whose limits come from the base | `merge-guard.mjs`, through `direct-lane.mjs` |
+| A merge pins the head that an APPROVED review named, or a head inside the direct lane, whose limits come from the commit the PR merges into | `merge-guard.mjs`, through `direct-lane.mjs` |
 | An issue that a merge names is closed, or has a comment after the merge | `issue-gate.mjs`, on `Stop` |
 | The controller edits only its own paths, or a small fix inside the direct lane, whose limits come from the base | `controller-guard.mjs`, through `direct-lane.mjs` |
 | A plan task names its files, a test step, and a commit step, within the budget | `qc plan-check`, and `plan-stop.mjs` |

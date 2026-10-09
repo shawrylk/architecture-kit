@@ -499,28 +499,34 @@ A small fix skips the subagent workflow. The main session edits it on a branch, 
 one APPROVED review of its head. The lane is on while `swarm.dispatch` is on, and `"direct": false` under
 `swarm` turns it off.
 
-The lane reads its limits from `qc.config.json` at `worktree.base`, never from the checkout. A branch cannot
+The lane reads its limits from `qc.config.json` at the base, never from the checkout. A branch cannot
 loosen the limits it merges under. The checkout's `"direct": false` still turns the lane off, and a missing,
-unreadable, or wrong `swarm.direct` at the base closes it.
+unreadable, or wrong `swarm.direct` at the base closes it. A base config whose `swarm` is not an object closes it too.
 
-The hooks measure the branch against the merge base of `worktree.base`, so a large change cannot pass as
+The base is not the same for each guard. The merge guard asks `gh pr view` for the commit the PR merges into
+(`baseRefOid`) and judges against that commit, so a local `worktree.base` ref that is stale or edited decides
+nothing. When the local repository lacks that commit, the lane closes and the refusal says to run `git fetch`.
+The controller guard has no PR, so it reads the local `worktree.base` ref. The session note reads the limits
+at `worktree.base` too, and the checkout's file when that read fails.
+
+The hooks measure the branch against its merge base with that base, so a large change cannot pass as
 several small edits:
 
 | Hook | The lane covers |
 |---|---|
 | Controller guard | an edit on a branch that is not protected, where the branch diff, the untracked files, and the pending edit fit the limits. An `Edit` counts its old and its new lines, and a `Write` counts the lines it writes and the lines it replaces |
-| Merge guard | a head that fits the limits, on a PR into the branch of `worktree.base`, where no implementer worked on the branch, and the newest review on the branch did not ask for changes. A record belongs to the branch when it names a commit of the branch, or the name of a local branch at the head, so an amend or a rebase keeps it |
+| Merge guard | a head that fits the limits, on a PR into the branch of `worktree.base`, judged against the PR's base commit, where no implementer worked on the branch, and the newest review on the branch did not ask for changes. A record belongs to the branch when it names a commit of the branch, or the name of a local branch at the head, so an amend or a rebase keeps it |
 
 These cases close the lane, so the subagent workflow runs:
 
 - A detached head, a missing base ref, a git error, or a head that no local branch points at.
 - A head with no commit past the base, or the head of a protected branch.
-- A PR into another base, or a PR whose base `gh` cannot read.
+- A PR into another base, a PR whose base `gh` cannot read, a `gh` answer with no `baseRefOid`, or a base commit that the local repository lacks.
 - A binary file, a text file over 1 MB, or a submodule, because the lane cannot judge its size.
 - A lane check that runs past its budget of 6 seconds. The budget keeps each hook call inside the timeout of the hook.
 - A wrong value under `swarm.direct`, in the checkout or at the base. The other guards keep their checks, and each refusal names the wrong key.
 - A base with no `qc.config.json`, a base file that is not JSON, or `"direct": false` at the base.
-- A change to `qc.config.json` at the repository root, in the branch diff or in the pending edit. The file also sets `worktree.base` and `protectedBranches`, so the branch that edits it runs the subagent workflow.
+- A change to `qc.config.json` at the repository root in the PR. The file also sets `worktree.base` and `protectedBranches`, so the branch that edits it runs the subagent workflow. The edit lane checks a pending edit of the file only when `controllerPaths` leave the file out. The default `controllerPaths` include it, so the controller guard allows that edit and the merge lane closes on the change.
 
 Each refusal names the reason the lane does not apply.
 
