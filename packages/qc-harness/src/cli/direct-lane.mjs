@@ -80,7 +80,9 @@ function directAtBase(root, base, git) {
   const text = git(root, "show", `${base}:${CONFIG_FILE}`);
   if (text === null) return { problem: gitFailed(git, `git cannot read ${CONFIG_FILE} at ${base}`) };
   try {
-    const direct = directSettings(JSON.parse(text).swarm);
+    const config = JSON.parse(text);
+    if (config === null || typeof config !== "object" || Array.isArray(config)) return { problem: `${CONFIG_FILE} at ${base} is not a JSON object` };
+    const direct = directSettings(config.swarm);
     return direct ? { direct } : { problem: `${KEY} is false at ${base}` };
   } catch (error) {
     return { problem: error instanceof SyntaxError ? `${CONFIG_FILE} at ${base} is not JSON` : error.message };

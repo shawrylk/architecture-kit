@@ -229,6 +229,7 @@ test("a base with no qc.config.json closes the lane", (t) => {
 test("a base config that is not JSON, or holds a wrong swarm.direct, closes the lane and names the cause", (t) => {
   for (const [config, cause] of [
     ["{ not json", /qc\.config\.json at origin\/main is not JSON/],
+    ["null", /qc\.config\.json at origin\/main is not a JSON object/],
     [JSON.stringify({ swarm: { direct: { maxLines: 0 } } }), /swarm\.direct\.maxLines in qc\.config\.json must be a positive whole number/],
   ]) {
     const root = repo(t, undefined, config);

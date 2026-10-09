@@ -440,3 +440,10 @@ test("a base that holds no qc.config.json keeps the head out of the direct lane"
   const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(JSON.stringify({ baseRefName: "main" })).gh })) ?? "";
   assert.match(reason, /does not apply: git cannot read qc\.config\.json at origin\/main/);
 });
+
+test("the note states the size against the limits of the base, not the checkout", (t) => {
+  const { dir, head } = laneRepo(t, { swarm: { dispatch: {}, direct: { maxLines: 5 } } });
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, direct: { maxLines: 500 } } }));
+  const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(JSON.stringify({ baseRefName: "main" })).gh });
+  assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /with 2 of 5 lines in 1 of 2 files and no review/);
+});
