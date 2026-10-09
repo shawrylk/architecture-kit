@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { checkoutDirs, mayWrite } from "./powershell-command.mjs";
+import { checkoutDirs, mayWrite, unresolvedGitDirs } from "./powershell-command.mjs";
 
 test("a PowerShell command that only reads skips the check, in any letter case", () => {
   for (const command of [
@@ -50,4 +50,14 @@ test("the checkout directories are each location change and each git -C director
   );
   assert.deepEqual(checkoutDirs("Get-ChildItem"), []);
   assert.deepEqual(checkoutDirs("Set-Content f x; git -C"), []);
+});
+
+test("a work tree counts as a checkout directory in PowerShell, and a bare git dir is unresolved", () => {
+  const W = String.raw`C:\w`;
+  const R = String.raw`C:\r\.git`;
+  assert.deepEqual(checkoutDirs(`git --work-tree=${W} checkout main`), [W]);
+  assert.deepEqual(checkoutDirs(`$env:GIT_WORK_TREE = "${W}"; git checkout main`), [W]);
+  assert.deepEqual(unresolvedGitDirs(`$env:GIT_DIR = "${R}"; git checkout main`), [R]);
+  assert.deepEqual(unresolvedGitDirs(`git --git-dir=${R} --work-tree=${W} checkout main`), []);
+  assert.deepEqual(checkoutDirs("git -C"), []);
 });
