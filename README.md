@@ -348,7 +348,7 @@ A limit over 1 fits a repository whose work orders own disjoint paths. Each impl
 its own worktree.
 
 A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
-names the workflow, the four types, each role's models for the session's runtime, and the one-implementer rule. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule.
+names the workflow, the four types, each role's models for the session's runtime, and the one-implementer rule, and that an implementer may run on Codex through `qc codex-implement`. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule. With `QC_ROLE=implementer` in the environment, the note is the worker note instead, as the next section says.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -389,6 +389,37 @@ The `1h` column prices the same requests at the one-hour cache lifetime. A negat
 `subagentPromptCacheTtl: "1h"` in your settings would have cost less. The plugin's agents set no
 `experimental.cacheTtl`: in the measured sessions the one-hour lifetime cost more for all four types,
 and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are API list prices.
+
+#### Run an implementer on Codex
+
+`qc codex-implement` runs one brief through `codex exec` as an implementer. Claude stays the one
+controller, and the controller workflow does not change for it.
+
+```bash
+npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
+```
+
+The runner runs `codex exec -s danger-full-access -C <worktree> "<prompt>"` with `QC_ROLE=implementer` in
+the environment and stdin closed, and appends the output to the log (`<progress>.log` by default). The
+prompt is the brief and a note to read `git log --oneline`, `git status --short`, and the progress file,
+and to continue from the first unfinished task. It spawns `codex` with no shell, so the binary must be
+a real executable on `PATH`. After each run it restarts a fresh session until the progress file holds
+`ALL TASKS DONE`. It never calls Claude.
+
+| Exit | Meaning |
+|---|---|
+| `0` | the progress file says `ALL TASKS DONE` |
+| `1` | a bad argument, or `codex` did not start |
+| `2` | the tail of a run matches `usage limit`, `spend cap`, `rate limit`, or `hit your limit`: dispatch the same brief to an `architecture:sdd-implementer` (sonnet) |
+| `3` | `--max-runs` (default 12) runs ended and the progress file is not done |
+
+With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the
+controller note: work inline, never use subagent-driven development, helper agents, task reviews, or
+fix-review rounds, and per task write the failing test, run only that test file, run typecheck and
+lint on what you touched, and commit at once. It runs no full local gate and no e2e, since CI runs
+them. When every task is committed, it appends `ALL TASKS DONE` to the progress file. A session whose
+context gets large writes notes and ends its turn, and the runner starts a fresh one. Without
+`QC_ROLE=implementer`, every hook behaves as before.
 
 ### 10. Choose optional tools for code exploration
 
