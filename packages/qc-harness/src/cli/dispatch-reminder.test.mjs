@@ -6,11 +6,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runtimeModels } from "../config.mjs";
-import { REMINDER, decide, modelsLine } from "./dispatch-reminder.mjs";
+import { CODEX_LINE, REMINDER, WORKER_NOTE, decide, modelsLine } from "./dispatch-reminder.mjs";
 
 // The checkouts below run under Codex, whatever runtime runs the test.
 process.env.QC_RUNTIME = "codex";
-const BASE = `${REMINDER}${modelsLine({ models: runtimeModels.codex, runtime: "codex" })}`;
+delete process.env.QC_ROLE;
+const BASE = `${REMINDER}${modelsLine({ models: runtimeModels.codex, runtime: "codex" })}${CODEX_LINE}`;
 
 const NOTE = fileURLToPath(new URL("./dispatch-reminder.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
@@ -262,4 +263,65 @@ test("the models line names each role's models for the runtime, and how to dispa
   const codex = modelsLine({ models: runtimeModels.codex, runtime: "codex" });
   assert.match(codex, /the codex runtime: sdd-planner gpt-6\.1-sol, sdd-implementer gpt-6\.1-sol/);
   assert.match(modelsLine({ models: {}, runtime: null }), /unknown runtime \(set QC_RUNTIME to claude or codex\): sdd-planner the session's model/);
+});
+
+test("the controller note says an implementer may run on Codex, and to fall back to a Claude sonnet on exit 2", () => {
+  for (const phrase of [
+    /qc codex-implement --brief <file> --worktree <path> --progress <file>/,
+    /exit 2 \(a Codex limit\)/,
+    /architecture:sdd-implementer \(sonnet\)/,
+    /same brief/,
+  ]) {
+    assert.match(CODEX_LINE, phrase);
+  }
+  assert.ok(!REMINDER.includes("codex-implement"));
+});
+
+test("QC_ROLE=implementer replaces the controller note with the worker note", (t) => {
+  const [on] = checkouts(t, [{ swarm: { dispatch: {} } }]);
+  const text = decide(start(on, "startup"), { QC_ROLE: "implementer" }).hookSpecificOutput.additionalContext;
+  assert.equal(text, WORKER_NOTE);
+  assert.ok(!text.includes("Run one implementer at a time"));
+  assert.ok(!text.includes("sdd-planner"));
+});
+
+test("the worker note says to work inline, run one test file, commit each task, and write ALL TASKS DONE", () => {
+  for (const phrase of [
+    /implementer under a controller/,
+    /Work inline/,
+    /Never use superpowers:subagent-driven-development, helper agents, task reviews, or fix-review rounds/,
+    /failing test, run only that test file, make it pass/,
+    /typecheck and lint on what you touched/,
+    /commit that task at once/,
+    /Do not run the full local gate or e2e; CI runs them/,
+    /append `ALL TASKS DONE` to the progress file the brief names/,
+    /context gets large.*end the turn.*fresh session continues/,
+  ]) {
+    assert.match(WORKER_NOTE, phrase);
+  }
+  assert.ok(WORKER_NOTE.length < 1000, `${WORKER_NOTE.length} characters`);
+});
+
+test("another QC_ROLE, or none, keeps the controller note", (t) => {
+  const [on] = checkouts(t, [{ swarm: { direct: false, dispatch: {} } }]);
+  for (const env of [{}, { QC_ROLE: "" }, { QC_ROLE: "controller" }]) {
+    assert.equal(decide(start(on, "startup"), env).hookSpecificOutput.additionalContext, BASE, JSON.stringify(env));
+  }
+});
+
+test("the worker note keeps the explore line, stays silent with dispatch off, and leaves SubagentStart alone", (t) => {
+  const [explore, off] = checkouts(t, [{ swarm: { dispatch: {}, explore: { tools: [{ name: "CocoIndex", use: "u", how: "h" }] } } }, null]);
+  const env = { QC_ROLE: "implementer" };
+  const text = decide(start(explore, "startup"), env).hookSpecificOutput.additionalContext;
+  assert.ok(text.startsWith(WORKER_NOTE));
+  assert.match(text, /CocoIndex/);
+  assert.equal(decide(start(off, "startup"), env), null);
+  assert.equal(decide(subagentStart(explore), env).hookSpecificOutput.hookEventName, "SubagentStart");
+});
+
+test("the hook process reads QC_ROLE from its environment", (t) => {
+  const [on] = checkouts(t, [{ swarm: { direct: false, dispatch: {} } }]);
+  const run = (env) => spawnSync(process.execPath, [NOTE], { input: JSON.stringify(start(on, "startup")), encoding: "utf8", env: { ...process.env, ...env } });
+  assert.equal(JSON.parse(run({ QC_ROLE: "implementer" }).stdout).hookSpecificOutput.additionalContext, WORKER_NOTE);
+  assert.equal(JSON.parse(run({}).stdout).hookSpecificOutput.additionalContext, BASE);
 });

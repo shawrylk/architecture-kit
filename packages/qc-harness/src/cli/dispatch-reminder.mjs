@@ -19,6 +19,21 @@ export const REMINDER =
   "Review a head only once CI on it is green, with the base merged in: fix a CI failure first, and merge `origin/<base>` at Step 0 of a fix round. " +
   "A PR gets one branch review. After it, review each fix round once, by its increment: add `Reviewed: <sha>`, the last head a branch review named.";
 
+/** One added sentence: a Codex implementer through the runner, and the Claude fallback on a Codex limit. */
+export const CODEX_LINE =
+  " An implementer may run on Codex through `qc codex-implement --brief <file> --worktree <path> --progress <file>`; " +
+  "on exit 2 (a Codex limit), dispatch the same brief to an architecture:sdd-implementer (sonnet).";
+
+/** The note a Codex implementer gets in place of the controller note, with `QC_ROLE=implementer`. */
+export const WORKER_NOTE =
+  "Implementer worker mode (QC_ROLE=implementer): you are an implementer under a controller. Work inline. " +
+  "Never use superpowers:subagent-driven-development, helper agents, task reviews, or fix-review rounds. " +
+  "For each task in your brief: write the failing test, run only that test file, make it pass, " +
+  "run typecheck and lint on what you touched, and commit that task at once. " +
+  "Do not run the full local gate or e2e; CI runs them. " +
+  "When every task in the brief is committed, append `ALL TASKS DONE` to the progress file the brief names. " +
+  "If your context gets large, write notes to the progress file and end the turn: a fresh session continues.";
+
 const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-reviewer"];
 
 /** One added line naming each role's models for the session's runtime, so a dispatch names the right one. */
@@ -85,7 +100,7 @@ function decideSubagentStart(cwd) {
 }
 
 /** @returns the hook output, or null when the checkout turns on neither `swarm.dispatch` nor `swarm.explore`. */
-function decideSessionStart(call) {
+function decideSessionStart(call, env) {
   const cwd = call.cwd ?? process.cwd();
   let dispatch;
   try {
@@ -95,13 +110,14 @@ function decideSessionStart(call) {
   }
   const explore = exploreLine(cwd);
   if (!dispatch) return explore === "" ? null : context("SessionStart", explore.trim());
-  return context("SessionStart", `${REMINDER}${modelsLine(dispatch)}${slotsLine(dispatch)}${directLine(cwd)}${explore}`);
+  if (env.QC_ROLE === "implementer") return context("SessionStart", `${WORKER_NOTE}${explore}`);
+  return context("SessionStart", `${REMINDER}${modelsLine(dispatch)}${CODEX_LINE}${slotsLine(dispatch)}${directLine(cwd)}${explore}`);
 }
 
 /** @returns the hook output, or null when there is nothing to add for this event. */
-export function decide(call) {
+export function decide(call, env = process.env) {
   if (call.hook_event_name === "SubagentStart") return decideSubagentStart(call.cwd ?? process.cwd());
-  return decideSessionStart(call);
+  return decideSessionStart(call, env);
 }
 
 async function readStdin() {

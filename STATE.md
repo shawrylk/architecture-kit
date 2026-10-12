@@ -210,3 +210,17 @@ list ends with `qc feature <domain-name>` before `qc check` — the path CI alre
 has no feature roots, which is coherent for one that wants the citation and audit checks and no
 anatomy; flagging it would manufacture a decision nobody made. The check fires on roots that were
 named and are not there, which is the mismatch, not the opt-out.
+
+
+## A Codex implementer, and the Claude fallback
+
+A `codex exec` session that read the controller note became a second controller: each task spawned an
+implementer, a task reviewer and fix rounds, and each reloaded every rule. `QC_ROLE=implementer` now
+swaps the `SessionStart` note for a short worker note, and `qc codex-implement` runs a brief through
+`codex exec`, restarting a fresh session after each stop until the progress file says
+`ALL TASKS DONE`. Exit 2 means a Codex limit; the controller note then says to send the same brief to
+a Claude `sdd-implementer` (sonnet). The runner never calls Claude. Harness 0.21.0, plugin 0.14.0.
+
+The runner spawns `codex` with no shell, which a Windows npm `.cmd` shim does not allow; the real
+`codex.exe` does. It reads the limit message from the last 4000 characters of a run, so a brief that
+quotes one of those words and a run that ends at once can read as a limit.
