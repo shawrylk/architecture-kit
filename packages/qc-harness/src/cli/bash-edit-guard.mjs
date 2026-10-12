@@ -20,6 +20,7 @@ import { MANIFEST_FILE, readManifest } from "./work-order-manifest.mjs";
 import { nativePath } from "./workflow-place.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { OFF, isolationSettings } from "./worktree-isolation.mjs";
+import { isWorker } from "./worker-role.mjs";
 
 const execFileAsync = promisify(execFile);
 const slashed = (file) => file.split(path.sep).join("/");
@@ -128,7 +129,7 @@ async function findingsIn(root, manifest, projectRoot, isMainSession) {
  * The report on one finished Bash call. @param projectRoot the folder that holds the work-order manifest
  * @returns PostToolUse output with model-visible context, or null when nothing breaks a rule
  */
-export async function report(call, projectRoot) {
+export async function report(call, projectRoot, env = process.env) {
   const command = call.tool_input?.command;
   const dialect = call.tool_name === "PowerShell" ? powershell : posix;
   if (typeof command !== "string" || !dialect.mayWrite(command)) return null;
@@ -142,7 +143,7 @@ export async function report(call, projectRoot) {
     // The edit guard names a manifest that does not parse.
   }
   const findings = [];
-  const isMainSession = !(typeof call.agent_id === "string" && call.agent_id !== "");
+  const isMainSession = !isWorker(call, env);
   for (const root of checkoutsOf(cwd, command, dialect)) findings.push(...(await findingsIn(root, manifest, project, isMainSession)));
   const unresolved = dialect.unresolvedGitDirs(command);
   if (findings.length === 0 && unresolved.length === 0) return null;

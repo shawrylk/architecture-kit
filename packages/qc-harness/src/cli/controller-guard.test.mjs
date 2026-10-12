@@ -52,6 +52,13 @@ test("a subagent's edit is left alone", (t) => {
   assert.equal(decide(edit(ws.main, path.join(ws.main, "src", "a.ts"), "Write", { agent_id: "agent-1" })), null);
 });
 
+test("a Codex implementer's edit, with QC_ROLE=implementer and no agent_id, is left alone", (t) => {
+  const ws = workspace(t);
+  const call = edit(ws.main, path.join(ws.main, "src", "a.ts"));
+  assert.equal(decide(call, process.platform, { QC_ROLE: "implementer" }), null);
+  assert.match(denied(decide(call, process.platform, { QC_ROLE: "controller" })) ?? "", /src\/a\.ts is outside them/);
+});
+
 test("the main session's edit of code in the checkout, or in its worktree, is refused", (t) => {
   const ws = workspace(t);
   for (const [file, rel] of [

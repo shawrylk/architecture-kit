@@ -122,6 +122,7 @@ test("while swarm.dispatch is on, a main-session shell write outside the control
   assert.match(text, /dispatch an implementer/i);
   assert.doesNotMatch(text, /work order|orchestrator/);
   assert.equal(await report({ ...call, agent_id: "agent-1" }, ws.plain), null);
+  assert.equal(await report(call, ws.plain, { QC_ROLE: "implementer" }), null);
   assert.equal(await report(bash(ws.plain, "cat src/a.ts"), ws.plain), null);
 });
 

@@ -221,6 +221,11 @@ swaps the `SessionStart` note for a short worker note, and `qc codex-implement` 
 `ALL TASKS DONE`. Exit 2 means a Codex limit; the controller note then says to send the same brief to
 a Claude `sdd-implementer` (sonnet). The runner never calls Claude. Harness 0.21.0, plugin 0.14.0.
 
+A Codex hook call carries no `agent_id`, so the controller guard and the Bash edit guard read
+`QC_ROLE=implementer` in the hook's environment as a worker, the same as a subagent. Without it, a
+Codex implementer got the controller's "dispatch an implementer" refusal and stopped. Harness 0.21.1,
+plugin 0.14.1.
+
 The runner spawns `codex` with no shell, which a Windows npm `.cmd` shim does not allow; the real
 `codex.exe` does. It reads the limit message from the last 4000 characters of a run, so a brief that
 quotes one of those words and a run that ends at once can read as a limit.

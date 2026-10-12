@@ -10,6 +10,7 @@ import { editLane, sizeLine } from "./direct-lane.mjs";
 import { pathKey } from "./git-read.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
+import { isWorker } from "./worker-role.mjs";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
 
@@ -25,9 +26,9 @@ function sameRepository(a, b) {
 export const isControllerPath = (rel, controllerPaths, platform = process.platform) => pathMatcher(controllerPaths, platform)(rel);
 
 /** The verdict on one edit. @returns the hook output, or null to let the edit run with no message. */
-export function decide(call, platform = process.platform) {
+export function decide(call, platform = process.platform, env = process.env) {
   if (call.hook_event_name !== "PreToolUse" || !EDIT_TOOLS.has(call.tool_name)) return null;
-  if (typeof call.agent_id === "string" && call.agent_id !== "") return null;
+  if (isWorker(call, env)) return null;
   const input = call.tool_input ?? {};
   const target = input.file_path ?? input.notebook_path;
   if (typeof target !== "string" || target === "") return null;
