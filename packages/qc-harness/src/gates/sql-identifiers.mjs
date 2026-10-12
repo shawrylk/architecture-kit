@@ -22,7 +22,8 @@ const SNAKE = /\b([a-z][a-z0-9]*_[a-z0-9_]+)\b/g;
 // Tables are matched by position instead. A single-word table name is
 // indistinguishable from a keyword by shape, and a stop-list of keywords is the
 // same trap as a list of column types: the one it misses blocks a unit.
-const TABLE_POSITION = /\b(?:from|join|into|update)\s+([a-z][a-z0-9_]*)/g;
+// A name after `from` or `join` that opens a parenthesis is a function, such as `unnest(...)`.
+const TABLE_POSITION = /\b(from|join|into|update)\s+([a-z][a-z0-9_]*)(\s*\()?/g;
 /** The few words that legally stand where a table would: `do update set`, `join lateral (`. */
 const NOT_A_TABLE = new Set(["set", "lateral", "only", "select"]);
 /** Names a statement binds for itself: a common table expression, or an alias. */
@@ -52,6 +53,8 @@ export const SQL_BUILTINS = Object.freeze([
   "jsonb_set",
   "current_timestamp",
   "current_date",
+  "clock_timestamp",
+  "unnest",
 ]);
 
 /** The text between the parenthesis at `open` and its match. */
@@ -67,10 +70,27 @@ function parens(source, open) {
   return source.slice(open + 1);
 }
 
-/** A constraint line declares no column, so only a name followed by a type counts. */
+/** The parts of a column list, split on the commas outside any parenthesis. */
+function topLevelParts(body) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    if (body[index] === "(") depth += 1;
+    if (body[index] === ")") depth -= 1;
+    if (body[index] === "," && depth === 0) {
+      parts.push(body.slice(start, index));
+      start = index + 1;
+    }
+  }
+  parts.push(body.slice(start));
+  return parts;
+}
+
+/** A constraint declares no column, so only a name followed by a type counts. Columns may share a line. */
 function addColumnLines(columns, body) {
-  for (const line of body.split("\n")) {
-    const column = COLUMN_LINE.exec(line.trim());
+  for (const part of topLevelParts(blanked(body))) {
+    const column = COLUMN_LINE.exec(part.trim());
     if (column && !CONSTRAINT_OPENER.has(column[1])) columns.add(column[1]);
   }
 }
@@ -78,7 +98,9 @@ function addColumnLines(columns, body) {
 /** @returns {Map<string, Set<string>>} table to its declared columns, across every migration. */
 export function declaredColumns(sources) {
   const tables = new Map();
-  for (const sql of sources) {
+  for (const source of sources) {
+    // Keywords and unquoted names ignore case, so a migration in capitals declares the same columns.
+    const sql = source.toLowerCase();
     CREATE_TABLE.lastIndex = 0;
     let match = CREATE_TABLE.exec(sql);
     while (match !== null) {
@@ -184,7 +206,8 @@ export function usedIdentifiers(source) {
     TABLE_POSITION.lastIndex = 0;
     let table = TABLE_POSITION.exec(statement);
     while (table !== null) {
-      if (!NOT_A_TABLE.has(table[1])) tables.add(table[1]);
+      const isCall = table[3] !== undefined && (table[1] === "from" || table[1] === "join");
+      if (!NOT_A_TABLE.has(table[2]) && !isCall) tables.add(table[2]);
       table = TABLE_POSITION.exec(statement);
     }
   }
