@@ -23,6 +23,8 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
+  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
+                           run a brief through codex exec as an implementer, restarting until the progress file says ALL TASKS DONE; exit 2 on a Codex limit
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
@@ -42,6 +44,11 @@ async function main() {
   if (command === "lease") {
     const { runLease } = await import("./lease.mjs");
     process.exit(await runLease(rest));
+  }
+  // The runner reads no configuration, so it runs from any folder.
+  if (command === "codex-implement") {
+    const { runCodexImplement } = await import("./codex-implement.mjs");
+    process.exit(await runCodexImplement(rest));
   }
   const config = load(process.cwd());
 
