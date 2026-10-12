@@ -60,6 +60,31 @@ test("an add column belongs to its own alter table, never to the one before it",
   assert.ok(tables.get("sites").has("site_name"));
 });
 
+test("a migration in capitals declares the same columns", () => {
+  const tables = declaredColumns([ddl, "ALTER TABLE projects ADD COLUMN blackboard_edited boolean NOT NULL DEFAULT false;"]);
+  assert.ok(tables.get("projects").has("blackboard_edited"));
+});
+
+test("columns that share a line are each declared, a generated column included", () => {
+  const tables = declaredColumns([
+    `create table results (
+  -- one row per item
+  item_id uuid not null, sub_pin_id uuid, owner_id uuid generated always as (coalesce(sub_pin_id, pin_id)) stored, checked boolean not null,
+  result text not null default 'a, b', corrected_at timestamptz,
+  primary key (item_id)
+);`,
+  ]);
+  assert.deepEqual([...tables.get("results")].sort(), ["checked", "corrected_at", "item_id", "owner_id", "result", "sub_pin_id"]);
+});
+
+test("a function in a from clause, and clock_timestamp, are no undeclared names", () => {
+  const tables = declaredColumns([ddl]);
+  const source = resource(
+    "insert into projects (id, created_at) select photo_id, clock_timestamp() from unnest($1::uuid[]) as photo_id",
+  );
+  assert.deepEqual(checkSqlIdentifiers(tables, [{ path: "r.ts", source }]), []);
+});
+
 test("an agreeing slice has no finding", () => {
   const tables = declaredColumns([ddl]);
   const source = resource("select id, tenant_id, code from projects where tenant_id = $1");
