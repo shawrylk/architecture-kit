@@ -161,3 +161,15 @@ test("qc codex-implement is wired, and prints usage errors with exit 1", () => {
   assert.match(result.stderr, /--brief/);
   assert.match(spawnSync(process.execPath, [QC], { encoding: "utf8" }).stdout, /qc codex-implement/);
 });
+
+test("a limit word that only echoes the brief is not a limit", async (t) => {
+  const { argv, brief } = setup(t);
+  writeFileSync(brief, "# Brief\n\nIf you hit a usage limit, stop and write notes.\n");
+  let calls = 0;
+  const run = async () => {
+    calls += 1;
+    return { status: 1, tail: "user\nIf you hit a usage limit, stop and write notes.\nexec failed\n" };
+  };
+  assert.equal(await runCodexImplement([...argv, "--max-runs", "2"], { run, say: quiet }), 3);
+  assert.equal(calls, 2);
+});

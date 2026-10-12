@@ -92,9 +92,15 @@ export async function runCodexImplement(argv, { run, codexCommand = ["codex"], e
     }
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
-    if (LIMIT.test(result.tail ?? "")) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
+    if (reportsLimit(result.tail ?? "", prompt)) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
   }
   return finish(say, `out of runs: ${settings.maxRuns} runs and the progress file is not done`, 3);
+}
+
+/** A limit line counts only when Codex wrote it, not when the log echoes a line of the prompt. */
+function reportsLimit(tail, prompt) {
+  const echoed = new Set(prompt.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+  return tail.split(/\r?\n/).some((line) => LIMIT.test(line) && !echoed.has(line.trim()));
 }
 
 function finish(say, message, code) {
