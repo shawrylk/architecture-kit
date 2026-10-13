@@ -39,6 +39,9 @@ export const defaults = {
   // Pinned library versions. Docs carry a {{ver:id}} or {{v:id}} token for each.
   versions: "versions.json",
 
+  // Limits for one brief before `qc codex-implement` starts Codex.
+  codex: { briefMaxLines: 40, briefMaxSteps: 6, maxRuns: 2 },
+
   // Globs of docs that may state a registry figure. Null is the ADR log, from adrLog(): a decision
   // states the number as of its date. `registries` adds `{ path, key, prefix, valueKey?, unitKey? }` to the
   // thresholds and the versions, which always apply; an item with the path of one of them replaces it.
