@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -8,12 +8,15 @@ import { fileURLToPath } from "node:url";
 import { DONE_MARKER, parseArgs, runCodexImplement } from "./codex-implement.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
+const VALID_BRIEF = "# Brief\nPaths: src/task.mjs\n\n## Product decisions\nKeep the change small.\n\n## Task\n1. Implement the change.\n";
 
-function setup(t, { progress = "" } = {}) {
+function setup(t, { progress = "", brief = VALID_BRIEF, codex } = {}) {
   const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-codex-implement-")));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const files = { dir, brief: path.join(dir, "brief.md"), progress: path.join(dir, "progress.md"), worktree: path.join(dir, "wt") };
-  writeFileSync(files.brief, "# Brief\n\nDo task one.\n");
+  mkdirSync(files.worktree);
+  writeFileSync(files.brief, brief);
+  if (codex) writeFileSync(path.join(files.worktree, "qc.config.json"), JSON.stringify({ codex }));
   writeFileSync(files.progress, progress);
   const argv = ["--brief", files.brief, "--worktree", files.worktree, "--progress", files.progress];
   return { ...files, argv };
@@ -60,7 +63,7 @@ test("a fresh session starts after a stop with the progress file not done", asyn
     if (calls === 2) appendFileSync(progress, `${DONE_MARKER}\n`);
     return { status: 0, tail: "context large, notes written" };
   };
-  assert.equal(await runCodexImplement(argv, { run, say: quiet }), 0);
+  assert.equal(await runCodexImplement([...argv, "--max-runs", "2"], { run, say: quiet }), 0);
   assert.equal(calls, 2);
 });
 
@@ -77,15 +80,15 @@ test("a usage or spend limit in the output tail exits 2 and stops restarting", a
   }
 });
 
-test("--max-runs bounds the restarts and exits 3, with a default of 12", async (t) => {
+test("--max-runs bounds the restarts and exits 3, with a default of 1", async (t) => {
   const { argv } = setup(t);
   let calls = 0;
   const run = async () => ((calls += 1), { status: 0, tail: "stopped" });
-  assert.equal(await runCodexImplement([...argv, "--max-runs", "3"], { run, say: quiet }), 3);
-  assert.equal(calls, 3);
+  assert.equal(await runCodexImplement([...argv, "--max-runs", "2"], { run, say: quiet }), 3);
+  assert.equal(calls, 2);
   calls = 0;
   assert.equal(await runCodexImplement(argv, { run, say: quiet }), 3);
-  assert.equal(calls, 12);
+  assert.equal(calls, 1);
 });
 
 test("a run that finishes the brief on its last allowed run exits 0, not 3", async (t) => {
@@ -164,7 +167,7 @@ test("qc codex-implement is wired, and prints usage errors with exit 1", () => {
 
 test("a limit word that only echoes the brief is not a limit", async (t) => {
   const { argv, brief } = setup(t);
-  writeFileSync(brief, "# Brief\n\nIf you hit a usage limit, stop and write notes.\n");
+  writeFileSync(brief, VALID_BRIEF + "If you hit a usage limit, stop and write notes.\n");
   let calls = 0;
   const run = async () => {
     calls += 1;
@@ -172,4 +175,71 @@ test("a limit word that only echoes the brief is not a limit", async (t) => {
   };
   assert.equal(await runCodexImplement([...argv, "--max-runs", "2"], { run, say: quiet }), 3);
   assert.equal(calls, 2);
+});
+
+async function assertRefused(argv, rule, limit, measured) {
+  const said = [];
+  let calls = 0;
+  const run = async () => ((calls += 1), { status: 0, tail: "stopped" });
+  const code = await runCodexImplement(argv, { run, say: (line) => said.push(line) });
+  assert.equal(code, 1);
+  assert.equal(calls, 0);
+  const message = said.join("\n");
+  assert.ok(message.includes(rule), message);
+  assert.match(message, new RegExp(`limit[^\\n]*${limit}\\b`));
+  assert.match(message, new RegExp(`measured[^\\n]*${measured}\\b`));
+}
+
+test("a brief above codex.briefMaxLines is refused before Codex starts", async (t) => {
+  const { argv } = setup(t, { brief: VALID_BRIEF + "More detail.\n".repeat(35) });
+  await assertRefused(argv, "codex.briefMaxLines", 40, 41);
+  const custom = setup(t, { codex: { briefMaxLines: 5 } });
+  await assertRefused(custom.argv, "codex.briefMaxLines", 5, 6);
+});
+
+test("a brief with more than one task heading is refused before Codex starts", async (t) => {
+  const { argv } = setup(t, { brief: VALID_BRIEF + "## Another task\n" });
+  await assertRefused(argv, "task-headings", 1, 2);
+});
+
+test("a brief above codex.briefMaxSteps is refused before Codex starts", async (t) => {
+  const { argv } = setup(t, { brief: VALID_BRIEF + "2. More work.\n".repeat(6) });
+  await assertRefused(argv, "codex.briefMaxSteps", 6, 7);
+  const custom = setup(t, { brief: VALID_BRIEF + "2) More work.\n", codex: { briefMaxSteps: 1 } });
+  await assertRefused(custom.argv, "codex.briefMaxSteps", 1, 2);
+});
+
+test("a brief without a Product decisions heading is refused before Codex starts", async (t) => {
+  const { argv } = setup(t, { brief: VALID_BRIEF.replace("## Product decisions\n", "") });
+  await assertRefused(argv, "product-decisions", 1, 0);
+});
+
+test("a brief without a Paths line is refused before Codex starts", async (t) => {
+  for (const paths of ["", "Paths:   \n"]) {
+    const { argv } = setup(t, { brief: VALID_BRIEF.replace("Paths: src/task.mjs\n", paths) });
+    await assertRefused(argv, "paths", 1, 0);
+  }
+});
+
+test("--max-runs above codex.maxRuns is refused before Codex starts", async (t) => {
+  const { argv } = setup(t);
+  await assertRefused([...argv, "--max-runs", "3"], "codex.maxRuns", 2, 3);
+  const custom = setup(t, { codex: { maxRuns: 1 } });
+  await assertRefused([...custom.argv, "--max-runs", "2"], "codex.maxRuns", 1, 2);
+});
+
+test("a brief at every default boundary passes with blank lines and CRLF", async (t) => {
+  const brief = ["# Brief", "Paths: src/task.mjs", "## Product decisions", "## Task", ...Array.from({ length: 6 }, (_, i) => `${i + 1}. Do one step.`), ...Array(30).fill("Detail.")].join("\r\n\r\n");
+  const { argv, progress } = setup(t, { brief });
+  const run = async () => (appendFileSync(progress, DONE_MARKER), { status: 0, tail: "ok" });
+  assert.equal(await runCodexImplement(argv, { run, say: quiet }), 0);
+});
+
+test("the worktree config can raise the brief and run limits", async (t) => {
+  const brief = VALID_BRIEF + "2. More work.\n".repeat(6) + "Detail.\n".repeat(29);
+  const { argv } = setup(t, { brief, codex: { briefMaxLines: 41, briefMaxSteps: 7, maxRuns: 3 } });
+  let calls = 0;
+  const run = async () => ((calls += 1), { status: 0, tail: "stopped" });
+  assert.equal(await runCodexImplement([...argv, "--max-runs", "3"], { run, say: quiet }), 3);
+  assert.equal(calls, 3);
 });

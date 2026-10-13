@@ -4,9 +4,10 @@
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { load } from "../config.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
-const DEFAULT_MAX_RUNS = 12;
+const DEFAULT_MAX_RUNS = 1;
 const TAIL_CHARS = 4000;
 const LIMIT = /usage limit|spend cap|rate limit|hit your limit/i;
 
@@ -39,6 +40,24 @@ export function parseArgs(argv) {
 }
 
 const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").includes(DONE_MARKER);
+
+function validateBriefBranch(brief, limits, maxRuns) {
+  const lines = brief.split(/\r?\n/).filter((line) => line.trim());
+  const decisions = lines.filter((line) => /^## Product decisions\s*$/.test(line)).length;
+  const rules = [
+    ["codex.briefMaxLines", limits.briefMaxLines, lines.length, false],
+    ["task-headings", 1, lines.filter((line) => line.startsWith("## ")).length - decisions, false],
+    ["codex.briefMaxSteps", limits.briefMaxSteps, lines.filter((line) => /^\s*\d+[.)]\s+/.test(line)).length, false],
+    ["product-decisions", 1, decisions, true],
+    ["paths", 1, lines.filter((line) => /^Paths:[ \t]*\S/.test(line)).length, true],
+    ["codex.maxRuns", limits.maxRuns, maxRuns, false],
+  ];
+  for (const [rule, limit, measured, minimum] of rules) {
+    if (minimum ? measured < limit : measured > limit) {
+      throw new Error(`${rule}: limit ${minimum ? ">=" : "<="} ${limit}; measured ${measured}`);
+    }
+  }
+}
 
 function continuationNote(progress) {
   return (
@@ -73,14 +92,17 @@ function spawnRun({ command, args, env, log }, codexCommand) {
  */
 export async function runCodexImplement(argv, { run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line) } = {}) {
   let settings;
+  let brief;
   try {
     settings = parseArgs(argv);
+    brief = readFileSync(settings.brief, "utf8");
+    validateBriefBranch(brief, load(settings.worktree).codex, settings.maxRuns);
   } catch (error) {
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
     return 1;
   }
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
-  const prompt = readFileSync(settings.brief, "utf8") + continuationNote(settings.progress);
+  const prompt = brief + continuationNote(settings.progress);
   const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, prompt];
   for (let count = 1; count <= settings.maxRuns; count += 1) {
     if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);

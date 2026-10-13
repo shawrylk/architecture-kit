@@ -395,6 +395,31 @@ and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are 
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude stays the one
 controller, and the controller workflow does not change for it.
 
+Before Codex starts, the runner checks the brief against `codex` in the worktree's `qc.config.json`.
+Each refusal names the rule, the limit, and the measured value, and exits `1`.
+
+| Rule | Limit |
+|---|---|
+| `codex.briefMaxLines` | At most 40 non-blank lines by default |
+| `task-headings` | At most one `## ` heading besides `## Product decisions` |
+| `codex.briefMaxSteps` | At most six numbered steps by default; `1.` and `1)` both count |
+| `product-decisions` | At least one `## Product decisions` heading |
+| `paths` | At least one `Paths:` line that names files or folders |
+| `codex.maxRuns` | At most two runs by default; `--max-runs` defaults to one |
+
+The runner counts the brief before it appends the continuation note.
+Omitted settings keep their defaults.
+
+```json
+{
+  "codex": {
+    "briefMaxLines": 40,
+    "briefMaxSteps": 6,
+    "maxRuns": 2
+  }
+}
+```
+
 ```bash
 npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
 ```
@@ -409,9 +434,9 @@ a real executable on `PATH`. After each run it restarts a fresh session until th
 | Exit | Meaning |
 |---|---|
 | `0` | the progress file says `ALL TASKS DONE` |
-| `1` | a bad argument, or `codex` did not start |
+| `1` | a bad argument, a refused brief, a run limit, an unreadable input, or `codex` did not start |
 | `2` | the tail of a run matches `usage limit`, `spend cap`, `rate limit`, or `hit your limit`: dispatch the same brief to an `architecture:sdd-implementer` (sonnet) |
-| `3` | `--max-runs` (default 12) runs ended and the progress file is not done |
+| `3` | `--max-runs` (default one) runs ended and the progress file is not done |
 
 With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the
 controller note: work inline, never use subagent-driven development, helper agents, task reviews, or
