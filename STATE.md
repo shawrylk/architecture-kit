@@ -224,3 +224,12 @@ a Claude `sdd-implementer` (sonnet). The runner never calls Claude. Harness 0.21
 The runner spawns `codex` with no shell, which a Windows npm `.cmd` shim does not allow; the real
 `codex.exe` does. It reads the limit message from the last 4000 characters of a run, so a brief that
 quotes one of those words and a run that ends at once can read as a limit.
+
+## Review while CI runs
+
+Harness 0.22.0 and plugin 0.15.0 add `swarm.review.requireGreen: "not-red"` (#123).
+The policy lets a review start while checks on the head queue or run.
+Its note names the check and says a later red head needs an increment review.
+A completed `failure`, `cancelled`, `timed_out`, or `action_required` run still refuses the review.
+`true` stays the default and requires green CI; `false` skips the CI check.
+Unknown CI keeps its existing behavior.

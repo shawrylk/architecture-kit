@@ -73,12 +73,18 @@ recorded.
 | A plan task names its files, a test step, and a commit step, within the budget | `qc plan-check`, and `plan-stop.mjs` |
 | A branch is reviewed whole once; a later review names `Reviewed: <sha>`, the last head a branch review named, and reads the increment (`swarm.review.oneBranchReview`) | `dispatch-guard.mjs`, on `Agent` |
 | A model never calls a code-review skill: dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review` (`codeReviewSkills`) | `skill-guard.mjs`, on `Skill` |
-| A review runs on a green head: CI on the head is not red or running (`requireGreen`) | `dispatch-guard.mjs`, on `Agent` |
+| A review follows `requireGreen`: `true` refuses red or open CI; `"not-red"` refuses red CI and notes open runs; `false` skips CI | `dispatch-guard.mjs`, on `Agent` |
 | A review runs on a head that holds the tip of `worktree.base`: merge the base first (`requireBase`) | `dispatch-guard.mjs`, on `Agent` |
 | An implementer prompt names its brief on a `Brief: <path>` line, and the brief holds a `## Product decisions` section with the user's rulings, or `none` (`productDecisions`). A reviewer prompt names a `Worktree: <path>` whose branch and head the gate can read | `dispatch-guard.mjs`, on `Agent` |
 | An implementer brief stays within `roundFindings` findings and `roundFiles` files; a larger round splits in parallel on disjoint paths (a warning) | `dispatch-guard.mjs`, on `Agent` |
 | Each subagent stop records its tokens and tool calls by role; `qc ledger --cost [branch]` totals them | `cost-stop.mjs`, on `SubagentStop` |
 | A typecheck that fails only with `TS2307` runs once more before the stop reports red | `hooks/stop-gate.sh`, on `Stop` |
+
+`swarm.review.requireGreen` defaults to `true`.
+With `"not-red"`, a completed `failure`, `cancelled`, `timed_out`, or `action_required` run refuses the review.
+Queued or running checks pass with a note that names the check and its status.
+The note says a later red head needs an increment review.
+Unknown CI passes with its existing note.
 
 ## Worktrees — QC-015
 

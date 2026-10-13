@@ -64,7 +64,7 @@ test("ciNotGreen bounds its reads so the whole gate stays under the hook's 10 se
 test("ciState separates a head that is not green, a green head, and a head it cannot read", () => {
   const origin = () => "o/r";
   const state = (gh, from = origin) => ciState(SHA, "/c", { gh, origin: from });
-  assert.deepEqual(state(() => reply(run("a", "completed", "success"))), { reason: null, unknown: null });
+  assert.deepEqual(state(() => reply(run("a", "completed", "success"))), { status: "green", reason: null, unknown: null });
   assert.match(state(() => reply(run("build", "in_progress"))).reason, /^CI on aaaaaaa: build is in_progress/);
   assert.match(state(() => reply()).unknown, /no check runs/);
   assert.match(state(() => null).unknown, /gh/);
@@ -73,4 +73,21 @@ test("ciState separates a head that is not green, a green head, and a head it ca
   assert.match(state(() => reply(), () => null).unknown, /origin/);
   assert.match(ciState("", "/c", { gh: () => null, origin }).unknown, /no commit/);
   for (const answer of [state(() => null), state(() => reply())]) assert.equal(answer.reason, null);
+});
+
+test("ciState distinguishes completed failures from open runs and gives failures priority", () => {
+  const state = (...runs) => ciState(SHA, "/c", { gh: () => reply(...runs), origin: () => "o/r" });
+  for (const conclusion of ["failure", "cancelled", "timed_out", "action_required"]) {
+    assert.deepEqual(state(run("lint", "in_progress"), run("build", "completed", conclusion)), {
+      status: "red", reason: `CI on aaaaaaa: build ended ${conclusion}`, unknown: null,
+    });
+  }
+  for (const status of ["queued", "in_progress", "waiting", "pending"]) {
+    assert.deepEqual(state(run("build", status, "failure")), {
+      status: "open", reason: `CI on aaaaaaa: build is ${status}`, unknown: null,
+    });
+  }
+  assert.deepEqual(state(), { status: "unknown", reason: null, unknown: "aaaaaaa has no check runs" });
+  assert.equal(ciNotGreen(SHA, "/c", { gh: () => reply(run("build", "queued")), origin: () => "o/r" }),
+    "CI on aaaaaaa: build is queued");
 });
