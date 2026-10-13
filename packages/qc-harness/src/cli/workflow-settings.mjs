@@ -12,9 +12,9 @@ import { ledgerFileOf } from "./ledger.mjs";
 
 const KEY = "swarm.review";
 const MERGE_KINDS = ["branch", "task"];
-const SWITCH_KEYS = ["oneBranchReview", "requireGreen", "requireBase", "productDecisions"];
+const SWITCH_KEYS = ["oneBranchReview", "requireBase", "productDecisions"];
 const LIMIT_KEYS = ["roundFindings", "roundFiles"];
-const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", ...SWITCH_KEYS, ...LIMIT_KEYS];
+const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", "requireGreen", ...SWITCH_KEYS, ...LIMIT_KEYS];
 const STATE_FILE = "state.json";
 
 const isNameList = (value) => Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "");
@@ -43,10 +43,13 @@ export function reviewSettings(swarm = {}) {
   for (const key of SWITCH_KEYS) {
     if (typeof merged[key] !== "boolean") throw wrong(key, merged[key], "true or false");
   }
+  if (typeof merged.requireGreen !== "boolean" && merged.requireGreen !== "not-red") {
+    throw wrong("requireGreen", merged.requireGreen, 'true, false, or "not-red"');
+  }
   for (const key of LIMIT_KEYS) {
     if (!Number.isInteger(merged[key]) || merged[key] < 0) throw wrong(key, merged[key], "a whole number, 0 or more");
   }
-  const enforcement = Object.fromEntries([...SWITCH_KEYS, ...LIMIT_KEYS].map((key) => [key, merged[key]]));
+  const enforcement = Object.fromEntries(["requireGreen", ...SWITCH_KEYS, ...LIMIT_KEYS].map((key) => [key, merged[key]]));
   return { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, ...enforcement, implementerTypes: dispatch.implementerTypes };
 }
 

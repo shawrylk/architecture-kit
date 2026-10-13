@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { reviewDefaults } from "../config.mjs";
+import { ciState as readCiState } from "./ci-state.mjs";
 import {
   baseCheck,
   briefCheck,
@@ -123,6 +124,56 @@ test("requireGreen off never asks CI", () => {
   const ciState = () => ((asked += 1), { reason: "red", unknown: null });
   assert.equal(check({ ciState, review: { ...review, requireGreen: false, reviewerTypes: { task: [], branch: ["sdd-branch-reviewer"] } } }).refusal, null);
   assert.equal(asked, 0);
+});
+
+const checkRuns = (runs) => (sha) => readCiState(sha, "/w", {
+  gh: () => JSON.stringify({ check_runs: runs }), origin: () => "o/r",
+});
+const ciReview = (requireGreen) => ({
+  ...review, requireGreen, reviewerTypes: { task: ["sdd-reviewer"], branch: ["sdd-branch-reviewer"] },
+});
+
+test('requireGreen "not-red" refuses each completed failure with the existing message', () => {
+  for (const conclusion of ["failure", "cancelled", "timed_out", "action_required"]) {
+    const ciState = checkRuns([
+      { name: "lint", status: "in_progress", conclusion: null },
+      { name: "build", status: "completed", conclusion },
+    ]);
+    for (const type of ["sdd-reviewer", "sdd-branch-reviewer"]) {
+      const result = check({ type, ciState, review: ciReview("not-red") });
+      assert.match(result.refusal, new RegExp(`build ended ${conclusion}`));
+      assert.deepEqual(result, check({ type, ciState, review: ciReview(true) }));
+    }
+  }
+});
+
+test('requireGreen "not-red" passes queued and running CI with the increment review note', () => {
+  for (const status of ["queued", "in_progress"]) {
+    const ciState = checkRuns([{ name: "build", status, conclusion: null }]);
+    for (const type of ["sdd-reviewer", "sdd-branch-reviewer"]) {
+      assert.deepEqual(check({ type, ciState, review: ciReview("not-red") }), {
+        refusal: null,
+        note: `Task gate: CI on aaaaaaa: build is ${status}. The review proceeds; a later red head needs an increment review.`,
+      });
+    }
+  }
+});
+
+test('requireGreen "not-red" passes a green head without a note', () => {
+  const ciState = checkRuns([{ name: "build", status: "completed", conclusion: "success" }]);
+  assert.deepEqual(check({ ciState, review: ciReview("not-red") }), { refusal: null, note: null });
+});
+
+test('requireGreen "not-red" keeps the note for unknown CI', () => {
+  const ciState = checkRuns([]);
+  assert.deepEqual(check({ ciState, review: ciReview("not-red") }), check({ ciState, review: ciReview(true) }));
+});
+
+test("requireGreen true still refuses a running run", () => {
+  const ciState = checkRuns([{ name: "build", status: "in_progress", conclusion: null }]);
+  const result = check({ ciState, review: ciReview(true) });
+  assert.match(result.refusal, /build is in_progress.*waits for green CI/);
+  assert.equal(result.note, null);
 });
 
 // Head contains the base tip

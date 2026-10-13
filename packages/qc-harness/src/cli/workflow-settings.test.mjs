@@ -66,6 +66,21 @@ test("a bad key throws and names it", () => {
   }
 });
 
+test('requireGreen accepts "not-red" as well as its boolean policies', () => {
+  for (const requireGreen of [true, false, "not-red"]) {
+    assert.equal(reviewSettings({ dispatch: {}, review: { requireGreen } }).requireGreen, requireGreen);
+  }
+});
+
+test("requireGreen rejects other strings and the other switches stay boolean", () => {
+  for (const requireGreen of ["true", "false", "green", "", "NOT-RED"]) {
+    assert.throws(() => reviewSettings({ dispatch: {}, review: { requireGreen } }), /swarm\.review\.requireGreen/);
+  }
+  for (const key of ["oneBranchReview", "requireBase", "productDecisions"]) {
+    assert.throws(() => reviewSettings({ dispatch: {}, review: { [key]: "not-red" } }), new RegExp(`swarm\\.review\\.${key}`));
+  }
+});
+
 test("workflowAt names the checkout, its ledger, its settings, and its protected branches", (t) => {
   const { dirs } = folders(t, [{ swarm: { dispatch: {} } }]);
   const found = workflowAt(dirs[0]);
