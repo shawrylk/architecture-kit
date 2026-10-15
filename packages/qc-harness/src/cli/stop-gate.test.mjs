@@ -387,3 +387,89 @@ test("a root typecheck script replaces tsc -b, keeps the TS2307 retry, and the l
   assert.ok(!lines.some((l) => l.startsWith("npx tsc")));
   assert.ok(lines.includes("npx eslint . --max-warnings 0 --cache --cache-location node_modules/.cache/eslint-stop-gate"));
 });
+
+/** A workspace whose repository is a git repository with one commit, so the gate can fingerprint it. */
+function gitWorkspace(t, installed = { codes: {}, withDoctor: false }) {
+  const ws = workspace(t, installed);
+  const repo = path.join(path.dirname(ws.tmpDir), "repo");
+  const git = (...args) => {
+    const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: repo, encoding: "utf8" });
+    assert.equal(r.status, 0, r.stderr);
+  };
+  writeFileSync(path.join(repo, ".gitignore"), "node_modules\n");
+  writeFileSync(path.join(repo, "a.txt"), "one\n");
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-q", "-m", "first");
+  return { ...ws, repo, git };
+}
+
+test("a second stop on an unchanged checkout skips the gate", (t) => {
+  const ws = gitWorkspace(t);
+  assert.equal(ws.run().status, 0);
+  assert.deepEqual(ws.ran(), ["installed check"]);
+  assert.equal(ws.run().status, 0);
+  assert.deepEqual(ws.ran(), ["installed check"]);
+});
+
+test("an edited tracked file makes the next stop run the full gate", (t) => {
+  const ws = gitWorkspace(t);
+  ws.run();
+  writeFileSync(path.join(ws.repo, "a.txt"), "two\n");
+  ws.run();
+  assert.equal(ws.ran().length, 2);
+  writeFileSync(path.join(ws.repo, "a.txt"), "three\n");
+  ws.run();
+  assert.equal(ws.ran().length, 3);
+});
+
+test("a new untracked file makes the next stop run the full gate", (t) => {
+  const ws = gitWorkspace(t);
+  ws.run();
+  writeFileSync(path.join(ws.repo, "b.txt"), "new\n");
+  ws.run();
+  assert.equal(ws.ran().length, 2);
+  ws.run();
+  assert.equal(ws.ran().length, 2);
+});
+
+test("a new commit makes the next stop run the full gate", (t) => {
+  const ws = gitWorkspace(t);
+  ws.run();
+  ws.git("commit", "-q", "--allow-empty", "-m", "second");
+  ws.run();
+  assert.equal(ws.ran().length, 2);
+});
+
+test("a red first run stores nothing, so the next stop runs the full gate again", (t) => {
+  const ws = gitWorkspace(t, { codes: { check: 1 }, withDoctor: false });
+  assert.equal(ws.run().status, 2);
+  assert.equal(ws.run().status, 2);
+  assert.equal(ws.ran().length, 2);
+});
+
+test("a repository that is no git checkout always runs the full gate", (t) => {
+  const ws = workspace(t, { codes: {}, withDoctor: false });
+  ws.run();
+  ws.run();
+  assert.equal(ws.ran().length, 2);
+});
+
+test("two checkout roots do not share a fingerprint", (t) => {
+  const a = gitWorkspace(t);
+  const b = gitWorkspace(t);
+  // Same temp folder, same content, same commit shape: only the root path differs.
+  const shared = { TMPDIR: a.tmpDir, TEMP: a.tmpDir, TMP: a.tmpDir };
+  const runIn = (ws) =>
+    spawnSync("bash", [HOOK], {
+      input: JSON.stringify({ hook_event_name: "Stop" }),
+      env: { ...process.env, CLAUDE_PROJECT_DIR: ws.repo, CLAUDE_PLUGIN_ROOT: path.join(path.dirname(ws.tmpDir), "plugin"), QC_STOP_EXTRA: "", ...shared },
+      encoding: "utf8",
+    });
+  runIn(a);
+  runIn(b);
+  assert.equal(a.ran().length, 1);
+  assert.equal(b.ran().length, 1);
+  runIn(a);
+  assert.equal(a.ran().length, 1);
+});

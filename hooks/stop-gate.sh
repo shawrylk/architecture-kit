@@ -48,9 +48,55 @@ try {
 } catch { process.exit(0); }
 '
 
+# The fingerprint of the checkout: the HEAD sha, the porcelain status, and the content hash of every
+# changed or untracked file, hashed into one value. One file per checkout root, keyed by a hash of the
+# absolute root path, under the folder that holds the memory of the last refusal. `check` prints
+# `same` when the stored value equals the current one, else `diff:<current>`. `store <value>` writes
+# the value a green run started from. Any error, a git error or a missing file included, prints nothing,
+# so the full gate runs and stores nothing.
+FINGERPRINT_JS='
+const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
+const crypto = require("node:crypto"), cp = require("node:child_process");
+const [mode, root, given] = process.argv.slice(1);
+const sha = (b) => crypto.createHash("sha256").update(b).digest("hex");
+try {
+  const dir = path.join(os.tmpdir(), "qc-stop-gate");
+  const file = path.join(dir, "root-" + sha(path.resolve(root)).slice(0, 32) + ".fingerprint");
+  if (mode === "store") {
+    if (given) { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(file, given); }
+    process.exit(0);
+  }
+  const git = (...a) => cp.execFileSync("git", a, { cwd: root, maxBuffer: 1 << 28, stdio: ["ignore", "pipe", "ignore"] });
+  const head = git("rev-parse", "HEAD").toString().trim();
+  const status = git("status", "--porcelain=v1", "-z", "--untracked-files=all");
+  const parts = status.toString("utf8").split("\0");
+  const h = crypto.createHash("sha256").update(head + "\0").update(status);
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i];
+    if (entry.length < 4) continue;
+    if (/[RC]/.test(entry.slice(0, 2))) i++;
+    const name = entry.slice(3);
+    let digest = "absent";
+    try { digest = sha(fs.readFileSync(path.join(root, name))); } catch {}
+    h.update("\0" + name + "\0" + digest);
+  }
+  const value = h.digest("hex");
+  let stored = "";
+  try { stored = fs.readFileSync(file, "utf8"); } catch {}
+  process.stdout.write(stored === value ? "same" : "diff:" + value);
+} catch {}
+process.exit(0);
+'
+
 ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
 [ -f "$ROOT/qc.config.json" ] || exit 0
 cd "$ROOT" || exit 0
+
+# Nothing changed since the last fully green run: the verdict stands. Any doubt runs the full gate.
+FINGERPRINT=$(node -e "$FINGERPRINT_JS" check "$ROOT" </dev/null 2>/dev/null)
+[ "$FINGERPRINT" = "same" ] && exit 0
+FINGERPRINT="${FINGERPRINT#diff:}"
+[ "$FINGERPRINT" = "same" ] && FINGERPRINT=""
 
 # A fixed path in the system temp directory collides when two projects run at once.
 LOGS=$(mktemp -d) || exit 0
@@ -164,4 +210,6 @@ if [ -n "$DRIFT" ]; then
   echo "This is drift in the kit setup, not in your code: qc doctor or hook-drift. Fix what it names." >&2
   exit 2
 fi
+# Only a fully green run, with no failure and no drift, stores the fingerprint it started from.
+node -e "$FINGERPRINT_JS" store "$ROOT" "$FINGERPRINT" </dev/null 2>/dev/null
 exit 0
