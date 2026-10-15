@@ -355,3 +355,35 @@ test("a failing typecheck with no error line does not retry, and a passing one r
   assert.equal(green.run().status, 0);
   assert.equal(green.count(), 1);
 });
+
+test("a root typecheck script replaces tsc -b, keeps the TS2307 retry, and the lint call carries a cache", (t) => {
+  const ws = workspace(t, { codes: {}, withDoctor: false });
+  const base = path.dirname(ws.tmpDir);
+  const repo = path.join(base, "repo");
+  mkdirSync(path.join(repo, "node_modules", ".bin"), { recursive: true });
+  writeFileSync(path.join(repo, "node_modules", ".bin", "eslint"), "");
+  writeFileSync(path.join(repo, "package.json"), JSON.stringify({ scripts: { typecheck: "tsgo" } }));
+  writeFileSync(path.join(repo, "pnpm-lock.yaml"), "");
+  const stubDir = path.join(base, "stub");
+  mkdirSync(stubDir, { recursive: true });
+  const calls = path.join(stubDir, "calls");
+  const counter = path.join(stubDir, "count");
+  writeFileSync(
+    path.join(stubDir, "pnpm"),
+    [
+      "#!/usr/bin/env bash",
+      `echo "pnpm $*" >> "${calls}"`,
+      `n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "${counter}"`,
+      `if [ $n -eq 1 ]; then printf '%s' "${TS2307.trim()}"; exit 2; fi`,
+      "exit 0",
+    ].join("\n") + "\n",
+    { mode: 0o755 },
+  );
+  writeFileSync(path.join(stubDir, "npx"), ["#!/usr/bin/env bash", `echo "npx $*" >> "${calls}"`, "exit 0"].join("\n") + "\n", { mode: 0o755 });
+  const result = ws.run({}, { PATH: `${stubDir}${path.delimiter}${process.env.PATH}` });
+  assert.equal(result.status, 0, result.stderr);
+  const lines = readFileSync(calls, "utf8").trim().split("\n");
+  assert.deepEqual(lines.slice(0, 2), ["pnpm run -s typecheck", "pnpm run -s typecheck"]);
+  assert.ok(!lines.some((l) => l.startsWith("npx tsc")));
+  assert.ok(lines.includes("npx eslint . --max-warnings 0 --cache --cache-location node_modules/.cache/eslint-stop-gate"));
+});

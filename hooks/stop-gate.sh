@@ -70,15 +70,27 @@ FAIL=""
 FULL=""
 DRIFT=""
 
-if [ -f "$ROOT/node_modules/.bin/tsc" ]; then
+# A root `typecheck` script wins: a repository may typecheck with a faster compiler than `tsc -b`.
+# `tsc -b` stays the fallback. The package manager follows the lockfile.
+TYPECHECK=""
+if [ -f "$ROOT/package.json" ] && node -e 'try{process.exit(typeof JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).scripts?.typecheck==="string"?0:1)}catch{process.exit(1)}' "$ROOT/package.json" 2>/dev/null; then
+  if [ -f "$ROOT/pnpm-lock.yaml" ]; then TYPECHECK="pnpm run -s typecheck"
+  elif [ -f "$ROOT/yarn.lock" ]; then TYPECHECK="yarn run -s typecheck"
+  else TYPECHECK="npm run -s typecheck"
+  fi
+fi
+if [ -n "$TYPECHECK" ] || [ -f "$ROOT/node_modules/.bin/tsc" ]; then
   TSC_FAILED=""
-  npx tsc -b --pretty false >"$LOGS/tsc" 2>&1 || TSC_FAILED=1
+  run_typecheck() {
+    if [ -n "$TYPECHECK" ]; then $TYPECHECK; else npx tsc -b --pretty false; fi
+  }
+  run_typecheck >"$LOGS/tsc" 2>&1 || TSC_FAILED=1
   # A concurrent `pnpm install` makes a module vanish for a moment, which tsc reports as TS2307.
   # When that is the only error, run it once more and judge the second run.
   # The filter reads the whole log: an early exit would SIGPIPE the upstream grep, and pipefail reads that as no match.
   if [ -n "$TSC_FAILED" ] && grep -q 'error TS' "$LOGS/tsc" && ! grep 'error TS' "$LOGS/tsc" | grep -v 'error TS2307' >/dev/null; then
     TSC_FAILED=""
-    npx tsc -b --pretty false >"$LOGS/tsc" 2>&1 || TSC_FAILED=1
+    run_typecheck >"$LOGS/tsc" 2>&1 || TSC_FAILED=1
   fi
   if [ -n "$TSC_FAILED" ]; then
     FAIL+="typecheck failed:${NL}$(tail -20 "$LOGS/tsc")${NL}"
@@ -86,7 +98,7 @@ if [ -f "$ROOT/node_modules/.bin/tsc" ]; then
   fi
 fi
 if [ -f "$ROOT/node_modules/.bin/eslint" ]; then
-  npx eslint . --max-warnings 0 >"$LOGS/lint" 2>&1 || {
+  npx eslint . --max-warnings 0 --cache --cache-location node_modules/.cache/eslint-stop-gate >"$LOGS/lint" 2>&1 || {
     FAIL+="lint failed:${NL}$(tail -20 "$LOGS/lint")${NL}"
     FULL+="lint failed:${NL}$(cat "$LOGS/lint")${NL}"
   }
