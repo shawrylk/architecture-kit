@@ -44,13 +44,17 @@ the report and continue.
 
 ## Launch a run
 
-Run this in the background from the repository root. The form is for PowerShell:
+Run this in the background from the main checkout. The form is for PowerShell:
 
 ```powershell
-pnpm exec qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 *> <wrapper.log>; "exit $LASTEXITCODE"
+npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 *> <wrapper.log>; "exit $LASTEXITCODE"
 ```
 
-- In a POSIX shell, replace `*> <wrapper.log>` with `> <wrapper.log> 2>&1`.
+- In a POSIX shell, use this form:
+
+  ```bash
+  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 > <wrapper.log> 2>&1; echo "exit $?"
+  ```
 - Never call `codex exec` directly. Each run of the runner is a fresh `codex exec` in the worktree, with full access. Its prompt is the brief plus a note that points at the progress file.
 - Start Codex only inside a worktree from `qc worktree add`. Never start it in the main checkout, the scratchpad, or the home folder. A run outside a repository can make a code indexer read the whole home folder.
 - Use `--max-runs` from 10 to 20. Each run continues from the progress file.
@@ -104,4 +108,4 @@ pnpm exec qc codex-implement --brief <brief.md> --worktree <absolute worktree pa
 3. Never use `--admin` or a force-push.
 4. Confirm that the pull request shows `MERGED` and that its head is in the base. After a squash, confirm that the base holds the change.
 5. Close each issue that the pull request names with `Refs`.
-6. Remove the worktree with `pnpm exec qc worktree remove <name>` from the main checkout.
+6. Remove the worktree with `npx qc worktree remove <name>` from the main checkout.
