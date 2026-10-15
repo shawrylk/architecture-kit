@@ -119,7 +119,7 @@ export default preset({
 
 Install the plugin per [Install](#install) above, if you have not already.
 
-A fast per-file pass runs after every edit. A full pass blocks a red turn. If the next stop shows the
+A fast per-file pass runs after every edit. A full pass blocks a red turn, and a stop on a checkout unchanged since the last green pass skips it. If the next stop shows the
 same failure, the gate ends the turn with a note that names it. A changed failure blocks again. Add
 your own step to that full pass with `QC_STOP_EXTRA` in `.claude/settings.json`:
 
@@ -511,7 +511,7 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Product decisions | the same | an implementer dispatch with no `Brief: <path>` line, or one whose file is missing or unreadable, and a brief whose `## Product decisions` heading is absent or has no text under it. Ask the user in one question, then write the rulings, or the word `none`. Key `productDecisions` |
 | Round size | the same | nothing: it warns on an implementer brief with more numbered findings (lines that start `1. `) than `roundFindings`, or more distinct file paths than `roundFiles`. Split the round in parallel on disjoint paths, with sub-branches in separate worktrees. `0` turns a limit off |
 | Cost record | `SubagentStop`, `cost-stop.mjs` | nothing: it appends a `cost` record with the agent's tokens by kind, its tool calls, its role, and the branch and head of its dispatch. A transcript that does not read records nothing. `qc ledger --cost [branch]` totals them per branch and per role |
-| Typecheck retry | `Stop`, `hooks/stop-gate.sh` | nothing: the gate runs the root `typecheck` script when `package.json` has one, else `tsc -b --pretty false`, and runs ESLint with a cache in `node_modules/.cache/eslint-stop-gate`. When the typecheck fails and every `error TS` line is `TS2307`, the gate runs it once more and judges the second run, because a concurrent `pnpm install` causes that error |
+| Typecheck retry | `Stop`, `hooks/stop-gate.sh` | nothing: the gate exits at once when the checkout matches the fingerprint stored after the last fully green run (the `HEAD` sha, the status, and the content of every changed or untracked file, kept per checkout root in the temp folder; any difference or error runs the full gate). Otherwise the gate runs the root `typecheck` script when `package.json` has one, else `tsc -b --pretty false`, and runs ESLint with a cache in `node_modules/.cache/eslint-stop-gate`. When the typecheck fails and every `error TS` line is `TS2307`, the gate runs it once more and judges the second run, because a concurrent `pnpm install` causes that error |
 
 The `swarm.review` keys that these rows name:
 
