@@ -10,7 +10,7 @@ beside the check that enforces it — and every check ships a case that must fai
 
 | | Install | Holds |
 |---|---|---|
-| Plugin `architecture` | `claude plugin install` | agent hooks, 4 subagent types, 4 skills, 3 slash commands |
+| Plugin `architecture` | `claude plugin install` | agent hooks, 4 subagent types, 5 skills, 3 slash commands |
 | Package `architecture-harness` | `pnpm add -D` | 11 gates, 10 lint rules, the `qc` CLI, doc templates |
 
 The plugin's hooks call the package's CLI. Either half works alone: the package is an ordinary dev
@@ -348,7 +348,9 @@ A limit over 1 fits a repository whose work orders own disjoint paths. Each impl
 its own worktree.
 
 A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
-names the workflow, the four types, each role's models for the session's runtime, and the one-implementer rule, and that an implementer may run on Codex through `qc codex-implement`. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule. With `QC_ROLE=implementer` in the environment, the note is the worker note instead, as the next section says.
+names the workflow, the four types, each role's models for the session's runtime, and the one-implementer rule, and makes Codex the first choice through `qc codex-implement`. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule. With `QC_ROLE=implementer` in the environment, the note is the worker note instead, as the next section says.
+
+Load `architecture:codex` before the first implementer dispatch; the skill covers the brief, the runner, the results, CI, the review, and the merge.
 
 | Key | Default | Meaning |
 |---|---|---|

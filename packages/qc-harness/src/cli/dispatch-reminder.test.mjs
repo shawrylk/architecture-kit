@@ -265,9 +265,11 @@ test("the models line names each role's models for the runtime, and how to dispa
   assert.match(modelsLine({ models: {}, runtime: null }), /unknown runtime \(set QC_RUNTIME to claude or codex\): sdd-planner the session's model/);
 });
 
-test("the controller note says an implementer may run on Codex, and to fall back to a Claude sonnet on exit 2", () => {
+test("the controller note makes Codex the first choice, names its skill, and falls back to Claude sonnet on exit 2", () => {
   for (const phrase of [
+    /Implementer work runs on Codex first/,
     /qc codex-implement --brief <file> --worktree <path> --progress <file>/,
+    /load the `architecture:codex` skill before the first dispatch/,
     /exit 2 \(a Codex limit\)/,
     /architecture:sdd-implementer \(sonnet\)/,
     /same brief/,
