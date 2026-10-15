@@ -8,9 +8,10 @@ description: How a Claude controller runs Codex implementers through `qc codex-i
 ## Roles
 
 - Claude orchestrates: it writes briefs, dispatches, watches CI, runs reviews, merges, and closes issues.
-- Codex writes every change to a repository file. A one-line fix, a CI fix, a review fix, and a merge with conflicts are each a Codex brief.
-- The main session edits only the controller paths that the guard allows, such as `*.md` and `docs/**`. A clean `git merge` and a `git push` by hand are fine.
-- Reviews stay on Claude: one `architecture:sdd-branch-reviewer` (opus) for each pull request, and `architecture:sdd-reviewer` for a small increment.
+- Codex writes each change to code. A CI fix, a review fix, and a merge with conflicts are each a Codex brief.
+- The one exception is a fix inside the `swarm.direct` limits, where that lane is on. The main session makes that edit.
+- The main session also edits the controller paths that the guard allows, such as `*.md` and `docs/**`. A clean `git merge` and a `git push` by hand are fine.
+- Reviews stay on Claude, with `architecture:sdd-branch-reviewer` (opus). The merge guard counts only a branch review by default.
 - On exit 2, a Codex limit, send the same brief to an `architecture:sdd-implementer` (sonnet).
 
 ## Write the brief
@@ -24,7 +25,7 @@ Write the brief as a markdown file in your scratchpad. It holds these parts:
 | `## Product decisions` | The user's answers. Codex never asks the user. |
 | Task | The exact change, the files, and the cause of a failure |
 | Constraints | What Codex must leave alone, such as a shared database or another session's worktree |
-| Commit | The message shape, the issue reference, and "no Claude co-author trailer" |
+| Commit | The message shape and the issue reference |
 | Exit criteria | Typecheck, the named test files, the push, and the done marker |
 
 The lean-mode block:
@@ -36,22 +37,24 @@ Git hooks run as part of commit and push. Never bypass them. Never stop to ask: 
 the report and continue.
 ```
 
-- End the exit criteria with: "append `ALL TASKS DONE` as the last line of the progress file". The runner matches that exact text. Any other marker, such as `DONE`, makes it repeat runs until `--max-runs`.
+- End the exit criteria with: "append `ALL TASKS DONE` to the progress file". The runner looks for that exact text anywhere in the file. Any other marker, such as `DONE`, makes it repeat runs until `--max-runs`.
+- Ask for a Claude co-author trailer only when `commitMessage.attribution` in `qc.config.json` is on. With it off, the brief says "no Claude co-author trailer".
 - Never tell Codex to skip a hook. A brief that says "no local checks" makes Codex treat the pre-push hook as out of scope, and it loops while it asks for permission to push.
-- To change the scope during a run, edit the brief file. The next run reads it again. A message to a running implementer has no effect.
+- The runner reads the brief once, at its start. To change the scope, stop the runner, edit the brief, and start it again with the same progress file.
 
 ## Launch a run
 
-Run this in the background, from the repository root:
+Run this in the background from the repository root. The form is for PowerShell:
 
 ```powershell
 pnpm exec qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 *> <wrapper.log>; "exit $LASTEXITCODE"
 ```
 
-- Never call `codex exec` directly. The runner sets the model, the sandbox, and the resume.
+- In a POSIX shell, replace `*> <wrapper.log>` with `> <wrapper.log> 2>&1`.
+- Never call `codex exec` directly. Each run of the runner is a fresh `codex exec` in the worktree, with full access. Its prompt is the brief plus a note that points at the progress file.
 - Start Codex only inside a worktree from `qc worktree add`. Never start it in the main checkout, the scratchpad, or the home folder. A run outside a repository can make a code indexer read the whole home folder.
-- Use `--max-runs` from 10 to 20. Each run resumes from the progress file.
-- Run one Codex run at a time. Add a second run only with more than 4 GB of free memory, and never run more than three.
+- Use `--max-runs` from 10 to 20. Each run continues from the progress file.
+- Codex runs count as implementers. Run one at a time, as the swarm rules say. Run more only up to `swarm.dispatch.implementerSlots`, on disjoint paths, and with more than 4 GB of free memory for each extra run.
 
 ## Read the result
 
@@ -78,13 +81,14 @@ pnpm exec qc codex-implement --brief <brief.md> --worktree <absolute worktree pa
 
 - Never poll in a loop of tool calls, and never send "are you done?" messages.
 - If Claude Code stops a background command for low memory, do not start it again. Poll in the foreground with a `timeout` instead.
-- After a review with findings, give the fix round to a fresh implementer with a `NO-RESUME: <reason>` line. Fold a minor finding into the next brief.
+- After a review with findings, give the fix round to a fresh Codex run with a new brief. Fold a minor finding into the next brief.
+- A Claude implementer that replaces a reviewed one gets a `NO-RESUME: <reason>` line in its `Agent` prompt. A Codex run needs no such line.
 
 ## Review
 
 - Review a head only when CI on it is green and it contains the tip of the base branch.
 - Every dispatch carries a `Brief: <path>` line, a `Worktree: <path>` line, and a named model.
-- A pull request gets one branch review. Each fix round gets one review of its increment, with a `Reviewed: <sha>` line that names the last reviewed head.
+- A pull request gets one branch review. Each fix round gets one `architecture:sdd-branch-reviewer` review of its increment, with a `Reviewed: <sha>` line that names the last reviewed head.
 
 ## CI failures
 
@@ -96,8 +100,8 @@ pnpm exec qc codex-implement --brief <brief.md> --worktree <absolute worktree pa
 ## Merge
 
 1. Grep the pull request body for "no merge is authorized". If it matches, stop.
-2. Merge with `gh pr merge <n> --merge --match-head-commit <the 40-character sha>`.
-3. Never use `--admin`, a squash, a rebase, or a force-push.
-4. Confirm that the pull request shows `MERGED` and that its head is an ancestor of the base.
+2. Merge with `gh pr merge <n> --merge --match-head-commit <the 40-character sha>`. Where the repository turns off merge commits, use the method it allows, still with `--match-head-commit`.
+3. Never use `--admin` or a force-push.
+4. Confirm that the pull request shows `MERGED` and that its head is in the base. After a squash, confirm that the base holds the change.
 5. Close each issue that the pull request names with `Refs`.
-6. Remove the worktree with `npx qc worktree remove <name>` from the main checkout.
+6. Remove the worktree with `pnpm exec qc worktree remove <name>` from the main checkout.
