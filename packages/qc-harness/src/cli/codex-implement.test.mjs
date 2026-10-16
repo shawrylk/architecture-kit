@@ -42,14 +42,65 @@ test("a run passes exec, the sandbox, the worktree and one prompt, with QC_ROLE=
   const [call] = seen;
   assert.equal(call.command, "codex");
   assert.deepEqual(call.args.slice(0, 5), ["exec", "-s", "danger-full-access", "-C", worktree]);
-  assert.equal(call.args.length, 6);
+  const prompt = call.args.at(-1);
   assert.equal(call.env.QC_ROLE, "implementer");
-  assert.ok(call.args[5].startsWith(readFileSync(brief, "utf8")));
-  assert.match(call.args[5], /git log --oneline/);
-  assert.match(call.args[5], /git status --short/);
-  assert.match(call.args[5], /first unfinished task/);
-  assert.ok(call.args[5].includes(progress));
+  assert.ok(prompt.startsWith(readFileSync(brief, "utf8")));
+  assert.match(prompt, /git log --oneline/);
+  assert.match(prompt, /git status --short/);
+  assert.match(prompt, /first unfinished task/);
+  assert.ok(prompt.includes(progress));
   assert.equal(call.log, `${progress}.log`);
+});
+
+test("the brief is read again before each run, so an edit reaches the next session", async (t) => {
+  const { argv, brief, progress } = setup(t);
+  const prompts = [];
+  const run = async (call) => {
+    prompts.push(call.args.at(-1));
+    if (prompts.length === 1) writeFileSync(brief, "# Brief\n\nDo task one.\nDecision: use the new column name.\n");
+    else appendFileSync(progress, `${DONE_MARKER}\n`);
+    return { status: 0, tail: "ok" };
+  };
+  assert.equal(await runCodexImplement(argv, { run, say: quiet }), 0);
+  assert.equal(prompts.length, 2);
+  assert.ok(!prompts[0].includes("new column name"));
+  assert.ok(prompts[1].includes("Decision: use the new column name."));
+});
+
+test("every run prompt carries the lean rules after the brief", async (t) => {
+  const { argv, brief, progress } = setup(t);
+  const seen = [];
+  const run = async (call) => {
+    seen.push(call.args.at(-1));
+    if (seen.length === 2) appendFileSync(progress, `${DONE_MARKER}\n`);
+    return { status: 0, tail: "ok" };
+  };
+  assert.equal(await runCodexImplement(argv, { run, say: quiet }), 0);
+  assert.equal(seen.length, 2);
+  for (const prompt of seen) {
+    assert.ok(prompt.startsWith(readFileSync(brief, "utf8")));
+    assert.match(prompt, /at most 40 lines/);
+    assert.match(prompt, /re-verify/);
+    assert.match(prompt, /line ranges/);
+    assert.match(prompt, /helper agents/);
+    assert.match(prompt, /one item per session/i);
+    assert.match(prompt, /under 15 lines/);
+    assert.match(prompt, /never drop a security, tenant, data, or correctness check/i);
+  }
+});
+
+test("a run turns off the Codex helper agents with -c, before the prompt", async (t) => {
+  const { argv, progress } = setup(t);
+  let args;
+  const run = async (call) => {
+    args = call.args;
+    appendFileSync(progress, `${DONE_MARKER}\n`);
+    return { status: 0, tail: "ok" };
+  };
+  assert.equal(await runCodexImplement(argv, { run, say: quiet }), 0);
+  const index = args.indexOf("features.multi_agent=false");
+  assert.ok(index > 0 && args[index - 1] === "-c");
+  assert.ok(index < args.length - 1, "the prompt stays the last argument");
 });
 
 test("a fresh session starts after a stop with the progress file not done", async (t) => {
@@ -146,7 +197,7 @@ test("the default runner spawns without a shell, closes stdin, and appends outpu
   assert.equal(line.role, "implementer");
   assert.equal(line.input, "");
   assert.deepEqual(line.args.slice(0, 3), ["exec", "-s", "danger-full-access"]);
-  assert.ok(line.args[5].startsWith(readFileSync(brief, "utf8")));
+  assert.ok(line.args.at(-1).startsWith(readFileSync(brief, "utf8")));
 
   writeFileSync(progress, "");
   process.env.FAKE_MODE = "limit";
