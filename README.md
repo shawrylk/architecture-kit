@@ -401,10 +401,14 @@ controller, and the controller workflow does not change for it.
 npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
 ```
 
-The runner runs `codex exec -s danger-full-access -C <worktree> "<prompt>"` with `QC_ROLE=implementer` in
-the environment and stdin closed, and appends the output to the log (`<progress>.log` by default). The
-prompt is the brief and a note to read `git log --oneline`, `git status --short`, and the progress file,
-and to continue from the first unfinished task. It spawns `codex` with no shell, so the binary must be
+The runner runs `codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false "<prompt>"`
+with `QC_ROLE=implementer` in the environment and stdin closed, and appends the output to the log
+(`<progress>.log` by default). It reads the brief file again before each run, so an edit reaches the
+next session. The prompt is the brief, a note to read `git log --oneline`, `git status --short`, and the
+progress file and to continue from the first unfinished task, and the lean rules: a progress file of at
+most 40 lines, no re-verifying, only the needed line ranges, no helper agents, no broad audit or full
+gate, one item per session, and a report under 15 lines. A lean rule never drops a security, tenant,
+data, or correctness check that the brief asks for. It spawns `codex` with no shell, so the binary must be
 a real executable on `PATH`. After each run it restarts a fresh session until the progress file holds
 `ALL TASKS DONE`. It never calls Claude.
 

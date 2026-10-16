@@ -21,26 +21,26 @@ Write the brief as a markdown file in your scratchpad. It holds these parts:
 | Part | Content |
 |---|---|
 | Header | The worktree path, the branch, the issue, and the report file |
-| `## Lean mode` | The block below, word for word |
 | `## Product decisions` | The user's answers. Codex never asks the user. |
 | Task | The exact change, the files, and the cause of a failure |
-| Constraints | What Codex must leave alone, such as a shared database or another session's worktree |
+| Constraints | What Codex must leave alone, such as a shared database or another session's worktree. Codex never bypasses a git hook and never stops to ask: it writes a question in the report and continues. |
 | Commit | The message shape and the issue reference |
 | Exit criteria | Typecheck, the named test files, the push, and the done marker |
 
-The lean-mode block:
+## Lean defaults
 
-```text
-Work inline. Start no helper agents. Run no task reviews. Run only the tests of the files you change,
-plus typecheck and lint. Commit each task when it passes. CI runs the full suite and the e2e tests.
-Git hooks run as part of commit and push. Never bypass them. Never stop to ask: write a question in
-the report and continue.
-```
+The runner adds these to the prompt of every run, so a brief carries no lean section:
+
+- At session start, Codex rewrites the progress file to at most 40 lines: the pushed head, one line for each done item, the first unfinished item, and the open questions.
+- It never re-verifies a finished item, never repeats a failed probe, and reads only the line ranges the item needs.
+- It starts no helper agents, and the runner turns off the Codex `multi_agent` and `multi_agent_v2` features with `-c`. It runs no broad audit, Playwright, or full gate: the touched tests, and the local check once before the push.
+- It does one item for each session, and keeps the report under 15 lines.
+- A lean rule never drops a security, tenant, data, or correctness check that the brief asks for.
 
 - End the exit criteria with: "append `ALL TASKS DONE` to the progress file". The runner looks for that exact text anywhere in the file. Any other marker, such as `DONE`, makes it repeat runs until `--max-runs`.
 - Ask for a Claude co-author trailer only when `commitMessage.attribution` in `qc.config.json` is on. With it off, the brief says "no Claude co-author trailer".
 - Never tell Codex to skip a hook. A brief that says "no local checks" makes Codex treat the pre-push hook as out of scope, and it loops while it asks for permission to push.
-- The runner reads the brief once, at its start. To change the scope, stop the runner, edit the brief, and start it again with the same progress file.
+- The runner reads the brief again before each run. Edit the brief file to change the scope or record a decision. The next session holds the edit, and the runner needs no restart.
 
 ## Launch a run
 

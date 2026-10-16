@@ -40,12 +40,28 @@ export function parseArgs(argv) {
 
 const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").includes(DONE_MARKER);
 
+const LEAN_RULES = [
+  "Lean rules for every session. They cut repeated reading and helper agents. Never drop a security, tenant, data, or correctness check that this brief asks for.",
+  "- At session start, rewrite the progress file to at most 40 lines: the pushed head, the done items one line each, the first unfinished item, and the open questions. Delete the history.",
+  "- Never re-verify a finished item, and never repeat a probe that already failed.",
+  "- Read only the line ranges that the current item needs.",
+  "- Start no helper agents. Run no broad audit, no Playwright, and no full gate. Run the tests of the touched files, and the local check once before the push.",
+  "- One item per session: code, test, commit, push, update the progress file, stop.",
+  "- Keep the report under 15 lines.",
+].join("\n");
+
 function continuationNote(progress) {
   return (
     `\n\n---\nThis may be a fresh session that continues earlier work. Read \`git log --oneline\` and \`git status --short\` ` +
-    `in the worktree, and the progress file ${progress}. Continue from the first unfinished task.`
+    `in the worktree, and the progress file ${progress}. Continue from the first unfinished task.\n\n${LEAN_RULES}`
   );
 }
+
+/** The Codex features that start helper agents. Each run turns them off. */
+const HELPER_AGENT_FEATURES = ["features.multi_agent=false", "features.multi_agent_v2=false"];
+
+/** The brief is read again for each run, so an edit reaches the next session. */
+const promptFor = (settings) => readFileSync(settings.brief, "utf8") + continuationNote(settings.progress);
 
 /** Runs one codex process with no shell and a closed stdin, appends its output to the log, and resolves with the exit status and the output tail. */
 function spawnRun({ command, args, env, log }, codexCommand) {
@@ -80,10 +96,16 @@ export async function runCodexImplement(argv, { run, codexCommand = ["codex"], e
     return 1;
   }
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
-  const prompt = readFileSync(settings.brief, "utf8") + continuationNote(settings.progress);
-  const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, prompt];
   for (let count = 1; count <= settings.maxRuns; count += 1) {
     if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
+    let prompt;
+    try {
+      prompt = promptFor(settings);
+    } catch (error) {
+      return finish(say, `cannot read the brief: ${error.message}`, 1);
+    }
+    const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
+    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, prompt];
     let result;
     try {
       result = await execute({ command: codexCommand[0], args, env: { ...env, QC_ROLE: "implementer" }, log: settings.log });
