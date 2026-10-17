@@ -71,11 +71,11 @@ export async function browserSession(chromium, target, { timeout = 15000, signIn
     try {
       if (method === "profile") {
         const profile = copyChromeProfile(root, chromeProfile);
-        context = await chromium.launchPersistentContext(profile.directory, { channel: "chrome", headless: false, args: [`--profile-directory=${profile.profileName}`] });
+        context = await chromium.launchPersistentContext(profile.directory, { channel: "chrome", headless: false, deviceScaleFactor: 1, reducedMotion: "reduce", args: [`--profile-directory=${profile.profileName}`] });
       } else {
         if (method === "state" && !existsSync(file)) return null;
         browser = await chromium.launch({ channel: "chrome", headless: method !== "headed" });
-        context = await browser.newContext(method === "state" ? { storageState: file } : {});
+        context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", ...(method === "state" ? { storageState: file } : {}) });
       }
       if (method === "headed") say("Sign in once in the Chrome window. The tool waits for the signed-in page.");
       const session = await reachesSignedIn(context, target, method === "headed" ? signInTimeout : timeout);
@@ -116,7 +116,7 @@ export function seedFields(auth) {
 export async function seedSession(chromium, target, { timeout = 15000 } = {}) {
   requireLocalhost(target.baseUrl);
   const browser = await chromium.launch({ channel: "chrome", headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce" });
   try {
     await context.route("**/*", async route => {
       try { requireLocalhost(route.request().url()); } catch { await route.abort(); return; }

@@ -7,6 +7,27 @@ import { setTimeout } from "node:timers/promises";
 import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { capturePage } from "./capture.mjs";
+import { findRegions } from "./regions.mjs";
+
+test("different text in the same box produces identical layout images", async () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "qc-screens-layout-"));
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const context = await browser.newContext({ deviceScaleFactor: 1 });
+    let text = "First";
+    await context.route("https://screens.example/**", route => route.fulfill({ contentType: "text/html", body: `<main id="ready"><button style="width:100px;height:40px">${text}</button></main>` }));
+    const page = await context.newPage();
+    const target = { baseUrl: "https://screens.example", auth: { signedIn: "#ready" } };
+    await capturePage({ page }, target, { path: "/", ready: "#ready" }, 200, 100, path.join(directory, "a.png"), 5000);
+    text = "Other text";
+    await capturePage({ page }, target, { path: "/", ready: "#ready" }, 200, 100, path.join(directory, "b.png"), 5000);
+    const images = ["a", "b"].map(name => PNG.sync.read(readFileSync(path.join(directory, `${name}.layout.png`))));
+    assert.deepEqual(findRegions(...images), []);
+  } finally {
+    await browser.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("capture includes a thumbnail whose response follows the ready selector", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "qc-screens-image-"));

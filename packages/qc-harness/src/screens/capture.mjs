@@ -4,6 +4,7 @@ import path from "node:path";
 import { PNG } from "pngjs";
 import { browserSession, seedSession } from "./auth.mjs";
 import { compareImages, gallery, sortReport } from "./compare.mjs";
+import { stableCapture, findRegions, regionCrop, boxPair } from "./regions.mjs";
 
 /** Branch: a typo must never silently skip a requested screen. */
 export function selectScreens(screens, only) {
@@ -43,7 +44,11 @@ function writeJson(file, value) {
 export async function capturePage(session, target, route, width, height, file, timeout) {
   const { page } = session;
   await page.setViewportSize({ width, height });
-  await page.goto(new URL(route.path, target.baseUrl).href, { waitUntil: "domcontentloaded", timeout });
+  const expected = new URL(route.path, target.baseUrl);
+  const response = await page.goto(expected.href, { waitUntil: "domcontentloaded", timeout });
+  if (response && response.status() >= 400) throw new Error(`Capture received HTTP ${response.status()}`);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
   await page.locator(target.auth.signedIn).first().waitFor({ state: "visible", timeout });
   for (const step of route.clicks ?? []) {
     const selector = typeof step === "string" ? step : step.selector;
@@ -57,17 +62,28 @@ export async function capturePage(session, target, route, width, height, file, t
     await control.click({ timeout });
   }
   if (route.ready) await page.locator(route.ready).first().waitFor({ state: "visible", timeout });
-  if (new URL(page.url()).origin !== new URL(target.baseUrl).origin) throw new Error("Capture left the target origin");
+  const actual = new URL(page.url());
+  if (actual.origin !== expected.origin || actual.pathname !== expected.pathname || actual.search !== expected.search) throw new Error("Capture reached a URL other than the mapped screen");
+  if (await page.locator('input[type="password"]:visible, [role="alert"][data-error]:visible').count()) throw new Error("Capture reached a sign-in or error page");
   await page.mouse.move(0, 0);
   await page.waitForLoadState("networkidle", { timeout });
   await page.evaluate(() => document.fonts.ready);
-  await page.screenshot({ path: file, animations: "disabled", caret: "hide", fullPage: false, mask: (route.masks ?? []).map(selector => page.locator(selector)), maskColor: "#808080", timeout });
+  const capture = () => page.screenshot({ animations: "disabled", caret: "hide", fullPage: false, mask: (route.masks ?? []).map(selector => page.locator(selector)), maskColor: "#808080", timeout }).then(buffer => PNG.sync.read(buffer));
+  const full = await stableCapture(capture);
+  writeFileSync(file, PNG.sync.write(full.image));
+  const style = await page.addStyleTag({ content: "*,*::before,*::after{color:transparent!important;text-shadow:none!important;-webkit-text-fill-color:transparent!important}img,canvas,video,svg{visibility:hidden!important}*:has(>img),*:has(>canvas),*:has(>video),*:has(>svg){background:#808080!important}input,textarea{color:transparent!important}" });
+  const layout = await stableCapture(capture);
+  await style.evaluate(element => element.remove());
+  writeFileSync(file.replace(/\.png$/, ".layout.png"), PNG.sync.write(layout.image));
+  const unstable = new PNG({ width, height });
+  for (const mask of [full.unstable, layout.unstable].filter(Boolean)) for (let i = 3; i < mask.data.length; i += 4) if (mask.data[i]) unstable.data.set([255, 0, 0, 255], i - 3);
+  writeFileSync(file.replace(/\.png$/, ".unstable.png"), PNG.sync.write(unstable));
 }
 
 /** Pipeline: authenticate, capture each viewport, compare, and publish the gallery. */
 export async function captureScreens(map, options, { chromium, say = console.error } = {}) {
   const { targets, out, only, changed, timeout = 15000, signInTimeout = 180000, height = 900 } = options;
-  if (targets.length !== 2 || targets[0] === targets[1] || targets.some(name => !map.targets[name])) throw new Error("Choose two distinct targets from the map");
+  if (targets.length !== 2 || targets.some(name => !map.targets[name])) throw new Error("Choose two targets from the map");
   if (changed && !targets.includes(changed)) throw new Error("--changed must name one of the two targets");
   const screens = selectScreens(map.screens, only);
   for (const screen of screens) for (const name of targets) if (!screen.targets[name]) throw new Error(`Screen ${screen.name} lacks target ${name}`);
@@ -82,7 +98,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
       if (changed && changed !== name) {
         for (const screen of screens) for (const width of map.widths) {
           const relative = `${screen.name}/${name}@${width}.png`;
-          if (!existsSync(path.join(out, relative)) || cache[relative] !== captureKey(target, screen.targets[name], width, height)) throw new Error(`Cached capture missing or stale: ${relative}; run both targets first`);
+          if (![relative, relative.replace(/\.png$/, ".layout.png"), relative.replace(/\.png$/, ".unstable.png")].every(file => existsSync(path.join(out, file))) || cache[relative] !== captureKey(target, screen.targets[name], width, height)) throw new Error(`Cached capture missing or stale: ${relative}; run both targets first`);
         }
         continue;
       }
@@ -109,9 +125,20 @@ export async function captureScreens(map, options, { chromium, say = console.err
     for (const screen of screens) for (const width of map.widths) {
       const images = targets.map(name => PNG.sync.read(readFileSync(path.join(out, screen.name, `${name}@${width}.png`))));
       const { pair, ...diff } = compareImages(...images);
+      const layouts = targets.map(name => PNG.sync.read(readFileSync(path.join(out, screen.name, `${name}@${width}.layout.png`))));
+      const unstable = new PNG({ width: layouts[0].width, height: layouts[0].height });
+      for (const name of targets) {
+        const mask = PNG.sync.read(readFileSync(path.join(out, screen.name, `${name}@${width}.unstable.png`)));
+        for (let i = 3; i < mask.data.length; i += 4) if (mask.data[i]) unstable.data.set([255, 0, 0, 255], i - 3);
+      }
+      const regions = findRegions(...layouts, { unstable: [unstable] });
+      for (const region of regions) {
+        region.crop = `${screen.name}/region-${region.id}@${width}.png`;
+        writeFileSync(path.join(out, region.crop), PNG.sync.write(regionCrop(...images, region.box)));
+      }
       const relative = `${screen.name}/pair@${width}.png`;
-      writeFileSync(path.join(out, relative), PNG.sync.write(pair));
-      fresh.push({ screen: screen.name, width, targets, ...diff, pair: relative });
+      writeFileSync(path.join(out, relative), PNG.sync.write(boxPair(pair, regions)));
+      fresh.push({ screen: screen.name, width, targets, ...diff, regions, pair: relative });
     }
     const reportFile = path.join(out, "report.json");
     const report = only ? mergeReport(readJson(reportFile, []), fresh) : sortReport(fresh);
