@@ -427,6 +427,26 @@ them. When every task is committed, it appends `ALL TASKS DONE` to the progress 
 context gets large writes notes and ends its turn, and the runner starts a fresh one. Without
 `QC_ROLE=implementer`, every hook behaves as before.
 
+#### Wait on CI with bounds
+
+`npx qc ci-wait <pr>` waits on the checks of a pull request and returns on the first thing worth
+acting on. Its exit code says which:
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every check is done, with no failure |
+| 1 | A check failed or was cancelled |
+| 3 | A new head was pushed |
+| 4 | A check stayed queued for `--queued` minutes (25 by default), as on a runner that is offline |
+| 5 | `--max` minutes passed (50 by default) |
+
+It reads the head after its first wait, since GitHub shows a push late. Run it as one background
+command for each head.
+
+A `TaskStop` frees the implementer slot of the agent it stopped, since that agent sends no
+`SubagentStop`. A session `startup` or `resume` frees every slot of the session. A subagent may not
+touch a slot folder: the slot guard refuses the command or the edit.
+
 ### 10. Choose optional tools for code exploration
 
 GitNexus and CocoIndex are optional tools. You can use `Read`, `Grep`, or shell searches without either tool.

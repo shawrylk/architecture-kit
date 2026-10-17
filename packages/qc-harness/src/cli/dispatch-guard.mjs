@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { dispatchNote, dispatchRefusal, dispatchSettingsAt, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
-import { claimSlot, reclaimSlot, releaseSlot, slotDirOf } from "./dispatch-slot.mjs";
+import { claimSlot, clearSlots, reclaimSlot, releaseHolder, releaseSlot, slotDirOf } from "./dispatch-slot.mjs";
 import { judgeTask, recordDispatch } from "./task-gate.mjs";
 
 const output = (fields) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } });
@@ -27,9 +27,32 @@ function onSubagent(call, dir, now) {
   }
 }
 
+const FRESH_STARTS = new Set(["startup", "resume"]);
+
+/** Frees the slot of the agent a TaskStop ended, since that agent sends no SubagentStop. */
+function onTaskStop(call, dir) {
+  const id = idOf(call.tool_input?.task_id) ?? idOf(call.tool_input?.shell_id);
+  if (!id || !existsSync(dir)) return null;
+  try {
+    if (!releaseHolder(dir, id)) return null;
+  } catch {
+    return null;
+  }
+  return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: `Dispatch guard: freed the implementer slot that ${id} held.` } };
+}
+
 /** The verdict on one hook event. `reads` replaces the task gate's CI and base reads, for a test. @returns the hook output, or null to let the call run with no message. */
 export function decide(call, tmp = os.tmpdir(), now = Date.now(), reads = {}) {
   const dir = slotDirOf(call.session_id ?? "session", tmp);
+  if (call.hook_event_name === "SessionStart") {
+    try {
+      if (FRESH_STARTS.has(call.source) && existsSync(dir)) clearSlots(dir);
+    } catch {
+      // A busy temp folder costs only a slot that still expires.
+    }
+    return null;
+  }
+  if (call.hook_event_name === "PostToolUse" && call.tool_name === "TaskStop") return onTaskStop(call, dir);
   if (call.hook_event_name === "SubagentStart" || call.hook_event_name === "SubagentStop") {
     onSubagent(call, dir, now);
     return null;

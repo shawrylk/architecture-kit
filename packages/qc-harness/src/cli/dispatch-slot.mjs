@@ -183,3 +183,15 @@ export function releaseSlot(dir, agentType, agentId = "", now = Date.now()) {
   if (victim) rmSync(victim.file, { force: true });
   return true;
 }
+
+/** Frees the slot that holds `agentId`, whatever its type. @returns true when a slot held it */
+export function releaseHolder(dir, agentId) {
+  const own = slotsOf(dir).find((slot) => slot.held === `${AGENT}${agentId}`);
+  if (own) rmSync(own.file, { force: true });
+  return own !== undefined;
+}
+
+/** Frees every slot of a session: a new Claude Code process holds no subagent of the last one. */
+export function clearSlots(dir) {
+  for (const slot of slotsOf(dir)) rmSync(slot.file, { force: true });
+}
