@@ -39,7 +39,8 @@ function writeJson(file, value) {
   renameSync(`${file}.tmp`, file);
 }
 
-async function capturePage(session, target, route, width, height, file, timeout) {
+/** Pipeline: wait for page resources before recording the viewport. */
+export async function capturePage(session, target, route, width, height, file, timeout) {
   const { page } = session;
   await page.setViewportSize({ width, height });
   await page.goto(new URL(route.path, target.baseUrl).href, { waitUntil: "domcontentloaded", timeout });
@@ -57,6 +58,8 @@ async function capturePage(session, target, route, width, height, file, timeout)
   }
   if (route.ready) await page.locator(route.ready).first().waitFor({ state: "visible", timeout });
   if (new URL(page.url()).origin !== new URL(target.baseUrl).origin) throw new Error("Capture left the target origin");
+  await page.mouse.move(0, 0);
+  await page.waitForLoadState("networkidle", { timeout });
   await page.evaluate(() => document.fonts.ready);
   await page.screenshot({ path: file, animations: "disabled", caret: "hide", fullPage: false, mask: (route.masks ?? []).map(selector => page.locator(selector)), maskColor: "#808080", timeout });
 }
