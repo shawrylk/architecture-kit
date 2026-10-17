@@ -20,6 +20,7 @@ test("a duplicate prefix fails and names both files", () => {
   assert.equal(problems[0].path, DIR);
   assert.match(problems[0].detail, /0002_projects\.sql/);
   assert.match(problems[0].detail, /0002_sites\.sql/);
+  assert.match(problems[0].detail, /qc migrations renumber --onto <base>/);
 });
 
 test("a gap fails and names the missing numbers", () => {

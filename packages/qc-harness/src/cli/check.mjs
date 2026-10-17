@@ -55,6 +55,7 @@ import { checkDocClaims, parseDocClaims } from "../gates/doc-claims.mjs";
 import { checkContractIdempotency, checkLedgerGrowth } from "../gates/contract-idempotency.mjs";
 import { contractHistory } from "./contract-history.mjs";
 import { contractOperations } from "../gates/contract-operations.mjs";
+import { checkContractKeys } from "../gates/contract-keys.mjs";
 import { checkContractRoutes, declaredTriggerRoutes } from "../gates/contract-routes.mjs";
 import { ratchetInputs } from "./registry-history.mjs";
 import { hookDrift } from "./git-hooks.mjs";
@@ -503,6 +504,24 @@ async function docClaims(config, lines) {
   return problems;
 }
 
+/** No key of the composed contract ends with a dot or holds no value. */
+async function contractKeys(config, lines) {
+  const { contract } = config;
+  const text = await read(path.join(config.root, contract));
+  if (text === null) return [];
+  let document;
+  try {
+    const { parse } = await import("yaml");
+    document = parse(text);
+  } catch (error) {
+    const rule = error?.code === "ERR_MODULE_NOT_FOUND" ? "contract-reader-unavailable" : "unreadable-contract";
+    return [{ path: contract, rule, detail: error.message }];
+  }
+  const problems = checkContractKeys(document, contract);
+  if (problems.length === 0) lines.push("OK  contract     no key ends with a dot, and every key holds a value");
+  return problems;
+}
+
 /** Every write of the composed contract names its idempotency key, or sits in the ledger. */
 async function contractIdempotency(config, lines) {
   const { contract } = config;
@@ -909,6 +928,10 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
 
   if (enabled(config.gates, "contract-routes")) {
     problems.push(...(await contractRouteAgreement(config, routes, lines)));
+  }
+
+  if (enabled(config.gates, "contract-keys")) {
+    problems.push(...(await contractKeys(config, lines)));
   }
 
   if (enabled(config.gates, "ui-catalog") || enabled(config.gates, "ui-dupes")) {
