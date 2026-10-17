@@ -567,3 +567,48 @@ test("gateVerdict reports the stop and the reason of a CI pass, and gateRefusal 
   assert.match(gateRefusal({ ...input, ci: () => null }) ?? "", /no review/);
   assert.equal(gateRefusal({ ...input, ci: () => "red" }), null);
 });
+
+test("a Fix: ci line passes an unreviewed implementer commit while CI on the head is not green, and records the purpose", (t) => {
+  const ws = workspace(t);
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  const call = dispatch(ws.main, taskPrompt(ws.linked, "Fix: ci"));
+  const red = () => ({ reason: "CI on abc1234: unit ended failure", unknown: null });
+  const passed = judgeTask(call, ws.tmp, { ci: () => null, ciState: red });
+  assert.equal(passed.refusal, null);
+  recordDispatch(passed);
+  assert.equal(readLedger(ws.ledger).at(-1).fix, "ci");
+  const green = () => ({ reason: null, unknown: null });
+  assert.match(judgeTask(call, ws.tmp, { ci: () => null, ciState: green }).refusal ?? "", /`Fix: ci`.*green/);
+  assert.match(refusalOf(ws) ?? "", /Fix: ci/);
+});
+
+test("a Fix: review line passes a fresh implementer after CHANGES_REQUIRED and over an unreviewed fix commit", (t) => {
+  const ws = workspace(t);
+  const moved = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, moved);
+  verdict(ws, moved, "CHANGES_REQUIRED", "branch");
+  implementerStop(ws, commitIn(ws.linked, "c.txt"));
+  assert.notEqual(refusalOf(ws), null);
+  assert.equal(refusalOf(ws, "Fix: review"), null);
+});
+
+test("a Fix: review line is refused when no verdict on the branch asks for changes", (t) => {
+  const ws = workspace(t);
+  assert.match(refusalOf(ws, "Fix: review") ?? "", /Fix: review.*no review/s);
+  verdict(ws, commitIn(ws.linked, "b.txt"), "APPROVED", "branch");
+  assert.match(refusalOf(ws, "Fix: review") ?? "", /Fix: review.*no review/s);
+});
+
+test("a Fix: ci line is refused while CI on the head is unknown", (t) => {
+  const ws = workspace(t);
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  const unknown = () => ({ reason: null, unknown: "gh is not signed in" });
+  assert.match(judgeTask(dispatch(ws.main, taskPrompt(ws.linked, "Fix: ci")), ws.tmp, { ci: () => null, ciState: unknown }).refusal ?? "", /Fix: ci.*not known to be red/s);
+});
+
+test("a branch reviewer dispatch records its scope", (t) => {
+  const ws = workspace(t);
+  const prompt = `Review.\nWorktree: ${ws.linked}\nScope: Photos\n`;
+  const task = judgeTask(dispatch(ws.main, prompt, "architecture:sdd-branch-reviewer"), ws.tmp, { ci: () => null, ciState: () => ({ reason: null, unknown: null }) });
+  assert.equal(task.record?.scope, "photos");
+});

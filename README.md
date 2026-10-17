@@ -448,7 +448,7 @@ With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker n
 controller note: work inline, never use subagent-driven development, helper agents, task reviews, or
 fix-review rounds, and per task write the failing test, run only that test file, run typecheck and
 lint on what you touched, and commit at once. It runs no full local gate and no e2e, since CI runs
-them. When every task is committed, it appends `ALL TASKS DONE` to the progress file. A session whose
+them. When every task is pushed, it appends `ALL TASKS DONE` to the progress file. A session whose
 context gets large writes notes and ends its turn, and the runner starts a fresh one. Without
 `QC_ROLE=implementer`, every hook behaves as before.
 
@@ -587,6 +587,16 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 | `plannerTypes` | the plugin's planner, bare and scoped | the agent types whose report runs the plan check |
 
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
+
+#### A fix on a red head, and reviews in parallel
+
+A CI fix or a review fix may start on a red or unreviewed head. Its implementer prompt carries a
+line `Fix: ci` or `Fix: review`, and the ledger records the purpose. A `Fix: ci` on a head whose CI
+is green is refused, since that head waits for a review.
+
+Several branch reviewers may review one head at once, each with its own prompt line
+`Scope: <name>`. The one-review rule then counts each scope on its own, and the merge guard waits
+until the newest review of every scope on the head approves.
 
 #### The direct lane for a small fix
 

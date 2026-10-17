@@ -92,8 +92,30 @@ export function shaMatches(a, b) {
 }
 
 /** The newest verdict of one of `kinds` that names `sha`, or null. */
-export const latestVerdictFor = (records, sha, kinds) =>
-  records.findLast((record) => record.type === "verdict" && kinds.includes(record.kind) && shaMatches(record.sha, sha)) ?? null;
+export const latestVerdictFor = (records, sha, kinds, scope) =>
+  records.findLast(
+    (record) =>
+      record.type === "verdict" && kinds.includes(record.kind) && shaMatches(record.sha, sha) && (scope === undefined || (record.scope ?? null) === scope),
+  ) ?? null;
+
+/** The scopes of the branch reviews dispatched on the branch of any dispatch whose head is `sha`. */
+export function dispatchedScopesFor(records, sha) {
+  const branches = new Set(
+    records.filter((record) => record.type === "dispatch" && typeof record.branch === "string" && shaMatches(record.head, sha)).map((record) => record.branch),
+  );
+  const scopes = records.filter((record) => record.type === "dispatch" && branches.has(record.branch) && typeof record.scope === "string").map((record) => record.scope);
+  return [...new Set(scopes)];
+}
+
+/** The verdict that decides `sha`: the newest of each scope, where a CHANGES_REQUIRED wins. Null when none names it. */
+export function decidingVerdictFor(records, sha, kinds) {
+  const newest = new Map();
+  for (const record of records) {
+    if (record.type === "verdict" && kinds.includes(record.kind) && shaMatches(record.sha, sha)) newest.set(record.scope ?? null, record);
+  }
+  const verdicts = [...newest.values()];
+  return verdicts.find((record) => record.verdict !== "APPROVED") ?? verdicts.at(-1) ?? null;
+}
 
 /** The newest verdict of any kind on `branch`, or null. */
 export const latestVerdictOn = (records, branch) =>
@@ -107,7 +129,7 @@ const short = (sha) => (typeof sha === "string" ? sha.slice(0, MIN_SHA) : "");
 
 const SUMMARIES = {
   dispatch: (r) =>
-    `${r.agentType} ${r.task ? `${r.branch} ${short(r.head)}` : "(no task)"}${r.resumeReason ? ` NO-RESUME: ${r.resumeReason}` : ""}${
+    `${r.agentType} ${r.task ? `${r.branch} ${short(r.head)}` : "(no task)"}${r.resumeReason ? ` NO-RESUME: ${r.resumeReason}` : ""}${r.fix ? ` FIX: ${r.fix}` : ""}${
       r.ciPass ? ` CI-PASS: ${short(r.ciPass.sha)} ${r.ciPass.reason}` : ""
     }${
       r.handoff ? ` HANDOFF: ${r.handoff}` : ""

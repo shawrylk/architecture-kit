@@ -542,3 +542,11 @@ test("the no-transcript line is left off for an agent type the workflow does not
   assert.equal(decide(bare(stop(ws.on, "Explore", "done")), ws.tmp), null);
   assert.equal(decide(bare(handback(ws.on, "Explore", "done")), ws.tmp), null);
 });
+
+test("a branch review records the scope its prompt names on its verdict", (t) => {
+  const ws = workspace(t);
+  const named = { agent_transcript_path: transcript(ws, "scoped", `Review the branch.\nWorktree: ${ws.on}\nScope: Photos\n`) };
+  decide({ ...stop(ws.on, "architecture:sdd-branch-reviewer", `VERDICT: APPROVED ${ws.head}\nAll good.`), ...named }, ws.tmp);
+  const verdict = readLedger(ws.ledger).find((record) => record.type === "verdict");
+  assert.equal(verdict?.scope, "photos");
+});

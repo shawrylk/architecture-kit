@@ -10,28 +10,33 @@ import { handoffPathOf, resolveHandoff } from "./handoff-note.mjs";
 import { gitOutWithin, linkedWorktrees, pathKey } from "./git-read.mjs";
 import { appendRecord, latestVerdictFor, latestVerdictOn, readLedger, shaMatches } from "./ledger.mjs";
 import { resolveNamedWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
-import { READ_MS, branchOfCheckout, briefCheck, defaultReads, headOf, reviewerCheck, unreadableRefusal } from "./review-gate.mjs";
+import { READ_MS, branchOfCheckout, briefCheck, defaultReads, headOf, reviewerCheck, scopeOf, unreadableRefusal } from "./review-gate.mjs";
 import { rememberSession, workflowAt } from "./workflow-settings.mjs";
 
 export { worktreeNamed };
 
 const NO_RESUME_LINE = /^[ \t]*NO-RESUME:[ \t]*(\S.*?)[ \t]*$/im;
+const FIX_LINE = /^[ \t]*Fix:[ \t]*(ci|review)[ \t]*$/im;
 const short = (sha) => (typeof sha === "string" ? sha.slice(0, 7) : "(none)");
 
 /** The reason on a prompt's `NO-RESUME:` line, or null. */
 export const noResumeReason = (prompt) => NO_RESUME_LINE.exec(prompt)?.[1] ?? null;
 
+/** The purpose on a prompt's `Fix:` line, `ci` or `review`, or null. */
+export const fixOf = (prompt) => FIX_LINE.exec(prompt)?.[1]?.toLowerCase() ?? null;
+
 const fixRoundRefusal = (branch, sha, type) =>
   `Task gate: the last review on ${branch} (${short(sha)}) is CHANGES_REQUIRED, so the fix goes back to the implementer that wrote it. ` +
   "Resume it with SendMessage and the findings, then have the fix reviewed. " +
-  `If a resume cannot work, such as a spent tool-call budget, add a line \`NO-RESUME: <reason>\` to the ${type} prompt; the ledger records the reason.`;
+  `If a resume cannot work, such as a spent tool-call budget, add a line \`NO-RESUME: <reason>\` to the ${type} prompt; the ledger records the reason. ` +
+  "A fresh agent that fixes the review findings adds a line `Fix: review` instead.";
 
 const unreviewedRefusal = (branch, stopHead, head) =>
   `Task gate: an implementer stopped on ${branch} at ${short(stopHead)}, and no review in the ledger names ${short(stopHead)} or a later commit. ` +
   `Dispatch the task reviewer on ${short(head)} first; its first line \`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>\` records the review. ` +
   `The review runs once CI on the head is green: when CI on ${short(stopHead)} has failed or still runs, the next implementer continues the task and this gate passes it. ` +
   `If that stop handed off, its report named \`HANDOFF: <note path>\`; the same line in the next implementer prompt continues the task. ` +
-  `\`qc ledger ${branch}\` lists what is recorded.`;
+  `\`qc ledger ${branch}\` lists what is recorded. A CI fix adds a line \`Fix: ci\`, and a review fix adds \`Fix: review\`.`;
 
 const HISTORY_LIMIT = 5000;
 // A read is capped, so the whole dispatch guard ends inside the Agent hook's 30 second limit.
@@ -76,13 +81,31 @@ export function continuedStop(records, branch, handoff) {
   return reviewed ? null : stop;
 }
 
+/** A CI fix or a review fix may start on a red or unreviewed head; a CI fix on a head whose CI is green is refused. */
+function fixVerdict({ records, branch, head, fix, ciStatus }) {
+  if (fix === "ci") {
+    const state = ciStatus(head);
+    if (state.reason === null) {
+      const why = state.unknown === null ? "is green" : `is not known to be red (${state.unknown})`;
+      return { refusal: `Task gate: \`Fix: ci\` names a CI fix, and CI on ${short(head)} ${why}. A CI fix needs a red run. Dispatch the reviewer, or drop the line.` };
+    }
+    return { refusal: null, fix };
+  }
+  const last = latestVerdictOn(records, branch);
+  if (last?.verdict !== "CHANGES_REQUIRED") {
+    return { refusal: `Task gate: \`Fix: review\` on ${branch}, where no review in the ledger asks for changes. Drop the line, or dispatch the reviewer first.` };
+  }
+  return { refusal: null, fix };
+}
+
 /**
  * The task gate's answer for an implementer on `branch`: `refusal` is the reason it may not start now, or null.
  * `ciPass` is `{ sha, reason }` when an unreviewed stop head passes because CI on it is not green, else absent.
  * Only implementer commits need a review, so a controller commit after a reviewed head passes. `cwd` is any
  * checkout; `git` reads it, and `ci` answers why CI on a sha is not green, or null.
  */
-export function gateVerdict({ records, branch, head, reason, type, cwd, git = gitRead, handoff = null, ci = (sha) => ciNotGreen(sha, cwd) }) {
+export function gateVerdict({ records, branch, head, reason, type, cwd, git = gitRead, handoff = null, ci = (sha) => ciNotGreen(sha, cwd), fix = null, ciStatus = (sha) => readCiState(sha, cwd) }) {
+  if (fix !== null) return fixVerdict({ records, branch, head, fix, ciStatus });
   // A continuation of the newest stop's hand-off is the same task, so it is neither a fix round nor a new task.
   const continued = continuedStop(records, branch, handoff);
   const why = reason ?? (continued ? `continues the hand-off ${continued.handoff}` : null);
@@ -180,7 +203,9 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
     }
     const checked = reviewerCheck({ type, prompt, review: workflow.review, base: workflow.base, records, root, branch, head, ciState: state, reads });
     if (checked.refusal) return refuse(checked.refusal);
-    return pass(workflow, { ...base, worktree: root, branch, head }, [ledgerNote, checked.note].filter(Boolean).join(" ") || null);
+    const scope = scopeOf(prompt);
+    const scoped = scope && workflow.review.reviewerTypes.branch.includes(type) ? { scope } : {};
+    return pass(workflow, { ...base, worktree: root, branch, head, ...scoped }, [ledgerNote, checked.note].filter(Boolean).join(" ") || null);
   }
   if (named === null) return pass(workflow, base, briefNote);
   const key = pathKey(abs);
@@ -198,11 +223,18 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
   const reason = noResumeReason(prompt);
   const spelled = handoffPathOf(prompt);
   const handoff = spelled === null ? null : resolveHandoff(spelled, cwd);
-  const { refusal, ciPass } = gateVerdict({ records, branch: worktree.branch, head: worktree.head, reason, type, cwd: workflow.root, handoff, ...(ci ? { ci } : {}) });
+  const fix = fixOf(prompt);
+  const { refusal, ciPass, note: fixNote } = gateVerdict({
+    records, branch: worktree.branch, head: worktree.head, reason, type, cwd: workflow.root, handoff, fix,
+    ...(ci ? { ci } : {}),
+    ...(ciState ? { ciStatus: ciState } : {}),
+  });
   if (refusal) return refuse(refusal);
   const continues = handoff ? { handoff } : {};
   const unreviewed = ciPass ? { ciPass } : {};
-  return pass(workflow, { ...base, task: true, worktree: worktree.path, branch: worktree.branch, head: worktree.head, resumeReason: reason, ...continues, ...unreviewed }, briefNote);
+  const purpose = fix ? { fix } : {};
+  const notes = [briefNote, fixNote].filter(Boolean).join(" ") || null;
+  return pass(workflow, { ...base, task: true, worktree: worktree.path, branch: worktree.branch, head: worktree.head, resumeReason: reason, ...continues, ...unreviewed, ...purpose }, notes);
 }
 
 /** Writes the dispatch record of a judged call. @returns a note for the session, or null. */
