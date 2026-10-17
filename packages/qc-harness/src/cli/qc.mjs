@@ -25,17 +25,27 @@ const USAGE = `qc — architecture gates
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
                            run a brief through codex exec as an implementer, restarting until the progress file says ALL TASKS DONE; exit 2 on a Codex limit
+  qc gate-slot [--slots <n>] -- <command...>
+                           run a heavy local command in one of the machine's gate slots; --status lists them
   qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
                            block until the first event among the items, print one EVENT line; exit 0 done, 4 bound (default 55 minutes), 5 failed, 6 queued past 15 minutes
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
+  qc throwaway-db [--port <n>|auto] -- <command...>
+                           run a command on a database of its own, in a container on a free port
+  qc retry-failed --report <json> --rerun "<command>" -- <command...>
+                           rerun only the failed test files once before the run fails
   qc ui <catalog|find|dupes|codemod>
                            the component catalog, a search over it, a duplicate finder and a class-token codemod
   qc worktree add <name> <branch> [--from <ref>]
                            fetch, add .worktree/<name> in the main checkout, install, print the path
   qc worktree remove <name>
                            refuse a dirty tree; delete it, then its branch once merged, pushed, or a merged PR head
+  qc migrations renumber --onto <ref> [--branch <ref>]
+                           move this branch's migrations after the last one of <ref>, and rewrite references
+  qc integrate --issue <n> [--type <t>] [--slug <s>] [--from <ref>] <branch>...
+                           one <t>/<n>-<s> branch for a batch: merge, renumber, regenerate; stop on a conflict
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
   qc doctor                the hooks and the lockfile must run the same harness
   qc config                print the resolved configuration
@@ -53,6 +63,11 @@ async function main() {
   if (command === "codex-implement") {
     const { runCodexImplement } = await import("./codex-implement.mjs");
     process.exit(await runCodexImplement(rest));
+  }
+  // The slots are machine-wide, so the runner reads no configuration.
+  if (command === "gate-slot") {
+    const { runGateSlot } = await import("./gate-slot.mjs");
+    process.exit(await runGateSlot(rest));
   }
   // The watcher reads no configuration either.
   if (command === "watch") {
@@ -124,6 +139,14 @@ async function main() {
       const { runTokens } = await import("./tokens.mjs");
       process.exit(runTokens(config, rest));
     }
+    case "throwaway-db": {
+      const { runThrowawayDb } = await import("./throwaway-db.mjs");
+      process.exit(await runThrowawayDb(config, rest));
+    }
+    case "retry-failed": {
+      const { runRetryFailed } = await import("./retry-failed.mjs");
+      process.exit(await runRetryFailed(rest));
+    }
     case "decisions": {
       const { runDecisions } = await import("./decisions.mjs");
       process.exit(await runDecisions(config, rest));
@@ -132,6 +155,14 @@ async function main() {
     case "worktree": {
       const { runWorktree } = await import("./worktree.mjs");
       process.exit(await runWorktree(config, rest));
+    }
+    case "migrations": {
+      const { runMigrations } = await import("./migrations.mjs");
+      process.exit(runMigrations(config, rest));
+    }
+    case "integrate": {
+      const { runIntegrate } = await import("./integrate.mjs");
+      process.exit(await runIntegrate(config, rest));
     }
     case "ui": {
       const { runUi } = await import("./ui.mjs");
