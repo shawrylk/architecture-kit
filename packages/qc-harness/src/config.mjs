@@ -403,6 +403,7 @@ export const defaults = {
     // Needs the composed contract, and the `yaml` peer to read it.
     "contract-idempotency": false,
     "contract-routes": false,
+    "contract-keys": false,
     // Needs `sagaKey.runners`, the names of a repository's saga runners.
     "saga-key": false,
   },

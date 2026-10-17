@@ -43,3 +43,55 @@ jobs:
       # - run: pnpm lint
       # - run: pnpm dup:check
       # - run: pnpm test
+
+  # Unit tests in eight hosted shards. A self-hosted runner that goes offline leaves a job queued;
+  # `qc ci-wait` reports a check queued for over 25 minutes. A repository with no test:unit script skips it.
+  unit:
+    runs-on: ubuntu-latest
+    strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4, 5, 6, 7, 8] } }
+    steps:
+      - uses: actions/checkout@v5
+      - id: script
+        run: node -e "console.log('present=' + Boolean(require('./package.json').scripts?.['test:unit']))" >> "$GITHUB_OUTPUT"
+      - if: steps.script.outputs.present == 'true'
+        uses: actions/setup-node@v5
+        with: { node-version-file: package.json }
+      - if: steps.script.outputs.present == 'true'
+        run: corepack enable && pnpm install --frozen-lockfile
+      - if: steps.script.outputs.present == 'true'
+        run: pnpm test:unit --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+  # Integration tests in two hosted shards. Add the services the tests need, such as a database.
+  integration:
+    runs-on: ubuntu-latest
+    strategy: { fail-fast: false, matrix: { shard: [1, 2] } }
+    steps:
+      - uses: actions/checkout@v5
+      - id: script
+        run: node -e "console.log('present=' + Boolean(require('./package.json').scripts?.['test:integration']))" >> "$GITHUB_OUTPUT"
+      - if: steps.script.outputs.present == 'true'
+        uses: actions/setup-node@v5
+        with: { node-version-file: package.json }
+      - if: steps.script.outputs.present == 'true'
+        run: corepack enable && pnpm install --frozen-lockfile
+      - if: steps.script.outputs.present == 'true'
+        run: pnpm test:integration --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+
+  # Browser tests: the specs a pull request affects, by the repository's own e2e:affected script,
+  # and every spec on a push.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - id: script
+        run: node -e "const s = require('./package.json').scripts ?? {}; console.log('present=' + Boolean(s.e2e && s['e2e:affected']))" >> "$GITHUB_OUTPUT"
+      - if: steps.script.outputs.present == 'true'
+        uses: actions/setup-node@v5
+        with: { node-version-file: package.json }
+      - if: steps.script.outputs.present == 'true'
+        run: corepack enable && pnpm install --frozen-lockfile
+      - if: steps.script.outputs.present == 'true' && github.event_name == 'pull_request'
+        run: pnpm e2e:affected "origin/$GITHUB_BASE_REF"
+      - if: steps.script.outputs.present == 'true' && github.event_name != 'pull_request'
+        run: pnpm e2e

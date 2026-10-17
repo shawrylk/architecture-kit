@@ -18,7 +18,7 @@ export function checkMigrationNumbers(names, dir) {
   const problems = [];
   for (const [number, files] of byNumber) {
     if (files.length > 1) {
-      problems.push({ path: dir, rule: "duplicate-migration-number", detail: `${files.sort().join(", ")} share number ${number}; give each migration its own` });
+      problems.push({ path: dir, rule: "duplicate-migration-number", detail: `${files.sort().join(", ")} share number ${number}; give each migration its own: \`qc migrations renumber --onto <base>\` moves this branch's migrations after the base's last` });
     }
   }
   const numbers = [...byNumber.keys()].sort((a, b) => a - b);
