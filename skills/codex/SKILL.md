@@ -77,11 +77,20 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 - Keep a `checkpoint.md` in the scratchpad. Update it at each clean break: the head, the CI state, the open agents, and each decision.
 - Cap every subagent reply: "a `VERDICT` line and at most 25 lines". The subagent writes its full output to a scratchpad file.
-- Poll CI with one background command for each head, then wait for its notification:
+- Wait with one background `qc watch` command, then wait for its notification. It blocks in a shell, so the wait costs no model tokens, and its exit is the event:
 
   ```bash
-  sleep 60; gh pr checks <n> --watch --interval 60 >/dev/null 2>&1; gh pr view <n> --json headRefOid,statusCheckRollup --jq '.headRefOid, (.statusCheckRollup[] | "\(.name): \(.conclusion // .status)")'
+  npx qc watch --pr <n> --codex <wrapper.log> --run <workflow>@<branch> --max 55
   ```
+
+  Repeat a flag to watch more items. It prints one line, `EVENT <item> <state> <head or code>`. Re-arm it after each event.
+
+  | Exit | Meaning |
+  |---|---|
+  | 0 | The checks on the head all passed, the Codex wrapper wrote an `exit ` line, or the run succeeded |
+  | 4 | The bound passed (55 minutes by default). Re-arm. |
+  | 5 | A check or a run failed |
+  | 6 | A job stayed `QUEUED` past 15 minutes |
 
 - Never poll in a loop of tool calls, and never send "are you done?" messages.
 - If Claude Code stops a background command for low memory, do not start it again. Poll in the foreground with a `timeout` instead.
