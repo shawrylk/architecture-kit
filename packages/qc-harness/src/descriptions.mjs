@@ -33,6 +33,8 @@ export const gateDescriptions = Object.freeze({
   "contract-idempotency": "Every write of the API contract declares its idempotency key or is listed in the ledger, and a ledger entry fails when it no longer owes the key or is new since the merge base",
   "saga-key": "A saga runner never takes a key minted at the call, so a retry resumes the saga rather than starting a second one",
   "contract-keys": "No key of the composed contract ends with a dot or holds no value, the two marks of a YAML line that split a sentence",
+  "ui-catalog": "Every exported component under the UI roots carries a JSDoc sentence, and the generated component catalog matches the code",
+  "ui-dupes": "The same class string, component name or JSX tree is not written twice, except what a baseline holds",
   "contract-routes": "Every route a feature trigger declares is an operation of the API contract and the reverse, matched by method and path, and an exemption fails when it excuses nothing",
 });
 
