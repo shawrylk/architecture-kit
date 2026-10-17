@@ -19,3 +19,10 @@ test("the template runs the affected browser tests on a pull request and every o
   assert.match(steps, /pnpm e2e:affected/);
   assert.match(steps, /pnpm e2e"/);
 });
+
+test("the e2e job installs the browsers before it runs a spec", () => {
+  const steps = parse(readFileSync(WORKFLOW, "utf8")).jobs.e2e.steps;
+  const install = steps.findIndex((step) => /playwright install --with-deps/.test(step.run ?? ""));
+  const run = steps.findIndex((step) => /pnpm e2e/.test(step.run ?? ""));
+  assert.ok(install >= 0 && install < run);
+});

@@ -64,3 +64,31 @@ test("qc migrations with no subcommand prints its usage and exits 2", (t) => {
   assert.equal(result.status, 2);
   assert.match(result.stderr, /qc migrations renumber --onto <ref>/);
 });
+
+test("renumber refuses a dirty tree outside a merge", (t) => {
+  const dir = repo(t);
+  git(dir, "switch", "-q", "-c", "feat/1-x");
+  commitFile(dir, "db/0002_x.sql", "select 2;\n");
+  writeFileSync(path.join(dir, "stray.txt"), "uncommitted\n");
+  assert.throws(() => renumber(dir, "db", { onto: "main" }), /uncommitted|clean/);
+});
+
+test("a stem is rewritten only where no name character follows it", () => {
+  const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-migrations-stem-")));
+  try {
+    git(dir, "init", "-q", "-b", "main");
+    for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"], ["core.autocrlf", "false"]]) git(dir, "config", key, value);
+    commitFile(dir, "db/0001_init.sql", "select 1;\n");
+    git(dir, "switch", "-q", "-c", "feat/1-x");
+    commitFile(dir, "db/0002_add.sql", "select 2;\n");
+    commitFile(dir, "refs.txt", "0002_add 0002_add_index\n");
+    git(dir, "switch", "-q", "main");
+    commitFile(dir, "db/0002_main.sql", "select 3;\n");
+    git(dir, "switch", "-q", "feat/1-x");
+    git(dir, "merge", "-q", "--no-edit", "main");
+    renumber(dir, "db", { onto: "main" });
+    assert.equal(readFileSync(path.join(dir, "refs.txt"), "utf8"), "0003_add 0002_add_index\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

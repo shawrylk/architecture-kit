@@ -91,6 +91,8 @@ jobs:
         with: { node-version-file: package.json }
       - if: steps.script.outputs.present == 'true'
         run: corepack enable && pnpm install --frozen-lockfile
+      - if: steps.script.outputs.present == 'true'
+        run: pnpm exec playwright install --with-deps
       - if: steps.script.outputs.present == 'true' && github.event_name == 'pull_request'
         run: pnpm e2e:affected "origin/$GITHUB_BASE_REF"
       - if: steps.script.outputs.present == 'true' && github.event_name != 'pull_request'

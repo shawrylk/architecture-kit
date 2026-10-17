@@ -65,6 +65,9 @@ export function addedMigrations(root, onto, branch, dir) {
     .filter((name) => MIGRATION.test(name));
 }
 
+/** A stem, matched only where no name character follows it, so `0002_add` leaves `0002_add_index` alone. */
+const stemPattern = (stem) => new RegExp(stem.replace(/\W/g, (c) => `\\${c}`) + "(?![A-Za-z0-9_])", "g");
+
 /** Renames through a temporary name, so no rename lands on a file that still exists, then rewrites the references. */
 export function applyRenumber(root, dir, plan) {
   for (const { from } of plan) git(root, ["mv", `${dir}/${from}`, `${dir}/${from}${TEMP_SUFFIX}`]);
@@ -76,7 +79,7 @@ export function applyRenumber(root, dir, plan) {
     const found = spawnSync("git", ["grep", "-l", "-I", "-F", oldStem, "--", "."], { cwd: root, encoding: "utf8", windowsHide: true });
     for (const file of lines(found.stdout ?? "")) {
       const full = path.join(root, file);
-      writeFileSync(full, readFileSync(full, "utf8").split(oldStem).join(newStem));
+      writeFileSync(full, readFileSync(full, "utf8").replace(stemPattern(oldStem), () => newStem));
       touched.add(file);
     }
   }
@@ -87,6 +90,9 @@ export function applyRenumber(root, dir, plan) {
 /** @returns the renames made and the files whose references were rewritten */
 export function renumber(root, dir, { onto, branch = "HEAD" }) {
   const folder = posixDir(dir);
+  const dirty = git(root, ["status", "--porcelain"]).trim() !== "";
+  const merging = spawnSync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: root, windowsHide: true }).status === 0;
+  if (dirty && !merging) throw new Error("the working tree has uncommitted changes; commit or stash them, or run this during a merge");
   const plan = planRenumber(migrationsAt(root, onto, folder), addedMigrations(root, onto, branch, folder));
   const references = plan.length > 0 ? applyRenumber(root, folder, plan) : [];
   return { plan, references };
