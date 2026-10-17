@@ -3,7 +3,9 @@
 
 import { spawn } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { load } from "../config.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 12;
@@ -40,11 +42,17 @@ export function parseArgs(argv) {
 
 const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").includes(DONE_MARKER);
 
+const SKILL_PLUGIN = "superpowers@claude-plugins-official";
+const TOOL_OUTPUT_TOKENS = 4000;
+
 const LEAN_RULES = [
   "Lean rules for every session. They cut repeated reading and helper agents. Never drop a security, tenant, data, or correctness check that this brief asks for.",
   "- At session start, rewrite the progress file to at most 40 lines: the pushed head, the done items one line each, the first unfinished item, and the open questions. Delete the history.",
   "- Never re-verify a finished item, and never repeat a probe that already failed.",
   "- Read only the line ranges that the current item needs.",
+  "- Load no skill and read no SKILL.md or plugin file. The global instructions that say to load skills do not apply to this run; this brief holds the rules.",
+  "- Search with `rg -n -m 20 <pattern> <path>`. Read at most 150 lines per call by range, never a whole file. End any command that can print more than 4,000 characters with a limit.",
+  "- Never run `gh issue view`: the brief holds the issue. Use `git status --short` and `git log -n 5 --oneline`.",
   "- Start no helper agents. Run no broad audit, no Playwright, and no full gate. Run the tests of the touched files, and the local check once before the push.",
   "- Write every item first, each test first, and update the progress file after each item. Then run the local check once, make one commit, and push once.",
   "- Read at most 15 files before the first code edit. Research that needs more belongs to a planner, and the brief names the planner output to read instead.",
@@ -63,6 +71,43 @@ function continuationNote(progress) {
 
 /** The Codex features that start helper agents. Each run turns them off. */
 const HELPER_AGENT_FEATURES = ["features.multi_agent=false", "features.multi_agent_v2=false"];
+
+/** @returns the names of the plugins that a Codex `config.toml` turns on, from its `[plugins."name"]` tables. */
+export function enabledPlugins(toml) {
+  const names = [];
+  let current = null;
+  for (const raw of toml.split(/\r?\n/)) {
+    const line = raw.trim();
+    const table = /^\[(.*)\]\s*(#.*)?$/.exec(line);
+    if (table) {
+      current = /^plugins\.(?:"([^"]+)"|'([^']+)')$/.exec(table[1]);
+      current = current ? (current[1] ?? current[2]) : null;
+    } else if (current && /^enabled\s*=\s*true\s*(#.*)?$/.test(line)) {
+      names.push(current);
+      current = null;
+    }
+  }
+  return names;
+}
+
+/** The `-c` overrides that turn off each plugin the user enabled, and the skill plugin, for this run only. */
+function pluginOverrides(env) {
+  const file = path.join(env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
+  let enabled = [];
+  try {
+    enabled = enabledPlugins(readFileSync(file, "utf8"));
+  } catch {
+    // A missing or unreadable config still lets the run start, with the superpowers override alone.
+  }
+  return [...new Set([...enabled, SKILL_PLUGIN])].flatMap((name) => ["-c", `plugins.${JSON.stringify(name)}.enabled=false`]);
+}
+
+/** @returns `codex.compactTokens` of the worktree's config; throws when it is not a positive whole number. */
+function compactTokensOf(worktree) {
+  const value = load(worktree).codex.compactTokens;
+  if (!Number.isInteger(value) || value < 1) throw new Error(`codex.compactTokens in qc.config.json must be a positive whole number, got ${JSON.stringify(value)}`);
+  return value;
+}
 
 /** The brief is read again for each run, so an edit reaches the next session. */
 const promptFor = (settings) => readFileSync(settings.brief, "utf8") + continuationNote(settings.progress);
@@ -87,17 +132,36 @@ function spawnRun({ command, args, env, log }, codexCommand) {
   });
 }
 
+/** Writes one stdout line and resolves once it is flushed, so the `process.exit` that follows cannot cut it. */
+const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${line}
+`, resolve));
+
 /**
+ * The last stdout line is `exit <code>` on every path, so a redirect of the runner into a wrapper log carries
+ * the end of the job for `qc watch --codex`, in any shell.
  * @param run `({ command, args, env, log }) => Promise<{ status, tail }>`; the default spawns `codexCommand`.
+ * @param out `(line) => Promise|void` writes the `exit` line; the default writes to stdout.
  * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs.
  */
-export async function runCodexImplement(argv, { run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line) } = {}) {
+export async function runCodexImplement(argv, { out = writeLine, ...options } = {}) {
+  const code = await runJob(argv, options);
+  await out(`exit ${code}`);
+  return code;
+}
+
+async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line) } = {}) {
   let settings;
   try {
     settings = parseArgs(argv);
   } catch (error) {
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
     return 1;
+  }
+  let compactTokens;
+  try {
+    compactTokens = compactTokensOf(settings.worktree);
+  } catch (error) {
+    return finish(say, error.message, 1);
   }
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
   for (let count = 1; count <= settings.maxRuns; count += 1) {
@@ -109,7 +173,8 @@ export async function runCodexImplement(argv, { run, codexCommand = ["codex"], e
       return finish(say, `cannot read the brief: ${error.message}`, 1);
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
-    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, prompt];
+    const limits = ["-c", `model_auto_compact_token_limit=${compactTokens}`, "-c", `tool_output_token_limit=${TOOL_OUTPUT_TOKENS}`];
+    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env), ...limits, prompt];
     let result;
     try {
       result = await execute({ command: codexCommand[0], args, env: { ...env, QC_ROLE: "implementer" }, log: settings.log });

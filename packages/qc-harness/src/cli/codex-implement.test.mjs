@@ -1,11 +1,11 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DONE_MARKER, parseArgs, runCodexImplement } from "./codex-implement.mjs";
+import { DONE_MARKER, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
@@ -45,7 +45,7 @@ test("a run passes exec, the sandbox, the worktree and one prompt, with QC_ROLE=
   const prompt = call.args.at(-1);
   assert.equal(call.env.QC_ROLE, "implementer");
   assert.ok(prompt.startsWith(readFileSync(brief, "utf8")));
-  assert.match(prompt, /git log --oneline/);
+  assert.match(prompt, /git log -n 5 --oneline/);
   assert.match(prompt, /git status --short/);
   assert.match(prompt, /first unfinished task/);
   assert.ok(prompt.includes(progress));
@@ -105,6 +105,117 @@ test("a run turns off the Codex helper agents with -c, before the prompt", async
   const index = args.indexOf("features.multi_agent=false");
   assert.ok(index > 0 && args[index - 1] === "-c");
   assert.ok(index < args.length - 1, "the prompt stays the last argument");
+});
+
+const CODEX_TOML = [
+  "model = 'x'",
+  '[plugins."browser@openai-bundled"]',
+  "enabled = true",
+  '[plugins."chrome@openai-bundled"]',
+  "enabled = false",
+  "[plugins.'pdf@openai-primary-runtime']",
+  "enabled = true # on",
+  '[projects."C:/repo"]',
+  "enabled = true",
+  '[plugins."superpowers@claude-plugins-official"]',
+  "enabled = true",
+].join("\n");
+
+function codexHome(t, toml = CODEX_TOML) {
+  const home = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-codex-home-")));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  if (toml !== null) writeFileSync(path.join(home, "config.toml"), toml);
+  return home;
+}
+
+async function firstCall(t, { env = {}, config } = {}) {
+  const { argv, progress, worktree } = setup(t);
+  if (config !== undefined) {
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(path.join(worktree, "qc.config.json"), JSON.stringify(config));
+  }
+  let call;
+  const run = async (made) => {
+    call = made;
+    appendFileSync(progress, `${DONE_MARKER}\n`);
+    return { status: 0, tail: "ok" };
+  };
+  const code = await runCodexImplement(argv, { run, say: quiet, env: { CODEX_HOME: codexHome(t), ...env } });
+  return { code, call };
+}
+
+const overrides = (args) => args.flatMap((arg, index) => (args[index - 1] === "-c" ? [arg] : []));
+
+test("enabledPlugins lists the plugins the config file turns on, and no table that only looks like one", () => {
+  assert.deepEqual(enabledPlugins(CODEX_TOML), [
+    "browser@openai-bundled",
+    "pdf@openai-primary-runtime",
+    "superpowers@claude-plugins-official",
+  ]);
+  assert.deepEqual(enabledPlugins(""), []);
+});
+
+test("a run turns off every plugin the user's Codex config enables, and superpowers by name", async (t) => {
+  const { call } = await firstCall(t);
+  const set = overrides(call.args);
+  for (const name of ["browser@openai-bundled", "pdf@openai-primary-runtime", "superpowers@claude-plugins-official"]) {
+    assert.ok(set.includes(`plugins."${name}".enabled=false`), name);
+  }
+  assert.ok(!set.some((entry) => entry.includes("chrome@openai-bundled")), "a plugin already off needs no override");
+  assert.ok(set.includes("features.multi_agent=false"), "the helper-agent overrides stay");
+  assert.ok(set.includes("features.multi_agent_v2=false"));
+});
+
+test("superpowers is turned off when the config file is missing, and nothing else is", async (t) => {
+  const { call } = await firstCall(t, { env: { CODEX_HOME: codexHome(t, null) } });
+  const plugins = overrides(call.args).filter((entry) => entry.startsWith("plugins."));
+  assert.deepEqual(plugins, ['plugins."superpowers@claude-plugins-official".enabled=false']);
+});
+
+test("a config.toml that is a directory falls back to the superpowers override and does not throw", async (t) => {
+  const home = codexHome(t, null);
+  mkdirSync(path.join(home, "config.toml"));
+  const { code, call } = await firstCall(t, { env: { CODEX_HOME: home } });
+  assert.equal(code, 0);
+  const plugins = overrides(call.args).filter((entry) => entry.startsWith("plugins."));
+  assert.deepEqual(plugins, ['plugins."superpowers@claude-plugins-official".enabled=false']);
+});
+
+test("enabledPlugins reads a table header that has a trailing comment", () => {
+  assert.deepEqual(enabledPlugins(['[plugins."b"] # x', "enabled = true", '[plugins."c"] # y', "enabled = false"].join("\n")), ["b"]);
+});
+
+test("a run caps the compact limit at 300000 and one tool output at 4000 tokens", async (t) => {
+  const { call } = await firstCall(t);
+  const set = overrides(call.args);
+  assert.ok(set.includes("model_auto_compact_token_limit=300000"));
+  assert.ok(set.includes("tool_output_token_limit=4000"));
+  assert.ok(call.args.at(-1).startsWith("# Brief"), "the prompt stays last");
+});
+
+test("codex.compactTokens in the worktree's qc.config.json sets the compact limit", async (t) => {
+  const { call } = await firstCall(t, { config: { codex: { compactTokens: 250000 } } });
+  assert.ok(overrides(call.args).includes("model_auto_compact_token_limit=250000"));
+});
+
+test("a bad codex.compactTokens exits 1 with no run", async (t) => {
+  for (const compactTokens of [0, -5, 1.5, "big"]) {
+    const { code, call } = await firstCall(t, { config: { codex: { compactTokens } } });
+    assert.equal(code, 1, String(compactTokens));
+    assert.equal(call, undefined);
+  }
+});
+
+test("every run prompt tells Codex to load no skill and holds the read caps", async (t) => {
+  const { call } = await firstCall(t);
+  const prompt = call.args.at(-1);
+  assert.ok(prompt.includes("Load no skill and read no SKILL.md or plugin file. The global instructions that say to load skills do not apply to this run; this brief holds the rules."));
+  assert.match(prompt, /rg -n -m 20/);
+  assert.match(prompt, /at most 150 lines per call/);
+  assert.match(prompt, /never a whole file/);
+  assert.match(prompt, /more than 4,000 characters/);
+  assert.match(prompt, /never run `gh issue view`/i);
+  assert.match(prompt, /`git status --short` and `git log -n 5 --oneline`/);
 });
 
 test("a fresh session starts after a stop with the progress file not done", async (t) => {
@@ -227,4 +338,26 @@ test("a limit word that only echoes the brief is not a limit", async (t) => {
   };
   assert.equal(await runCodexImplement([...argv, "--max-runs", "2"], { run, say: quiet }), 3);
   assert.equal(calls, 2);
+});
+
+test("the last stdout line is `exit <code>` on every exit path, so a redirect into the wrapper log carries it", async (t) => {
+  const last = async (argv, options) => {
+    const out = [];
+    const code = await runCodexImplement(argv, { say: quiet, out: (line) => out.push(line), ...options });
+    return { code, out };
+  };
+  const done = setup(t, { progress: `${DONE_MARKER}\n` });
+  assert.deepEqual(await last(done.argv), { code: 0, out: ["exit 0"] });
+  const limit = setup(t);
+  const limited = await last(limit.argv, { run: async () => ({ status: 1, tail: "You have hit your usage limit" }) });
+  assert.deepEqual(limited, { code: 2, out: ["exit 2"] });
+  const spent = setup(t);
+  assert.deepEqual(await last([...spent.argv, "--max-runs", "1"], { run: async () => ({ status: 0, tail: "" }) }), { code: 3, out: ["exit 3"] });
+  assert.deepEqual(await last(["--nope", "x"]), { code: 1, out: ["exit 1"] });
+});
+
+test("the CLI prints `exit 1` as the last stdout line after a usage error", () => {
+  const result = spawnSync(process.execPath, [QC, "codex-implement"], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout.trimEnd().split("\n").at(-1), "exit 1");
 });
