@@ -74,7 +74,7 @@ export function enabledPlugins(toml) {
   let current = null;
   for (const raw of toml.split(/\r?\n/)) {
     const line = raw.trim();
-    const table = /^\[(.*)\]$/.exec(line);
+    const table = /^\[(.*)\]\s*(#.*)?$/.exec(line);
     if (table) {
       current = /^plugins\.(?:"([^"]+)"|'([^']+)')$/.exec(table[1]);
       current = current ? (current[1] ?? current[2]) : null;
@@ -89,7 +89,12 @@ export function enabledPlugins(toml) {
 /** The `-c` overrides that turn off each plugin the user enabled, and the skill plugin, for this run only. */
 function pluginOverrides(env) {
   const file = path.join(env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
-  const enabled = existsSync(file) ? enabledPlugins(readFileSync(file, "utf8")) : [];
+  let enabled = [];
+  try {
+    enabled = enabledPlugins(readFileSync(file, "utf8"));
+  } catch {
+    // A missing or unreadable config still lets the run start, with the superpowers override alone.
+  }
   return [...new Set([...enabled, SKILL_PLUGIN])].flatMap((name) => ["-c", `plugins.${JSON.stringify(name)}.enabled=false`]);
 }
 

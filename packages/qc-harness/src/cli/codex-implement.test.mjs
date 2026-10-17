@@ -168,6 +168,19 @@ test("superpowers is turned off when the config file is missing, and nothing els
   assert.deepEqual(plugins, ['plugins."superpowers@claude-plugins-official".enabled=false']);
 });
 
+test("a config.toml that is a directory falls back to the superpowers override and does not throw", async (t) => {
+  const home = codexHome(t, null);
+  mkdirSync(path.join(home, "config.toml"));
+  const { code, call } = await firstCall(t, { env: { CODEX_HOME: home } });
+  assert.equal(code, 0);
+  const plugins = overrides(call.args).filter((entry) => entry.startsWith("plugins."));
+  assert.deepEqual(plugins, ['plugins."superpowers@claude-plugins-official".enabled=false']);
+});
+
+test("enabledPlugins reads a table header that has a trailing comment", () => {
+  assert.deepEqual(enabledPlugins(['[plugins."b"] # x', "enabled = true", '[plugins."c"] # y', "enabled = false"].join("\n")), ["b"]);
+});
+
 test("a run caps the compact limit at 300000 and one tool output at 4000 tokens", async (t) => {
   const { call } = await firstCall(t);
   const set = overrides(call.args);
