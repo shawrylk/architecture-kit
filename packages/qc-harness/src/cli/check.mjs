@@ -59,6 +59,10 @@ import { checkContractRoutes, declaredTriggerRoutes } from "../gates/contract-ro
 import { ratchetInputs } from "./registry-history.mjs";
 import { hookDrift } from "./git-hooks.mjs";
 import { repoFiles } from "./repo-files.mjs";
+import { checkUiCatalog } from "../gates/ui-catalog.mjs";
+import { checkUiDupes } from "../gates/ui-dupes.mjs";
+import { findDupes } from "../ui/dupes.mjs";
+import { CATALOG_COMMAND, catalogText, scanComponents } from "../ui/scan.mjs";
 
 // Each skip is tested on "/" + the relative path, so it reads a path the way it read a full one.
 const SKIP = /node_modules|\/dist\/|\.test\.[cm]?[jt]sx?$/;
@@ -555,6 +559,36 @@ async function contractRouteAgreement(config, routes, lines) {
   return problems;
 }
 
+/** The UI gates: the catalog and its documentation, and the duplicates. A repository with no component under its roots passes both. */
+async function uiAgreement(config, tree, lines) {
+  let scan;
+  try {
+    scan = await scanComponents(config, tree.files);
+  } catch (cause) {
+    return [{ path: "qc.config.json", rule: "ui-no-typescript", detail: cause.message }];
+  }
+  const { options, files, entries, ts } = scan;
+  const baselineOf = async (file, key) => parsedJson(await read(path.join(config.root, file)))?.[key] ?? null;
+  const problems = [];
+  if (enabled(config.gates, "ui-catalog")) {
+    const actual = await read(path.join(config.root, options.catalog));
+    problems.push(
+      ...checkUiCatalog(entries, {
+        catalog: { path: options.catalog, actual, expected: catalogText(entries, options), command: CATALOG_COMMAND },
+        baseline: await baselineOf(options.catalogBaseline, "undocumented"),
+        baselineFile: options.catalogBaseline,
+      }),
+    );
+    lines.push(`OK  ui-catalog   ${entries.length} component(s), each described, and ${options.catalog} matches the code`);
+  }
+  if (enabled(config.gates, "ui-dupes")) {
+    const found = ts ? findDupes(ts, files, { entries, callees: options.classCallees, ...options.dupes }) : [];
+    problems.push(...checkUiDupes(found, { baseline: await baselineOf(options.dupes.baseline, "findings"), baselineFile: options.dupes.baseline }));
+    lines.push("OK  ui-dupes     no class string, component name or JSX tree is written twice beyond the baseline");
+  }
+  return problems;
+}
+
 /**
  * @param {object} config
  * @param {string | string[]} [only] files to check on the fast path a hook takes; none is the full check
@@ -875,6 +909,10 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
 
   if (enabled(config.gates, "contract-routes")) {
     problems.push(...(await contractRouteAgreement(config, routes, lines)));
+  }
+
+  if (enabled(config.gates, "ui-catalog") || enabled(config.gates, "ui-dupes")) {
+    problems.push(...(await uiAgreement(config, tree, lines)));
   }
 
   return { problems, lines };

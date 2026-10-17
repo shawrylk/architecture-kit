@@ -405,6 +405,9 @@ export const defaults = {
     "contract-routes": false,
     // Needs `sagaKey.runners`, the names of a repository's saga runners.
     "saga-key": false,
+    // Each needs a repository to opt in: the UI it judges lives where only that repository knows.
+    "ui-catalog": false,
+    "ui-dupes": false,
   },
 
   // Gates that produce rather than inspect: a repository's codegen imports these and
@@ -462,6 +465,20 @@ export const defaults = {
 
   // Extra pipeline steps a repo composes in. The CLI never hardcodes a project's chain.
   pipeline: [],
+
+  // The UI tools: `qc ui`, and the `ui-catalog` and `ui-dupes` gates. A component is an exported React component
+  // under `componentRoots`, where `*` stands for one folder. `layers` names a layer by the folder that holds it.
+  // `catalog` is the generated catalog, and `catalogBaseline` lists the components that predate its gate.
+  // `classCallees` are the calls whose string arguments are class strings. `dupes` sets the shortest class
+  // string, the fewest files, and the baseline.
+  ui: {
+    componentRoots: ["frontend/src/platform/ui", "frontend/src/features/*/components"],
+    layers: { primitive: "frontend/src/platform/ui/primitives", pattern: "frontend/src/platform/ui/patterns" },
+    catalog: "docs/ui-catalog.md",
+    catalogBaseline: "ui-catalog.baseline.json",
+    classCallees: ["cn", "clsx", "cva", "twMerge"],
+    dupes: { minClassLength: 60, minFiles: 3, baseline: "ui-dupes.baseline.json" },
+  },
 
   // Files the browser rules apply to.
   clientFiles: ["frontend/src/**/*.{ts,tsx}"],
