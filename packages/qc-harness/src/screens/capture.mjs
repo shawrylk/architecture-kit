@@ -5,6 +5,7 @@ import { PNG } from "pngjs";
 import { browserSession, seedSession } from "./auth.mjs";
 import { compareImages, gallery, sortReport } from "./compare.mjs";
 import { stableCapture, findRegions, regionCrop, boxPair } from "./regions.mjs";
+import { collectInventory, diffInventory, inventoryBox } from "./inventory.mjs";
 
 /** Branch: a typo must never silently skip a requested screen. */
 export function selectScreens(screens, only) {
@@ -68,6 +69,8 @@ export async function capturePage(session, target, route, width, height, file, t
   await page.mouse.move(0, 0);
   await page.waitForLoadState("networkidle", { timeout });
   await page.evaluate(() => document.fonts.ready);
+  const inventory = await collectInventory(page, [...(route.masks ?? []), ...(route.exclude ?? [])]);
+  writeJson(file.replace(/\.png$/, ".inventory.json"), inventory);
   const capture = () => page.screenshot({ animations: "disabled", caret: "hide", fullPage: false, mask: (route.masks ?? []).map(selector => page.locator(selector)), maskColor: "#808080", timeout }).then(buffer => PNG.sync.read(buffer));
   const full = await stableCapture(capture);
   writeFileSync(file, PNG.sync.write(full.image));
@@ -98,7 +101,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
       if (changed && changed !== name) {
         for (const screen of screens) for (const width of map.widths) {
           const relative = `${screen.name}/${name}@${width}.png`;
-          if (![relative, relative.replace(/\.png$/, ".layout.png"), relative.replace(/\.png$/, ".unstable.png")].every(file => existsSync(path.join(out, file))) || cache[relative] !== captureKey(target, screen.targets[name], width, height)) throw new Error(`Cached capture missing or stale: ${relative}; run both targets first`);
+          if (![relative, relative.replace(/\.png$/, ".layout.png"), relative.replace(/\.png$/, ".unstable.png"), relative.replace(/\.png$/, ".inventory.json")].every(file => existsSync(path.join(out, file))) || cache[relative] !== captureKey(target, screen.targets[name], width, height)) throw new Error(`Cached capture missing or stale: ${relative}; run both targets first`);
         }
         continue;
       }
@@ -136,9 +139,17 @@ export async function captureScreens(map, options, { chromium, say = console.err
         region.crop = `${screen.name}/region-${region.id}@${width}.png`;
         writeFileSync(path.join(out, region.crop), PNG.sync.write(regionCrop(...images, region.box)));
       }
+      const inventories = targets.map(name => readJson(path.join(out, screen.name, `${name}@${width}.inventory.json`), []));
+      const inventoryFindings = diffInventory(...inventories);
+      for (const finding of inventoryFindings) {
+        finding.id += regions.length;
+        finding.box = inventoryBox(finding, images[0].width, images[0].height);
+        finding.crop = `${screen.name}/inventory-${finding.id}@${width}.png`;
+        writeFileSync(path.join(out, finding.crop), PNG.sync.write(regionCrop(...images, finding.box)));
+      }
       const relative = `${screen.name}/pair@${width}.png`;
-      writeFileSync(path.join(out, relative), PNG.sync.write(boxPair(pair, regions)));
-      fresh.push({ screen: screen.name, width, targets, ...diff, regions, pair: relative });
+      writeFileSync(path.join(out, relative), PNG.sync.write(boxPair(pair, [...regions, ...inventoryFindings])));
+      fresh.push({ screen: screen.name, width, targets, ...diff, regions, inventoryFindings, pair: relative });
     }
     const reportFile = path.join(out, "report.json");
     const report = only ? mergeReport(readJson(reportFile, []), fresh) : sortReport(fresh);

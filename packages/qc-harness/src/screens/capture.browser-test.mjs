@@ -8,6 +8,23 @@ import { chromium } from "playwright";
 import { PNG } from "pngjs";
 import { capturePage } from "./capture.mjs";
 import { findRegions } from "./regions.mjs";
+import { collectInventory, diffInventory } from "./inventory.mjs";
+
+test("accessibility inventory excludes table data and masked controls", async () => {
+  const browser = await chromium.launch({ channel: "chrome", headless: true });
+  try {
+    const page = await browser.newPage();
+    const content = value => `<label>Email<input placeholder="Your email"></label><button aria-label="Next">Go</button><table><tr><th>Title</th></tr><tr><td>${value}</td></tr></table><section id="masked"><button>Hidden</button></section>`;
+    await page.setContent(content("First row"));
+    const first = await collectInventory(page, ["#masked"]);
+    await page.setContent(content("Other data"));
+    const second = await collectInventory(page, ["#masked"]);
+    assert.deepEqual(first.map(item => item.role), ["textbox", "button", "columnheader"]);
+    assert.equal(first[0].name, "Email");
+    assert.equal(first[0].placeholder, "Your email");
+    assert.deepEqual(diffInventory(first, second), []);
+  } finally { await browser.close(); }
+});
 
 test("different text in the same box produces identical layout images", async () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), "qc-screens-layout-"));
