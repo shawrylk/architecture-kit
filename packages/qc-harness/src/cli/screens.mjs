@@ -5,11 +5,14 @@ import { captureScreens } from "../screens/capture.mjs";
 import { authStatus, targetSession } from "../screens/stack-auth.mjs";
 import { applyCatalog, openScreen } from "../screens/catalog.mjs";
 import { runDiscovery } from "./screens-discovery.mjs";
+import { setupLocal } from "../screens/setup.mjs";
 
-export const USAGE = `qc screens [run [names...]|list|open <name>|auth status]
+export const USAGE = `qc screens [run [names...]|list|open <name>|auth status|setup]
+  qc screens discover|pair|coverage|scaffold --map <json> --out <dir>
   --map <json> [--targets <left,right>] [--target <name>] [--out <dir>]
   [--only <names>] [--changed <target>] [--height <pixels>]
   [--timeout <milliseconds>] [--sign-in-timeout <milliseconds>]
+  [--depth <levels>] [--max-states <count>] [--allow-writes] [--catalog-out <dir>]
 
 Chrome must be installed. Sessions stay in ~/.qc/screens.
 Catalog modules live outside the kit. open waits until you close its window.`;
@@ -31,7 +34,13 @@ export async function runScreens(argv, { say = console.error } = {}) {
       return 0;
     }
     const { chromium } = await import("playwright");
-    if (["discover", "pair", "coverage", "scaffold"].includes(command)) return runDiscovery(command, map, values, { chromium, say });
+    if (command === "setup") {
+      const target = map.targets[values.target];
+      if (!target) throw new Error("Choose --target from the map");
+      say(JSON.stringify(await setupLocal(target, values.target, { chromium, timeout: Number(values.timeout ?? 15000), signInTimeout: Number(values["sign-in-timeout"] ?? 180000), say })));
+      return 0;
+    }
+    if (["discover", "pair", "coverage", "scaffold"].includes(command)) return await runDiscovery(command, map, values, { chromium, say });
     const timeout = Number(values.timeout ?? 15000);
     const signInTimeout = Number(values["sign-in-timeout"] ?? 180000);
     if (authCommand) {

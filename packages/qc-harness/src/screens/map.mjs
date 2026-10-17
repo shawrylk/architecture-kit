@@ -56,6 +56,7 @@ export function parseMap(input) {
 export function loadMap(file, { targets } = {}) {
   const map = parseMap(resolveStackTargets(JSON.parse(readFileSync(file, "utf8")), targets));
   if (map.catalog) map.catalog = path.resolve(path.dirname(file), map.catalog);
+  for (const target of Object.values(map.targets)) if (target.setup) target.setup = path.resolve(path.dirname(file), target.setup);
   for (const target of Object.values(map.targets)) if (target.auth.mode === "seed-login") target.auth.seedFile = path.resolve(path.dirname(file), target.auth.seedFile);
   return map;
 }

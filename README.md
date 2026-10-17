@@ -1321,6 +1321,27 @@ qc prose --pr-body-event                  # also the body of the pull request in
 `paths` and `exempt` are globs over markdown files. The ADR log, `adr.root` and `docs.decisions`, is always
 exempt. `valeConfig` names the repository's Vale config and defaults to `.vale/.vale.ini`.
 
+## Prepare local screen fixtures
+
+`qc screens setup --map screens.json --target legacy-local` prepares matching content through the application's own UI.
+The command accepts only localhost targets and stops when the application does not answer.
+
+Set the target's `setup` property to a TypeScript or JavaScript module path relative to the map.
+The module's default export supplies `find(page, ctx)` and `create(page, ctx)` for each fixture kind.
+The kinds are `project`, `folder`, `photo`, `drawing`, `document`, `blackboard`, `inspection`, and `delivery`.
+
+Each function returns the resource id visible in the UI, or `find` returns `null` when the resource is absent.
+The command checks the UI again on each run and saves each confirmed id under `~/.qc/screens/fixtures-<target>.json`.
+
+`ctx.baseUrl` identifies the target, and `ctx.fixtures` contains the confirmed ids.
+`ctx.item` supplies the shared name, beginning with project `QC-PARITY-TEST`.
+`ctx.assets` supplies deterministic photo, drawing PDF, and document paths for upload controls.
+Use `ctx.step(name, action)` to name each UI action and capture failures.
+
+Form login reads `QC_TEST_EMAIL` and `QC_TEST_PASSWORD` from `~/.qc/accounts.env`.
+Auth0 login uses the real `/bff/login` flow and the saved session.
+The tool types credentials only into localhost forms.
+
 ## Tests
 
 ```bash
