@@ -666,6 +666,43 @@ per gate and per rule.
 A test fails if a switch ever stops reaching the runner, so the config cannot quietly lie about what
 it controls.
 
+### Find a component before writing one
+
+`qc ui` keeps a catalog of the exported React components and finds the one a new file would duplicate.
+Every path comes from the `ui` block of `qc.config.json`; the defaults are `componentRoots`
+(`frontend/src/platform/ui` and `frontend/src/features/*/components`), `layers` (a `primitive` and a
+`pattern` folder), `catalog` (`docs/ui-catalog.md`), `classCallees` (`cn`, `clsx`, `cva`, `twMerge`) and
+`dupes` (`minClassLength` 60, `minFiles` 3, a baseline file). A repository with no files under the roots
+gets no catalog and no failure. The tools read TSX with the `typescript` package of the repository, an
+optional peer dependency.
+
+```bash
+npx qc ui catalog [--json] [--check] [--baseline]  # write docs/ui-catalog.md, one table per layer
+npx qc ui find <words...>                          # the top 8 entries, as name — path — description
+npx qc ui dupes [--json] [--baseline]              # repeated class strings, names and near-equal JSX trees
+npx qc ui codemod --map '{"text-[11px]":"text-2xs"}' [--write]
+npx qc ui codemod --suggest                        # arbitrary-value tokens, with the @theme variable that holds the value
+```
+
+- The catalog lists each exported component with its layer, props and the first sentence of its JSDoc. It is
+  generated: a generated marker covers it, so the generated-file guard refuses a hand edit. A repository's
+  codegen writes it by calling `writeCatalog(config)` from `architecture-harness/ui/scan`.
+- `find` ranks entries by the tokens they share with the words: the camel-case parts of the name weigh most,
+  then the description and the prop names.
+- The `ui-catalog` gate (off by default) fails an exported component with no JSDoc sentence, naming `path:line`,
+  and a stale catalog. `qc ui catalog --baseline` writes `ui-catalog.baseline.json` with the components that
+  predate the gate. A baseline entry that no longer fails is an error, so the baseline only shrinks.
+- The `ui-dupes` gate (off by default) fails a finding the baseline does not hold, and a baseline entry that no
+  longer occurs. The findings are: the same class string of `minClassLength` characters in `minFiles` files, two
+  exported components of one name in different files, and JSX trees of four elements or more with one
+  element skeleton and a Jaccard index of 0.8 or more over their class tokens, in different files.
+  Class strings compare by their sorted tokens.
+- The `PreToolUse` hook `ui-reuse-hint` runs on a `Write` of a new `.tsx` file under the roots. It ranks the
+  catalog by the words of the file name and its exported names, and adds the top 5 as context. It never blocks.
+- `codemod` rewrites whole class tokens, keeping variant prefixes and the `!` modifier. It touches only string
+  literals in `className`, in calls to `classCallees`, and in `cva` variant objects, with the static parts of
+  template literals, and it edits by source range, so formatting stays. It is a dry run until `--write`.
+
 ### Guard IME composition in text entry
 
 `qc/ime-safe-key` reads `onKeyDown` and `onKeyUp` on `input`, `textarea`, a `contentEditable`
