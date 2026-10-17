@@ -207,6 +207,8 @@ test("hooks.json runs the guard on Agent, SubagentStart and SubagentStop", () =>
   const matchersOf = (entries) =>
     (entries ?? []).filter((entry) => entry.hooks.some((hook) => hook.command.includes("dispatch-guard.mjs"))).map((entry) => entry.matcher);
   assert.deepEqual(matchersOf(hooks.PreToolUse), ["Agent"]);
+  assert.deepEqual(matchersOf(hooks.PostToolUse), ["TaskStop"]);
+  assert.deepEqual(matchersOf(hooks.SessionStart), [undefined]);
   assert.deepEqual(matchersOf(hooks.SubagentStart), [undefined]);
   assert.deepEqual(matchersOf(hooks.SubagentStop), [undefined]);
 });
@@ -246,4 +248,32 @@ test("a dispatch with no tool_use_id still claims its own slot", (t) => {
   assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
   assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
   assert.match(reasonOf(decide(agentCall(ws.on, implementer), ws.tmp)) ?? "", /all 2 implementer slots/);
+});
+
+const taskStop = (cwd, taskId) => ({
+  session_id: "session-aaaa",
+  cwd,
+  hook_event_name: "PostToolUse",
+  tool_name: "TaskStop",
+  tool_input: { task_id: taskId },
+});
+
+test("a TaskStop frees the slot of the agent it stopped, and a TaskStop of another task frees nothing", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(slotCall(ws.on, "use-a"), ws.tmp), null);
+  decide(agentEvent(ws.on, "agent-a", "SubagentStart"), ws.tmp);
+  assert.equal(decide(taskStop(ws.on, "shell-9"), ws.tmp), null);
+  assert.notEqual(reasonOf(decide(slotCall(ws.on, "use-b"), ws.tmp)), null);
+  assert.match(decide(taskStop(ws.on, "agent-a"), ws.tmp)?.hookSpecificOutput?.additionalContext ?? "", /freed the implementer slot/);
+  assert.equal(decide(slotCall(ws.on, "use-b"), ws.tmp), null);
+});
+
+test("a session startup or resume frees every slot of the session, and a compaction frees none", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(slotCall(ws.on, "use-a"), ws.tmp), null);
+  const start = (source) => ({ session_id: "session-aaaa", cwd: ws.on, hook_event_name: "SessionStart", source });
+  assert.equal(decide(start("compact"), ws.tmp), null);
+  assert.notEqual(reasonOf(decide(slotCall(ws.on, "use-b"), ws.tmp)), null);
+  assert.equal(decide(start("resume"), ws.tmp), null);
+  assert.equal(decide(slotCall(ws.on, "use-b"), ws.tmp), null);
 });
