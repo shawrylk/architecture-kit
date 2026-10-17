@@ -40,7 +40,8 @@
     "./preset": "./src/eslint/preset.mjs",
     "./config": "./src/config.mjs",
     "./gates/*": "./src/gates/*.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./ui/*": "./src/ui/*.mjs"
   },
   "files": [
     "src",
@@ -58,7 +59,8 @@
     "eslint-plugin-sonarjs": ">=3",
     "@commitlint/lint": ">=19",
     "@commitlint/config-conventional": ">=19",
-    "yaml": ">=2"
+    "yaml": ">=2",
+    "typescript": ">=5"
   },
   "peerDependenciesMeta": {
     "@typescript-eslint/eslint-plugin": {
@@ -80,6 +82,9 @@
       "optional": true
     },
     "yaml": {
+      "optional": true
+    },
+    "typescript": {
       "optional": true
     }
   },

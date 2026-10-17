@@ -33,6 +33,8 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 
 - At session start, Codex rewrites the progress file to at most 40 lines: the pushed head, one line for each done item, the first unfinished item, and the open questions.
 - It never re-verifies a finished item, never repeats a failed probe, and reads only the line ranges the item needs.
+- It loads no skill and reads no `SKILL.md` or plugin file: the runner turns off every plugin the user's Codex config enables, and `superpowers@claude-plugins-official`, with `-c`.
+- It searches with `rg -n -m 20` and a path, reads at most 150 lines per call, limits any command that can print over 4,000 characters, never runs `gh issue view`, and uses `git status --short` and `git log -n 5 --oneline`. The runner also sets `tool_output_token_limit=4000` and `model_auto_compact_token_limit` from `codex.compactTokens` (default 300000).
 - It starts no helper agents, and the runner turns off the Codex `multi_agent` and `multi_agent_v2` features with `-c`. It runs no broad audit, Playwright, or full gate: the touched tests, and the local check once before the push.
 - It does one item for each session, and keeps the report under 15 lines.
 - A lean rule never drops a security, tenant, data, or correctness check that the brief asks for.
@@ -47,14 +49,15 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 Run this in the background from the main checkout. The form is for PowerShell:
 
 ```powershell
-npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 *> <wrapper.log>; "exit $LASTEXITCODE"
+npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 *> <wrapper.log>
 ```
 
 - In a POSIX shell, use this form:
 
   ```bash
-  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 > <wrapper.log> 2>&1; echo "exit $?"
+  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 > <wrapper.log> 2>&1
   ```
+- The runner writes `exit <code>` as its last stdout line on every exit path, so the wrapper log carries it and the forms need no `echo`. `qc watch --codex` reads that line. It decodes the UTF-16LE file that PowerShell 5.1 writes for `*>`.
 - Never call `codex exec` directly. Each run of the runner is a fresh `codex exec` in the worktree, with full access. Its prompt is the brief plus a note that points at the progress file.
 - Start Codex only inside a worktree from `qc worktree add`. Never start it in the main checkout, the scratchpad, or the home folder. A run outside a repository can make a code indexer read the whole home folder.
 - Use `--max-runs` from 10 to 20. Each run continues from the progress file.
@@ -77,11 +80,23 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 - Keep a `checkpoint.md` in the scratchpad. Update it at each clean break: the head, the CI state, the open agents, and each decision.
 - Cap every subagent reply: "a `VERDICT` line and at most 25 lines". The subagent writes its full output to a scratchpad file.
-- Poll CI with one background command for each head, then wait for its notification:
+- Wait with one background `qc watch` command, then wait for its notification. It blocks in a shell, so the wait costs no model tokens, and its exit is the event:
 
   ```bash
-  sleep 60; gh pr checks <n> --watch --interval 60 >/dev/null 2>&1; gh pr view <n> --json headRefOid,statusCheckRollup --jq '.headRefOid, (.statusCheckRollup[] | "\(.name): \(.conclusion // .status)")'
+  npx qc watch --pr <n> --codex <wrapper.log> --run <workflow>@<branch> --max 55
   ```
+
+  Repeat a flag to watch more items. It prints one line, `EVENT <item> <state> <head or code>`. Re-arm it after each event.
+
+  A `--run` counts only a run of the branch's current head, read at each poll. Add `@<sha>` (`ci.yml@feat/x@<sha>`) to pin the head. A `gh` error writes `watch: gh failed: <first line>` to stderr, and the wait goes on.
+
+  | Exit | Meaning |
+  |---|---|
+  | 0 | The checks on the head all passed, the Codex wrapper wrote an `exit ` line, or the run of the armed head succeeded |
+  | 1 | Bad input: an unknown flag, a missing value, or no item. Fix the command. |
+  | 4 | The bound passed (55 minutes by default). Re-arm. |
+  | 5 | A check or a run failed |
+  | 6 | A job stayed `QUEUED` past 15 minutes |
 
 - Never poll in a loop of tool calls, and never send "are you done?" messages.
 - If Claude Code stops a background command for low memory, do not start it again. Poll in the foreground with a `timeout` instead.
