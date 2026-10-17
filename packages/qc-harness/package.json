@@ -39,6 +39,7 @@
     "./eslint": "./src/eslint/index.mjs",
     "./preset": "./src/eslint/preset.mjs",
     "./config": "./src/config.mjs",
+    "./screens": "./src/screens/catalog.mjs",
     "./gates/*": "./src/gates/*.mjs",
     "./package.json": "./package.json",
     "./ui/*": "./src/ui/*.mjs"

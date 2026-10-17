@@ -33,8 +33,8 @@ export function applyStackLogin(target, manifest) {
 }
 
 /** Pipeline: resolve current stack URLs before validating the screen map. */
-export function resolveStackTargets(input) {
-  for (const target of Object.values(input.targets)) if (target.stack) {
+export function resolveStackTargets(input, names) {
+  for (const [name, target] of Object.entries(input.targets)) if (target.stack && (!names || names.includes(name))) {
     const { manifest } = loadStack(target.stack);
     target.baseUrl = new URL(healthUrls(manifest)[0]).origin;
     applyStackLogin(target, manifest);

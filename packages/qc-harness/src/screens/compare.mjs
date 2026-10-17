@@ -33,6 +33,8 @@ const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({ "&": "&am
 
 /** Fragment: a static gallery needs neither a server nor a script. */
 export function gallery(rows) {
+  const failed = rows.filter(row => row.error).map(row => `<p>${escapeHtml(row.screen)}: ${escapeHtml(row.error.message)}${row.error.screenshot ? ` <a href="${escapeHtml(row.error.screenshot)}">Failure screenshot</a>` : ""}</p>`).join("");
+  if (failed) return gallery(rows.filter(row => !row.error)).replace("<h1>Screen pairs</h1>", `<h1>Screen pairs</h1>${failed}`);
   const crops = rows.flatMap(row => [...(row.inventoryFindings ?? []), ...(row.regions ?? [])].filter(region => region.crop).map(region => `<figure><figcaption>${escapeHtml(row.screen)} @ ${row.width}px — ${escapeHtml(region.kind)} ${region.id}</figcaption><a href="${escapeHtml(region.crop)}"><img loading="lazy" src="${escapeHtml(region.crop)}" alt="${escapeHtml(region.kind)} region ${region.id}"></a></figure>`)).join("");
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Screen pairs</title><style>body{font:16px system-ui;margin:24px;background:#fafafa;color:#222}img{max-width:100%;border:1px solid #ccc}figure{margin:24px 0}figcaption{margin:8px 0}</style><h1>Screen pairs</h1><p>Left: baseline. Right: comparison, with differences in red.</p>${crops}${rows.map(row => `<figure><figcaption>${escapeHtml(row.screen)} @ ${row.width}px: ${row.diffPercent}% (${escapeHtml(row.targets.join(" → "))})</figcaption><a href="${escapeHtml(row.pair)}"><img loading="lazy" src="${escapeHtml(row.pair)}" alt="${escapeHtml(row.screen)} pair at ${row.width} pixels"></a></figure>`).join("")}</html>`;
 }

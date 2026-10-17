@@ -6,6 +6,7 @@ import { targetSession } from "./stack-auth.mjs";
 import { compareImages, gallery, sortReport } from "./compare.mjs";
 import { stableCapture, findRegions, regionCrop, boxPair } from "./regions.mjs";
 import { collectInventory, diffInventory, inventoryBox } from "./inventory.mjs";
+import { openScreen } from "./catalog.mjs";
 
 /** Branch: a typo must never silently skip a requested screen. */
 export function selectScreens(screens, only) {
@@ -42,11 +43,12 @@ function writeJson(file, value) {
 }
 
 /** Pipeline: wait for page resources before recording the viewport. */
-export async function capturePage(session, target, route, width, height, file, timeout) {
+export async function capturePage(session, target, route, width, height, file, timeout, navigation = {}) {
   const { page } = session;
   await page.setViewportSize({ width, height });
-  const expected = new URL(route.path, target.baseUrl);
-  const response = await page.goto(expected.href, { waitUntil: "domcontentloaded", timeout });
+  if (route.open) await openScreen(page, target, route, { ...navigation, timeout });
+  const expected = new URL(route.path ?? page.url(), target.baseUrl);
+  const response = route.open ? null : await page.goto(expected.href, { waitUntil: "domcontentloaded", timeout });
   if (response && response.status() >= 400) throw new Error(`Capture received HTTP ${response.status()}`);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
@@ -84,7 +86,7 @@ export async function capturePage(session, target, route, width, height, file, t
 }
 
 /** Pipeline: authenticate, capture each viewport, compare, and publish the gallery. */
-export async function captureScreens(map, options, { chromium, say = console.error } = {}) {
+export async function captureScreens(map, options, { chromium, say = console.error, sessionFactory = targetSession } = {}) {
   const { targets, out, only, changed, timeout = 15000, signInTimeout = 180000, height = 900 } = options;
   if (targets.length !== 2 || targets.some(name => !map.targets[name])) throw new Error("Choose two targets from the map");
   if (changed && !targets.includes(changed)) throw new Error("--changed must name one of the two targets");
@@ -95,6 +97,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
   const cache = readJson(cacheFile, {});
   const sessions = new Map();
   const fresh = [];
+  const failures = new Map();
   try {
     for (const name of targets) {
       const target = map.targets[name];
@@ -105,7 +108,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
         }
         continue;
       }
-      const session = await targetSession(chromium, target, { timeout, signInTimeout, say });
+      const session = await sessionFactory(chromium, target, { timeout, signInTimeout, say });
       sessions.set(name, session);
       await session.context.route("**/*", async route => {
         const request = route.request();
@@ -116,7 +119,13 @@ export async function captureScreens(map, options, { chromium, say = console.err
         mkdirSync(path.join(out, screen.name), { recursive: true });
         for (const width of map.widths) {
           const relative = `${screen.name}/${name}@${width}.png`;
-          await capturePage(session, target, screen.targets[name], width, height, path.join(out, relative), timeout);
+          try {
+            await capturePage(session, target, screen.targets[name], width, height, path.join(out, relative), timeout, { targetName: name, screenName: screen.name, out });
+          } catch (error) {
+            failures.set(`${screen.name}@${width}`, { target: name, step: error.step ?? "Capture", screenshot: error.screenshot, message: error.message });
+            say(error.message);
+            continue;
+          }
           cache[relative] = captureKey(target, screen.targets[name], width, height);
           writeJson(cacheFile, cache);
           say(`Captured ${relative}`);
@@ -126,6 +135,8 @@ export async function captureScreens(map, options, { chromium, say = console.err
       sessions.delete(name);
     }
     for (const screen of screens) for (const width of map.widths) {
+      const error = failures.get(`${screen.name}@${width}`);
+      if (error) { fresh.push({ screen: screen.name, width, targets, error, regions: [], inventoryFindings: [] }); continue; }
       const images = targets.map(name => PNG.sync.read(readFileSync(path.join(out, screen.name, `${name}@${width}.png`))));
       const { pair, ...diff } = compareImages(...images);
       const layouts = targets.map(name => PNG.sync.read(readFileSync(path.join(out, screen.name, `${name}@${width}.layout.png`))));
