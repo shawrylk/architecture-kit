@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { PNG } from "pngjs";
-import { browserSession, seedSession } from "./auth.mjs";
+import { targetSession } from "./stack-auth.mjs";
 import { compareImages, gallery, sortReport } from "./compare.mjs";
 import { stableCapture, findRegions, regionCrop, boxPair } from "./regions.mjs";
 import { collectInventory, diffInventory, inventoryBox } from "./inventory.mjs";
@@ -105,7 +105,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
         }
         continue;
       }
-      const session = await (target.auth.mode === "seed-login" ? seedSession(chromium, target, { timeout }) : browserSession(chromium, target, { timeout, signInTimeout, say }));
+      const session = await targetSession(chromium, target, { timeout, signInTimeout, say });
       sessions.set(name, session);
       await session.context.route("**/*", async route => {
         const request = route.request();

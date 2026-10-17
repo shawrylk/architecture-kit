@@ -31,6 +31,8 @@ const USAGE = `qc — architecture gates
                            block until the first event among the items, print one EVENT line; exit 0 done, 4 bound (default 55 minutes), 5 failed, 6 queued past 15 minutes
   qc screens --map <json> --targets <left,right> --out <dir> [--only <names>] [--changed <target>]
                            capture authenticated screen pairs, compare pixels, and write a static gallery
+  qc stack up|down|status [names...] [--timeout <milliseconds>]
+                           run repository plugins from ~/.qc/stacks.json
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
@@ -56,6 +58,10 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "stack") {
+    const { runStack } = await import("./stack.mjs");
+    process.exit(await runStack(rest));
+  }
   if (command === "screens") {
     const { runScreens } = await import("./screens.mjs");
     process.exit(await runScreens(rest));

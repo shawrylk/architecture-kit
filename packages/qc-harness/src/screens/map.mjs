@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { resolveStackTargets } from "./stack-auth.mjs";
 
 const namePattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 const text = (value) => typeof value === "string" && value.length > 0;
@@ -24,6 +25,9 @@ export function parseMap(input) {
     requireValue(auth && text(auth.signedIn), "auth.signedIn must identify a signed-in page");
     if (auth.mode === "browser-session") {
       requireValue(text(auth.domain) && /^[a-z0-9]+(?:[.-][a-z0-9]+)*$/i.test(auth.domain), "Invalid Auth0 domain");
+    } else if (auth.mode === "form") {
+      requireLocalhost(target.baseUrl);
+      for (const field of ["userSelector", "passwordSelector", "submitSelector"]) requireValue(text(auth[field]), `form requires ${field}`);
     } else {
       requireValue(auth.mode === "seed-login", "Unknown auth mode");
       requireLocalhost(target.baseUrl);
@@ -50,7 +54,7 @@ export function parseMap(input) {
 
 /** Resource: resolve a seed file relative to its map. */
 export function loadMap(file) {
-  const map = parseMap(JSON.parse(readFileSync(file, "utf8")));
+  const map = parseMap(resolveStackTargets(JSON.parse(readFileSync(file, "utf8"))));
   for (const target of Object.values(map.targets)) if (target.auth.mode === "seed-login") target.auth.seedFile = path.resolve(path.dirname(file), target.auth.seedFile);
   return map;
 }

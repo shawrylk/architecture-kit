@@ -62,7 +62,7 @@ async function saveState(context, file) {
 }
 
 /** Pipeline: reuse state, then Chrome's copied profile, then an interactive sign-in. */
-export async function browserSession(chromium, target, { timeout = 15000, signInTimeout = 180000, say = console.error, chromeProfile } = {}) {
+export async function browserSession(chromium, target, { timeout = 15000, signInTimeout = 180000, say = console.error, chromeProfile, allowInteractive = true, headed = false } = {}) {
   const root = privateRoot();
   const file = path.join(root, "state", `${target.auth.domain}.json`);
   const launch = async (method) => {
@@ -71,10 +71,10 @@ export async function browserSession(chromium, target, { timeout = 15000, signIn
     try {
       if (method === "profile") {
         const profile = copyChromeProfile(root, chromeProfile);
-        context = await chromium.launchPersistentContext(profile.directory, { channel: "chrome", headless: false, deviceScaleFactor: 1, reducedMotion: "reduce", args: [`--profile-directory=${profile.profileName}`] });
+        context = await chromium.launchPersistentContext(profile.directory, { channel: "chrome", headless: !headed, deviceScaleFactor: 1, reducedMotion: "reduce", args: [`--profile-directory=${profile.profileName}`] });
       } else {
         if (method === "state" && !existsSync(file)) return null;
-        browser = await chromium.launch({ channel: "chrome", headless: method !== "headed" });
+        browser = await chromium.launch({ channel: "chrome", headless: !headed && method !== "headed" });
         context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", ...(method === "state" ? { storageState: file } : {}) });
       }
       if (method === "headed") say("Sign in once in the Chrome window. The tool waits for the signed-in page.");
@@ -88,7 +88,7 @@ export async function browserSession(chromium, target, { timeout = 15000, signIn
       return null;
     }
   };
-  return firstSignedIn([() => launch("state"), () => launch("profile"), () => launch("headed")]);
+  return firstSignedIn(allowInteractive ? [() => launch("state"), () => launch("profile"), () => launch("headed")] : [() => launch("state")]);
 }
 
 /** Resource: read only named fields, without evaluating seed code. */
@@ -113,25 +113,33 @@ export function seedFields(auth) {
 }
 
 /** Pipeline: fill credentials only while every request stays on loopback. */
-export async function seedSession(chromium, target, { timeout = 15000 } = {}) {
+export async function seedSession(chromium, target, { timeout = 15000, credentials, savedOnly = false, headed = false } = {}) {
   requireLocalhost(target.baseUrl);
-  const browser = await chromium.launch({ channel: "chrome", headless: true });
-  const context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce" });
+  const file = path.join(privateRoot(), `local-${new URL(target.baseUrl).port || "80"}.json`);
+  if (savedOnly && !existsSync(file)) throw new Error("No saved local session");
+  const browser = await chromium.launch({ channel: "chrome", headless: !headed });
+  const context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", ...(existsSync(file) ? { storageState: file } : {}) });
   try {
     await context.route("**/*", async route => {
       try { requireLocalhost(route.request().url()); } catch { await route.abort(); return; }
       await route.continue();
     });
+    if (savedOnly) {
+      const session = await reachesSignedIn(context, { ...target, auth: { ...target.auth, path: target.auth.checkPath ?? "/projects" } }, timeout);
+      await saveState(context, file);
+      return { ...session, close: () => browser.close() };
+    }
     const page = await context.newPage();
     await page.goto(new URL(target.auth.path ?? "/login", target.baseUrl).href, { waitUntil: "domcontentloaded", timeout });
     requireLocalhost(page.url());
-    const { user, password } = seedFields(target.auth);
+    const { user, password } = credentials ?? seedFields(target.auth);
     await page.locator(target.auth.userSelector).fill(user, { timeout });
     requireLocalhost(page.url());
     await page.locator(target.auth.passwordSelector).fill(password, { timeout });
     requireLocalhost(page.url());
     await page.locator(target.auth.submitSelector).click({ timeout });
     await page.locator(target.auth.signedIn).first().waitFor({ state: "visible", timeout });
+    await saveState(context, file);
     return { context, page, close: () => browser.close() };
   } catch {
     await browser.close();
