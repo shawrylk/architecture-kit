@@ -8,6 +8,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { branchAt, branchesAt, gitOut, pathKey } from "./git-read.mjs";
 import { checkHandoffFile, handoffPathOf } from "./handoff-note.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
+import { scopeOf } from "./review-gate.mjs";
 import { dropReport, keepReport, reportOf } from "./report-stash.mjs";
 import { commitLookup, firstUserText, resolveNamedWorktree, workflowOfRepo } from "./workflow-place.mjs";
 import { agentTranscriptOf } from "./transcript-usage.mjs";
@@ -165,6 +166,7 @@ function recordStop({ workflow, call, session, agentId, role, worktree, verdict,
     appendRecord(workflow.ledger, { type: "stop", session, agentType: call.agent_type, agentId, role, ...place, ...handedOff });
     // A failed read keeps the sha as the reviewer wrote it, which the gates match by prefix.
     const sha = lookup?.sha ?? (lookup?.error ? verdict.sha : null);
+    const scope = role === "branch" ? scopeOf(firstUserText(agentTranscriptOf(call))) : null;
     if (verdict && sha) {
       appendRecord(workflow.ledger, {
         type: "verdict",
@@ -175,6 +177,7 @@ function recordStop({ workflow, call, session, agentId, role, worktree, verdict,
         sha,
         branch: lookup.sha ? branchOf(workflow, sha, { worktree, dispatches: dispatchesOf(records, session) }) : null,
         redChecked: RED_CHECKED_LINE.test(text),
+        ...(scope ? { scope } : {}),
       });
     }
     dropReport(session, agentId, tmp);

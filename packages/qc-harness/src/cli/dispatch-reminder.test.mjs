@@ -287,15 +287,15 @@ test("QC_ROLE=implementer replaces the controller note with the worker note", (t
   assert.ok(!text.includes("sdd-planner"));
 });
 
-test("the worker note says to work inline, run one test file, commit each task, and write ALL TASKS DONE", () => {
+test("the worker note says to work inline, write every task, check and commit once, and write ALL TASKS DONE", () => {
   for (const phrase of [
     /implementer under a controller/,
     /Work inline/,
     /Never use superpowers:subagent-driven-development, helper agents, task reviews, or fix-review rounds/,
     /failing test, run only that test file, make it pass/,
     /typecheck and lint on what you touched/,
-    /commit that task at once/,
-    /Do not run the full local gate or e2e; CI runs them/,
+    /Then run the local check once, make one commit, and push once./,
+    /Do not run the full gate \(`pnpm check`\) or e2e; CI runs them/,
     /append `ALL TASKS DONE` to the progress file the brief names/,
     /context gets large.*end the turn.*fresh session continues/,
   ]) {

@@ -223,3 +223,13 @@ test("the dispatch guard refuses a reviewer and claims no slot for it", (t) => {
   assert.equal(output.hookSpecificOutput.permissionDecision, "deny");
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /^Task gate:/);
 });
+
+test("branch reviews of distinct scopes run on one head, and a second review of one scope needs a Reviewed line", (t) => {
+  const ws = workspace(t);
+  const head = git(ws.linked, "rev-parse", "HEAD");
+  appendRecord(ws.ledger, { type: "verdict", kind: "branch", verdict: "APPROVED", sha: head, branch: "feat/1-x", scope: "photos" });
+  assert.equal(judge(ws, BRANCH_REVIEWER, reviewPrompt(ws, "Scope: Inspections")).refusal, null);
+  assert.match(judge(ws, BRANCH_REVIEWER, reviewPrompt(ws, "Scope: photos")).refusal ?? "", /scope "photos".*Reviewed: /s);
+  assert.match(judge(ws, BRANCH_REVIEWER, reviewPrompt(ws)).refusal ?? "", /Scope: <name>/);
+  assert.equal(judge(ws, BRANCH_REVIEWER, reviewPrompt(ws, `Scope: photos\nReviewed: ${head.slice(0, 7)}`)).refusal, null);
+});
