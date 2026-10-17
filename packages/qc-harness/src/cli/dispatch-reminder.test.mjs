@@ -295,7 +295,7 @@ test("the worker note says to work inline, write every task, check and commit on
     /failing test, run only that test file, make it pass/,
     /typecheck and lint on what you touched/,
     /Then run the local check once, make one commit, and push once./,
-    /Do not run the full local gate or e2e; CI runs them/,
+    /Do not run the full gate \(`pnpm check`\) or e2e; CI runs them/,
     /append `ALL TASKS DONE` to the progress file the brief names/,
     /context gets large.*end the turn.*fresh session continues/,
   ]) {

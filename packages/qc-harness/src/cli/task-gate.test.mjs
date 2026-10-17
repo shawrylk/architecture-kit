@@ -591,3 +591,24 @@ test("a Fix: review line passes a fresh implementer after CHANGES_REQUIRED and o
   assert.notEqual(refusalOf(ws), null);
   assert.equal(refusalOf(ws, "Fix: review"), null);
 });
+
+test("a Fix: review line is refused when no verdict on the branch asks for changes", (t) => {
+  const ws = workspace(t);
+  assert.match(refusalOf(ws, "Fix: review") ?? "", /Fix: review.*no review/s);
+  verdict(ws, commitIn(ws.linked, "b.txt"), "APPROVED", "branch");
+  assert.match(refusalOf(ws, "Fix: review") ?? "", /Fix: review.*no review/s);
+});
+
+test("a Fix: ci line is refused while CI on the head is unknown", (t) => {
+  const ws = workspace(t);
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  const unknown = () => ({ reason: null, unknown: "gh is not signed in" });
+  assert.match(judgeTask(dispatch(ws.main, taskPrompt(ws.linked, "Fix: ci")), ws.tmp, { ci: () => null, ciState: unknown }).refusal ?? "", /Fix: ci.*not known to be red/s);
+});
+
+test("a branch reviewer dispatch records its scope", (t) => {
+  const ws = workspace(t);
+  const prompt = `Review.\nWorktree: ${ws.linked}\nScope: Photos\n`;
+  const task = judgeTask(dispatch(ws.main, prompt, "architecture:sdd-branch-reviewer"), ws.tmp, { ci: () => null, ciState: () => ({ reason: null, unknown: null }) });
+  assert.equal(task.record?.scope, "photos");
+});

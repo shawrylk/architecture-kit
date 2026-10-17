@@ -423,7 +423,7 @@ With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker n
 controller note: work inline, never use subagent-driven development, helper agents, task reviews, or
 fix-review rounds, and per task write the failing test, run only that test file, run typecheck and
 lint on what you touched, and commit at once. It runs no full local gate and no e2e, since CI runs
-them. When every task is committed, it appends `ALL TASKS DONE` to the progress file. A session whose
+them. When every task is pushed, it appends `ALL TASKS DONE` to the progress file. A session whose
 context gets large writes notes and ends its turn, and the runner starts a fresh one. Without
 `QC_ROLE=implementer`, every hook behaves as before.
 

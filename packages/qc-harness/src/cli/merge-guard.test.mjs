@@ -502,3 +502,15 @@ test("a merge waits while the newest review of any scope on the head asks for ch
   records.push({ type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "f", scope: "a" });
   assert.equal(mergeVerdict([{ sha }], records, "branch").refusal, null);
 });
+
+test("a merge needs an APPROVED review of every scope dispatched on the branch", () => {
+  const sha = "c".repeat(40);
+  const records = [
+    { type: "dispatch", task: false, agentType: "sdd-branch-reviewer", branch: "f", head: sha, scope: "a" },
+    { type: "dispatch", task: false, agentType: "sdd-branch-reviewer", branch: "f", head: sha, scope: "b" },
+    { type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "f", scope: "a" },
+  ];
+  assert.match(mergeVerdict([{ sha }], records, "branch").refusal ?? "", /scope "b"/);
+  records.push({ type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "f", scope: "b" });
+  assert.equal(mergeVerdict([{ sha }], records, "branch").refusal, null);
+});

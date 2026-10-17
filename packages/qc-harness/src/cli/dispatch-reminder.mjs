@@ -31,7 +31,7 @@ export const WORKER_NOTE =
   "Never use superpowers:subagent-driven-development, helper agents, task reviews, or fix-review rounds. " +
   "Write every task in your brief: write the failing test, run only that test file, make it pass, " +
   "and run typecheck and lint on what you touched. Then run the local check once, make one commit, and push once. " +
-  "Do not run the full local gate or e2e; CI runs them. " +
+  "Do not run the full gate (`pnpm check`) or e2e; CI runs them. " +
   "When every task in the brief is pushed, append `ALL TASKS DONE` to the progress file the brief names. " +
   "If your context gets large, write notes to the progress file and end the turn: a fresh session continues.";
 

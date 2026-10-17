@@ -92,8 +92,20 @@ export function shaMatches(a, b) {
 }
 
 /** The newest verdict of one of `kinds` that names `sha`, or null. */
-export const latestVerdictFor = (records, sha, kinds) =>
-  records.findLast((record) => record.type === "verdict" && kinds.includes(record.kind) && shaMatches(record.sha, sha)) ?? null;
+export const latestVerdictFor = (records, sha, kinds, scope) =>
+  records.findLast(
+    (record) =>
+      record.type === "verdict" && kinds.includes(record.kind) && shaMatches(record.sha, sha) && (scope === undefined || (record.scope ?? null) === scope),
+  ) ?? null;
+
+/** The scopes of the branch reviews dispatched on the branch of any dispatch whose head is `sha`. */
+export function dispatchedScopesFor(records, sha) {
+  const branches = new Set(
+    records.filter((record) => record.type === "dispatch" && typeof record.branch === "string" && shaMatches(record.head, sha)).map((record) => record.branch),
+  );
+  const scopes = records.filter((record) => record.type === "dispatch" && branches.has(record.branch) && typeof record.scope === "string").map((record) => record.scope);
+  return [...new Set(scopes)];
+}
 
 /** The verdict that decides `sha`: the newest of each scope, where a CHANGES_REQUIRED wins. Null when none names it. */
 export function decidingVerdictFor(records, sha, kinds) {

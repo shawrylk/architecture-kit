@@ -10,7 +10,7 @@ import { handoffPathOf, resolveHandoff } from "./handoff-note.mjs";
 import { gitOutWithin, linkedWorktrees, pathKey } from "./git-read.mjs";
 import { appendRecord, latestVerdictFor, latestVerdictOn, readLedger, shaMatches } from "./ledger.mjs";
 import { resolveNamedWorktree, workflowOfRepo, worktreeNamed } from "./workflow-place.mjs";
-import { READ_MS, branchOfCheckout, briefCheck, defaultReads, headOf, reviewerCheck, unreadableRefusal } from "./review-gate.mjs";
+import { READ_MS, branchOfCheckout, briefCheck, defaultReads, headOf, reviewerCheck, scopeOf, unreadableRefusal } from "./review-gate.mjs";
 import { rememberSession, workflowAt } from "./workflow-settings.mjs";
 
 export { worktreeNamed };
@@ -85,14 +85,17 @@ export function continuedStop(records, branch, handoff) {
 function fixVerdict({ records, branch, head, fix, ciStatus }) {
   if (fix === "ci") {
     const state = ciStatus(head);
-    if (state.reason === null && state.unknown === null) {
-      return { refusal: `Task gate: \`Fix: ci\` names a CI fix, and CI on ${short(head)} is green. Dispatch the reviewer, or drop the line.` };
+    if (state.reason === null) {
+      const why = state.unknown === null ? "is green" : `is not known to be red (${state.unknown})`;
+      return { refusal: `Task gate: \`Fix: ci\` names a CI fix, and CI on ${short(head)} ${why}. A CI fix needs a red run. Dispatch the reviewer, or drop the line.` };
     }
     return { refusal: null, fix };
   }
   const last = latestVerdictOn(records, branch);
-  const note = last?.verdict === "CHANGES_REQUIRED" ? null : `Task gate: \`Fix: review\` on ${branch}, where no review in the ledger asks for changes; the dispatch runs as a fix.`;
-  return { refusal: null, fix, note };
+  if (last?.verdict !== "CHANGES_REQUIRED") {
+    return { refusal: `Task gate: \`Fix: review\` on ${branch}, where no review in the ledger asks for changes. Drop the line, or dispatch the reviewer first.` };
+  }
+  return { refusal: null, fix };
 }
 
 /**
@@ -200,7 +203,9 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
     }
     const checked = reviewerCheck({ type, prompt, review: workflow.review, base: workflow.base, records, root, branch, head, ciState: state, reads });
     if (checked.refusal) return refuse(checked.refusal);
-    return pass(workflow, { ...base, worktree: root, branch, head }, [ledgerNote, checked.note].filter(Boolean).join(" ") || null);
+    const scope = scopeOf(prompt);
+    const scoped = scope && workflow.review.reviewerTypes.branch.includes(type) ? { scope } : {};
+    return pass(workflow, { ...base, worktree: root, branch, head, ...scoped }, [ledgerNote, checked.note].filter(Boolean).join(" ") || null);
   }
   if (named === null) return pass(workflow, base, briefNote);
   const key = pathKey(abs);
