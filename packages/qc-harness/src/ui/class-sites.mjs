@@ -41,31 +41,89 @@ export function classSpans(ts, file, callees) {
   const callable = new Set(callees);
   const found = new Map();
 
-  function collect(node, skipKeys) {
-    if (ts.isTypeNode(node)) return;
-    let keys = skipKeys;
-    if (ts.isCallExpression(node)) {
-      const name = calleeName(ts, node.expression);
-      if (name !== null && callable.has(name)) keys = name === "cva";
-    }
-    const isKey = node.parent && ts.isPropertyAssignment(node.parent) && node.parent.name === node;
-    if (!(isKey && keys)) {
-      for (const span of spansOf(ts, file, node)) found.set(span.start, span);
-      if (ts.isTemplateExpression(node)) {
-        for (const span of node.templateSpans) collect(span.expression, keys);
-        return;
+  function take(node) {
+    for (const span of spansOf(ts, file, node)) found.set(span.start, span);
+  }
+
+  function propertyName(property) {
+    if (!ts.isPropertyAssignment(property)) return null;
+    const { name } = property;
+    return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
+  }
+
+  function propertyValue(object, wanted) {
+    if (!ts.isObjectLiteralExpression(object)) return [];
+    return object.properties.filter((p) => wanted.has(propertyName(p))).map((p) => p.initializer);
+  }
+
+  /**
+   * A node whose value is class text: a string, or an expression that yields one. A condition, a comparison
+   * operand and the argument of a call outside `classCallees` are not class text, so the walk stops there.
+   * `objectKeys` reads the keys of an object, as `clsx({ "p-2": on })` does.
+   */
+  function collectValue(node, objectKeys) {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      take(node);
+    } else if (ts.isTemplateExpression(node)) {
+      take(node);
+      for (const span of node.templateSpans) collectValue(span.expression, objectKeys);
+    } else if (
+      ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isSatisfiesExpression(node) ||
+      ts.isNonNullExpression(node) ||
+      ts.isJsxExpression(node)
+    ) {
+      if (node.expression) collectValue(node.expression, objectKeys);
+    } else if (ts.isConditionalExpression(node)) {
+      collectValue(node.whenTrue, objectKeys);
+      collectValue(node.whenFalse, objectKeys);
+    } else if (ts.isBinaryExpression(node)) {
+      const kind = node.operatorToken.kind;
+      const logical =
+        kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        kind === ts.SyntaxKind.BarBarToken ||
+        kind === ts.SyntaxKind.QuestionQuestionToken;
+      if (logical) collectValue(node.right, objectKeys);
+    } else if (ts.isArrayLiteralExpression(node)) {
+      for (const element of node.elements) collectValue(element, objectKeys);
+    } else if (ts.isObjectLiteralExpression(node) && objectKeys) {
+      for (const property of node.properties) {
+        if (ts.isPropertyAssignment(property) && ts.isStringLiteral(property.name)) take(property.name);
       }
     }
-    ts.forEachChild(node, (child) => collect(child, keys));
+  }
+
+  /** The class text of a `cva` call: the base, the variant values, and the class of each compound variant. */
+  function collectVariants(call) {
+    const [base, config] = call.arguments;
+    if (base) collectValue(base, false);
+    if (!config) return;
+    for (const variants of propertyValue(config, new Set(["variants"]))) {
+      if (!ts.isObjectLiteralExpression(variants)) continue;
+      for (const group of variants.properties) {
+        if (!ts.isPropertyAssignment(group) || !ts.isObjectLiteralExpression(group.initializer)) continue;
+        for (const option of group.initializer.properties) {
+          if (ts.isPropertyAssignment(option)) collectValue(option.initializer, false);
+        }
+      }
+    }
+    for (const compound of propertyValue(config, new Set(["compoundVariants"]))) {
+      if (!ts.isArrayLiteralExpression(compound)) continue;
+      for (const entry of compound.elements) {
+        for (const value of propertyValue(entry, CLASS_ATTRIBUTES)) collectValue(value, false);
+      }
+    }
   }
 
   function visit(node) {
     if (ts.isJsxAttribute(node) && CLASS_ATTRIBUTES.has(node.name.getText(file)) && node.initializer) {
-      collect(node.initializer, false);
+      collectValue(node.initializer, false);
     } else if (ts.isCallExpression(node)) {
       const name = calleeName(ts, node.expression);
-      if (name !== null && callable.has(name)) {
-        for (const argument of node.arguments) collect(argument, name === "cva");
+      if (name === "cva" && callable.has(name)) collectVariants(node);
+      else if (name !== null && callable.has(name)) {
+        for (const argument of node.arguments) collectValue(argument, true);
       }
     }
     ts.forEachChild(node, visit);

@@ -18,10 +18,10 @@ test("a string in a call to a class callee is a site, a string in another call i
   assert.deepEqual(tokens(`const a = cn("p-2", cond && "m-1", { "b-1": on }); const b = other("p-9");`), ["p-2", "m-1", "b-1"]);
 });
 
-test("a cva call yields its base and its variant strings but not its variant names", () => {
+test("a cva call yields its base and its variant strings but not its variant names or its default variants", () => {
   assert.deepEqual(
     tokens(`const v = cva("base-1", { variants: { size: { "sm": "text-xs", md: "text-sm" } }, defaultVariants: { size: "md" } });`),
-    ["base-1", "text-xs", "text-sm", "md"],
+    ["base-1", "text-xs", "text-sm"],
   );
 });
 

@@ -69,6 +69,39 @@ test("a cn call, a cva object and a clsx key are rewritten, and a string elsewhe
   );
 });
 
+test("a string that is not class text stays, and a real class beside it changes", () => {
+  const map = { shadow: "shadow-sm" };
+  const text = [
+    `const v = cva("p-1", {`,
+    `  variants: { elevation: { shadow: "shadow" } },`,
+    `  compoundVariants: [{ elevation: "shadow", class: "p-3" }],`,
+    `  defaultVariants: { elevation: "shadow" },`,
+    `});`,
+    `const a = cn(e === "shadow" && "p-2");`,
+    `const b = cn(lookup("shadow"));`,
+    `const c = cn(on ? "shadow" : "p-2", list.includes("shadow") || "shadow", ["shadow"], { "shadow": on });`,
+  ].join("\n");
+  const out = run(text, map);
+  assert.equal(
+    out.text,
+    [
+      `const v = cva("p-1", {`,
+      `  variants: { elevation: { shadow: "shadow-sm" } },`,
+      `  compoundVariants: [{ elevation: "shadow", class: "p-3" }],`,
+      `  defaultVariants: { elevation: "shadow" },`,
+      `});`,
+      `const a = cn(e === "shadow" && "p-2");`,
+      `const b = cn(lookup("shadow"));`,
+      `const c = cn(on ? "shadow-sm" : "p-2", list.includes("shadow") || "shadow-sm", ["shadow-sm"], { "shadow-sm": on });`,
+    ].join("\n"),
+  );
+});
+
+test("a compoundVariants class is rewritten and its selector is not", () => {
+  const out = run(`const v = cva("a", { compoundVariants: [{ size: "text-[11px]", className: "text-[11px]" }] });`);
+  assert.equal(out.text, `const v = cva("a", { compoundVariants: [{ size: "text-[11px]", className: "text-2xs" }] });`);
+});
+
 test("the static parts of a template literal are rewritten and a token cut by a substitution is not", () => {
   const out = run("const a = cn(`text-[11px] ${x} rounded-[4px] text-[11px]${y}`);");
   assert.equal(out.text, "const a = cn(`text-2xs ${x} rounded-sm text-[11px]${y}`);");
