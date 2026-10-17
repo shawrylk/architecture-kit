@@ -15,6 +15,10 @@ export const defaults = {
   featureDir: "features",
   publicFile: "index",
 
+  // `qc codex-implement`. `compactTokens` is the backstop that compacts a runaway session; one item
+  // runs in a fresh session and should finish under 200K.
+  codex: { compactTokens: 300000 },
+
   docs: {
     root: "docs",
     decisions: "docs/decisions.md",
@@ -514,7 +518,10 @@ export const dispatchDefaults = {
   models: {},
 };
 
-const roleModels = (planning, working, other) => ({
+// `watching` is the codex watcher, which only waits on a job. It defaults to `other`.
+const roleModels = (planning, working, other, watching = other) => ({
+  codex: watching,
+  "architecture:codex": watching,
   "sdd-planner": planning,
   "architecture:sdd-planner": planning,
   "sdd-branch-reviewer": planning,
@@ -528,7 +535,7 @@ const roleModels = (planning, working, other) => ({
 
 // The default `swarm.dispatch.models` of each runtime that can run a session. A runtime calls only its own models.
 export const runtimeModels = {
-  claude: roleModels(["opus"], ["sonnet"], ["sonnet", "haiku"]),
+  claude: roleModels(["opus"], ["sonnet"], ["sonnet", "haiku"], ["haiku", "sonnet"]),
   codex: roleModels(["gpt-6.1-sol"], ["gpt-6.1-sol"], ["gpt-6.1-sol"]),
 };
 

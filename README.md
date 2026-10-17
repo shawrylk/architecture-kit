@@ -268,7 +268,7 @@ Known limits:
 
 ### 9. Hold an orchestrator to the subagent workflow
 
-The plugin ships four subagent types for `superpowers:subagent-driven-development`:
+The plugin ships four subagent types for `superpowers:subagent-driven-development`, and one watcher for a Codex job:
 
 | Type | Model | Effort | Tools | Role |
 |---|---|---|---|---|
@@ -276,6 +276,9 @@ The plugin ships four subagent types for `superpowers:subagent-driven-developmen
 | `architecture:sdd-implementer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
 | `architecture:sdd-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
 | `architecture:sdd-branch-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
+| `architecture:codex` | `haiku` | none | `Bash` | starts one `qc codex-implement` job in the background and waits on it in bounded steps, so the job shows in the agent panel |
+
+The watcher is not a role: it writes no code and reads no source. Dispatch it with `model: haiku` (or `sonnet`); the guard accepts both for `architecture:codex`. Its wait step polls the wrapper file with `until grep -q`, because `tail -f | grep -m1` holds the pipe open and makes every step last the full timeout.
 
 Every role says `model: inherit` and `effort: high`, so a subagent runs on the model family of
 the session that dispatches it. The dispatch guard picks each role's models from the runtime:
@@ -401,21 +404,27 @@ controller, and the controller workflow does not change for it.
 npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
 ```
 
-The runner runs `codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false "<prompt>"`
+The runner runs `codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> "<prompt>"`
 with `QC_ROLE=implementer` in the environment and stdin closed, and appends the output to the log
 (`<progress>.log` by default). It reads the brief file again before each run, so an edit reaches the
-next session. The prompt is the brief, a note to read `git log --oneline`, `git status --short`, and the
+next session. The prompt is the brief, a note to read `git log -n 5 --oneline`, `git status --short`, and the
 progress file and to continue from the first unfinished task, and the lean rules: a progress file of at
-most 40 lines, no re-verifying, only the needed line ranges, no helper agents, no broad audit or full
+most 40 lines, no re-verifying, only the needed line ranges, no skill or plugin file, read caps, no helper agents, no broad audit or full
 gate, one item per session, and a report under 15 lines. A lean rule never drops a security, tenant,
 data, or correctness check that the brief asks for. It spawns `codex` with no shell, so the binary must be
 a real executable on `PATH`. After each run it restarts a fresh session until the progress file holds
 `ALL TASKS DONE`. It never calls Claude.
 
+The overrides apply to the runner's `codex exec` call only, so your interactive Codex sessions keep their plugins and skills:
+
+- `-c plugins."<name>".enabled=false` for every plugin that `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) enables, read at launch, and for `superpowers@claude-plugins-official` by name. The lean rules tell the run to load no skill.
+- `-c model_auto_compact_token_limit=<n>` with `n` from `codex.compactTokens` in the worktree's `qc.config.json` (default `300000`). It is a backstop for a runaway item: each item runs in a fresh session and should finish under 200K.
+- `-c tool_output_token_limit=4000`, so one command output never carries more than 4,000 tokens.
+
 | Exit | Meaning |
 |---|---|
 | `0` | the progress file says `ALL TASKS DONE` |
-| `1` | a bad argument, or `codex` did not start |
+| `1` | a bad argument, a bad `codex.compactTokens`, or `codex` did not start |
 | `2` | the tail of a run matches `usage limit`, `spend cap`, `rate limit`, or `hit your limit`: dispatch the same brief to an `architecture:sdd-implementer` (sonnet) |
 | `3` | `--max-runs` (default 12) runs ended and the progress file is not done |
 
