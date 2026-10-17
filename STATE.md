@@ -9,7 +9,7 @@ Both halves are built, and `quality-control-mono` now runs on them.
 | `.claude-plugin/`, `hooks/`, `skills/`, `commands/` | the Claude Code plugin `architecture` |
 | `packages/qc-harness/src/gates/` | 12 gates, each with its must-fail case |
 | `packages/qc-harness/src/eslint/` | 10 rules, a preset, and the fixture suite |
-| `packages/qc-harness/src/cli/` | `qc check｜init｜feature｜install-hooks｜config`, and the workflow commands: `integrate`, `migrations`, `ci-wait`, `gate-slot`, `throwaway-db`, `retry-failed` |
+| `packages/qc-harness/src/cli/` | `qc check｜init｜feature｜install-hooks｜config`, and the workflow commands: `integrate`, `migrations`, `watch`, `gate-slot`, `throwaway-db`, `retry-failed` |
 | `packages/qc-harness/templates/` | decisions, architecture, enforcement, guards, performance, glossary, ui, CLAUDE.md, thresholds, git hook, CI |
 
 `pnpm test` — 168 passing.

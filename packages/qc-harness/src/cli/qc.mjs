@@ -18,8 +18,6 @@ const USAGE = `qc — architecture gates
   qc lease status [path]   who holds this worktree's lease, since when, and when it lapses
   qc lease release [path]  remove it: --session <id> for your own, --force for another's
   qc pr-check              in CI: the pull request names an issue that exists and predates it
-  qc ci-wait <pr> [--max <min>] [--queued <min>]
-                           wait on a PR's checks; return on a failure, a new head, a stuck queue, or the limit
   qc prose [--base <ref>] [--pr-body <file>] [--pr-body-event]
                            Vale on the lines a diff adds to the docs, and on a PR body; needs the vale binary
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
@@ -120,10 +118,6 @@ async function main() {
     case "pr-check": {
       const { runPrCheck } = await import("./pr-check.mjs");
       process.exit(await runPrCheck());
-    }
-    case "ci-wait": {
-      const { runCiWait } = await import("./ci-wait.mjs");
-      process.exit(await runCiWait(rest));
     }
     case "prose": {
       const { runProse } = await import("./prose.mjs");

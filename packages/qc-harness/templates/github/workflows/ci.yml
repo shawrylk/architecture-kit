@@ -45,7 +45,7 @@ jobs:
       # - run: pnpm test
 
   # Unit tests in eight hosted shards. A self-hosted runner that goes offline leaves a job queued;
-  # `qc ci-wait` reports a check queued for over 25 minutes. A repository with no test:unit script skips it.
+  # `qc watch --pr` reports a check queued for over 15 minutes. A repository with no test:unit script skips it.
   unit:
     runs-on: ubuntu-latest
     strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4, 5, 6, 7, 8] } }
