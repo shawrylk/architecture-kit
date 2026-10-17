@@ -29,10 +29,10 @@ export const CODEX_LINE =
 export const WORKER_NOTE =
   "Implementer worker mode (QC_ROLE=implementer): you are an implementer under a controller. Work inline. " +
   "Never use superpowers:subagent-driven-development, helper agents, task reviews, or fix-review rounds. " +
-  "For each task in your brief: write the failing test, run only that test file, make it pass, " +
-  "run typecheck and lint on what you touched, and commit that task at once. " +
+  "Write every task in your brief: write the failing test, run only that test file, make it pass, " +
+  "and run typecheck and lint on what you touched. Then run the local check once, make one commit, and push once. " +
   "Do not run the full local gate or e2e; CI runs them. " +
-  "When every task in the brief is committed, append `ALL TASKS DONE` to the progress file the brief names. " +
+  "When every task in the brief is pushed, append `ALL TASKS DONE` to the progress file the brief names. " +
   "If your context gets large, write notes to the progress file and end the turn: a fresh session continues.";
 
 const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-reviewer"];

@@ -25,6 +25,11 @@ const KNOWN_EXTENSIONS = new Set(
   "mjs cjs js jsx ts tsx json md yml yaml sh sql css html cs py go rs toml txt xml csv".split(" "),
 );
 
+const SCOPE_LINE = /^[ \t]*Scope:[ \t]*(\S.*?)[ \t]*$/im;
+
+/** The scope on a prompt's `Scope:` line, in lowercase, or null. */
+export const scopeOf = (prompt) => SCOPE_LINE.exec(String(prompt ?? ""))?.[1]?.toLowerCase() ?? null;
+
 const short = (sha) => (typeof sha === "string" ? sha.slice(0, 7) : "(none)");
 const pass = (note = null) => ({ refusal: null, note });
 const refuse = (refusal) => ({ refusal, note: null });
@@ -51,20 +56,24 @@ export const unreadableRefusal = (type, why) =>
   "Add a line `Worktree: <path>` that names a worktree whose checked-out branch is the branch under review, then dispatch.";
 
 function branchReviewRefusal({ records, branch, prompt }) {
-  const last = records.findLast((record) => record.type === "verdict" && record.kind === "branch" && record.branch === branch);
+  const scope = scopeOf(prompt);
+  const counts = (record) =>
+    record.type === "verdict" && record.kind === "branch" && record.branch === branch && (scope === null || record.scope === scope);
+  const last = records.findLast(counts);
   if (!last) return null;
   const named = reviewedShaOf(prompt);
+  const which = scope === null ? "a branch review" : `a branch review of scope "${scope}"`;
   if (named === null) {
     return (
-      `Task gate: ${branch} already has a branch review in the ledger (${short(last.sha)}), and a PR gets one. ` +
-      `Send the incremental review: add a line \`Reviewed: ${short(last.sha)}\`, the last head a branch review named, and pass the delta diff ${short(last.sha)}..<head> in place of the whole branch.`
+      `Task gate: ${branch} already has ${which} in the ledger (${short(last.sha)}), and a PR gets one. ` +
+      `Send the incremental review: add a line \`Reviewed: ${short(last.sha)}\`, the last head a branch review named, and pass the delta diff ${short(last.sha)}..<head> in place of the whole branch. ` +
+      "A review of another part of the branch runs beside it with its own line `Scope: <name>`."
     );
   }
-  const known = records.some((record) => record.type === "verdict" && record.kind === "branch" && record.branch === branch && shaMatches(record.sha, named));
-  if (known) return null;
+  if (records.some((record) => counts(record) && shaMatches(record.sha, named))) return null;
   return (
-    `Task gate: \`Reviewed: ${short(named)}\` is no head a branch review of ${branch} named. ` +
-    `Write the last head a branch review named: \`Reviewed: ${short(last.sha)}\`.`
+    `Task gate: \`Reviewed: ${short(named)}\` is no head ${which} of ${branch} named. ` +
+    `Write the last head ${which} named: \`Reviewed: ${short(last.sha)}\`.`
   );
 }
 

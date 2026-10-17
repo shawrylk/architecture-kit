@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { appendRecord, readLedger } from "./ledger.mjs";
-import { decide, namedIssues } from "./merge-guard.mjs";
+import { decide, mergeVerdict, namedIssues } from "./merge-guard.mjs";
 
 const HOOK = fileURLToPath(new URL("./merge-guard.mjs", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -490,4 +490,15 @@ test("a gh answer with no base commit closes the lane", (t) => {
   const { dir, head } = laneRepo(t);
   const reason = denied(decide(merge7(dir, head), { gh: fakeGh(JSON.stringify({ baseRefName: "main" })).gh })) ?? "";
   assert.match(reason, /does not apply: gh returned no base commit for the PR/);
+});
+
+test("a merge waits while the newest review of any scope on the head asks for changes", () => {
+  const sha = "b".repeat(40);
+  const records = [
+    { type: "verdict", kind: "branch", verdict: "CHANGES_REQUIRED", sha, branch: "f", scope: "a" },
+    { type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "f", scope: "b" },
+  ];
+  assert.match(mergeVerdict([{ sha }], records, "branch").refusal ?? "", /CHANGES_REQUIRED/);
+  records.push({ type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "f", scope: "a" });
+  assert.equal(mergeVerdict([{ sha }], records, "branch").refusal, null);
 });

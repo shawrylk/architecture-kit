@@ -95,6 +95,16 @@ export function shaMatches(a, b) {
 export const latestVerdictFor = (records, sha, kinds) =>
   records.findLast((record) => record.type === "verdict" && kinds.includes(record.kind) && shaMatches(record.sha, sha)) ?? null;
 
+/** The verdict that decides `sha`: the newest of each scope, where a CHANGES_REQUIRED wins. Null when none names it. */
+export function decidingVerdictFor(records, sha, kinds) {
+  const newest = new Map();
+  for (const record of records) {
+    if (record.type === "verdict" && kinds.includes(record.kind) && shaMatches(record.sha, sha)) newest.set(record.scope ?? null, record);
+  }
+  const verdicts = [...newest.values()];
+  return verdicts.find((record) => record.verdict !== "APPROVED") ?? verdicts.at(-1) ?? null;
+}
+
 /** The newest verdict of any kind on `branch`, or null. */
 export const latestVerdictOn = (records, branch) =>
   records.findLast((record) => record.type === "verdict" && record.branch === branch) ?? null;
@@ -107,7 +117,7 @@ const short = (sha) => (typeof sha === "string" ? sha.slice(0, MIN_SHA) : "");
 
 const SUMMARIES = {
   dispatch: (r) =>
-    `${r.agentType} ${r.task ? `${r.branch} ${short(r.head)}` : "(no task)"}${r.resumeReason ? ` NO-RESUME: ${r.resumeReason}` : ""}${
+    `${r.agentType} ${r.task ? `${r.branch} ${short(r.head)}` : "(no task)"}${r.resumeReason ? ` NO-RESUME: ${r.resumeReason}` : ""}${r.fix ? ` FIX: ${r.fix}` : ""}${
       r.ciPass ? ` CI-PASS: ${short(r.ciPass.sha)} ${r.ciPass.reason}` : ""
     }${
       r.handoff ? ` HANDOFF: ${r.handoff}` : ""

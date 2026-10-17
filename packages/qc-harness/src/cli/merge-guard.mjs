@@ -11,7 +11,7 @@ import { LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
 import { originOf, repoOfSpelling } from "./git-read.mjs";
-import { appendRecord, latestVerdictFor, readLedger } from "./ledger.mjs";
+import { appendRecord, decidingVerdictFor, readLedger } from "./ledger.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
 
@@ -36,7 +36,7 @@ export function mergeVerdict(merges, records, kind, lane = null) {
     if (!merge.sha) {
       return { refusal: `Merge guard: \`gh pr merge\` must pass \`--match-head-commit <sha>\` with the head the ${kind} review approved, so a push after the review cannot merge unreviewed. Add it.` };
     }
-    const verdict = latestVerdictFor(records, merge.sha, [kind]);
+    const verdict = decidingVerdictFor(records, merge.sha, [kind]);
     if (verdict?.verdict === "APPROVED") continue;
     const fit = lane ? lane(merge) : null;
     if (fit && fit.problem === null) {

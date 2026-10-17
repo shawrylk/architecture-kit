@@ -563,6 +563,16 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
 
+#### A fix on a red head, and reviews in parallel
+
+A CI fix or a review fix may start on a red or unreviewed head. Its implementer prompt carries a
+line `Fix: ci` or `Fix: review`, and the ledger records the purpose. A `Fix: ci` on a head whose CI
+is green is refused, since that head waits for a review.
+
+Several branch reviewers may review one head at once, each with its own prompt line
+`Scope: <name>`. The one-review rule then counts each scope on its own, and the merge guard waits
+until the newest review of every scope on the head approves.
+
 #### The direct lane for a small fix
 
 A small fix skips the subagent workflow. The main session edits it on a branch, and merges it with

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   appendRecord,
+  decidingVerdictFor,
   commonDirOf,
   formatRecord,
   lastTaskDispatchOn,
@@ -184,4 +185,12 @@ test("qc ledger --cost totals tokens and tool calls per branch and per role, wit
 test("a cost record prints as one line in the plain ledger listing", () => {
   const line = formatRecord({ ...cost("a1", "implementer", "feat/1-x", 10, 100, 5), at: "2026-10-09T10:00:00.000Z" });
   assert.match(line, /^2026-10-09T10:00:00.000Z {2}cost {10}implementer sdd-implementer a1 feat\/1-x in 10 out 100 .* tools 5$/);
+});
+
+test("the deciding verdict on a sha is a CHANGES_REQUIRED that is the newest of its scope, else the newest APPROVED", () => {
+  const sha = "a".repeat(40);
+  const v = (verdict, scope) => ({ type: "verdict", kind: "branch", verdict, sha, branch: "b", ...(scope ? { scope } : {}) });
+  assert.equal(decidingVerdictFor([v("APPROVED", "x"), v("CHANGES_REQUIRED", "y")], sha, ["branch"]).verdict, "CHANGES_REQUIRED");
+  assert.equal(decidingVerdictFor([v("CHANGES_REQUIRED", "y"), v("APPROVED", "y")], sha, ["branch"]).verdict, "APPROVED");
+  assert.equal(decidingVerdictFor([v("APPROVED")], sha, ["task"]), null);
 });

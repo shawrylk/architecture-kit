@@ -567,3 +567,27 @@ test("gateVerdict reports the stop and the reason of a CI pass, and gateRefusal 
   assert.match(gateRefusal({ ...input, ci: () => null }) ?? "", /no review/);
   assert.equal(gateRefusal({ ...input, ci: () => "red" }), null);
 });
+
+test("a Fix: ci line passes an unreviewed implementer commit while CI on the head is not green, and records the purpose", (t) => {
+  const ws = workspace(t);
+  implementerStop(ws, commitIn(ws.linked, "b.txt"));
+  const call = dispatch(ws.main, taskPrompt(ws.linked, "Fix: ci"));
+  const red = () => ({ reason: "CI on abc1234: unit ended failure", unknown: null });
+  const passed = judgeTask(call, ws.tmp, { ci: () => null, ciState: red });
+  assert.equal(passed.refusal, null);
+  recordDispatch(passed);
+  assert.equal(readLedger(ws.ledger).at(-1).fix, "ci");
+  const green = () => ({ reason: null, unknown: null });
+  assert.match(judgeTask(call, ws.tmp, { ci: () => null, ciState: green }).refusal ?? "", /`Fix: ci`.*green/);
+  assert.match(refusalOf(ws) ?? "", /Fix: ci/);
+});
+
+test("a Fix: review line passes a fresh implementer after CHANGES_REQUIRED and over an unreviewed fix commit", (t) => {
+  const ws = workspace(t);
+  const moved = commitIn(ws.linked, "b.txt");
+  implementerStop(ws, moved);
+  verdict(ws, moved, "CHANGES_REQUIRED", "branch");
+  implementerStop(ws, commitIn(ws.linked, "c.txt"));
+  assert.notEqual(refusalOf(ws), null);
+  assert.equal(refusalOf(ws, "Fix: review"), null);
+});
