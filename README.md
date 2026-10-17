@@ -843,6 +843,16 @@ prints an `OK` line that says why it skipped.
 The `migration-numbers` gate reads the `<number>_<name>.sql` files in `paths.migrations`. Each number
 is unique, and the numbers run from the lowest to the highest with no gap.
 
+Two open branches can take the same number. `qc migrations renumber --onto <ref>` renames the
+migrations that this branch added to follow the last migration of `<ref>`, in order, and rewrites
+each reference to an old name. A second run changes nothing.
+
+`qc integrate --issue <n> <branch>...` builds one branch, `feat/<n>-integration`, for a batch of
+related branches. It merges each branch in order, renumbers its migrations, and commits. A conflict
+in files that `generated.globs` matches is settled by `generated.command`. Any other conflict stops
+the run with the file list; resolve it, commit, and run the same command again. The batch then runs
+one CI and merges once.
+
 ### Mirror the tests of more than one root
 
 The `test-mirror` gate judges every root in `testMirror.roots`. The default is one root:

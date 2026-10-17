@@ -42,6 +42,10 @@ const USAGE = `qc — architecture gates
                            fetch, add .worktree/<name> in the main checkout, install, print the path
   qc worktree remove <name>
                            refuse a dirty tree; delete it, then its branch once merged, pushed, or a merged PR head
+  qc migrations renumber --onto <ref> [--branch <ref>]
+                           move this branch's migrations after the last one of <ref>, and rewrite references
+  qc integrate --issue <n> [--type <t>] [--slug <s>] [--from <ref>] <branch>...
+                           one <t>/<n>-<s> branch for a batch: merge, renumber, regenerate; stop on a conflict
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
   qc doctor                the hooks and the lockfile must run the same harness
   qc config                print the resolved configuration
@@ -151,6 +155,14 @@ async function main() {
     case "worktree": {
       const { runWorktree } = await import("./worktree.mjs");
       process.exit(await runWorktree(config, rest));
+    }
+    case "migrations": {
+      const { runMigrations } = await import("./migrations.mjs");
+      process.exit(runMigrations(config, rest));
+    }
+    case "integrate": {
+      const { runIntegrate } = await import("./integrate.mjs");
+      process.exit(await runIntegrate(config, rest));
     }
     case "ui": {
       const { runUi } = await import("./ui.mjs");
