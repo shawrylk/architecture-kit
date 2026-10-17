@@ -30,6 +30,8 @@ const USAGE = `qc — architecture gates
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
+  qc ui <catalog|find|dupes|codemod>
+                           the component catalog, a search over it, a duplicate finder and a class-token codemod
   qc worktree add <name> <branch> [--from <ref>]
                            fetch, add .worktree/<name> in the main checkout, install, print the path
   qc worktree remove <name>
@@ -130,6 +132,10 @@ async function main() {
     case "worktree": {
       const { runWorktree } = await import("./worktree.mjs");
       process.exit(await runWorktree(config, rest));
+    }
+    case "ui": {
+      const { runUi } = await import("./ui.mjs");
+      process.exit(await runUi(config, rest));
     }
     case "enforcement-map": {
       const { runSyncEnforcementMap } = await import("./sync-enforcement-map.mjs");
