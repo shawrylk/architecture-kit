@@ -25,9 +25,13 @@ const USAGE = `qc — architecture gates
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
                            run a brief through codex exec as an implementer, restarting until the progress file says ALL TASKS DONE; exit 2 on a Codex limit
+  qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
+                           block until the first event among the items, print one EVENT line; exit 0 done, 4 bound (default 55 minutes), 5 failed, 6 queued past 15 minutes
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
+  qc ui <catalog|find|dupes|codemod>
+                           the component catalog, a search over it, a duplicate finder and a class-token codemod
   qc worktree add <name> <branch> [--from <ref>]
                            fetch, add .worktree/<name> in the main checkout, install, print the path
   qc worktree remove <name>
@@ -49,6 +53,11 @@ async function main() {
   if (command === "codex-implement") {
     const { runCodexImplement } = await import("./codex-implement.mjs");
     process.exit(await runCodexImplement(rest));
+  }
+  // The watcher reads no configuration either.
+  if (command === "watch") {
+    const { runWatch } = await import("./watch.mjs");
+    process.exit(await runWatch(rest));
   }
   const config = load(process.cwd());
 
@@ -123,6 +132,10 @@ async function main() {
     case "worktree": {
       const { runWorktree } = await import("./worktree.mjs");
       process.exit(await runWorktree(config, rest));
+    }
+    case "ui": {
+      const { runUi } = await import("./ui.mjs");
+      process.exit(await runUi(config, rest));
     }
     case "enforcement-map": {
       const { runSyncEnforcementMap } = await import("./sync-enforcement-map.mjs");

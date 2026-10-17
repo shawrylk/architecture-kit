@@ -268,7 +268,7 @@ Known limits:
 
 ### 9. Hold an orchestrator to the subagent workflow
 
-The plugin ships four subagent types for `superpowers:subagent-driven-development`:
+The plugin ships four subagent types for `superpowers:subagent-driven-development`, and one watcher for a Codex job:
 
 | Type | Model | Effort | Tools | Role |
 |---|---|---|---|---|
@@ -276,6 +276,9 @@ The plugin ships four subagent types for `superpowers:subagent-driven-developmen
 | `architecture:sdd-implementer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
 | `architecture:sdd-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
 | `architecture:sdd-branch-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
+| `architecture:codex` | `haiku` | none | `Bash` | starts one `qc codex-implement` job in the background and waits on it in bounded steps, so the job shows in the agent panel |
+
+The watcher is not a role: it writes no code and reads no source. Dispatch it with `model: haiku` (or `sonnet`); the guard accepts both for `architecture:codex`. Its wait step polls the wrapper file with `until grep -q`, because `tail -f | grep -m1` holds the pipe open and makes every step last the full timeout.
 
 Every role says `model: inherit` and `effort: high`, so a subagent runs on the model family of
 the session that dispatches it. The dispatch guard picks each role's models from the runtime:
@@ -401,21 +404,27 @@ controller, and the controller workflow does not change for it.
 npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
 ```
 
-The runner runs `codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false "<prompt>"`
+The runner runs `codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> "<prompt>"`
 with `QC_ROLE=implementer` in the environment and stdin closed, and appends the output to the log
 (`<progress>.log` by default). It reads the brief file again before each run, so an edit reaches the
-next session. The prompt is the brief, a note to read `git log --oneline`, `git status --short`, and the
+next session. The prompt is the brief, a note to read `git log -n 5 --oneline`, `git status --short`, and the
 progress file and to continue from the first unfinished task, and the lean rules: a progress file of at
-most 40 lines, no re-verifying, only the needed line ranges, no helper agents, no broad audit or full
+most 40 lines, no re-verifying, only the needed line ranges, no skill or plugin file, read caps, no helper agents, no broad audit or full
 gate, one item per session, and a report under 15 lines. A lean rule never drops a security, tenant,
 data, or correctness check that the brief asks for. It spawns `codex` with no shell, so the binary must be
 a real executable on `PATH`. After each run it restarts a fresh session until the progress file holds
 `ALL TASKS DONE`. It never calls Claude.
 
+The overrides apply to the runner's `codex exec` call only, so your interactive Codex sessions keep their plugins and skills:
+
+- `-c plugins."<name>".enabled=false` for every plugin that `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) enables, read at launch, and for `superpowers@claude-plugins-official` by name. The lean rules tell the run to load no skill.
+- `-c model_auto_compact_token_limit=<n>` with `n` from `codex.compactTokens` in the worktree's `qc.config.json` (default `300000`). It is a backstop for a runaway item: each item runs in a fresh session and should finish under 200K.
+- `-c tool_output_token_limit=4000`, so one command output never carries more than 4,000 tokens.
+
 | Exit | Meaning |
 |---|---|
 | `0` | the progress file says `ALL TASKS DONE` |
-| `1` | a bad argument, or `codex` did not start |
+| `1` | a bad argument, a bad `codex.compactTokens`, or `codex` did not start |
 | `2` | the tail of a run matches `usage limit`, `spend cap`, `rate limit`, or `hit your limit`: dispatch the same brief to an `architecture:sdd-implementer` (sonnet) |
 | `3` | `--max-runs` (default 12) runs ended and the progress file is not done |
 
@@ -666,6 +675,43 @@ per gate and per rule.
 
 A test fails if a switch ever stops reaching the runner, so the config cannot quietly lie about what
 it controls.
+
+### Find a component before writing one
+
+`qc ui` keeps a catalog of the exported React components and finds the one a new file would duplicate.
+Every path comes from the `ui` block of `qc.config.json`; the defaults are `componentRoots`
+(`frontend/src/platform/ui` and `frontend/src/features/*/components`), `layers` (a `primitive` and a
+`pattern` folder), `catalog` (`docs/ui-catalog.md`), `classCallees` (`cn`, `clsx`, `cva`, `twMerge`) and
+`dupes` (`minClassLength` 60, `minFiles` 3, a baseline file). A repository with no files under the roots
+gets no catalog and no failure. The tools read TSX with the `typescript` package of the repository, an
+optional peer dependency.
+
+```bash
+npx qc ui catalog [--json] [--check] [--baseline]  # write docs/ui-catalog.md, one table per layer
+npx qc ui find <words...>                          # the top 8 entries, as name — path — description
+npx qc ui dupes [--json] [--baseline]              # repeated class strings, names and near-equal JSX trees
+npx qc ui codemod --map '{"text-[11px]":"text-2xs"}' [--write]
+npx qc ui codemod --suggest                        # arbitrary-value tokens, with the @theme variable that holds the value
+```
+
+- The catalog lists each exported component with its layer, props and the first sentence of its JSDoc. It is
+  generated: a generated marker covers it, so the generated-file guard refuses a hand edit. A repository's
+  codegen writes it by calling `writeCatalog(config)` from `architecture-harness/ui/scan`.
+- `find` ranks entries by the tokens they share with the words: the camel-case parts of the name weigh most,
+  then the description and the prop names.
+- The `ui-catalog` gate (off by default) fails an exported component with no JSDoc sentence, naming `path:line`,
+  and a stale catalog. `qc ui catalog --baseline` writes `ui-catalog.baseline.json` with the components that
+  predate the gate. A baseline entry that no longer fails is an error, so the baseline only shrinks.
+- The `ui-dupes` gate (off by default) fails a finding the baseline does not hold, and a baseline entry that no
+  longer occurs. The findings are: the same class string of `minClassLength` characters in `minFiles` files, two
+  exported components of one name in different files, and JSX trees of four elements or more with one
+  element skeleton and a Jaccard index of 0.8 or more over their class tokens, in different files.
+  Class strings compare by their sorted tokens.
+- The `PreToolUse` hook `ui-reuse-hint` runs on a `Write` of a new `.tsx` file under the roots. It ranks the
+  catalog by the words of the file name and its exported names, and adds the top 5 as context. It never blocks.
+- `codemod` rewrites whole class tokens, keeping variant prefixes and the `!` modifier. It touches only string
+  literals in `className`, in calls to `classCallees`, and in `cva` variant objects, with the static parts of
+  template literals, and it edits by source range, so formatting stays. It is a dry run until `--write`.
 
 ### Guard IME composition in text entry
 

@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dispatchDefaults, runtimeModels } from "../config.mjs";
 import { REMINDER } from "./dispatch-reminder.mjs";
+import { dispatchRefusal, dispatchSettings } from "./dispatch.mjs";
 
 const AGENTS = fileURLToPath(new URL("../../../../agents/", import.meta.url));
 const README = fileURLToPath(new URL("../../../../README.md", import.meta.url));
@@ -45,6 +46,9 @@ const EXPECTED = {
   "sdd-reviewer": { model: "inherit", effort: "high", tools: READ_TOOLS },
   "sdd-branch-reviewer": { model: "inherit", effort: "high", tools: READ_TOOLS },
 };
+// The watcher runs one `qc codex-implement` job. It reads no source, so it needs Bash alone and the cheapest model.
+const WATCHER = { codex: { model: "haiku", effort: undefined, tools: ["Bash"] } };
+const SHIPPED = { ...EXPECTED, ...WATCHER };
 // Fields Claude Code ignores on a plugin agent, and the one that drops a repository's CLAUDE.md and rules.
 const FORBIDDEN_FIELDS = ["disallowedTools", "hooks", "mcpServers", "permissionMode", "omitClaudeMd"];
 
@@ -83,7 +87,7 @@ const frontOf = (name) => frontmatterOf(path.join(AGENTS, `${name}.md`));
 test("each subagent type inherits the session model, has a model in every runtime, and keeps its effort and tool list", () => {
   assert.deepEqual(
     readdirSync(AGENTS).sort(),
-    Object.keys(EXPECTED).map((name) => `${name}.md`).sort(),
+    Object.keys(SHIPPED).map((name) => `${name}.md`).sort(),
     "agents/ holds exactly the shipped types",
   );
   for (const [name, want] of Object.entries(EXPECTED)) {
@@ -100,20 +104,21 @@ test("each subagent type inherits the session model, has a model in every runtim
   }
 });
 
-test("each listed tool is one a subagent keeps, never Agent and never an MCP tool, and Read and Bash are always there", () => {
-  for (const name of Object.keys(EXPECTED)) {
+test("each listed tool is one a subagent keeps, never Agent and never an MCP tool, and Bash is always there", () => {
+  for (const name of Object.keys(SHIPPED)) {
     const tools = listOf(frontOf(name).tools);
     assert.ok(!tools.includes("Agent"), `${name} can dispatch a subagent`);
     for (const tool of tools) {
       assert.ok(!tool.startsWith("mcp__"), `${name} lists the MCP tool ${tool}`);
       assert.ok(SUBAGENT_TOOLS.has(tool), `${name} lists ${tool}, which no subagent keeps`);
     }
-    for (const tool of ALWAYS_PRESENT) assert.ok(tools.includes(tool), `${name} lacks ${tool}`);
+    assert.ok(tools.includes("Bash"), `${name} lacks Bash`);
+    if (name in EXPECTED) assert.ok(tools.includes("Read"), `${name} lacks Read`);
   }
 });
 
 test("no type sets a field a plugin agent ignores, or one that drops the repository's CLAUDE.md", () => {
-  for (const name of Object.keys(EXPECTED)) {
+  for (const name of Object.keys(SHIPPED)) {
     const front = frontOf(name);
     for (const field of FORBIDDEN_FIELDS) assert.equal(front[field], undefined, `${name} sets ${field}`);
   }
@@ -121,8 +126,8 @@ test("no type sets a field a plugin agent ignores, or one that drops the reposit
 
 test("the README table gives each shipped type the tools its definition lists, and no other type", () => {
   const documented = readmeToolsOf(readFileSync(README, "utf8"));
-  assert.deepEqual(Object.keys(documented).sort(), Object.keys(EXPECTED).sort());
-  for (const [name, want] of Object.entries(EXPECTED)) assert.deepEqual(documented[name], want.tools, name);
+  assert.deepEqual(Object.keys(documented).sort(), Object.keys(SHIPPED).sort());
+  for (const [name, want] of Object.entries(SHIPPED)) assert.deepEqual(documented[name], want.tools, name);
 });
 
 test("the README reader takes a CRLF checkout and skips the rows of other tables", () => {
@@ -149,7 +154,7 @@ test("the default allowed types are the shipped types, bare and scoped", () => {
 
 test("no type pins a prompt cache lifetime, so a user's own setting decides it", () => {
   // The measured one-hour lifetime cost more for all four types; `qc tokens` reports it per session.
-  for (const name of Object.keys(EXPECTED)) {
+  for (const name of Object.keys(SHIPPED)) {
     const front = frontOf(name);
     assert.equal(front.experimental, undefined, `${name} sets experimental`);
     assert.equal(front.cacheTtl, undefined, `${name} sets cacheTtl`);
@@ -165,4 +170,26 @@ test("both reviewers review only the increment when the dispatch carries a Revie
     assert.match(text, /Without the line, review as before/, name);
     assert.ok(text.indexOf("`Reviewed: <sha>`") < text.indexOf("`VERDICT: APPROVED <sha>`"), `${name} keeps the verdict line rule last`);
   }
+});
+
+test("the codex watcher runs on haiku with Bash alone, and the guard accepts haiku or sonnet for it", () => {
+  const front = frontOf("codex");
+  assert.equal(front.name, "codex");
+  assert.equal(front.model, WATCHER.codex.model);
+  assert.deepEqual(listOf(front.tools), WATCHER.codex.tools);
+  for (const type of ["codex", `${PLUGIN}:codex`]) assert.deepEqual(runtimeModels.claude[type], ["haiku", "sonnet"], type);
+  const settings = dispatchSettings({ dispatch: {} }, "claude");
+  for (const model of ["haiku", "sonnet"]) {
+    assert.equal(dispatchRefusal({ subagent_type: `${PLUGIN}:codex`, model, prompt: "Brief: b" }, settings), null, model);
+  }
+  assert.match(dispatchRefusal({ subagent_type: `${PLUGIN}:codex`, model: "opus", prompt: "Brief: b" }, settings) ?? "", /haiku, sonnet/);
+});
+
+test("the codex watcher starts one background job and polls the wrapper file with until grep", () => {
+  const text = readFileSync(path.join(AGENTS, "codex.md"), "utf8").replace(/\r/g, "");
+  assert.ok(text.includes("run_in_background: true"));
+  assert.ok(text.includes("codex-implement --brief"));
+  assert.ok(text.includes("until grep -q"));
+  assert.ok(text.includes("Never pipe `tail -f` into `grep -m1`"));
+  assert.ok(!/^\s*tail -f/m.test(text), "no step runs tail -f");
 });
