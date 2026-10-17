@@ -4,6 +4,7 @@ import { loadMap } from "../screens/map.mjs";
 import { captureScreens } from "../screens/capture.mjs";
 import { authStatus, targetSession } from "../screens/stack-auth.mjs";
 import { applyCatalog, openScreen } from "../screens/catalog.mjs";
+import { runDiscovery } from "./screens-discovery.mjs";
 
 export const USAGE = `qc screens [run [names...]|list|open <name>|auth status]
   --map <json> [--targets <left,right>] [--target <name>] [--out <dir>]
@@ -19,7 +20,7 @@ export async function runScreens(argv, { say = console.error } = {}) {
   const command = argv[0]?.startsWith("--") || !argv.length ? "run" : argv.shift();
   const authCommand = command === "auth" && argv.shift() === "status";
   try {
-    ({ values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: { map: { type: "string" }, targets: { type: "string" }, target: { type: "string" }, out: { type: "string" }, only: { type: "string" }, changed: { type: "string" }, height: { type: "string" }, timeout: { type: "string" }, "sign-in-timeout": { type: "string" }, help: { type: "boolean" } } }));
+    ({ values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: { map: { type: "string" }, targets: { type: "string" }, target: { type: "string" }, out: { type: "string" }, only: { type: "string" }, changed: { type: "string" }, height: { type: "string" }, timeout: { type: "string" }, "sign-in-timeout": { type: "string" }, depth: { type: "string" }, "max-states": { type: "string" }, "allow-writes": { type: "boolean" }, "catalog-out": { type: "string" }, help: { type: "boolean" } } }));
     if (values.help) { say(USAGE); return 0; }
     if (!values.map) throw new Error("--map is required");
     for (const field of ["height", "timeout", "sign-in-timeout"]) if (values[field] !== undefined && (!Number.isInteger(Number(values[field])) || Number(values[field]) < 1)) throw new Error(`--${field} must be a positive integer`);
@@ -30,6 +31,7 @@ export async function runScreens(argv, { say = console.error } = {}) {
       return 0;
     }
     const { chromium } = await import("playwright");
+    if (["discover", "pair", "coverage", "scaffold"].includes(command)) return runDiscovery(command, map, values, { chromium, say });
     const timeout = Number(values.timeout ?? 15000);
     const signInTimeout = Number(values["sign-in-timeout"] ?? 180000);
     if (authCommand) {

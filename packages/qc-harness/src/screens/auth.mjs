@@ -2,6 +2,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, 
 import os from "node:os";
 import path from "node:path";
 import { requireLocalhost } from "./map.mjs";
+import { installWriteGuard } from "./write-guard.mjs";
 
 /** Branch: a failed session advances to the next method. */
 export async function firstSignedIn(methods) {
@@ -62,7 +63,7 @@ async function saveState(context, file) {
 }
 
 /** Pipeline: reuse state, then Chrome's copied profile, then an interactive sign-in. */
-export async function browserSession(chromium, target, { timeout = 15000, signInTimeout = 180000, say = console.error, chromeProfile, allowInteractive = true, headed = false } = {}) {
+export async function browserSession(chromium, target, { timeout = 15000, signInTimeout = 180000, say = console.error, chromeProfile, allowInteractive = true, headed = false, allowWrites = false } = {}) {
   const root = privateRoot();
   const file = path.join(root, "state", `${target.auth.domain}.json`);
   const launch = async (method) => {
@@ -75,8 +76,9 @@ export async function browserSession(chromium, target, { timeout = 15000, signIn
       } else {
         if (method === "state" && !existsSync(file)) return null;
         browser = await chromium.launch({ channel: "chrome", headless: !headed && method !== "headed" });
-        context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", ...(method === "state" ? { storageState: file } : {}) });
+        context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", serviceWorkers: "block", ...(method === "state" ? { storageState: file } : {}) });
       }
+      await installWriteGuard(context, target, { allowWrites });
       if (method === "headed") say("Sign in once in the Chrome window. The tool waits for the signed-in page.");
       const session = await reachesSignedIn(context, target, method === "headed" ? signInTimeout : timeout);
       await saveState(context, file);

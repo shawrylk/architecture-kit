@@ -7,6 +7,7 @@ import { compareImages, gallery, sortReport } from "./compare.mjs";
 import { stableCapture, findRegions, regionCrop, boxPair } from "./regions.mjs";
 import { collectInventory, diffInventory, inventoryBox } from "./inventory.mjs";
 import { openScreen } from "./catalog.mjs";
+import { safeControl, installWriteGuard } from "./write-guard.mjs";
 
 /** Branch: a typo must never silently skip a requested screen. */
 export function selectScreens(screens, only) {
@@ -30,7 +31,7 @@ export function mergeReport(previous, fresh) {
 
 /** Branch: capture navigation excludes mutation controls. */
 export function safeClick(control) {
-  return control.type !== "submit" && !/save|delete|submit|complete|\u4fdd\u5b58|\u524a\u966|\u9001\u4fe1|\u5b8c\u4e86/i.test(control.text);
+  return safeControl(control);
 }
 
 function readJson(file, fallback) {
@@ -110,11 +111,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
       }
       const session = await sessionFactory(chromium, target, { timeout, signInTimeout, say });
       sessions.set(name, session);
-      await session.context.route("**/*", async route => {
-        const request = route.request();
-        if (["GET", "HEAD", "OPTIONS"].includes(request.method())) await route.continue();
-        else await route.abort();
-      });
+      await installWriteGuard(session.context, target);
       for (const screen of screens) {
         mkdirSync(path.join(out, screen.name), { recursive: true });
         for (const width of map.widths) {
