@@ -46,7 +46,11 @@ const LEAN_RULES = [
   "- Never re-verify a finished item, and never repeat a probe that already failed.",
   "- Read only the line ranges that the current item needs.",
   "- Start no helper agents. Run no broad audit, no Playwright, and no full gate. Run the tests of the touched files, and the local check once before the push.",
-  "- One item per session: code, test, commit, push, update the progress file, stop.",
+  "- Write every item first, each test first, and update the progress file after each item. Then run the local check once, make one commit, and push once.",
+  "- Read at most 15 files before the first code edit. Research that needs more belongs to a planner, and the brief names the planner output to read instead.",
+  "- Wrap each heavy command in `npx qc gate-slot --`: the local check, a test run of more than one file, a live database test, a commit, and a push.",
+  "- Before the push, run the live database tests of the server code you touched through `npx qc throwaway-db --`. Never use port 5432 or another port the local stack owns.",
+  "- Work up to about 200K tokens in a session. Then leave the progress file exact and stop, so a fresh session continues.",
   "- Keep the report under 15 lines.",
 ].join("\n");
 

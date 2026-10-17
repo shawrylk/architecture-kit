@@ -392,6 +392,22 @@ The `1h` column prices the same requests at the one-hour cache lifetime. A negat
 `experimental.cacheTtl`: in the measured sessions the one-hour lifetime cost more for all four types,
 and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are API list prices.
 
+#### Share the machine between agents
+
+Several agents on one machine can each start a heavy run at once and stall it. Wrap each heavy
+command in `npx qc gate-slot -- <command>`: the local check, a test run of more than one file, a
+browser test, a live database test, a commit, and a push. At most `QC_GATE_SLOTS` (3 by default)
+such commands run at once. Each claim records its process id, so a claim whose process is gone is
+freed on the next claim. `npx qc gate-slot --status` lists the holders.
+
+`npx qc throwaway-db -- <command>` runs a command on a database of its own: a postgres container
+on a free port, never 5432, removed once the command exits. `throwawayDb.env` in `qc.config.json`
+names each variable the command reads, such as `{ "DATABASE_URL": "{url}" }`.
+
+`npx qc retry-failed --report <json> --rerun "<command>" -- <command>` reruns only the failed test
+files once when a run fails under load. It reads the Jest or Vitest JSON report the run wrote, and
+reruns nothing when the failure is no test failure or more than five files failed.
+
 #### Run an implementer on Codex
 
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude stays the one

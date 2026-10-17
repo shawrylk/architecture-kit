@@ -83,7 +83,11 @@ test("every run prompt carries the lean rules after the brief", async (t) => {
     assert.match(prompt, /re-verify/);
     assert.match(prompt, /line ranges/);
     assert.match(prompt, /helper agents/);
-    assert.match(prompt, /one item per session/i);
+    assert.match(prompt, /Then run the local check once, make one commit, and push once\./);
+    assert.match(prompt, /npx qc gate-slot --/);
+    assert.match(prompt, /npx qc throwaway-db --/);
+    assert.match(prompt, /Never use port 5432/);
+    assert.match(prompt, /at most 15 files before the first code edit/i);
     assert.match(prompt, /under 15 lines/);
     assert.match(prompt, /never drop a security, tenant, data, or correctness check/i);
   }

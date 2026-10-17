@@ -25,9 +25,15 @@ const USAGE = `qc — architecture gates
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
                            run a brief through codex exec as an implementer, restarting until the progress file says ALL TASKS DONE; exit 2 on a Codex limit
+  qc gate-slot [--slots <n>] -- <command...>
+                           run a heavy local command in one of the machine's gate slots; --status lists them
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
+  qc throwaway-db [--port <n>|auto] -- <command...>
+                           run a command on a database of its own, in a container on a free port
+  qc retry-failed --report <json> --rerun "<command>" -- <command...>
+                           rerun only the failed test files once before the run fails
   qc worktree add <name> <branch> [--from <ref>]
                            fetch, add .worktree/<name> in the main checkout, install, print the path
   qc worktree remove <name>
@@ -49,6 +55,11 @@ async function main() {
   if (command === "codex-implement") {
     const { runCodexImplement } = await import("./codex-implement.mjs");
     process.exit(await runCodexImplement(rest));
+  }
+  // The slots are machine-wide, so the runner reads no configuration.
+  if (command === "gate-slot") {
+    const { runGateSlot } = await import("./gate-slot.mjs");
+    process.exit(await runGateSlot(rest));
   }
   const config = load(process.cwd());
 
@@ -114,6 +125,14 @@ async function main() {
     case "tokens": {
       const { runTokens } = await import("./tokens.mjs");
       process.exit(runTokens(config, rest));
+    }
+    case "throwaway-db": {
+      const { runThrowawayDb } = await import("./throwaway-db.mjs");
+      process.exit(await runThrowawayDb(config, rest));
+    }
+    case "retry-failed": {
+      const { runRetryFailed } = await import("./retry-failed.mjs");
+      process.exit(await runRetryFailed(rest));
     }
     case "decisions": {
       const { runDecisions } = await import("./decisions.mjs");
