@@ -29,15 +29,17 @@ const check = (name, status, conclusion = "") => ({ __typename: "CheckRun", name
 
 async function watch(argv, { gh, time = fakeClock() } = {}) {
   const lines = [];
-  const code = await runWatch(argv, { gh, say: (line) => lines.push(line), now: time.now, sleep: time.sleep });
-  return { code, lines, time };
+  const warnings = [];
+  const code = await runWatch(argv, { gh, say: (line) => lines.push(line), warn: (line) => warnings.push(line), now: time.now, sleep: time.sleep });
+  return { code, lines, warnings, time };
 }
 
 test("parseWatchArgs reads repeated flags and the defaults", () => {
   const parsed = parseWatchArgs(["--pr", "7", "--pr", "8", "--codex", "a.log", "--run", "ci.yml@feat/x", "--repo", "o/r"]);
   assert.deepEqual(parsed.prs, [7, 8]);
   assert.equal(parsed.codex.length, 1);
-  assert.deepEqual(parsed.runs, [{ workflow: "ci.yml", branch: "feat/x" }]);
+  assert.deepEqual(parsed.runs, [{ workflow: "ci.yml", branch: "feat/x", sha: undefined }]);
+  assert.deepEqual(parseWatchArgs(["--run", "ci.yml@feat/x@abc1234"]).runs, [{ workflow: "ci.yml", branch: "feat/x", sha: "abc1234" }]);
   assert.equal(parsed.repo, "o/r");
   assert.equal(parsed.maxMinutes, 55);
   assert.equal(parsed.intervalSeconds, 60);
@@ -48,6 +50,7 @@ test("parseWatchArgs refuses no item, a bad number, a bad run, and an unknown fl
   assert.throws(() => parseWatchArgs(["--pr", "x"]), /--pr/);
   assert.throws(() => parseWatchArgs(["--pr", "1", "--max", "0"]), /--max/);
   assert.throws(() => parseWatchArgs(["--run", "ci.yml"]), /--run/);
+  assert.throws(() => parseWatchArgs(["--run", "ci.yml@"]), /--run/);
   assert.throws(() => parseWatchArgs(["--pr", "1", "--nope"]), /--nope/);
   assert.throws(() => parseWatchArgs(["--pr"]), /--pr/);
 });
@@ -139,12 +142,13 @@ test("--codex reads only the last 2 KB", async (t) => {
 });
 
 test("--run exits 0 on a success and 5 on a failure", async () => {
-  const run = (status, conclusion) => JSON.stringify([{ status, conclusion, headSha: "deadbeef" }]);
-  const pass = stubGh([run("in_progress", ""), run("completed", "success")]);
+  const run = (status, conclusion) => (args) => (args[0] === "api" ? "deadbeef\n" : JSON.stringify([{ status, conclusion, headSha: "deadbeef" }]));
+  const pass = stubGh([run("in_progress", ""), run("in_progress", ""), run("completed", "success")]);
   const first = await watch(["--run", "ci.yml@feat/x", "--repo", "o/r"], { gh: pass.gh });
   assert.equal(first.code, 0);
   assert.deepEqual(first.lines, ["EVENT run:ci.yml@feat/x passed deadbeef"]);
-  assert.deepEqual(pass.calls[0], ["run", "list", "--workflow", "ci.yml", "--branch", "feat/x", "--limit", "1", "--json", "status,conclusion,headSha", "-R", "o/r"]);
+  assert.deepEqual(pass.calls[0], ["api", "repos/o/r/commits/feat/x", "--jq", ".sha"]);
+  assert.deepEqual(pass.calls[1], ["run", "list", "--workflow", "ci.yml", "--branch", "feat/x", "--limit", "20", "--json", "status,conclusion,headSha", "-R", "o/r"]);
   const fail = await watch(["--run", "ci.yml@feat/x"], { gh: stubGh([run("completed", "failure")]).gh });
   assert.equal(fail.code, 5);
   assert.deepEqual(fail.lines, ["EVENT run:ci.yml@feat/x failed deadbeef"]);
@@ -157,4 +161,86 @@ test("the first event among several items wins", async (t) => {
   assert.equal(code, 0);
   assert.equal(lines.length, 1);
   assert.match(lines[0], /^EVENT codex:/);
+});
+
+
+test("a --codex wrapper that PowerShell 5.1 wrote as UTF-16LE with a BOM fires on its exit line", async (t) => {
+  const file = wrapper(t);
+  writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("working\r\nexit 0\r\n", "utf16le")]));
+  const { code, lines } = await watch(["--codex", file], { gh: () => null });
+  assert.equal(code, 0);
+  assert.deepEqual(lines, [`EVENT codex:${file} exit 0`]);
+});
+
+test("a long UTF-16LE wrapper reads its tail at a character boundary", async (t) => {
+  const file = wrapper(t);
+  const text = `${"progress line that fills the log\r\n".repeat(200)}exit 3\r\n`;
+  writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]));
+  const { lines } = await watch(["--codex", file], { gh: () => null });
+  assert.deepEqual(lines, [`EVENT codex:${file} exit 3`]);
+});
+
+test("--codex drops the partial first line of a 2 KB tail, so a cut at `exit 1` mid-line is no event", async (t) => {
+  const quoted = `exit 1 is quoted in a long line${"k".repeat(2048)}`.slice(0, 2047);
+  const file = wrapper(t, `${"x".repeat(300)}-${quoted}\n`);
+  const { code, lines } = await watch(["--codex", file, "--max", "2"], { gh: () => null });
+  assert.equal(code, 4);
+  assert.deepEqual(lines, ["EVENT timeout"]);
+});
+
+test("--codex keeps a whole first line when the 2 KB cut lands on a line start", async (t) => {
+  const file = wrapper(t, `${"x".repeat(100)}\nexit 4\n${"z".repeat(2041)}`);
+  const { lines } = await watch(["--codex", file], { gh: () => null });
+  assert.deepEqual(lines, [`EVENT codex:${file} exit 4`]);
+});
+
+test("--run ignores a completed run on the previous head, and fires on the run of the current head", async () => {
+  const time = fakeClock();
+  const stale = { status: "completed", conclusion: "success", headSha: "oldhead" };
+  const fresh = { status: "completed", conclusion: "failure", headSha: "newhead" };
+  const answer = (args) => {
+    if (args[0] === "api") return "newhead\n";
+    return JSON.stringify(time.clock.now < 2 * MIN ? [stale] : [fresh, stale]);
+  };
+  const { code, lines } = await watch(["--run", "ci.yml@feat/x"], { gh: stubGh([answer]).gh, time });
+  assert.equal(code, 5);
+  assert.deepEqual(lines, ["EVENT run:ci.yml@feat/x failed newhead"]);
+});
+
+test("--run <wf>@<branch> never fires on a run of another head, so it times out", async () => {
+  const answer = (args) => (args[0] === "api" ? "newhead\n" : JSON.stringify([{ status: "completed", conclusion: "success", headSha: "oldhead" }]));
+  const { code, lines } = await watch(["--run", "ci.yml@feat/x", "--max", "5"], { gh: stubGh([answer]).gh });
+  assert.equal(code, 4);
+  assert.deepEqual(lines, ["EVENT timeout"]);
+});
+
+test("--run <wf>@<branch>@<sha> pins the head and reads no branch head", async () => {
+  const runs = JSON.stringify([
+    { status: "completed", conclusion: "failure", headSha: "other99" },
+    { status: "completed", conclusion: "success", headSha: "abc1234" },
+  ]);
+  const { gh, calls } = stubGh([runs]);
+  const { code, lines } = await watch(["--run", "ci.yml@feat/x@abc1234"], { gh });
+  assert.equal(code, 0);
+  assert.deepEqual(lines, ["EVENT run:ci.yml@feat/x@abc1234 passed abc1234"]);
+  assert.ok(calls.every((args) => args[0] === "run"), "no api call");
+});
+
+test("a gh error writes one stderr line with the first line of the error, and the wait goes on", async () => {
+  let calls = 0;
+  const gh = () => {
+    calls += 1;
+    if (calls === 1) throw new Error("HTTP 502 bad gateway\nmore detail");
+    return rollup("h", check("a", "COMPLETED", "SUCCESS"));
+  };
+  const { code, warnings, lines } = await watch(["--pr", "7"], { gh });
+  assert.equal(code, 0);
+  assert.deepEqual(warnings, ["watch: gh failed: HTTP 502 bad gateway"]);
+  assert.deepEqual(lines, ["EVENT pr:7 passed h"]);
+});
+
+test("a gh that answers null writes a stderr line and is not an event", async () => {
+  const { code, warnings } = await watch(["--pr", "7", "--max", "2"], { gh: () => null });
+  assert.equal(code, 4);
+  assert.ok(warnings.length >= 1 && warnings.every((line) => line.startsWith("watch: gh failed: ")));
 });

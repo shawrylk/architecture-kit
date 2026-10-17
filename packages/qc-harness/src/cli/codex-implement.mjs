@@ -128,11 +128,24 @@ function spawnRun({ command, args, env, log }, codexCommand) {
   });
 }
 
+/** Writes one stdout line and resolves once it is flushed, so the `process.exit` that follows cannot cut it. */
+const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${line}
+`, resolve));
+
 /**
+ * The last stdout line is `exit <code>` on every path, so a redirect of the runner into a wrapper log carries
+ * the end of the job for `qc watch --codex`, in any shell.
  * @param run `({ command, args, env, log }) => Promise<{ status, tail }>`; the default spawns `codexCommand`.
+ * @param out `(line) => Promise|void` writes the `exit` line; the default writes to stdout.
  * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs.
  */
-export async function runCodexImplement(argv, { run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line) } = {}) {
+export async function runCodexImplement(argv, { out = writeLine, ...options } = {}) {
+  const code = await runJob(argv, options);
+  await out(`exit ${code}`);
+  return code;
+}
+
+async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line) } = {}) {
   let settings;
   try {
     settings = parseArgs(argv);

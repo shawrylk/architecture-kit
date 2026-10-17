@@ -335,3 +335,25 @@ test("a limit word that only echoes the brief is not a limit", async (t) => {
   assert.equal(await runCodexImplement([...argv, "--max-runs", "2"], { run, say: quiet }), 3);
   assert.equal(calls, 2);
 });
+
+test("the last stdout line is `exit <code>` on every exit path, so a redirect into the wrapper log carries it", async (t) => {
+  const last = async (argv, options) => {
+    const out = [];
+    const code = await runCodexImplement(argv, { say: quiet, out: (line) => out.push(line), ...options });
+    return { code, out };
+  };
+  const done = setup(t, { progress: `${DONE_MARKER}\n` });
+  assert.deepEqual(await last(done.argv), { code: 0, out: ["exit 0"] });
+  const limit = setup(t);
+  const limited = await last(limit.argv, { run: async () => ({ status: 1, tail: "You have hit your usage limit" }) });
+  assert.deepEqual(limited, { code: 2, out: ["exit 2"] });
+  const spent = setup(t);
+  assert.deepEqual(await last([...spent.argv, "--max-runs", "1"], { run: async () => ({ status: 0, tail: "" }) }), { code: 3, out: ["exit 3"] });
+  assert.deepEqual(await last(["--nope", "x"]), { code: 1, out: ["exit 1"] });
+});
+
+test("the CLI prints `exit 1` as the last stdout line after a usage error", () => {
+  const result = spawnSync(process.execPath, [QC, "codex-implement"], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout.trimEnd().split("\n").at(-1), "exit 1");
+});

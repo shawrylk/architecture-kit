@@ -1,21 +1,23 @@
 // `qc watch`: block until the first event among the pull requests, Codex jobs and workflow runs it watches.
 // The wait is a shell command, so it costs no model tokens, and its exit is the event.
 
+import { spawnSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
-import { runGh } from "./gh-run.mjs";
 
 const DEFAULT_MAX_MINUTES = 55;
 const DEFAULT_INTERVAL_SECONDS = 60;
 const QUEUED_LIMIT_MS = 15 * 60_000;
 const CODEX_TAIL_BYTES = 2048;
+const GH_TIMEOUT_MS = 20_000;
+const SHA_SUFFIX = /^(.+)@([0-9a-f]{7,40})$/i;
 const FAILED_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 const FAILED_STATES = new Set(["FAILURE", "ERROR"]);
 
 export const EXIT = { PASSED: 0, BAD_INPUT: 1, TIMEOUT: 4, FAILED: 5, QUEUED: 6 };
 
 const USAGE =
-  "usage: qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]\n" +
+  "usage: qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]\n" +
   "exit 0 the item finished well, 1 bad input, 4 the bound passed, 5 a check or run failed, 6 a job stayed queued past 15 minutes";
 
 const positive = (flag, text) => {
@@ -35,9 +37,11 @@ export function parseWatchArgs(argv) {
     if (flag === "--pr") parsed.prs.push(positive(flag, value));
     else if (flag === "--codex") parsed.codex.push(path.resolve(value));
     else if (flag === "--run") {
-      const at = value.lastIndexOf("@");
-      if (at < 1 || at === value.length - 1) throw new Error(`--run needs <workflow>@<branch>, got ${value}`);
-      parsed.runs.push({ workflow: value.slice(0, at), branch: value.slice(at + 1) });
+      const at = value.indexOf("@");
+      if (at < 1 || at === value.length - 1) throw new Error(`--run needs <workflow>@<branch>[@<sha>], got ${value}`);
+      const rest = value.slice(at + 1);
+      const pinned = SHA_SUFFIX.exec(rest);
+      parsed.runs.push({ workflow: value.slice(0, at), branch: pinned ? pinned[1] : rest, sha: pinned?.[2] });
     } else if (flag === "--max") parsed.maxMinutes = positive(flag, value);
     else if (flag === "--interval") parsed.intervalSeconds = positive(flag, value);
     else parsed.repo = value;
@@ -46,16 +50,30 @@ export function parseWatchArgs(argv) {
   return parsed;
 }
 
-/** @returns the last 2 KB of a file as text, or null when it cannot be read yet. */
+/**
+ * PowerShell 5.1 writes `*>` as UTF-16LE with a BOM, so the first two bytes pick the decoder.
+ * When the file is longer than 2 KB, the read starts one character early and the text up to the first
+ * newline is dropped, so a line that the cut split never matches.
+ * @returns the last 2 KB of a file as whole lines of text, or null when it cannot be read yet.
+ */
 function readTail(file) {
   let fd;
   try {
     fd = openSync(file, "r");
     const size = fstatSync(fd).size;
-    const length = Math.min(size, CODEX_TAIL_BYTES);
-    const buffer = Buffer.alloc(length);
-    readSync(fd, buffer, 0, length, size - length);
-    return buffer.toString("utf8");
+    const bom = Buffer.alloc(Math.min(size, 2));
+    readSync(fd, bom, 0, bom.length, 0);
+    const utf16 = bom.length === 2 && bom[0] === 0xff && bom[1] === 0xfe;
+    const unit = utf16 ? 2 : 1;
+    const cut = size > CODEX_TAIL_BYTES;
+    let start = cut ? size - CODEX_TAIL_BYTES - unit : 0;
+    if (utf16 && start % 2 === 1) start += 1;
+    const buffer = Buffer.alloc(size - start);
+    readSync(fd, buffer, 0, buffer.length, start);
+    const text = buffer.toString(utf16 ? "utf16le" : "utf8");
+    if (!cut) return text.replace(/^﻿/, "");
+    const newline = text.indexOf("\n");
+    return newline < 0 ? "" : text.slice(newline + 1);
   } catch {
     return null;
   } finally {
@@ -117,10 +135,17 @@ function codexWatcher(file) {
   };
 }
 
-function runWatcher({ workflow, branch }, { repo, gh }) {
-  const args = ["run", "list", "--workflow", workflow, "--branch", branch, "--limit", "1", "--json", "status,conclusion,headSha", ...(repo ? ["-R", repo] : [])];
+/**
+ * Watches one workflow on one branch. Only a run of the armed head counts: the head the branch has at each poll,
+ * or the one that `@<sha>` pins. A run of an earlier head never fires.
+ */
+function runWatcher({ workflow, branch, sha }, { repo, gh }) {
+  const headArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/commits/${branch}`, "--jq", ".sha"];
+  const listArgs = ["run", "list", "--workflow", workflow, "--branch", branch, "--limit", "20", "--json", "status,conclusion,headSha", ...(repo ? ["-R", repo] : [])];
   return () => {
-    const latest = parseJson(gh(args))?.[0];
+    const head = sha ?? gh(headArgs)?.trim();
+    if (!head) return null;
+    const latest = parseJson(gh(listArgs))?.find((run) => typeof run.headSha === "string" && run.headSha.startsWith(head.toLowerCase()) || run.headSha === head);
     if (!latest || latest.status !== "completed") return null;
     return latest.conclusion === "success"
       ? { state: "passed", detail: latest.headSha, code: EXIT.PASSED }
@@ -128,13 +153,22 @@ function runWatcher({ workflow, branch }, { repo, gh }) {
   };
 }
 
+/** @returns gh's stdout on exit 0; throws an Error with gh's message when gh fails, times out, or is missing. */
+function readGh(args) {
+  const result = spawnSync("gh", args, { encoding: "utf8", windowsHide: true, timeout: GH_TIMEOUT_MS });
+  if (result.status === 0) return result.stdout ?? "";
+  const reason = (result.stderr ?? "").split(/\r?\n/).find((line) => line.trim()) ?? result.error?.message ?? `gh exited ${result.status}`;
+  throw new Error(reason.trim());
+}
+
 const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * @param deps `gh`, `say`, `now` and `sleep` replace the real reads, the output and the clock, for a test.
+ * A gh error writes one `watch: gh failed: <first line>` line to stderr and the wait goes on. It is never an event.
+ * @param deps `gh` returns stdout, null, or throws; `say`, `warn`, `now` and `sleep` replace the output and the clock, for a test.
  * @returns the exit code: 0 an item finished well, 4 the bound passed, 5 a check or run failed, 6 a job stayed queued.
  */
-export async function runWatch(argv, { gh = runGh, say = console.log, now = Date.now, sleep = realSleep } = {}) {
+export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep } = {}) {
   let parsed;
   try {
     parsed = parseWatchArgs(argv);
@@ -142,11 +176,21 @@ export async function runWatch(argv, { gh = runGh, say = console.log, now = Date
     console.error(`${error.message}\n${USAGE}`);
     return EXIT.BAD_INPUT;
   }
-  const context = { repo: parsed.repo, gh: (args) => gh(args), now };
+  const read = (args) => {
+    try {
+      const out = gh(args);
+      if (out === null) warn("watch: gh failed: no answer");
+      return out;
+    } catch (error) {
+      warn(`watch: gh failed: ${String(error?.message ?? error).split(/\r?\n/)[0]}`);
+      return null;
+    }
+  };
+  const context = { repo: parsed.repo, gh: read, now };
   const watchers = [
     ...parsed.prs.map((number) => ({ item: `pr:${number}`, poll: pullRequestWatcher(number, context) })),
     ...parsed.codex.map((file) => ({ item: `codex:${file}`, poll: codexWatcher(file) })),
-    ...parsed.runs.map((entry) => ({ item: `run:${entry.workflow}@${entry.branch}`, poll: runWatcher(entry, context) })),
+    ...parsed.runs.map((entry) => ({ item: `run:${entry.workflow}@${entry.branch}${entry.sha ? `@${entry.sha}` : ""}`, poll: runWatcher(entry, context) })),
   ];
   const deadline = now() + parsed.maxMinutes * 60_000;
   for (;;) {
