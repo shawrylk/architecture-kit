@@ -67,3 +67,17 @@ test("an explicit port to avoid is refused, and a docker that cannot start remov
   assert.equal(await runThrowawayDb({}, ["--", "x"], { ...deps, docker: fakeDocker(calls, { runCode: 1 }) }), 1);
   assert.deepEqual(calls, ["run --detach"]);
 });
+
+test("port 5432 stays avoided when the config lists other ports to avoid", async () => {
+  const deps = { docker: fakeDocker([]), open: async () => 55003, sleep: async () => {}, run: async () => 0, env: {}, say: () => {} };
+  const config = { throwawayDb: { avoidPorts: [5433] } };
+  assert.equal(await runThrowawayDb(config, ["--port", "5432", "--", "x"], deps), 2);
+  assert.equal(await runThrowawayDb(config, ["--port", "5433", "--", "x"], deps), 2);
+  const opened = [5432, 5433, 55003];
+  let next = 0;
+  const ports = [];
+  const run = async () => 0;
+  const docker = (args) => { if (args[0] === "run") ports.push(args[args.indexOf("--publish") + 1]); return { code: 0, err: "" }; };
+  await runThrowawayDb(config, ["--", "x"], { ...deps, docker, run, open: async () => opened[next++] });
+  assert.deepEqual(ports, ["127.0.0.1:55003:5432"]);
+});

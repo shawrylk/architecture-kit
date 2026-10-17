@@ -84,7 +84,8 @@ export async function runThrowawayDb(config, argv, deps = {}) {
     name = `qc-throwaway-${randomBytes(4).toString("hex")}`,
     password = randomBytes(16).toString("hex"),
   } = deps;
-  const settings = merge(throwawayDefaults, config.throwawayDb ?? {});
+  const merged = merge(throwawayDefaults, config.throwawayDb ?? {});
+  const settings = { ...merged, avoidPorts: [...new Set([5432, ...merged.avoidPorts])] };
   const { flags, command } = splitAtDashes(argv);
   let port;
   try {
