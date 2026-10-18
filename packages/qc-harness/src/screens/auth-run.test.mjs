@@ -77,7 +77,8 @@ test("capture checks each target once before navigating any screen and closes ea
 });
 
 
-test("headed auth accepts the named target and saves a valid session", async t => {
+// A headed browser needs a display, which a Linux CI runner lacks.
+test("headed auth accepts the named target and saves a valid session", { skip: process.platform === "linux" && !process.env.DISPLAY }, async t => {
   const f = await fixture(t);
   f.save(["app"]);
   const map = path.join(f.root, "map.json");
