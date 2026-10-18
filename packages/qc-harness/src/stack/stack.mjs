@@ -16,7 +16,6 @@ export const healthUrls = manifest => typeof manifest.health === "string" ? [man
 export function validateManifest(manifest) {
   if (!/^[a-z0-9][a-z0-9_-]*$/i.test(manifest.name ?? "")) throw new Error("Invalid stack name");
   for (const [name, port] of Object.entries(manifest.ports ?? {})) {
-    if (port === 5432) throw new Error("Stack port 5432 is reserved");
     if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error(`Invalid port ${name}`);
   }
   for (const key of ["up", "down"]) if (typeof manifest[key] !== "string" || !manifest[key]) throw new Error(`Stack requires ${key}`);

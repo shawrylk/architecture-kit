@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import net from "node:net";
@@ -19,16 +19,22 @@ test("stack up waits for health, status observes it, and down stops its process"
     const options = { registry: { fixture: root }, stateRoot: path.join(root, "state"), timeout: 8000 };
     assert.equal((await stackAction("up", ["fixture"], options))[0].healthy, true);
     assert.equal((await stackAction("status", ["fixture"], options))[0].healthy, true);
+    const other = path.join(root, "other");
+    mkdirSync(other);
+    writeFileSync(path.join(other, "qc.stack.json"), JSON.stringify({ ...manifest, name: "other" }));
+    await assert.rejects(stackAction("up", ["fixture", "other"], { ...options, registry: { fixture: root, other } }), /Stack other: port .* is in use/);
     assert.equal((await stackAction("down", ["fixture"], options))[0].running, false);
     await new Promise(resolve => probe.listen(port, "127.0.0.1", resolve));
     await assert.rejects(stackAction("up", ["fixture"], options), /in use/);
     await new Promise(resolve => probe.close(resolve));
   } finally { if (probe.listening) await new Promise(resolve => probe.close(resolve)); rmSync(root, { recursive: true, force: true }); }
 });
-test("stack refuses port 5432 and remote health URLs", () => {
+test("stack accepts a database on port 5432", () => {
   const manifest = { name: "x", up: "node app", down: "node stop", ports: { db: 5432 }, health: ["http://localhost:3000"], login: { kind: "auth0-session" } };
-  assert.throws(() => validateManifest(manifest), /5432/);
-  manifest.ports.db = 5433;
+  assert.equal(validateManifest(manifest).ports.db, 5432);
+});
+test("stack refuses remote health URLs", () => {
+  const manifest = { name: "x", up: "node app", down: "node stop", ports: { db: 5433 }, health: ["http://localhost:3000"], login: { kind: "auth0-session" } };
   manifest.health = ["https://cloud.example"];
   assert.throws(() => validateManifest(manifest), /localhost/);
 });

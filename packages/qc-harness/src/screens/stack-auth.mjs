@@ -27,7 +27,7 @@ export function applyStackLogin(target, manifest) {
     const url = new URL(login.url, target.baseUrl);
     requireLocalhost(url.href);
     if (url.origin !== new URL(target.baseUrl).origin) throw new Error("Form login must use the target origin");
-    target.auth = { ...target.auth, mode: "form", path: url.pathname + url.search, userSelector: login.selectors?.email, passwordSelector: login.selectors?.password, submitSelector: login.selectors?.submit };
+    target.auth = { ...target.auth, mode: "form", path: url.pathname + url.search, userSelector: login.selectors?.email, passwordSelector: login.selectors?.secret ?? login.selectors?.password, submitSelector: login.selectors?.submit };
   } else throw new Error(`Unsupported login kind: ${login.kind}`);
   return target;
 }

@@ -5,6 +5,16 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { accountFields, applyStackLogin, refreshDue } from "./stack-auth.mjs";
+import { parseMap } from "./map.mjs";
+
+test("stack form login reads the legacy email, secret, and submit selectors", () => {
+  const target = { baseUrl: "http://localhost:3300", auth: { signedIn: "main" } };
+  applyStackLogin(target, { login: { kind: "form", url: "/login", selectors: { email: "#username", secret: "#password", submit: "[data-testid=button-login-submit]" } } });
+  const map = parseMap({ widths: [390], targets: { legacy: target, other: structuredClone(target) }, screens: [{ name: "projects", targets: { legacy: { path: "/projects" }, other: { path: "/projects" } } }] });
+  assert.equal(map.targets.legacy.auth.userSelector, "#username");
+  assert.equal(map.targets.legacy.auth.passwordSelector, "#password");
+  assert.equal(map.targets.legacy.auth.submitSelector, "[data-testid=button-login-submit]");
+});
 
 test("accounts read named environment fields without evaluation", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "qc-account-"));
