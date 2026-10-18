@@ -42,6 +42,7 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 - It starts no helper agents, and the runner turns off the Codex `multi_agent` and `multi_agent_v2` features with `-c`. It runs no broad audit, Playwright, or full gate: the touched tests, and the local check once before the push.
 - It writes every item first. Then it runs the local check once, makes one commit, and pushes once. It keeps the report under 15 lines.
 - A lean rule never drops a security, tenant, data, or correctness check that the brief asks for.
+- A lean rule never overrides the brief on commits or pushes. Where the brief says not to commit, Codex makes no commit. Where it says not to push, Codex pushes nothing.
 
 - The runner owns the done marker `ALL TASKS DONE` and supplies it in every run prompt. A brief never needs to name it.
 - Done means the last non-empty line of the progress file equals the marker exactly, after trimming whitespace.
