@@ -59,7 +59,7 @@ export async function applyCatalog(map, mapFile) {
     const key = entry.open[name] ? name : family;
     if (!entry.open[key]) return [];
     const original = map.screens.find(item => item.name === entry.name)?.targets[name] ?? {};
-    return [[name, { ...original, path: entry.paths?.[key] ?? original.path, ready: entry.ready?.[key] ?? original.ready, masks: entry.masks?.[key] ?? original.masks, exclude: entry.exclude?.[key] ?? original.exclude, open: entry.open[key], navigationSource: String(entry.open[key]) }]];
+    return [[name, { ...original, path: entry.paths?.[key] ?? original.path, ready: entry.ready?.[key] ?? original.ready, masks: entry.masks?.[key] ?? original.masks, exclude: entry.exclude?.[key] ?? original.exclude, idle: entry.idle?.[key] ?? original.idle, open: entry.open[key], navigationSource: String(entry.open[key]) }]];
   })) }));
   return map;
 }

@@ -800,7 +800,7 @@ For each screen target, `clicks` is an ordered list of selectors for navigation 
 Use `{ "selector": "[data-guide-skip]", "optional": true }` for an onboarding control that can be absent.
 Capture navigation refuses mutation controls and blocks write requests.
 Use `ready` to identify loaded content, and `masks` to cover data that differs between environments.
-A page that polls never reaches network idle. Set `"idle": false` on its target, and the capture waits for `ready` only.
+A page that polls never reaches network idle. Set `"idle": false` on its target, or `idle: { legacy: false }` on a catalog entry, and the capture waits for `ready` only.
 Captures use a fixed viewport, disabled animations, and a hidden caret.
 The default height is 900 pixels; `--height` changes it.
 

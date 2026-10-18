@@ -47,6 +47,7 @@ export function parseMap(input) {
       if (route.masks !== undefined) requireValue(Array.isArray(route.masks) && route.masks.every(text), "masks must contain selectors");
       if (route.clicks !== undefined) requireValue(Array.isArray(route.clicks) && route.clicks.every(step => text(step) || (step && text(step.selector) && typeof step.optional === "boolean")), "clicks must contain selectors or optional navigation steps");
       if (route.ready !== undefined) requireValue(text(route.ready), "ready must be a selector");
+      if (route.idle !== undefined) requireValue(typeof route.idle === "boolean", "idle must be true or false");
     }
   }
   return input;
