@@ -25,7 +25,7 @@ Write the brief as a markdown file in your scratchpad. It holds these parts:
 | Task | The exact change, the files, and the cause of a failure |
 | Constraints | What Codex must leave alone, such as a shared database or another session's worktree. Codex never bypasses a git hook and never stops to ask: it writes a question in the report and continues. |
 | Commit | The message shape and the issue reference |
-| Exit criteria | Typecheck, the named test files, the push, and the done marker |
+| Exit criteria | Typecheck, the named test files, and the push; the runner supplies the done marker |
 
 Copy `brief-template.md` beside this skill. It holds the run shape, the gate slots, the live tests, and the commit rule.
 
@@ -42,8 +42,12 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 - It starts no helper agents, and the runner turns off the Codex `multi_agent` and `multi_agent_v2` features with `-c`. It runs no broad audit, Playwright, or full gate: the touched tests, and the local check once before the push.
 - It writes every item first. Then it runs the local check once, makes one commit, and pushes once. It keeps the report under 15 lines.
 - A lean rule never drops a security, tenant, data, or correctness check that the brief asks for.
+- A lean rule never overrides the brief on commits or pushes. Where the brief says not to commit, Codex makes no commit. Where it says not to push, Codex pushes nothing.
 
-- End the exit criteria with: "append `ALL TASKS DONE` to the progress file". The runner looks for that exact text anywhere in the file. Any other marker, such as `DONE`, makes it repeat runs until `--max-runs`.
+- The runner owns the done marker `ALL TASKS DONE` and supplies it in every run prompt. A brief never needs to name it.
+- Done means the last non-empty line of the progress file equals the marker exactly, after trimming whitespace.
+- Write it as the last line, alone, only when the exit criteria hold. Never quote it anywhere else.
+- Never wait for anyone to supply the marker.
 - Ask for a Claude co-author trailer only when `commitMessage.attribution` in `qc.config.json` is on. With it off, the brief says "no Claude co-author trailer".
 - Never tell Codex to skip a hook. A brief that says "no local checks" makes Codex treat the pre-push hook as out of scope, and it loops while it asks for permission to push.
 - The runner reads the brief again before each run. Edit the brief file to change the scope or record a decision. The next session holds the edit, and the runner needs no restart.
@@ -71,10 +75,10 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 | Exit | Meaning | Next step |
 |---|---|---|
-| 0 | The progress file holds `ALL TASKS DONE` | Read the report tail, then check the diff |
+| 0 | The last non-empty progress line equals `ALL TASKS DONE` after trimming whitespace | Read the report tail, then check the diff |
 | 1 | Bad input, or no `codex` on the `PATH` | Fix the command |
 | 2 | A Codex usage or spend limit | Send the same brief to `architecture:sdd-implementer` (sonnet) |
-| 3 | Out of runs | Read the progress tail. The work is often complete with a wrong marker. |
+| 3 | Out of runs | Read the progress tail for unfinished work or a marker outside the last non-empty line. |
 
 - Read only the tails: `tail -c 600 <progress.md>` and the end of the report.
 - Never read the Codex log or a JSONL transcript. They fill the context.

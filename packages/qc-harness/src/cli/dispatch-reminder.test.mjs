@@ -296,7 +296,11 @@ test("the worker note says to work inline, write every task, check and commit on
     /typecheck and lint on what you touched/,
     /Then run the local check once, make one commit, and push once./,
     /Do not run the full gate \(`pnpm check`\) or e2e; CI runs them/,
-    /append `ALL TASKS DONE` to the progress file the brief names/,
+    /runner owns the done marker `ALL TASKS DONE`/,
+    /last non-empty line.*equals.*exactly.*trimming whitespace/,
+    /last line, alone, only when the exit criteria hold/,
+    /Never quote it anywhere else/,
+    /Never wait for anyone to supply it/,
     /context gets large.*end the turn.*fresh session continues/,
   ]) {
     assert.match(WORKER_NOTE, phrase);
