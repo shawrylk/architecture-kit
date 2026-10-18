@@ -53,7 +53,8 @@ export async function capturePage(session, target, route, width, height, file, t
   if (response && response.status() >= 400) throw new Error(`Capture received HTTP ${response.status()}`);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
-  await page.locator(target.auth.signedIn).first().waitFor({ state: "visible", timeout });
+  // A full-screen viewer has no header, so an entry's own ready selector replaces the signed-in check.
+  if (!route.ready) await page.locator(target.auth.signedIn).first().waitFor({ state: "visible", timeout });
   for (const step of route.clicks ?? []) {
     const selector = typeof step === "string" ? step : step.selector;
     const control = page.locator(selector).first();
