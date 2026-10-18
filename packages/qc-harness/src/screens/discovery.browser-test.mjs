@@ -16,7 +16,7 @@ test("one SPA URL exposes five states; writes and an automatic POST stay blocked
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   const browser = await chromium.launch({ channel: "chrome", headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext({ serviceWorkers: "block" });
   const out = mkdtempSync(path.join(os.tmpdir(), "qc-discover-"));
   try {
     const result = await discover({ context, page: await context.newPage() }, { baseUrl: `http://127.0.0.1:${server.address().port}`, routes: ["/"], auth: { signedIn: "main" } }, { out, targetName: "fixture", widths: [390], depth: 1, timeout: 3000 });

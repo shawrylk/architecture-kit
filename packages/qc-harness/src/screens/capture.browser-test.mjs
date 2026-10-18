@@ -30,7 +30,7 @@ test("different text in the same box produces identical layout images", async ()
   const directory = mkdtempSync(path.join(os.tmpdir(), "qc-screens-layout-"));
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   try {
-    const context = await browser.newContext({ deviceScaleFactor: 1 });
+    const context = await browser.newContext({ deviceScaleFactor: 1, serviceWorkers: "block" });
     let text = "First";
     await context.route("https://screens.example/**", route => route.fulfill({ contentType: "text/html", body: `<main id="ready"><button style="width:100px;height:40px">${text}</button></main>` }));
     const page = await context.newPage();
@@ -50,7 +50,7 @@ test("capture includes a thumbnail whose response follows the ready selector", a
   const directory = mkdtempSync(path.join(os.tmpdir(), "qc-screens-image-"));
   const browser = await chromium.launch({ channel: "chrome", headless: true });
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ serviceWorkers: "block" });
     const image = new PNG({ width: 20, height: 20 });
     for (let offset = 0; offset < image.data.length; offset += 4) image.data.set([255, 0, 0, 255], offset);
     await context.route("https://screens.example/**", async route => {

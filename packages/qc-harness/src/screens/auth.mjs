@@ -104,7 +104,7 @@ async function lockedBrowserSession(chromium, target, file, { timeout = 15000, s
         profileRoot = path.join(privateRoot(), `profile-${process.pid}-${Date.now()}`);
         const profile = copyChromeProfile(profileRoot, chromeProfile);
         stage = "the browser";
-        context = await chromium.launchPersistentContext(profile.directory, { channel: "chrome", headless: !headed, deviceScaleFactor: 1, reducedMotion: "reduce", args: [`--profile-directory=${profile.profileName}`] });
+        context = await chromium.launchPersistentContext(profile.directory, { channel: "chrome", headless: !headed, deviceScaleFactor: 1, reducedMotion: "reduce", serviceWorkers: "block", args: [`--profile-directory=${profile.profileName}`] });
       } else {
         if (method === "state" && !existsSync(file)) return null;
         stage = "the browser";
@@ -187,7 +187,7 @@ async function lockedSeedSession(chromium, target, file, { timeout = 15000, cred
     if (savedOnly && !existsSync(file)) throw new Error("No saved local session");
     stage = "the browser";
     browser = await chromium.launch({ channel: "chrome", headless: !headed });
-    const context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", ...(existsSync(file) ? { storageState: JSON.parse(readFileSync(file, "utf8")) } : {}) });
+    const context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", serviceWorkers: "block", ...(existsSync(file) ? { storageState: JSON.parse(readFileSync(file, "utf8")) } : {}) });
     await context.route("**/*", async route => {
       try { requireLocalhost(route.request().url()); } catch { await route.abort(); return; }
       await route.continue();

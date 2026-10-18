@@ -36,7 +36,7 @@ test("local UI setup makes real requests, resumes ids, and creates no duplicates
       return (await page.getByTestId("record").getAttribute("href")).split("/").at(-1);
     },
   }]));
-  const sessionFactory = async () => { const context = await browser.newContext(); return { context, page: await context.newPage(), close: () => context.close() }; };
+  const sessionFactory = async () => { const context = await browser.newContext({ serviceWorkers: "block" }); return { context, page: await context.newPage(), close: () => context.close() }; };
   try {
     const options = { chromium, adapter, stateRoot: root, sessionFactory, timeout: 3000 };
     const first = await setupLocal(target, "fixture", options);

@@ -17,7 +17,7 @@ test("a failing catalog step records its screenshot while the other screen compl
   try {
     const report = await captureScreens({ widths: [200], targets: { a: target, b: target }, screens: ["bad", "good"].map(name => ({ name, targets: { a: route(name === "bad"), b: route(name === "bad") } })) }, { targets: ["a", "b"], out, timeout: 3000, height: 100 }, {
       chromium, say: () => {}, sessionFactory: async () => {
-        const context = await browser.newContext();
+        const context = await browser.newContext({ serviceWorkers: "block" });
         const page = await context.newPage();
         await page.route("**/*", route => route.fulfill({ contentType: "text/html", body: '<main><h1>Fixture</h1><a href="/good">Good page</a></main>' }));
         return { context, page, close: () => context.close() };
