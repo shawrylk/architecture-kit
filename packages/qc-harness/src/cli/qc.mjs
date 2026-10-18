@@ -24,7 +24,8 @@ const USAGE = `qc — architecture gates
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
-                           run a brief through codex exec as an implementer, restarting until the progress file says ALL TASKS DONE; exit 2 on a Codex limit
+                           run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
+                           the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
   qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
