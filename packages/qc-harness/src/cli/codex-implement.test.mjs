@@ -112,6 +112,7 @@ test("every run prompt carries the lean rules after the brief", async (t) => {
     assert.match(prompt, /line ranges/);
     assert.match(prompt, /helper agents/);
     assert.match(prompt, /Then run the local check once, make one commit, and push once\./);
+    assert.match(prompt, /never override the brief on commits or pushes/);
     assert.match(prompt, /npx qc gate-slot --/);
     assert.match(prompt, /npx qc throwaway-db --/);
     assert.match(prompt, /Never use port 5432/);

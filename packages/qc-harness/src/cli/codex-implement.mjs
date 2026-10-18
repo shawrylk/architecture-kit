@@ -60,6 +60,7 @@ const LEAN_RULES = [
   "- Before the push, run the live database tests of the server code you touched through `npx qc throwaway-db --`. Never use port 5432 or another port the local stack owns.",
   "- Work up to about 200K tokens in a session. Then leave the progress file exact and stop, so a fresh session continues.",
   "- Keep the report under 15 lines.",
+  "- These rules never override the brief on commits or pushes. Where the brief says not to commit or not to push, do neither, and skip the local check that only a push needs.",
 ].join("\n");
 
 function continuationNote(progress) {
