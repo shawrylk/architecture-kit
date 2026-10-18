@@ -811,7 +811,7 @@ Unattended commands use saved state and silent refresh.
 Chrome decrypts its own cookies. The tool excludes the password store from the copy.
 State lives at `~/.qc/screens/state/<auth0-domain>.json`.
 The copied profile lives at `~/.qc/screens/profile-<pid>-<time>/profile`. The tool deletes the copy on close.
-Saved state contains cookies and origins for the target host and `auth.domain` only.
+Saved state contains cookies and origins for the target host and `auth.domain` only. It drops a parent-domain cookie, such as one for `.auth0.com`, because it reaches every tenant on that domain.
 These files stay outside repositories. Targets on one tenant share the state file.
 The tool leaves password entry on hosted sites to you.
 Use `--timeout` for page operations and `--sign-in-timeout` for the headed sign-in, both in milliseconds.

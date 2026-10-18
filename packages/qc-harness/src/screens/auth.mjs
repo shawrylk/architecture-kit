@@ -52,13 +52,12 @@ async function reachesSignedIn(context, target, timeout) {
 }
 
 async function saveState(context, file, target) {
+  // A parent-domain cookie, such as .auth0.com, reaches every tenant on that domain, so only exact hosts are kept.
   const hosts = [new URL(target.baseUrl).hostname, target.auth.domain].filter(Boolean).map(host => host.toLowerCase());
+  const origins = [new URL(target.baseUrl).origin, ...(target.auth.domain ? [`https://${target.auth.domain.toLowerCase()}`] : [])];
   const state = await context.storageState();
-  state.cookies = state.cookies.filter(cookie => {
-    const domain = cookie.domain.replace(/^\./, "").toLowerCase();
-    return hosts.some(host => host === domain || host.endsWith(`.${domain}`));
-  });
-  state.origins = state.origins.filter(origin => hosts.includes(new URL(origin.origin).hostname));
+  state.cookies = state.cookies.filter(cookie => hosts.includes(cookie.domain.replace(/^\./, "").toLowerCase()));
+  state.origins = state.origins.filter(origin => origins.includes(new URL(origin.origin).origin));
   await atomicJson(file, state);
 }
 

@@ -17,14 +17,14 @@ test("profile sign-in saves only target and authentication hosts", async t => {
     route: async () => {}, close: async () => {},
     newPage: async () => ({ goto: async () => {}, url: () => target.baseUrl, locator: () => ({ first: () => ({ waitFor: async () => {} }) }) }),
     storageState: async () => ({
-      cookies: ["app.example.test", ".example.test", ".tenant.auth0.test", "foreign.test", "evilapp.example.test", "example.test.evil"].map(domain => ({ name: "session", domain, path: "/" })),
-      origins: [target.baseUrl, "https://tenant.auth0.test", "https://foreign.test", "https://evilapp.example.test"].map(origin => ({ origin, localStorage: [] })),
+      cookies: ["app.example.test", ".example.test", ".tenant.auth0.test", ".auth0.test", "foreign.test", "evilapp.example.test", "example.test.evil"].map(domain => ({ name: "session", domain, path: "/" })),
+      origins: [target.baseUrl, "https://tenant.auth0.test", "https://app.example.test:8443", "http://app.example.test", "https://foreign.test", "https://evilapp.example.test"].map(origin => ({ origin, localStorage: [] })),
     }),
   };
   const session = await browserSession({ launchPersistentContext: async () => context }, target, { chromeProfile: source, allowInteractive: true, say: () => {} });
   t.after(() => session.close());
   const saved = JSON.parse(readFileSync(path.join(root, ".qc", "screens", "state", "tenant.auth0.test.json"), "utf8"));
-  assert.deepEqual(saved.cookies.map(cookie => cookie.domain), ["app.example.test", ".example.test", ".tenant.auth0.test"]);
+  assert.deepEqual(saved.cookies.map(cookie => cookie.domain), ["app.example.test", ".tenant.auth0.test"]);
   assert.deepEqual(saved.origins.map(origin => origin.origin), [target.baseUrl, "https://tenant.auth0.test"]);
 });
 
