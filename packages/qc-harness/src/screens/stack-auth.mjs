@@ -52,7 +52,8 @@ export async function recordRefresh(target) {
 }
 
 export function refreshDue(record, now = Date.now()) {
-  return !record?.lastRefreshed || now - Date.parse(record.lastRefreshed) >= 23 * 60 * 60 * 1000;
+  const lastTry = Math.max(Date.parse(record?.lastRefreshed) || 0, Date.parse(record?.lastAttempted) || 0);
+  return !lastTry || now - lastTry >= 23 * 60 * 60 * 1000;
 }
 
 /** Pipeline: authenticate each target through its declared mechanism. */
@@ -89,8 +90,14 @@ export async function authStatus(chromium, targets, options = {}) {
 export async function refreshStackSessions(stack) {
   const { readdirSync } = await import("node:fs");
   for (const name of readdirSync(privateRoot()).filter(name => /^session-.*\.json$/.test(name))) {
-    const record = JSON.parse(readFileSync(path.join(privateRoot(), name), "utf8"));
-    if (record.target.stack !== stack || !refreshDue(record)) continue;
+    const file = path.join(privateRoot(), name);
+    const record = await withFileLock(file, async () => {
+      const current = JSON.parse(readFileSync(file, "utf8"));
+      if (current.target.stack !== stack || !refreshDue(current)) return null;
+      await atomicJson(file, { ...current, lastAttempted: new Date(Date.now()).toISOString() });
+      return current;
+    });
+    if (!record) continue;
     const { chromium } = await import("playwright");
     const target = { ...record.target, auth: { ...record.target.auth, path: "/bff/login?returnTo=%2Fprojects" } };
     const session = await targetSession(chromium, target, { timeout: 15000, signInTimeout: 180000, allowInteractive: false });

@@ -24,7 +24,7 @@ const timer = setInterval(async () => {
     try {
       const { refreshStackSessions } = await import("../screens/stack-auth.mjs");
       await refreshStackSessions(state.manifest.name);
-    } catch { /* The next interval retries an unavailable session. */ }
+    } catch { /* The refresh ledger delays a failed session until its next due time. */ }
     finally { refreshing = false; }
   }
 }, 1000);
