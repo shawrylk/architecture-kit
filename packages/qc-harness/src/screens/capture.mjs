@@ -71,7 +71,8 @@ export async function capturePage(session, target, route, width, height, file, t
   if (actual.origin !== expected.origin || actual.pathname !== expected.pathname || actual.search !== expected.search) throw new Error("Capture reached a URL other than the mapped screen");
   if (await page.locator('input[type="password"]:visible, [role="alert"][data-error]:visible').count()) throw new Error("Capture reached a sign-in or error page");
   await page.mouse.move(0, 0);
-  await page.waitForLoadState("networkidle", { timeout });
+  // A page that polls never goes idle, so its entry sets `idle: false` and relies on `ready`.
+  if (route.idle !== false) await page.waitForLoadState("networkidle", { timeout });
   await page.evaluate(() => document.fonts.ready);
   const inventory = await collectInventory(page, [...(route.masks ?? []), ...(route.exclude ?? [])]);
   writeJson(file.replace(/\.png$/, ".inventory.json"), inventory);
