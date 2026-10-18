@@ -51,8 +51,15 @@ async function reachesSignedIn(context, target, timeout) {
   return { context, page };
 }
 
-async function saveState(context, file) {
-  await atomicJson(file, await context.storageState());
+async function saveState(context, file, target) {
+  const hosts = [new URL(target.baseUrl).hostname, target.auth.domain].filter(Boolean).map(host => host.toLowerCase());
+  const state = await context.storageState();
+  state.cookies = state.cookies.filter(cookie => {
+    const domain = cookie.domain.replace(/^\./, "").toLowerCase();
+    return hosts.some(host => host === domain || host.endsWith(`.${domain}`));
+  });
+  state.origins = state.origins.filter(origin => hosts.includes(new URL(origin.origin).hostname));
+  await atomicJson(file, state);
 }
 
 /** Record: interactive sign-in is a terminal result for unattended commands. */
@@ -121,7 +128,7 @@ async function lockedBrowserSession(chromium, target, file, { timeout = 15000, s
         }
       } else session = await reachesSignedIn(context, target, method === "headed" ? signInTimeout : timeout);
       stage = "the session file";
-      await saveState(context, file);
+      await saveState(context, file, target);
       return { ...session, close };
     } catch {
       await close().catch(() => {});
@@ -188,7 +195,7 @@ async function lockedSeedSession(chromium, target, file, { timeout = 15000, cred
     if (savedOnly) {
       stage = "the saved session";
       const session = await reachesSignedIn(context, { ...target, auth: { ...target.auth, path: target.auth.checkPath ?? "/projects" } }, timeout);
-      await saveState(context, file);
+      await saveState(context, file, target);
       return { ...session, close: () => browser.close() };
     }
     stage = "the login page";
@@ -208,7 +215,7 @@ async function lockedSeedSession(chromium, target, file, { timeout = 15000, cred
     stage = "the signed-in page";
     await page.locator(target.auth.signedIn).first().waitFor({ state: "visible", timeout });
     stage = "the session file";
-    await saveState(context, file);
+    await saveState(context, file, target);
     return { context, page, close: () => browser.close() };
   } catch {
     if (browser) await browser.close().catch(() => {});

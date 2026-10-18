@@ -1,9 +1,32 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { firstSignedIn, seedFields, copyChromeProfile } from "./auth.mjs";
+import { firstSignedIn, seedFields, copyChromeProfile, browserSession } from "./auth.mjs";
+
+test("profile sign-in saves only target and authentication hosts", async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-auth-filter-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.mock.method(os, "homedir", () => root);
+  const source = path.join(root, "chrome");
+  mkdirSync(source);
+  writeFileSync(path.join(source, "Local State"), JSON.stringify({ profile: { last_used: "Default" } }));
+  const target = { baseUrl: "https://app.example.test", auth: { domain: "tenant.auth0.test", signedIn: "main" } };
+  const context = {
+    route: async () => {}, close: async () => {},
+    newPage: async () => ({ goto: async () => {}, url: () => target.baseUrl, locator: () => ({ first: () => ({ waitFor: async () => {} }) }) }),
+    storageState: async () => ({
+      cookies: ["app.example.test", ".example.test", ".tenant.auth0.test", "foreign.test", "evilapp.example.test", "example.test.evil"].map(domain => ({ name: "session", domain, path: "/" })),
+      origins: [target.baseUrl, "https://tenant.auth0.test", "https://foreign.test", "https://evilapp.example.test"].map(origin => ({ origin, localStorage: [] })),
+    }),
+  };
+  const session = await browserSession({ launchPersistentContext: async () => context }, target, { chromeProfile: source, allowInteractive: true, say: () => {} });
+  t.after(() => session.close());
+  const saved = JSON.parse(readFileSync(path.join(root, ".qc", "screens", "state", "tenant.auth0.test.json"), "utf8"));
+  assert.deepEqual(saved.cookies.map(cookie => cookie.domain), ["app.example.test", ".example.test", ".tenant.auth0.test"]);
+  assert.deepEqual(saved.origins.map(origin => origin.origin), [target.baseUrl, "https://tenant.auth0.test"]);
+});
 
 test("auth falls back in order and stops at the first signed-in context", async () => {
   const calls = [];
