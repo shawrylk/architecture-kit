@@ -104,7 +104,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
     for (const name of targets) {
       const session = await sessionFactory(chromium, map.targets[name], { timeout, signInTimeout, say, targetName: name, allowInteractive: false, allowWrites });
       sessions.set(name, session);
-      await installWriteGuard(session.context, map.targets[name]);
+      await installWriteGuard(session.context, map.targets[name], { allowWrites });
     }
     for (const name of targets) {
       const target = map.targets[name];

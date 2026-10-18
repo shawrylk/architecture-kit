@@ -116,6 +116,23 @@ test("a browser launch failure names the target and method without asking for hu
   });
 });
 
+test("--allow-writes reaches the capture write guard as well as the session", async t => {
+  const f = await fixture(t);
+  const verdicts = [];
+  const report = await captureScreens({ widths: [200], targets: { first: f.target, second: f.target }, screens: [{ name: "projects", targets: { first: { path: "/projects" }, second: { path: "/projects" } } }] }, { targets: ["first", "second"], out: path.join(f.root, "out"), allowWrites: true }, {
+    say: () => {},
+    sessionFactory: async (_chromium, _target, options) => {
+      assert.equal(options.allowWrites, true);
+      const context = { route: async (_pattern, handler) => {
+        await handler({ request: () => ({ method: () => "POST", url: () => `${f.target.baseUrl}/api/items` }), fallback: async () => verdicts.push("allowed"), abort: async () => verdicts.push("blocked") });
+      } };
+      return { context, page: { setViewportSize: async () => { throw new Error("stop after the guard"); } }, close: async () => {} };
+    },
+  });
+  assert.equal(report[0].error.message, "stop after the guard");
+  assert.deepEqual(verdicts, ["allowed", "allowed"]);
+});
+
 test("a cached target also passes preflight before a changed-target capture", async t => {
   const f = await fixture(t);
   const names = [];
