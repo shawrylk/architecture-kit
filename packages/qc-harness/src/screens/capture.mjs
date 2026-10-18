@@ -89,7 +89,7 @@ export async function capturePage(session, target, route, width, height, file, t
 
 /** Pipeline: authenticate, capture each viewport, compare, and publish the gallery. */
 export async function captureScreens(map, options, { chromium, say = console.error, sessionFactory = targetSession } = {}) {
-  const { targets, out, only, changed, timeout = 15000, signInTimeout = 180000, height = 900 } = options;
+  const { targets, out, only, changed, timeout = 15000, signInTimeout = 180000, height = 900, allowWrites = false } = options;
   if (targets.length !== 2 || targets.some(name => !map.targets[name])) throw new Error("Choose two targets from the map");
   if (changed && !targets.includes(changed)) throw new Error("--changed must name one of the two targets");
   const screens = selectScreens(map.screens, only);
@@ -102,7 +102,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
   const failures = new Map();
   try {
     for (const name of targets) {
-      const session = await sessionFactory(chromium, map.targets[name], { timeout, signInTimeout, say, targetName: name, allowInteractive: false });
+      const session = await sessionFactory(chromium, map.targets[name], { timeout, signInTimeout, say, targetName: name, allowInteractive: false, allowWrites });
       sessions.set(name, session);
       await installWriteGuard(session.context, map.targets[name]);
     }

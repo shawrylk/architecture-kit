@@ -74,7 +74,7 @@ export async function runScreens(argv, { say = console.error } = {}) {
     }
     if (command !== "run") throw new Error(`Unknown screens command ${command}`);
     if (!values.targets || !values.out) throw new Error("--targets and --out are required");
-    const report = await captureScreens(map, { targets: values.targets.split(",").map(name => name.trim()), out: path.resolve(values.out), only: positionals.length ? positionals.join(",") : values.only, changed: values.changed, height: Number(values.height ?? 900), timeout, signInTimeout }, { chromium, say });
+    const report = await captureScreens(map, { targets: values.targets.split(",").map(name => name.trim()), out: path.resolve(values.out), only: positionals.length ? positionals.join(",") : values.only, changed: values.changed, height: Number(values.height ?? 900), timeout, signInTimeout, allowWrites: values["allow-writes"] === true }, { chromium, say });
     for (const row of report) say(JSON.stringify(row));
     return report.some(row => row.error) ? 1 : 0;
   } catch (error) { say(error.exitCode === 4 ? error.message : `qc screens: ${error.message}`); return error.exitCode === 4 ? 4 : 1; }
