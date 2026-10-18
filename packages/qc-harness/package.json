@@ -50,7 +50,8 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\""
+    "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\"",
+    "test:browser": "node --test \"src/**/*.browser-test.mjs\""
   },
   "peerDependencies": {
     "@typescript-eslint/eslint-plugin": ">=8",
