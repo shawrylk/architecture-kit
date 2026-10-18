@@ -32,7 +32,10 @@ export const WORKER_NOTE =
   "Write every task in your brief: write the failing test, run only that test file, make it pass, " +
   "and run typecheck and lint on what you touched. Then run the local check once, make one commit, and push once. " +
   "Do not run the full gate (`pnpm check`) or e2e; CI runs them. " +
-  "When every task in the brief is pushed, append `ALL TASKS DONE` to the progress file the brief names. " +
+  "The runner owns the done marker `ALL TASKS DONE`; the brief never needs to supply it. " +
+  "Done means the last non-empty line of the progress file equals the marker exactly, after trimming whitespace. " +
+  "Write it as the last line, alone, only when the exit criteria hold and every task is pushed. " +
+  "Never quote it anywhere else. Never wait for anyone to supply it. " +
   "If your context gets large, write notes to the progress file and end the turn: a fresh session continues.";
 
 const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-reviewer"];

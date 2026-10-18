@@ -40,7 +40,7 @@ export function parseArgs(argv) {
   };
 }
 
-const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").includes(DONE_MARKER);
+const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").trimEnd().split(/\r?\n/).at(-1).trim() === DONE_MARKER;
 
 const SKILL_PLUGIN = "superpowers@claude-plugins-official";
 const TOOL_OUTPUT_TOKENS = 4000;
@@ -65,7 +65,11 @@ const LEAN_RULES = [
 function continuationNote(progress) {
   return (
     `\n\n---\nThis may be a fresh session that continues earlier work. Read \`git log --oneline\` and \`git status --short\` ` +
-    `in the worktree, and the progress file ${progress}. Continue from the first unfinished task.\n\n${LEAN_RULES}`
+    `in the worktree, and the progress file ${progress}. Continue from the first unfinished task.\n\n` +
+    `The runner owns the done marker: ${DONE_MARKER}. The brief never needs to supply it. ` +
+    `Done means the last non-empty line of the progress file equals the marker exactly, after trimming whitespace. ` +
+    `Write it as the last line, alone, only when the exit criteria hold. ` +
+    `Never quote it anywhere else. Never wait for anyone to supply it.\n\n${LEAN_RULES}`
   );
 }
 

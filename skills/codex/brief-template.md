@@ -32,4 +32,6 @@ Progress: `<absolute progress file>`
 
 - Typecheck, the named test files, and the local check pass.
 - The branch is pushed.
-- Append `ALL TASKS DONE` to the progress file.
+- Write the runner's marker as the last line, alone, only when the exit criteria hold.
+- The last non-empty progress line must equal the marker exactly, after trimming whitespace.
+- Never quote the marker elsewhere or wait for anyone to supply it; the runner supplies it in every prompt.

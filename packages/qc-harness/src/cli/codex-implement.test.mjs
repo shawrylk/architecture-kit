@@ -21,6 +21,29 @@ function setup(t, { progress = "" } = {}) {
 
 const quiet = () => {};
 
+for (const [name, progress] of [
+  ["marker in prose", `Do not append ${DONE_MARKER} until the push succeeds.\n`],
+  ["marker before more lines", `${DONE_MARKER}\nPush remains unfinished.\n`],
+  ["quoted marker", `"${DONE_MARKER}"\n`],
+  ["empty progress", "\n \n"],
+]) {
+  test(`${name} never ends the job before or after a run`, async (t) => {
+    const { argv } = setup(t, { progress });
+    let calls = 0;
+    const run = async () => {
+      calls += 1;
+      return { status: 0, tail: "work remains" };
+    };
+    assert.equal(await runCodexImplement([...argv, "--max-runs", "1"], { run, say: quiet }), 3);
+    assert.equal(calls, 1);
+  });
+}
+
+test("the last non-empty line accepts the exact marker with surrounding whitespace", async (t) => {
+  const { argv } = setup(t, { progress: `Tasks pushed.\r\n \t${DONE_MARKER}\t \r\n \r\n\t\r\n` });
+  assert.equal(await runCodexImplement(argv, { run: async () => assert.fail("no run"), say: quiet }), 0);
+});
+
 test("a progress file that already says ALL TASKS DONE exits 0 with no run", async (t) => {
   const { argv } = setup(t, { progress: `task 1 committed\n${DONE_MARKER}\n` });
   let calls = 0;
@@ -79,6 +102,11 @@ test("every run prompt carries the lean rules after the brief", async (t) => {
   assert.equal(seen.length, 2);
   for (const prompt of seen) {
     assert.ok(prompt.startsWith(readFileSync(brief, "utf8")));
+    assert.ok(prompt.includes(DONE_MARKER));
+    assert.match(prompt, /last non-empty line.*equals.*exactly.*trimming whitespace/i);
+    assert.match(prompt, /last line, alone.*only when.*exit criteria/i);
+    assert.match(prompt, /never quote.*anywhere else/i);
+    assert.match(prompt, /never wait for anyone to supply/i);
     assert.match(prompt, /at most 40 lines/);
     assert.match(prompt, /re-verify/);
     assert.match(prompt, /line ranges/);
