@@ -39,6 +39,7 @@
     "./eslint": "./src/eslint/index.mjs",
     "./preset": "./src/eslint/preset.mjs",
     "./config": "./src/config.mjs",
+    "./screens": "./src/screens/catalog.mjs",
     "./gates/*": "./src/gates/*.mjs",
     "./package.json": "./package.json",
     "./ui/*": "./src/ui/*.mjs"
@@ -49,7 +50,8 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\""
+    "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\"",
+    "test:browser": "node --test \"src/**/*.browser-test.mjs\""
   },
   "peerDependencies": {
     "@typescript-eslint/eslint-plugin": ">=8",
@@ -98,5 +100,10 @@
     "eslint-plugin-sonarjs": "^3",
     "typescript": "^5",
     "yaml": "^2.9.1"
+  },
+  "dependencies": {
+    "pixelmatch": "^8.0.0",
+    "playwright": "^1.64.1",
+    "pngjs": "^7.0.0"
   }
 }

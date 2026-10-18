@@ -267,8 +267,13 @@ test("a clean mirror run names every root it judged", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a fresh init repository with the default config passes the hooks check", async () => {
+test("a fresh init repository with the default config passes the hooks check", async t => {
   const dir = repo();
+  const globalConfig = process.env.GIT_CONFIG_GLOBAL;
+  const fixtureConfig = path.join(dir, ".git", "fixture-global-config");
+  writeFileSync(fixtureConfig, "");
+  process.env.GIT_CONFIG_GLOBAL = fixtureConfig;
+  t.after(() => { if (globalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = globalConfig; });
   await quiet(() => runInit(load(dir)));
   const config = load(dir);
   assert.deepEqual(hookDrift(dir, requiredHooks(config)).problems, []);

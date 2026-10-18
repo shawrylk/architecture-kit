@@ -1,0 +1,10 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { diffInventory } from "./inventory.mjs";
+const field = (name, role = "textbox", type = "text", state = {}) => ({ role, name, type, state, box: { x: 0, y: 0, width: 100, height: 30 } });
+test("a removed field is missing", () => assert.equal(diffInventory([field("Email")], [])[0].kind, "missing"));
+test("a renamed button is renamed", () => assert.equal(diffInventory([field("Continue", "button")], [field("Next", "button")])[0].kind, "renamed"));
+test("swapped fields report a move", () => assert.ok(diffInventory([field("A"), field("B")], [field("B"), field("A")]).some(f => f.kind === "moved")));
+test("a text input against a select reports type", () => assert.equal(diffInventory([field("Country")], [field("Country", "combobox", "select")])[0].kind, "type"));
+test("a disabled field reports state", () => assert.equal(diffInventory([field("Email")], [field("Email", "textbox", "text", { disabled: true })])[0].kind, "state"));
+test("identical inventories have no findings", () => assert.deepEqual(diffInventory([field("Email")], [field(" Email ")]), []));
