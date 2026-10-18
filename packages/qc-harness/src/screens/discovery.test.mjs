@@ -8,6 +8,7 @@ test("write guard blocks mutations in English and Japanese and allows local opt-
   assert.equal(safeControl({ text: "Photos" }), true);
   assert.equal(permitsRequest("POST", "http://localhost/api", { baseUrl: "http://localhost" }), false);
   assert.equal(permitsRequest("POST", "http://localhost/api", { baseUrl: "http://localhost" }, true), true);
+  assert.equal(permitsRequest("POST", "https://other.test/x", { baseUrl: "http://localhost" }, true), false);
   assert.equal(permitsRequest("POST", "https://cloud.test/api", { baseUrl: "https://cloud.test" }, true), false);
   assert.equal(permitsRequest("POST", "https://tenant.auth0.com/u/login", { baseUrl: "https://cloud.test", auth: { domain: "tenant.auth0.com" } }), true);
   assert.equal(permitsRequest("POST", "https://tenant.auth0.com/api/users", { baseUrl: "https://cloud.test", auth: { domain: "tenant.auth0.com" } }), false);

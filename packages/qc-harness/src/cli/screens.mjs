@@ -6,6 +6,7 @@ import { authStatus, targetSession } from "../screens/stack-auth.mjs";
 import { applyCatalog, openScreen } from "../screens/catalog.mjs";
 import { runDiscovery } from "./screens-discovery.mjs";
 import { setupLocal } from "../screens/setup.mjs";
+import { installWriteGuard } from "../screens/write-guard.mjs";
 
 export const USAGE = `qc screens [run [names...]|list|open <name>|auth status|auth <target> --headed|setup]
   qc screens discover|pair|coverage|scaffold --map <json> --out <dir>
@@ -18,7 +19,7 @@ Chrome must be installed. Sessions stay in ~/.qc/screens.
 Catalog modules live outside the kit. open waits until you close its window.`;
 
 /** Trigger: screen commands share the same catalog, sessions, and map. */
-export async function runScreens(argv, { say = console.error } = {}) {
+export async function runScreens(argv, { say = console.error, sessionFactory = targetSession } = {}) {
   let values, positionals;
   const command = argv[0]?.startsWith("--") || !argv.length ? "run" : argv.shift();
   const authTarget = command === "auth" ? argv.shift() : undefined;
@@ -63,8 +64,10 @@ export async function runScreens(argv, { say = console.error } = {}) {
       const item = map.screens.find(item => item.name === positionals[0]);
       const route = item?.targets[values.target];
       if (!target || !route) throw new Error("Choose a screen name and --target from the map");
-      const session = await targetSession(chromium, target, { timeout, signInTimeout, say, targetName: values.target, headed: true });
+      const allowWrites = values["allow-writes"] === true;
+      const session = await sessionFactory(chromium, target, { timeout, signInTimeout, say, targetName: values.target, headed: true, allowWrites });
       try {
+        await installWriteGuard(session.context, target, { allowWrites });
         await session.page.setViewportSize({ width: map.widths[0], height: Number(values.height ?? 900) });
         if (route.open) await openScreen(session.page, target, route, { targetName: values.target, screenName: item.name, out: path.resolve(values.out ?? "."), timeout });
         else await session.page.goto(new URL(route.path, target.baseUrl).href, { timeout });
