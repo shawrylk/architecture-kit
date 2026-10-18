@@ -49,7 +49,7 @@ export async function setupLocal(target, targetName, { chromium, adapter, stateR
   const file = path.join(stateRoot, `fixtures-${targetName}.json`);
   const fixtures = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const assets = fixtureAssets(path.join(stateRoot, "fixture-assets"));
-  const session = await sessionFactory(chromium, target, { timeout, signInTimeout, allowWrites: true, say });
+  const session = await sessionFactory(chromium, target, { timeout, signInTimeout, targetName, allowWrites: true, say });
   try {
     const { page, context } = session;
     page.setDefaultTimeout(timeout);

@@ -15,7 +15,7 @@ export async function runDiscovery(command, map, values, { chromium, say }) {
     const depth = Number(values.depth ?? 4);
     const maxStates = Number(values["max-states"] ?? 500);
     if (!Number.isInteger(depth) || depth < 0 || !Number.isInteger(maxStates) || maxStates < 1) throw new Error("Invalid depth or state bound");
-    const session = await targetSession(chromium, target, { timeout, signInTimeout: Number(values["sign-in-timeout"] ?? 180000), say });
+    const session = await targetSession(chromium, target, { timeout, signInTimeout: Number(values["sign-in-timeout"] ?? 180000), targetName: values.target, say });
     try {
       const routes = [...new Map(map.screens.flatMap(screen => screen.targets[values.target]?.path ? [screen.targets[values.target].path] : []).map(route => [route, route])).values()];
       const result = await discover(session, { ...target, routes: target.routes ?? routes }, { out, targetName: values.target, widths: map.widths, depth, timeout, maxStates, allowWrites: values["allow-writes"], say });

@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { atomicJson, withFileLock } from "./session-files.mjs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -45,8 +46,9 @@ export function resolveStackTargets(input, names) {
 const metadataFile = target => path.join(privateRoot(), `session-${createHash("sha256").update(target.baseUrl).digest("hex").slice(0, 16)}.json`);
 
 /** Ledger: refresh times belong to each application rather than its shared tenant. */
-export function recordRefresh(target) {
-  writeFileSync(metadataFile(target), JSON.stringify({ target, lastRefreshed: new Date().toISOString() }), { mode: 0o600 });
+export async function recordRefresh(target) {
+  const file = metadataFile(target);
+  await withFileLock(file, () => atomicJson(file, { target, lastRefreshed: new Date().toISOString() }));
 }
 
 export function refreshDue(record, now = Date.now()) {
@@ -55,8 +57,12 @@ export function refreshDue(record, now = Date.now()) {
 
 /** Pipeline: authenticate each target through its declared mechanism. */
 export async function targetSession(chromium, target, options = {}) {
-  const session = await (target.auth.mode === "browser-session" ? browserSession(chromium, target, options) : seedSession(chromium, target, { ...options, credentials: target.auth.mode === "form" ? accountFields() : undefined }));
-  recordRefresh(target);
+  let credentials;
+  try { if (target.auth.mode === "form") credentials = accountFields(); }
+  catch { throw new Error(`${options.targetName ?? target.baseUrl}: form sign-in failed at the account file`); }
+  const session = await (target.auth.mode === "browser-session" ? browserSession(chromium, target, options) : seedSession(chromium, target, { ...options, credentials }));
+  try { await recordRefresh({ ...target, name: options.targetName ?? target.name }); }
+  catch { await session.close(); throw new Error(`${options.targetName ?? target.baseUrl}: ${target.auth.mode} sign-in failed at the refresh ledger`); }
   return session;
 }
 
@@ -68,9 +74,9 @@ export async function authStatus(chromium, targets, options = {}) {
     let lastRefreshed = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).lastRefreshed : null;
     let valid = false;
     try {
-      const session = await (target.auth.mode === "browser-session" ? browserSession(chromium, target, { ...options, allowInteractive: false }) : seedSession(chromium, target, { ...options, savedOnly: true }));
+      const session = await (target.auth.mode === "browser-session" ? browserSession(chromium, target, { ...options, targetName: name, allowInteractive: false }) : seedSession(chromium, target, { ...options, targetName: name, savedOnly: true }));
       await session.close();
-      recordRefresh(target);
+      await recordRefresh({ ...target, name });
       lastRefreshed = JSON.parse(readFileSync(file, "utf8")).lastRefreshed;
       valid = true;
     } catch {}
@@ -87,7 +93,7 @@ export async function refreshStackSessions(stack) {
     if (record.target.stack !== stack || !refreshDue(record)) continue;
     const { chromium } = await import("playwright");
     const target = { ...record.target, auth: { ...record.target.auth, path: "/bff/login?returnTo=%2Fprojects" } };
-    const session = await targetSession(chromium, target, { timeout: 15000, signInTimeout: 180000 });
+    const session = await targetSession(chromium, target, { timeout: 15000, signInTimeout: 180000, allowInteractive: false });
     await session.close();
   }
 }

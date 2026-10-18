@@ -101,6 +101,11 @@ export async function captureScreens(map, options, { chromium, say = console.err
   const failures = new Map();
   try {
     for (const name of targets) {
+      const session = await sessionFactory(chromium, map.targets[name], { timeout, signInTimeout, say, targetName: name, allowInteractive: false });
+      sessions.set(name, session);
+      await installWriteGuard(session.context, map.targets[name]);
+    }
+    for (const name of targets) {
       const target = map.targets[name];
       if (changed && changed !== name) {
         for (const screen of screens) for (const width of map.widths) {
@@ -109,9 +114,7 @@ export async function captureScreens(map, options, { chromium, say = console.err
         }
         continue;
       }
-      const session = await sessionFactory(chromium, target, { timeout, signInTimeout, say });
-      sessions.set(name, session);
-      await installWriteGuard(session.context, target);
+      const session = sessions.get(name);
       for (const screen of screens) {
         mkdirSync(path.join(out, screen.name), { recursive: true });
         for (const width of map.widths) {

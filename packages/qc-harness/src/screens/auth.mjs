@@ -1,5 +1,6 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
+import { atomicJson, withFileLock } from "./session-files.mjs";
 import path from "node:path";
 import { requireLocalhost } from "./map.mjs";
 import { installWriteGuard } from "./write-guard.mjs";
@@ -51,46 +52,90 @@ async function reachesSignedIn(context, target, timeout) {
 }
 
 async function saveState(context, file) {
-  const state = await context.storageState();
-  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.tmp`;
-  try {
-    writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 });
-    renameSync(temporary, file);
-  } finally {
-    rmSync(temporary, { force: true });
+  await atomicJson(file, await context.storageState());
+}
+
+/** Record: interactive sign-in is a terminal result for unattended commands. */
+export class PersonSignInRequired extends Error {
+  constructor(targetName) {
+    super(`${targetName}: needs a person to sign in (run qc screens auth ${targetName} --headed)`);
+    this.exitCode = 4;
   }
 }
 
-/** Pipeline: reuse state, then Chrome's copied profile, then an interactive sign-in. */
-export async function browserSession(chromium, target, { timeout = 15000, signInTimeout = 180000, say = console.error, chromeProfile, allowInteractive = true, headed = false, allowWrites = false } = {}) {
-  const root = privateRoot();
-  const file = path.join(root, "state", `${target.auth.domain}.json`);
-  const launch = async (method) => {
-    let context;
-    let browser;
+/** Pipeline: reuse saved cookies and refresh through the real login page without typing. */
+export async function browserSession(chromium, target, options = {}) {
+  const { targetName = target.name ?? target.baseUrl } = options;
+  try {
+    const file = path.join(privateRoot(), "state", `${target.auth.domain}.json`);
+    return await withFileLock(file, () => lockedBrowserSession(chromium, target, file, { ...options, targetName }));
+  } catch (error) {
+    if (error instanceof PersonSignInRequired || error.authFailure) throw error;
+    throw authFailure(targetName, "browser-session", "the session files");
+  }
+}
+
+function authFailure(targetName, method, stage) {
+  const error = new Error(`${targetName}: ${method} sign-in failed at ${stage}`);
+  error.authFailure = true;
+  return error;
+}
+
+async function lockedBrowserSession(chromium, target, file, { timeout = 15000, signInTimeout = 180000, say = console.error, chromeProfile, allowInteractive = false, headed = false, allowWrites = false, targetName }) {
+  const launch = async method => {
+    let context, browser, profileRoot;
+    let stage = "the copied Chrome profile";
+    const close = async () => {
+      try { if (context) await context.close(); }
+      finally {
+        try { if (browser) await browser.close(); }
+        finally { if (profileRoot) rmSync(profileRoot, { recursive: true, force: true }); }
+      }
+    };
     try {
       if (method === "profile") {
-        const profile = copyChromeProfile(root, chromeProfile);
+        profileRoot = path.join(privateRoot(), `profile-${process.pid}-${Date.now()}`);
+        const profile = copyChromeProfile(profileRoot, chromeProfile);
+        stage = "the browser";
         context = await chromium.launchPersistentContext(profile.directory, { channel: "chrome", headless: !headed, deviceScaleFactor: 1, reducedMotion: "reduce", args: [`--profile-directory=${profile.profileName}`] });
       } else {
         if (method === "state" && !existsSync(file)) return null;
+        stage = "the browser";
         browser = await chromium.launch({ channel: "chrome", headless: !headed && method !== "headed" });
-        context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", serviceWorkers: "block", ...(method === "state" ? { storageState: file } : {}) });
+        stage = "the session file";
+        const storageState = method === "state" ? JSON.parse(readFileSync(file, "utf8")) : undefined;
+        stage = "the browser";
+        context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", serviceWorkers: "block", ...(storageState ? { storageState } : {}) });
       }
       await installWriteGuard(context, target, { allowWrites });
-      if (method === "headed") say("Sign in once in the Chrome window. The tool waits for the signed-in page.");
-      const session = await reachesSignedIn(context, target, method === "headed" ? signInTimeout : timeout);
+      if (method === "headed") say(`${targetName}: sign in once in the Chrome window.`);
+      stage = "the login page";
+      let session;
+      if (method === "state") {
+        try {
+          session = await reachesSignedIn(context, { ...target, auth: { ...target.auth, path: target.auth.checkPath ?? "/projects" } }, timeout);
+        } catch {
+          for (const page of context.pages()) await page.close();
+          const loginPath = target.auth.loginPath ?? (target.auth.path && target.auth.path !== "/projects" ? target.auth.path : "/bff/login?returnTo=%2Fprojects");
+          session = await reachesSignedIn(context, { ...target, auth: { ...target.auth, path: loginPath } }, timeout);
+        }
+      } else session = await reachesSignedIn(context, target, method === "headed" ? signInTimeout : timeout);
+      stage = "the session file";
       await saveState(context, file);
-      return { ...session, close: async () => { await context.close(); if (browser) await browser.close(); } };
-    } catch (error) {
-      if (context) await context.close();
-      if (browser) await browser.close();
-      if (method === "profile") say(`Auth step 2 failed: ${error.code === "EBUSY" || error.code === "EPERM" ? "Chrome locked a session file during the profile copy" : error.code === "ENOENT" ? "Chrome profile files are unavailable" : "the copied Chrome profile did not reach the signed-in page"}.`);
+      return { ...session, close };
+    } catch {
+      await close().catch(() => {});
+      if (stage === "the browser" || stage === "the session file") throw authFailure(targetName, "browser-session", stage);
+      if (allowInteractive) say(`${targetName}: browser-session sign-in failed at the ${method === "state" ? "saved session and silent refresh" : method === "profile" ? "copied Chrome profile" : "headed login page"}.`);
       return null;
     }
   };
-  return firstSignedIn(allowInteractive ? [() => launch("state"), () => launch("profile"), () => launch("headed")] : [() => launch("state")]);
+  const methods = allowInteractive ? ["state", "profile", "headed"] : ["state"];
+  for (const method of methods) {
+    const session = await launch(method);
+    if (session) return session;
+  }
+  throw new PersonSignInRequired(targetName);
 }
 
 /** Resource: read only named fields, without evaluating seed code. */
@@ -115,36 +160,58 @@ export function seedFields(auth) {
 }
 
 /** Pipeline: fill credentials only while every request stays on loopback. */
-export async function seedSession(chromium, target, { timeout = 15000, credentials, savedOnly = false, headed = false } = {}) {
-  requireLocalhost(target.baseUrl);
-  const file = path.join(privateRoot(), `local-${new URL(target.baseUrl).port || "80"}.json`);
-  if (savedOnly && !existsSync(file)) throw new Error("No saved local session");
-  const browser = await chromium.launch({ channel: "chrome", headless: !headed });
-  const context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", ...(existsSync(file) ? { storageState: file } : {}) });
+export async function seedSession(chromium, target, options = {}) {
+  const { targetName = target.name ?? target.baseUrl } = options;
+  const method = target.auth.mode === "form" ? "form" : "seed";
   try {
+    requireLocalhost(target.baseUrl);
+    const file = path.join(privateRoot(), `local-${new URL(target.baseUrl).port || "80"}.json`);
+    return await withFileLock(file, () => lockedSeedSession(chromium, target, file, { ...options, targetName, method }));
+  } catch (error) {
+    if (error.authFailure) throw error;
+    throw authFailure(targetName, method, "the localhost guard or session files");
+  }
+}
+
+async function lockedSeedSession(chromium, target, file, { timeout = 15000, credentials, savedOnly = false, headed = false, targetName, method }) {
+  let browser;
+  let stage = "the saved session";
+  try {
+    if (savedOnly && !existsSync(file)) throw new Error("No saved local session");
+    stage = "the browser";
+    browser = await chromium.launch({ channel: "chrome", headless: !headed });
+    const context = await browser.newContext({ deviceScaleFactor: 1, reducedMotion: "reduce", ...(existsSync(file) ? { storageState: JSON.parse(readFileSync(file, "utf8")) } : {}) });
     await context.route("**/*", async route => {
       try { requireLocalhost(route.request().url()); } catch { await route.abort(); return; }
       await route.continue();
     });
     if (savedOnly) {
+      stage = "the saved session";
       const session = await reachesSignedIn(context, { ...target, auth: { ...target.auth, path: target.auth.checkPath ?? "/projects" } }, timeout);
       await saveState(context, file);
       return { ...session, close: () => browser.close() };
     }
+    stage = "the login page";
     const page = await context.newPage();
     await page.goto(new URL(target.auth.path ?? "/login", target.baseUrl).href, { waitUntil: "domcontentloaded", timeout });
     requireLocalhost(page.url());
+    stage = "the credential fields";
     const { user, password } = credentials ?? seedFields(target.auth);
+    stage = "the username field";
     await page.locator(target.auth.userSelector).fill(user, { timeout });
     requireLocalhost(page.url());
+    stage = "the password field";
     await page.locator(target.auth.passwordSelector).fill(password, { timeout });
     requireLocalhost(page.url());
+    stage = "the submit control";
     await page.locator(target.auth.submitSelector).click({ timeout });
+    stage = "the signed-in page";
     await page.locator(target.auth.signedIn).first().waitFor({ state: "visible", timeout });
+    stage = "the session file";
     await saveState(context, file);
     return { context, page, close: () => browser.close() };
   } catch {
-    await browser.close();
-    throw new Error("Local seed sign-in failed");
+    if (browser) await browser.close().catch(() => {});
+    throw authFailure(targetName, method, stage);
   }
 }

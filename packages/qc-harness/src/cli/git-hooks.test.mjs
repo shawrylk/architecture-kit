@@ -15,6 +15,11 @@ function repo(t) {
   const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-git-hooks-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q"], { cwd: root, stdio: "pipe" });
+  const globalConfig = process.env.GIT_CONFIG_GLOBAL;
+  const fixtureConfig = path.join(root, ".git", "fixture-global-config");
+  writeFileSync(fixtureConfig, "");
+  process.env.GIT_CONFIG_GLOBAL = fixtureConfig;
+  t.after(() => { if (globalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL; else process.env.GIT_CONFIG_GLOBAL = globalConfig; });
   const git = (...args) => execFileSync("git", args, { cwd: root, stdio: "pipe" });
   const hook = (dir, name, text) => {
     mkdirSync(path.join(root, dir), { recursive: true });
