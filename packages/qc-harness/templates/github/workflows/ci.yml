@@ -38,11 +38,17 @@ jobs:
       - if: github.event_name == 'pull_request'
         run: npx qc prose --base "origin/$GITHUB_BASE_REF" --pr-body-event
 
-      # Uncomment each as the repository grows the thing it checks.
-      # - run: pnpm typecheck
-      # - run: pnpm lint
-      # - run: pnpm dup:check
-      # - run: pnpm test
+      # Typecheck and lint as the stop gate runs them: a root script wins, else the installed tool.
+      # CI is the one check an agent cannot skip, so each step is on and does nothing without its tool.
+      - run: |
+          if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then pnpm run typecheck
+          elif [ -x node_modules/.bin/tsc ]; then pnpm exec tsc -b --pretty false
+          fi
+      - run: |
+          if node -e "process.exit(require('./package.json').scripts?.lint ? 0 : 1)"; then pnpm run lint
+          elif [ -x node_modules/.bin/eslint ]; then pnpm exec eslint . --max-warnings 0
+          fi
+      - run: pnpm run --if-present dup:check
 
   # Unit tests in eight hosted shards. A self-hosted runner that goes offline leaves a job queued;
   # `qc watch --pr` reports a check queued for over 15 minutes. A repository with no test:unit script skips it.
