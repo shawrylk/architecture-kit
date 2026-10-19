@@ -103,10 +103,17 @@ tester.run("no-raw-fetch", rules["no-raw-fetch"], {
   valid: [
     { code: "await fetch(url);", filename: "/a/platform/api-client.ts" },
     { code: "await client.get(path);", filename: "/a/features/pins/index.ts" },
+    { code: "function load(fetch) { return fetch(url); }", filename: "/a/features/pins/index.ts" },
+    { code: "await client.fetch(url);", filename: "/a/features/pins/index.ts" },
+    { code: "const options = { fetch: true };", filename: "/a/features/pins/index.ts" },
   ],
   invalid: [
     { code: "await fetch(url);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
     { code: "new URL(path);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
+    { code: "await window.fetch(url);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
+    { code: "await globalThis['fetch'](url);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
+    { code: "const f = fetch; f(url);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
+    { code: "const { fetch: f } = globalThis;", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
   ],
 });
 
