@@ -6,8 +6,9 @@ import os from "node:os";
 import path from "node:path";
 import { chromium } from "playwright";
 import { capturePage } from "./capture.mjs";
+import { chromeMissing } from "./chrome.mjs";
 
-test("an entry with idle false captures a page that polls forever", async t => {
+test("an entry with idle false captures a page that polls forever", { skip: await chromeMissing(chromium) }, async t => {
   const root = mkdtempSync(path.join(os.tmpdir(), "qc-capture-idle-"));
   const server = http.createServer((req, res) => {
     if (req.url === "/poll") return res.end("ok");

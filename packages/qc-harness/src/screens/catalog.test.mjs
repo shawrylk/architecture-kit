@@ -29,8 +29,8 @@ test("catalog entries carry the idle option for each app family", async () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "qc-catalog-"));
   try {
     writeFileSync(path.join(root, "area.ts"), 'export const entry = {name:"drawings-pins",idle:{legacy:false},open:{legacy:async (page: any) => page.goto("/a"),mono:async (page: any) => page.goto("/b")}}');
-    const map = await applyCatalog({ catalog: root, targets: { "legacy-local": { family: "legacy" }, "mono-local": { family: "mono" } }, screens: [] }, path.join(root, "map.json"));
-    assert.equal(map.screens[0].targets["legacy-local"].idle, false);
-    assert.equal(map.screens[0].targets["mono-local"].idle, undefined);
+    const map = await applyCatalog({ catalog: root, targets: { "old-local": { family: "legacy" }, "new-local": { family: "mono" } }, screens: [] }, path.join(root, "map.json"));
+    assert.equal(map.screens[0].targets["old-local"].idle, false);
+    assert.equal(map.screens[0].targets["new-local"].idle, undefined);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

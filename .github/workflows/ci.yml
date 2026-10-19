@@ -42,7 +42,9 @@ jobs:
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       # Every rule, every gate, every config knob — each with a case that must fail.
+      # The hosted runners carry Google Chrome, so a screen test that cannot find it fails here instead of skipping.
       - run: pnpm test
+        env: { QC_REQUIRE_CHROME: "1" }
 
       # The kit must still be able to set up a repository from nothing.
       - name: a fresh repository reaches a green check

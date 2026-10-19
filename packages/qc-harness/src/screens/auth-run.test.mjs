@@ -9,6 +9,9 @@ import { chromium } from "playwright";
 import { browserSession, seedSession } from "./auth.mjs";
 import { runScreens } from "../cli/screens.mjs";
 import { captureScreens } from "./capture.mjs";
+import { chromeMissing } from "./chrome.mjs";
+
+const noChrome = await chromeMissing(chromium);
 
 async function fixture(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "qc-auth-run-"));
@@ -32,33 +35,33 @@ async function fixture(t) {
   return { root, requests, target, state, save };
 }
 
-test("expired application state refreshes once through the login path and persists the renewed cookie", async t => {
+test("expired application state refreshes once through the login path and persists the renewed cookie", { skip: noChrome }, async t => {
   const f = await fixture(t);
   f.save(["sso"]);
-  const session = await browserSession(chromium, f.target, { targetName: "mono-local", timeout: 3000, allowInteractive: false });
+  const session = await browserSession(chromium, f.target, { targetName: "new-local", timeout: 3000, allowInteractive: false });
   await session.close();
   assert.equal(f.requests.filter(p => p.startsWith("/bff/login")).length, 1);
   assert.ok(JSON.parse(readFileSync(f.state)).cookies.some(c => c.name === "app"));
 });
 
-test("seed errors name the target and failing field without exposing browser diagnostics or credentials", async t => {
+test("seed errors name the target and failing field without exposing browser diagnostics or credentials", { skip: noChrome }, async t => {
   const f = await fixture(t);
   const target = { ...f.target, auth: { ...f.target.auth, mode: "seed-login", path: "/login", userSelector: "#user", passwordSelector: "#missing", submitSelector: "#submit" } };
-  await assert.rejects(seedSession(chromium, target, { targetName: "legacy-local", credentials: { user: "test", password: randomUUID() }, timeout: 3000 }), error => {
-    assert.equal(error.message, "legacy-local: seed sign-in failed at the password field");
+  await assert.rejects(seedSession(chromium, target, { targetName: "old-local", credentials: { user: "test", password: randomUUID() }, timeout: 3000 }), error => {
+    assert.equal(error.message, "old-local: seed sign-in failed at the password field");
     return true;
   });
 });
 
-test("run stops with code four and one human instruction without capturing or retrying", async t => {
+test("run stops with code four and one human instruction without capturing or retrying", { skip: noChrome }, async t => {
   const f = await fixture(t);
   f.save([]);
   const map = path.join(f.root, "map.json");
-  writeFileSync(map, JSON.stringify({ widths: [200], targets: { "mono-local": f.target, other: f.target }, screens: [{ name: "projects", targets: { "mono-local": { path: "/projects" }, other: { path: "/projects" } } }] }));
+  writeFileSync(map, JSON.stringify({ widths: [200], targets: { "new-local": f.target, other: f.target }, screens: [{ name: "projects", targets: { "new-local": { path: "/projects" }, other: { path: "/projects" } } }] }));
   const lines = [];
-  const code = await runScreens(["run", "projects", "--map", map, "--targets", "mono-local,other", "--out", path.join(f.root, "out"), "--timeout", "3000", "--sign-in-timeout", "100"], { say: line => lines.push(line) });
+  const code = await runScreens(["run", "projects", "--map", map, "--targets", "new-local,other", "--out", path.join(f.root, "out"), "--timeout", "3000", "--sign-in-timeout", "100"], { say: line => lines.push(line) });
   assert.equal(code, 4);
-  assert.deepEqual(lines, ["mono-local: needs a person to sign in (run qc screens auth mono-local --headed)"]);
+  assert.deepEqual(lines, ["new-local: needs a person to sign in (run qc screens auth new-local --headed)"]);
   assert.equal(f.requests.filter(p => p.startsWith("/bff/login")).length, 1);
 });
 
@@ -78,22 +81,22 @@ test("capture checks each target once before navigating any screen and closes ea
 
 
 // A headed browser needs a display, which a Linux CI runner lacks.
-test("headed auth accepts the named target and saves a valid session", { skip: process.platform === "linux" && !process.env.DISPLAY }, async t => {
+test("headed auth accepts the named target and saves a valid session", { skip: noChrome || (process.platform === "linux" && !process.env.DISPLAY) }, async t => {
   const f = await fixture(t);
   f.save(["app"]);
   const map = path.join(f.root, "map.json");
-  writeFileSync(map, JSON.stringify({ widths: [200], targets: { "mono-local": f.target, other: f.target }, screens: [{ name: "projects", targets: { "mono-local": { path: "/projects" }, other: { path: "/projects" } } }] }));
+  writeFileSync(map, JSON.stringify({ widths: [200], targets: { "new-local": f.target, other: f.target }, screens: [{ name: "projects", targets: { "new-local": { path: "/projects" }, other: { path: "/projects" } } }] }));
   const lines = [];
-  assert.equal(await runScreens(["auth", "mono-local", "--headed", "--map", map, "--timeout", "3000"], { say: line => lines.push(line) }), 0);
-  assert.deepEqual(lines, ["mono-local: signed in"]);
+  assert.equal(await runScreens(["auth", "new-local", "--headed", "--map", map, "--timeout", "3000"], { say: line => lines.push(line) }), 0);
+  assert.deepEqual(lines, ["new-local: signed in"]);
   assert.ok(JSON.parse(readFileSync(f.state)).cookies.some(c => c.name === "app"));
 });
 
-test("parallel sessions preserve the shared saved state and write a complete refresh ledger", async t => {
+test("parallel sessions preserve the shared saved state and write a complete refresh ledger", { skip: noChrome }, async t => {
   const f = await fixture(t);
   f.save(["sso"]);
   const { targetSession } = await import("./stack-auth.mjs");
-  const sessions = await Promise.all(Array.from({ length: 3 }, () => targetSession(chromium, f.target, { targetName: "mono-local", timeout: 3000, allowInteractive: false })));
+  const sessions = await Promise.all(Array.from({ length: 3 }, () => targetSession(chromium, f.target, { targetName: "new-local", timeout: 3000, allowInteractive: false })));
   await Promise.all(sessions.map(s => s.close()));
   assert.equal(f.requests.filter(p => p.startsWith("/bff/login")).length, 1);
   assert.ok(JSON.parse(readFileSync(f.state)).cookies.some(c => c.name === "app"));
@@ -110,8 +113,8 @@ test("parallel sessions preserve the shared saved state and write a complete ref
 test("a browser launch failure names the target and method without asking for human sign-in", async t => {
   const f = await fixture(t);
   f.save([]);
-  await assert.rejects(browserSession({ launch: async () => { throw new Error("private browser diagnostics"); } }, f.target, { targetName: "mono-local", allowInteractive: false }), error => {
-    assert.equal(error.message, "mono-local: browser-session sign-in failed at the browser");
+  await assert.rejects(browserSession({ launch: async () => { throw new Error("private browser diagnostics"); } }, f.target, { targetName: "new-local", allowInteractive: false }), error => {
+    assert.equal(error.message, "new-local: browser-session sign-in failed at the browser");
     assert.equal(error.exitCode, undefined);
     return true;
   });
