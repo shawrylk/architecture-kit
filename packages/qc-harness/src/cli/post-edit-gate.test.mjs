@@ -35,8 +35,8 @@ function workspace() {
   return { project, linked, plain, outside, pluginRoot: path.join(base, "plugin"), ranIn, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
-function runHook(ws, file) {
-  const featureFile = path.join(file, "features", "tasks", "index.ts");
+function runHook(ws, file, featureDir = "features") {
+  const featureFile = path.join(file, featureDir, "tasks", "index.ts");
   mkdirSync(path.dirname(featureFile), { recursive: true });
   writeFileSync(featureFile, "export {};\n");
   return spawnSync("bash", [HOOK], {
@@ -71,6 +71,13 @@ test("a feature file in the session's own project is checked from the project", 
   const ws = workspace();
   t.after(ws.cleanup);
   assert.equal(runHook(ws, path.join(ws.project, "backend", "src")), 2);
+  assert.deepEqual(ws.ranIn(), [ws.project]);
+});
+
+test("a file under a layout with no features folder is checked too, since featureDir is the repository's own", (t) => {
+  const ws = workspace();
+  t.after(ws.cleanup);
+  assert.equal(runHook(ws, path.join(ws.project, "src"), "modules"), 2);
   assert.deepEqual(ws.ranIn(), [ws.project]);
 });
 

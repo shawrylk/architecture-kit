@@ -34,5 +34,7 @@ test("the gates job typechecks and lints on every push, with no step left commen
   assert.match(runs, /tsc -b/);
   assert.match(runs, /pnpm run lint/);
   assert.match(runs, /eslint \. --max-warnings 0/);
+  assert.match(runs, /typecheck skipped: /);
+  assert.match(runs, /lint skipped: /);
   assert.doesNotMatch(text, /^\s*# - run:/m);
 });

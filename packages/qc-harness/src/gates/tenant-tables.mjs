@@ -34,14 +34,17 @@ function block(source, open) {
  */
 export function tenantScopedTables(source, options = {}) {
   const factory = escape(options.tableFactory ?? DEFAULT_TABLE_FACTORY);
-  const tablePattern = new RegExp(`${factory}\\(\\s*"([a-z_][a-z0-9_]*)"\\s*,\\s*\\{`, "g");
+  // Either quote, and the columns as an object or as drizzle's callback, `(t) => ({ ... })`. A table this
+  // misses gets no policy and no finding, so the forms it reads are wide on purpose.
+  const callback = `(?:(?:\\(\\s*\\w*\\s*\\)|\\w+)\\s*=>\\s*\\(?\\s*)?`;
+  const tablePattern = new RegExp(`\\b${factory}\\(\\s*(["'\`])([a-z_][a-z0-9_]*)\\1\\s*,\\s*${callback}\\{`, "g");
   const column = new RegExp(`\\b${escape(options.column ?? DEFAULT_COLUMN)}\\b`);
 
   const found = new Set();
   let match = tablePattern.exec(source);
   while (match !== null) {
     const body = block(source, match.index + match[0].length - 1);
-    if (column.test(body)) found.add(match[1]);
+    if (column.test(body)) found.add(match[2]);
     match = tablePattern.exec(source);
   }
   return [...found].sort();

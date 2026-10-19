@@ -74,17 +74,28 @@ test("in CI a failed call to GitHub fails and quotes the first stderr line", asy
   assert.deepEqual(result.notes, []);
 });
 
-test("in CI with no token the check is still a note", async () => {
+test("in CI with no token the check fails and names GH_TOKEN", async () => {
   const result = await checkPullRequest(event("Fixes #12"), { gh: missingGh, hasToken: false, ci: true });
-  assert.deepEqual(result.problems, []);
-  assert.match(result.notes.join(), /no GH_TOKEN/);
+  assert.match(result.problems.join(), /no GH_TOKEN/);
 });
 
-test("in CI a repository the token cannot see is still a note", async () => {
-  const gh = async () => ({ ok: false, stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/private'. (repository)" });
-  const result = await checkPullRequest(event("Refs acme/private#5"), { gh, hasToken: true, ci: true });
+/** Knows acme/app#12, and cannot see acme/private at all. */
+const ghWithPrivate = async (args) =>
+  args.includes("acme/private")
+    ? { ok: false, stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/private'. (repository)" }
+    : ghKnowing({ "acme/app#12": "2026-05-01T00:00:00Z" })(args);
+
+test("in CI a repository the token cannot see is a note beside an issue it can see", async () => {
+  const result = await checkPullRequest(event("Fixes #12. Refs acme/private#5"), { gh: ghWithPrivate, hasToken: true, ci: true });
   assert.deepEqual(result.problems, []);
   assert.match(result.notes.join(), /the token cannot see acme.private/);
+});
+
+test("a body that names only issues the token cannot see fails, in CI and outside it", async () => {
+  for (const ci of [true, false]) {
+    const result = await checkPullRequest(event("Refs acme/private#5"), { gh: ghWithPrivate, hasToken: true, ci });
+    assert.match(result.problems.join(), /names only issues the token cannot see\. Also name an issue in acme\/app/);
+  }
 });
 
 test("CI=false is not CI", () => {
@@ -97,9 +108,8 @@ test("CI=false is not CI", () => {
 });
 
 test("a repository the token cannot see is a note, never a missing issue", async () => {
-  const gh = async () => ({ ok: false, stderr: "GraphQL: Could not resolve to a Repository with the name 'acme/private'. (repository)" });
-  const result = await checkPullRequest(event("Refs acme/private#5"), { gh, hasToken: true });
-  assert.deepEqual(result.problems, []);
+  const result = await checkPullRequest(event("Fixes #12. Refs acme/private#5"), { gh: ghWithPrivate, hasToken: true });
+  assert.doesNotMatch(result.problems.join(), /does not exist/);
   assert.match(result.notes.join(), /the token cannot see acme.private/);
 });
 

@@ -31,6 +31,14 @@ test("a nested object inside a column definition does not end the table early", 
   assert.deepEqual(tenantScopedTables(source), ["photos"]);
 });
 
+test("a single-quoted name and drizzle's callback form are listed too", () => {
+  const source = `export const b = pgTable('b', { tenantId: uuid() });
+export const c = pgTable("c", (t) => ({ tenantId: t.uuid() }));
+export const d = pgTable(\`d\`, t => ({ tenantId: t.uuid() }));
+export const e = myPgTable("e", { tenantId: uuid() });`;
+  assert.deepEqual(tenantScopedTables(source), ["b", "c", "d"]);
+});
+
 test("a source with no table yields nothing", () => {
   assert.deepEqual(tenantScopedTables("export const queries = {};"), []);
 });

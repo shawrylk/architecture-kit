@@ -36,6 +36,14 @@ function editsRegion(file, input) {
   return edits.some((one) => typeof one?.old_string === "string" && one.old_string !== "" && touchesRegion(text, lf(one.old_string), regions));
 }
 
+/** True when a Write of the Markdown file changes or drops a generated region. Text outside them is free. */
+function writesRegion(file, content) {
+  if (!existsSync(file) || typeof content !== "string") return false;
+  const regionsOf = (text) => generatedRegions(text).map(([start, end]) => text.slice(start, end));
+  const after = regionsOf(lf(content));
+  return regionsOf(lf(readFileSync(file, "utf8"))).some((region) => !after.includes(region));
+}
+
 /** The verdict on one edit. @returns the hook output, or null to let the call run with no message. */
 export function decide(call) {
   const input = call.tool_input ?? {};
@@ -56,7 +64,8 @@ export function decide(call) {
   if (globMatcher(generated.globs)(rel)) {
     return deny(`Generated-file guard: ${rel} is generated. ${rerun}`);
   }
-  if (call.tool_name !== "Write" && MARKDOWN.test(rel) && editsRegion(file, input)) {
+  const changesRegion = call.tool_name === "Write" ? writesRegion(file, input.content) : editsRegion(file, input);
+  if (MARKDOWN.test(rel) && changesRegion) {
     return deny(`Generated-file guard: the edit changes the generated region of ${rel}. ${rerun}`);
   }
   return null;

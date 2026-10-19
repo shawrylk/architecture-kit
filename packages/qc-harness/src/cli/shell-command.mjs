@@ -253,7 +253,9 @@ export function gitCall(segment) {
       explicitDir = true;
       i++;
     } else if (/^--(git-dir|work-tree)=/.test(word)) explicitDir = true;
-    else if (word === "-c") configs.push(words[++i]);
+    else if (word === "-c" || word === "--config-env") configs.push(words[++i]);
+    // `--config-env=name=VAR` sets `name` from a variable, so it is a `-c` whose value hides in the environment.
+    else if (word.startsWith("--config-env=")) configs.push(word.slice("--config-env=".length));
     else if (!word.startsWith("-")) return { sub: word, dirs, explicitDir, configs, args: words.slice(i + 1) };
   }
   return { sub: null, dirs, explicitDir, configs, args: [] };

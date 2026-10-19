@@ -14,18 +14,32 @@ const DEFAULT_TABLE = "audit_log";
  */
 export function checkAuditAppendOnly(resources, options = {}) {
   const table = options.table ?? DEFAULT_TABLE;
-  const name = escape(table);
-  // The table in a mutating position. An insert naming it is the whole point.
-  const mutation = new RegExp(`\\b(?:update\\s+${name}\\b|delete\\s+from\\s+${name}\\b|truncate\\s+(?:table\\s+)?${name}\\b)`, "i");
+  // The table as SQL can name it: quoted or not, under a schema or not, after `only` or not.
+  const name = table.split(".").map((part) => `"?${escape(part)}"?`).join("\\s*\\.\\s*");
+  const ref = `(?:only\\s+)?(?:(?:"[^"]+"|\\w+)\\s*\\.\\s*)?${name}(?![\\w$"])`;
+  // The table in a mutating position. An insert naming it is the whole point, but an upsert rewrites a row.
+  const mutation = new RegExp(
+    [
+      `update\\s+${ref}`,
+      `delete\\s+from\\s+${ref}`,
+      `truncate\\s+(?:table\\s+)?(?:only\\s+)?(?:[\\w."]+\\s*,\\s*)*${ref}`,
+      `merge\\s+into\\s+${ref}`,
+      `insert\\s+into\\s+${ref}[^;]*?\\bon\\s+conflict\\b[^;]*?\\bdo\\s+update\\b`,
+    ]
+      .map((form) => `\\b${form}`)
+      .join("|"),
+    "i",
+  );
   const problems = [];
   for (const { path, statements } of resources) {
     for (const { sql } of statements) {
       const found = mutation.exec(sql);
       if (found !== null) {
+        const quoted = found[0].replace(/\s+/g, " ").trim();
         problems.push({
           path,
           rule: "audit-mutated",
-          detail: `'${found[0].trim()}' — ${table} is append-only, so no repository may hold an update or delete path for it`,
+          detail: `'${quoted.length > 60 ? `${quoted.slice(0, 57)}...` : quoted}' — ${table} is append-only, so no repository may hold an update or delete path for it`,
         });
       }
     }

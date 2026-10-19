@@ -48,6 +48,26 @@ test("a tenant column compared with itself is a finding", () => {
   assert.equal(checkTenantPredicate(one("select id from projects p where p.tenant_id = p.tenant_id"), owned).length, 1);
 });
 
+test("a string literal is one value: an or or a comment marker inside it changes nothing", () => {
+  const count = (sql) => checkTenantPredicate(one(sql), owned).length;
+  assert.equal(count("select * from projects where tenant_id = $1 and status <> 'draft or review'"), 0);
+  assert.equal(count("select * from projects where note = 'a -- b' and tenant_id = $1"), 0);
+  assert.equal(count("select * from projects where note = 'it''s' and tenant_id = $1"), 0);
+  assert.equal(count("select * from projects where tenant_id = $1 and note = '/*' or true or note = '*/'"), 1);
+});
+
+test("each side of a union, intersect or except carries the tenant", () => {
+  const count = (sql) => checkTenantPredicate(one(sql), owned).length;
+  assert.equal(count("select id from projects where tenant_id = $1 union select id from projects"), 1);
+  assert.equal(count("select id from projects where tenant_id = $1 except select id from projects"), 1);
+  assert.equal(count("select id from projects where tenant_id = $1 union all select id from projects where tenant_id = $1"), 0);
+});
+
+test("the tenant column may stand on either side of the equals sign", () => {
+  assert.equal(checkTenantPredicate(one("select * from projects where $1 = tenant_id"), owned).length, 0);
+  assert.equal(checkTenantPredicate(one("select * from projects where tenant_id <= $1"), owned).length, 1);
+});
+
 test("a correlated subquery that matches the tenant of the outer row passes", () => {
   const sql = "exists (select 1 from projects v where v.tenant_id = outer_row.tenant_id and v.id = outer_row.project_id)";
   assert.deepEqual(checkTenantPredicate(one(sql), owned), []);

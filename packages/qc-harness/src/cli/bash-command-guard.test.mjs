@@ -80,6 +80,8 @@ test("a git call that points core.hooksPath elsewhere is denied", (t) => {
     "git config set core.hooksPath /tmp/x",
     "git config --unset core.hooksPath",
     "git config --global core.hooksPath ''",
+    "git --config-env=core.hooksPath=HOOKS commit -m x",
+    "git --config-env core.hooksPath=HOOKS push",
     "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/x'\" git commit -m x",
     "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x; git commit -m x",
   ]) {
@@ -94,6 +96,8 @@ test("a read of core.hooksPath, another setting, and a quoted mention pass", (t)
     "git config core.hooksPath",
     "git config --show-origin core.hooksPath",
     "git config get core.hooksPath",
+    "git config get core.hooksPath --default .githooks",
+    "git config --get core.hooksPath githooks",
     "git config core.autocrlf false",
     "cat > notes.md <<'EOF'\nGIT_CONFIG_PARAMETERS sets core.hooksPath\nEOF",
     "echo 'GIT_CONFIG_KEY_0=core.hooksPath' > fixture.txt",

@@ -85,6 +85,16 @@ test("an edit whose old_string lies in or across a generated region is denied", 
   assert.ok(reasonOf(decide({ ...edit(doc, ""), ...multi })));
 });
 
+test("a Write of the whole doc that changes or drops its generated region is denied, and one that keeps it passes", (t) => {
+  const ws = workspace(t);
+  const doc = ws.at("docs/enforcement.md");
+  const writeOf = (content) => ({ ...write(doc), tool_input: { file_path: doc, content } });
+  assert.ok(reasonOf(decide(writeOf(ENFORCEMENT.replace("qc/comment-style", "qc/other")))));
+  assert.ok(reasonOf(decide(writeOf("# Enforcement\n"))));
+  assert.equal(decide(writeOf(ENFORCEMENT.replace("Hand-written intro.", "A new intro."))), null);
+  assert.equal(decide(writeOf(`${ENFORCEMENT}\n<!-- generated: more. pnpm codegen. -->\n<!-- /generated -->\n`)), null);
+});
+
 test("an edit outside the generated region passes", (t) => {
   const ws = workspace(t);
   assert.equal(decide(edit(ws.at("docs/enforcement.md"), "Hand-written judgement calls.")), null);
