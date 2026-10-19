@@ -81,12 +81,15 @@ function skipsHooks({ sub, args }) {
 
 /** The `git config` words that write or remove a setting, whatever follows the key. */
 const CONFIG_WRITES = new Set(["--add", "--replace-all", "--unset", "--unset-all", "set", "unset"]);
+/** The `git config` words that only read, so a word after the key is a pattern or a default, never a value. */
+const CONFIG_READS = new Set(["--get", "--get-all", "--get-regexp", "--list", "-l", "get", "list"]);
 
 /** True when `git config` writes or removes `core.hooksPath`. A bare key, as in `git config core.hooksPath`, only reads it. */
 function configWritesHooksPath(args) {
   const key = args.findIndex((arg) => /^core\.hookspath$/i.test(arg));
   if (key < 0) return false;
   if (args.some((arg) => CONFIG_WRITES.has(arg))) return true;
+  if (args.some((arg) => CONFIG_READS.has(arg))) return false;
   return args.slice(key + 1).some((arg) => !arg.startsWith("-"));
 }
 

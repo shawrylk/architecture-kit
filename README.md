@@ -192,13 +192,14 @@ Markdown file, such as the rule-to-check table in `enforcement.md`.
 
 A `PreToolUse` hook on Bash refuses a command that skips the gates: `git commit`, `git push`,
 `git merge`, `git rebase` or `git am` with `--no-verify`, and `git commit -n`. It also refuses a change
-of `core.hooksPath` through `git -c`, `git config`, `GIT_CONFIG_PARAMETERS` or `GIT_CONFIG_KEY_<n>`.
-It also refuses a hand run of a hook
-script, such as `node .../work-order-guard.mjs`, because a hand run writes a lease that blocks later
-edits. A command that runs `node --test` or vitest is exempt from the second rule.
+of `core.hooksPath` through `git -c`, `git --config-env`, `git config`, `GIT_CONFIG_PARAMETERS` or
+`GIT_CONFIG_KEY_<n>`. It also refuses a hand run of a hook script, such as
+`node .../work-order-guard.mjs`, because a hand run writes a lease that blocks later edits. A command
+that runs `node --test` or vitest can run a hook script.
 
-The guard reads the command and never runs it, so it cannot see through a variable, a decoded string or
-a deleted hook file. For example, `f=--no-verify; git commit $f` passes it. Two checks catch what it
+The guard reads the command and never runs it, so it cannot see through a variable, a decoded string, a
+config file that `GIT_CONFIG_GLOBAL` names, or a deleted hook file. For example,
+`f=--no-verify; git commit $f` passes it. Two checks catch what it
 misses: `qc doctor` in the stop gate reports a changed or missing git hook, and CI runs the gates again.
 
 A subagent does not count its own tool calls, so a `PreToolUse` hook counts them for it.
