@@ -37,6 +37,9 @@ test("a commit or push that skips the git hooks is denied", (t) => {
     "git commit -nm x",
     "git commit -anm x",
     "cd repo && git add -A && GIT_PAGER=cat git -C repo commit --no-verify -F -",
+    "git merge --no-verify feat/x",
+    "git rebase --no-verify main",
+    "git am --no-verify < fix.patch",
   ]) {
     assert.match(reasonOf(decide(bash(ws.adopted, command))) ?? "", /skips the git hooks/, command);
   }
@@ -69,8 +72,33 @@ test("git commit --no-verify inside bash -lc, env, sudo, and an if block is refu
 
 test("a git call that points core.hooksPath elsewhere is denied", (t) => {
   const ws = workspace(t);
-  for (const command of ["git -c core.hooksPath=/dev/null commit -m x", "git -c core.hookspath= push"]) {
+  for (const command of [
+    "git -c core.hooksPath=/dev/null commit -m x",
+    "git -c core.hookspath= push",
+    "git config core.hooksPath /tmp/x && git commit -m x",
+    "git config --local core.hooksPath /tmp/x",
+    "git config set core.hooksPath /tmp/x",
+    "git config --unset core.hooksPath",
+    "git config --global core.hooksPath ''",
+    "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/x'\" git commit -m x",
+    "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/x; git commit -m x",
+  ]) {
     assert.match(reasonOf(decide(bash(ws.adopted, command))) ?? "", /core\.hooksPath/, command);
+  }
+});
+
+test("a read of core.hooksPath, another setting, and a quoted mention pass", (t) => {
+  const ws = workspace(t);
+  for (const command of [
+    "git config --get core.hooksPath",
+    "git config core.hooksPath",
+    "git config --show-origin core.hooksPath",
+    "git config get core.hooksPath",
+    "git config core.autocrlf false",
+    "cat > notes.md <<'EOF'\nGIT_CONFIG_PARAMETERS sets core.hooksPath\nEOF",
+    "echo 'GIT_CONFIG_KEY_0=core.hooksPath' > fixture.txt",
+  ]) {
+    assert.equal(decide(bash(ws.adopted, command)), null, command);
   }
 });
 
@@ -108,6 +136,8 @@ test("a message, a dry run, a test run and a read pass", (t) => {
     "npx vitest run src/work-order-guard.mjs",
     "cat packages/qc-harness/src/cli/work-order-guard.mjs",
     "git -c core.autocrlf=false commit -m x",
+    "git merge -n feat/x",
+    "git rebase -n main",
   ]) {
     assert.equal(decide(bash(ws.adopted, command)), null, command);
   }

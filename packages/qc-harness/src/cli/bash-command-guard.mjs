@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { CONFIG_FILE } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { locationTarget, powershellSegments } from "./powershell-command.mjs";
-import { cdTarget, commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
+import { cdTarget, commandEnv, commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
 import { nativePath } from "./workflow-place.mjs";
 import { keyOf } from "./worktree.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
@@ -54,9 +54,12 @@ const WORKTREE_ADD = /\bworktree\s+add\b/i;
 const EXPLICIT_DIR = /--git-dir|--work-tree|GIT_DIR|GIT_COMMON_DIR|GIT_WORK_TREE|core\.worktree|core\.bare/i;
 const isNoVerify = (arg) => arg.length >= NO_VERIFY_MIN && NO_VERIFY.startsWith(arg);
 
-/** True when a commit or push names `--no-verify`, or a commit names `-n` alone or in a flag cluster. */
+/** The subcommands whose `--no-verify` skips a hook. Only `commit` also reads `-n` as it: `merge` and `rebase` read it as `--no-stat`. */
+const SKIPS_WITH_NO_VERIFY = new Set(["commit", "push", "merge", "rebase", "am"]);
+
+/** True when a commit, push, merge, rebase or am names `--no-verify`, or a commit names `-n` alone or in a flag cluster. */
 function skipsHooks({ sub, args }) {
-  if (sub !== "commit" && sub !== "push") return false;
+  if (!SKIPS_WITH_NO_VERIFY.has(sub)) return false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--") return false;
@@ -76,7 +79,38 @@ function skipsHooks({ sub, args }) {
   return false;
 }
 
-const setsHooksPath = ({ configs }) => configs.some((setting) => /^core\.hookspath=/i.test(setting ?? ""));
+/** The `git config` words that write or remove a setting, whatever follows the key. */
+const CONFIG_WRITES = new Set(["--add", "--replace-all", "--unset", "--unset-all", "set", "unset"]);
+
+/** True when `git config` writes or removes `core.hooksPath`. A bare key, as in `git config core.hooksPath`, only reads it. */
+function configWritesHooksPath(args) {
+  const key = args.findIndex((arg) => /^core\.hookspath$/i.test(arg));
+  if (key < 0) return false;
+  if (args.some((arg) => CONFIG_WRITES.has(arg))) return true;
+  return args.slice(key + 1).some((arg) => !arg.startsWith("-"));
+}
+
+/** True when the call sets `core.hooksPath` for itself with `-c`, or writes or removes it with `git config`. */
+const setsHooksPath = ({ sub, configs, args }) =>
+  configs.some((setting) => /^core\.hookspath=/i.test(setting ?? "")) || (sub === "config" && configWritesHooksPath(args));
+
+/** Git reads settings from these variables, so one that names `core.hooksPath` points git away from the hooks. */
+const CONFIG_VARIABLE = /^(?:\$env:)?GIT_CONFIG_(?:PARAMETERS|KEY_\d+)(?:=|$)/i;
+const HOOKS_PATH_WORD = /core\.hookspath/i;
+const EXPORTS = new Set(["export", "declare", "typeset", "set"]);
+
+/**
+ * True when the segment sets a `GIT_CONFIG_*` variable to a value that names `core.hooksPath`: before its command,
+ * through `export`, or as a PowerShell `$env:` assignment. Only the segment's own settings count, so a heredoc or a
+ * message that quotes such a line passes.
+ */
+function setsHooksPathVariable(segment) {
+  const settings = Object.entries(commandEnv(segment)).map(([name, value]) => `${name}=${value}`);
+  const [program, ...args] = commandWords(segment);
+  if (EXPORTS.has(program ?? "")) settings.push(...args);
+  if (CONFIG_VARIABLE.test(program ?? "") && args[0] === "=") settings.push(`${program}=${args.slice(1).join(" ")}`);
+  return settings.some((setting) => CONFIG_VARIABLE.test(setting) && HOOKS_PATH_WORD.test(setting));
+}
 
 const namesHookScript = (word) => HOOK_SCRIPTS.some((name) => word.toLowerCase().endsWith(name));
 
@@ -143,7 +177,8 @@ const REASONS = {
     "the command skips the git hooks. The pre-commit and pre-push hooks are the gates: run the command " +
     "without `--no-verify` or `-n`, and fix what the hook names.",
   hooksPath:
-    "`-c core.hooksPath=` points git away from the installed hooks, so the gates never run. Remove it.",
+    "`core.hooksPath` points git away from the installed hooks, so the gates never run. This guard refuses it in `-c`, in " +
+    "`git config`, and in `GIT_CONFIG_PARAMETERS` or `GIT_CONFIG_KEY_<n>`. To restore the hooks, run `npx qc install-hooks`.",
   script:
     "a hand run of a hook script writes a lease or a ledger record under a made-up session id, and that lease blocks later " +
     "edits in the worktree for hours. Test a hook only through its own suite (`node --test`), in temporary folders.",
@@ -217,6 +252,7 @@ export function violations(command, parse = segmentsOf, place = null, refused = 
     const nested = nestedCommand(segment);
     if (nested) for (const key of violations(nested.command, nested.parse, place && { ...place, cwd, scoped, unknown }, refused)) found.add(key);
   }
+  if (segments.some(setsHooksPathVariable)) found.add("hooksPath");
   if (!segments.some(runsTests) && segments.some(runsHookScript)) found.add("script");
   return Object.keys(REASONS).filter((key) => found.has(key));
 }
