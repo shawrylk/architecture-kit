@@ -58,3 +58,19 @@ test("the comparator in force at the base judges the change", () => {
   const after = { ...base, filelength: { value: 550, comparator: "min" } };
   assert.equal(check(after).length, 1);
 });
+
+test("a comparator that flips at the same value fails, since the limit now points the other way", () => {
+  const problems = check({ ...base, filelength: { value: 500, comparator: "min" } });
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].detail, /from max 500 to min 500/);
+});
+
+test("a value that is no longer a number fails, as a removal does, unless a changed ADR names it", () => {
+  for (const value of [null, "500", undefined]) {
+    const problems = check(moved("filelength", value));
+    assert.equal(problems.length, 1, String(value));
+    assert.match(problems[0].detail, /no longer has a number/);
+  }
+  const adrs = [{ path: "docs/decisions/0033-files.md", text: "We drop `filelength`." }];
+  assert.deepEqual(check(moved("filelength", null), adrs), []);
+});

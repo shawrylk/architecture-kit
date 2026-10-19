@@ -23,15 +23,18 @@ export function checkThresholdRatchet(before, after, adrs, { registry }) {
   };
   for (const [key, entry] of Object.entries(after)) {
     const was = before[key];
-    // The comparator in force before the change is the policy the change answers to.
-    if (typeof was?.value !== "number" || typeof entry?.value !== "number") continue;
-    if (!loosened(was.comparator, was.value, entry.value)) continue;
-    if (citedByAdr(key)) continue;
-    problems.push({
-      path: registry,
-      rule: "loosened-threshold",
-      detail: `'${key}' moves from ${was.value} to ${entry.value}, and a ${was.comparator} that moves this way loosens; a changed ADR must name '${key}'`,
-    });
+    if (typeof was?.value !== "number" || citedByAdr(key)) continue;
+    // A limit with no number, or one that now points the other way, no longer holds the old line.
+    let detail = null;
+    if (typeof entry?.value !== "number") {
+      detail = `'${key}' (${was.comparator} ${was.value}) no longer has a number, so it limits nothing`;
+    } else if (entry.comparator !== was.comparator) {
+      detail = `'${key}' changes from ${was.comparator} ${was.value} to ${entry.comparator} ${entry.value}, which is no longer the same limit`;
+    } else if (loosened(was.comparator, was.value, entry.value)) {
+      // The comparator in force before the change is the policy the change answers to.
+      detail = `'${key}' moves from ${was.value} to ${entry.value}, and a ${was.comparator} that moves this way loosens`;
+    }
+    if (detail) problems.push({ path: registry, rule: "loosened-threshold", detail: `${detail}; a changed ADR must name '${key}'` });
   }
   // Dropping a limit is the widest loosening of all, so it answers to the same rule.
   for (const [key, was] of Object.entries(before)) {
