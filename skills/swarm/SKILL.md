@@ -1,9 +1,12 @@
 ---
 name: swarm
-description: The protocol for several agents working one repository at once — exclusive paths, index-first, generated registries, never two edits to one file. Use when dispatching work orders, coordinating parallel units, or deciding whether a change needs the orchestrator.
+description: The protocol for several agents working one repository at once — exclusive paths, index-first, generated registries, never two edits to one file. Use only in a repository with a `qc.config.json` at its root, when dispatching work orders, coordinating parallel units, or deciding whether a change needs the orchestrator.
 ---
 
 # Swarm
+
+This skill applies only to a repository with a `qc.config.json` at its root. Without that file,
+stop reading: none of its rules apply.
 
 - A work order owns an exclusive set of paths. It writes nowhere else.
 - Cross-feature reuse is a kernel `fragment`, requested from the orchestrator — never an edit into

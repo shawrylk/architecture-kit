@@ -1,9 +1,12 @@
 ---
 name: architecture
-description: The bounded vertical slice architecture — layers, feature anatomy, unit of work, guards, and where each rule is written down. Use when adding or changing a feature, choosing where code belongs, deciding between slice and flat anatomy, or when a structural gate fails and the fix is not obvious.
+description: The bounded vertical slice architecture — layers, feature anatomy, unit of work, guards, and where each rule is written down. Use only in a repository with a `qc.config.json` at its root, when adding or changing a feature, choosing where code belongs, deciding between slice and flat anatomy, or when a structural gate fails and the fix is not obvious.
 ---
 
 # Architecture
+
+This skill applies only to a repository with a `qc.config.json` at its root. Without that file,
+stop reading: none of its rules apply.
 
 Authority is `docs/decisions.md` in the repository you are working in. Every cited id is defined
 there. If a doc this skill names does not exist, the repository has not run `qc init`.
