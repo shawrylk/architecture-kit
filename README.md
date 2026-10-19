@@ -10,11 +10,12 @@ beside the check that enforces it — and every check ships a case that must fai
 
 | | Install | Holds |
 |---|---|---|
-| Plugin `architecture` | `claude plugin install` | agent hooks, 4 subagent types, 5 skills, 3 slash commands |
-| Package `architecture-harness` | `pnpm add -D` | 11 gates, 10 lint rules, the `qc` CLI, doc templates |
+| Plugin `architecture` | `claude plugin install` | agent hooks, subagent types, skills, slash commands |
+| Package `architecture-harness` | `pnpm add -D` | gates, lint rules, the `qc` CLI, doc templates |
 
 The plugin's hooks call the package's CLI. Either half works alone: the package is an ordinary dev
-dependency, and the plugin no-ops in any repository without a `qc.config.json`.
+dependency. In a repository without a `qc.config.json`, the plugin's hooks do nothing, and each skill
+tells the agent that its rules do not apply.
 
 ## Install
 
@@ -25,6 +26,13 @@ This repository is public, so both halves install from it directly — no token,
 ```bash
 claude plugin marketplace add shawrylk/architecture-kit
 claude plugin install architecture@architecture-kit
+```
+
+The `sdd-*` subagent types and the `codex` skill follow the `subagent-driven-development` skill of the
+`superpowers` plugin. Install it if you use them:
+
+```bash
+claude plugin install superpowers@claude-plugins-official
 ```
 
 **The npm package** (gates, lint rules, and the `qc` CLI):
@@ -182,10 +190,16 @@ needs a folder, so a generated file at the top level needs its own glob. The hoo
 Edit whose `old_string` touches a `<!-- generated: ... -->` … `<!-- /generated -->` region of a
 Markdown file, such as the rule-to-check table in `enforcement.md`.
 
-A `PreToolUse` hook on Bash refuses a command that skips the gates: `git commit` or `git push` with
-`--no-verify`, `git commit -n`, and `git -c core.hooksPath=...`. It also refuses a hand run of a hook
+A `PreToolUse` hook on Bash refuses a command that skips the gates: `git commit`, `git push`,
+`git merge`, `git rebase` or `git am` with `--no-verify`, and `git commit -n`. It also refuses a change
+of `core.hooksPath` through `git -c`, `git config`, `GIT_CONFIG_PARAMETERS` or `GIT_CONFIG_KEY_<n>`.
+It also refuses a hand run of a hook
 script, such as `node .../work-order-guard.mjs`, because a hand run writes a lease that blocks later
 edits. A command that runs `node --test` or vitest is exempt from the second rule.
+
+The guard reads the command and never runs it, so it cannot see through a variable, a decoded string or
+a deleted hook file. For example, `f=--no-verify; git commit $f` passes it. Two checks catch what it
+misses: `qc doctor` in the stop gate reports a changed or missing git hook, and CI runs the gates again.
 
 A subagent does not count its own tool calls, so a `PreToolUse` hook counts them for it.
 `swarm.toolCallBudget` in `qc.config.json` sets the budget, and the default is 100. At 70% of the
@@ -752,7 +766,12 @@ npx qc ui codemod --suggest                        # arbitrary-value tokens, wit
 ### Compare screen pairs
 
 `qc screens` captures two applications with Playwright and compares their pixels with `pixelmatch`.
-Install Google Chrome before the first capture.
+The screen packages are optional peer dependencies, so install them with the package. Install Google
+Chrome before the first capture.
+
+```sh
+pnpm add -D playwright pixelmatch pngjs
+```
 
 ```sh
 npx qc screens --map screens.json --targets legacy,mono --out captures
@@ -1371,7 +1390,8 @@ The tool types credentials only into localhost forms.
 ## Tests
 
 ```bash
-pnpm test   # 125: every rule, every gate, every knob, each with a case that must fail
+pnpm test   # every rule, every gate, every knob, each with a case that must fail
 ```
 
-CI also scaffolds a repository from an empty directory and requires a green `qc check`.
+The screen tests that launch Google Chrome skip when it is not installed. Set `QC_REQUIRE_CHROME=1`
+to make them fail instead, as CI does. CI also scaffolds a repository from an empty directory and requires a green `qc check`.
