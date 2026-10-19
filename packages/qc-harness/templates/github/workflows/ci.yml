@@ -39,14 +39,16 @@ jobs:
         run: npx qc prose --base "origin/$GITHUB_BASE_REF" --pr-body-event
 
       # Typecheck and lint as the stop gate runs them: a root script wins, else the installed tool.
-      # CI is the one check an agent cannot skip, so each step is on and does nothing without its tool.
+      # CI is the one check an agent cannot skip, so each step is on, and without its tool it says it skipped.
       - run: |
           if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then pnpm run typecheck
           elif [ -x node_modules/.bin/tsc ]; then pnpm exec tsc -b --pretty false
+          else echo "::notice::typecheck skipped: no typecheck script and no tsc"
           fi
       - run: |
           if node -e "process.exit(require('./package.json').scripts?.lint ? 0 : 1)"; then pnpm run lint
           elif [ -x node_modules/.bin/eslint ]; then pnpm exec eslint . --max-warnings 0
+          else echo "::notice::lint skipped: no lint script and no eslint"
           fi
       - run: pnpm run --if-present dup:check
 
