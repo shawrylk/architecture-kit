@@ -29,9 +29,9 @@ OUT=""
 if [ -f "$ROOT/node_modules/.bin/eslint" ]; then
   LINT=$(npx eslint "$FILE" --max-warnings 0 2>&1) || OUT+="$LINT"$'\n'
 fi
-case "$FILE" in
-  */features/*) STRUCT=$(node "$QC_CLI" check "$FILE" 2>&1) || OUT+="$STRUCT"$'\n' ;;
-esac
+# Every source file, not only a path with `features/` in it: featureRoots and featureDir are the
+# repository's own, and a per-file check outside a feature still reads its comments.
+STRUCT=$(node "$QC_CLI" check "$FILE" 2>&1) || OUT+="$STRUCT"$'\n'
 
 if [ -n "$OUT" ]; then
   echo "$OUT" >&2
