@@ -10,6 +10,8 @@ import { scriptPattern } from "../gates/english-source.mjs";
 
 export const INSTALL_HINT = "pnpm add -D @commitlint/lint @commitlint/config-conventional";
 const TRAILER = /^co-authored-by:\s*\S/im;
+// `git commit -v` puts the diff under this line, after the comment character, and git drops it all.
+const SCISSORS = /^\S -{24} >8 -{24}\s*$/;
 
 const importPath = async (file) => (await import(pathToFileURL(file).href)).default;
 
@@ -58,8 +60,9 @@ export async function loadCommitlint(root) {
  * @returns {Promise<{rule: string, detail: string}[]>}
  */
 export async function checkCommitMessage(raw, options, commitlint) {
-  const message = raw
-    .split(/\r?\n/)
+  const lines = raw.split(/\r?\n/);
+  const cut = lines.findIndex((line) => SCISSORS.test(line));
+  const message = (cut === -1 ? lines : lines.slice(0, cut))
     .filter((line) => !line.startsWith("#"))
     .join("\n")
     .trim();

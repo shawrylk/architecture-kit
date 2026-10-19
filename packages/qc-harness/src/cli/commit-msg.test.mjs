@@ -31,6 +31,18 @@ test("a message that is not English fails, whatever commitlint says", async () =
   assert.deepEqual(problems.map((problem) => problem.rule), ["english"]);
 });
 
+test("the diff that git commit -v puts under the scissors line is not part of the message", async () => {
+  const commitlint = await loadCommitlint(HARNESS);
+  const raw = [
+    "fix(ui): save the photo",
+    "# ------------------------ >8 ------------------------",
+    "# Do not modify or remove the line above.",
+    "diff --git a/x.ts b/x.ts",
+    `+const label = "写真を保存する"; ${"x".repeat(120)}`,
+  ].join("\n");
+  assert.deepEqual(await checkCommitMessage(raw, {}, commitlint), []);
+});
+
 test("with no commitlint installed, the check fails with the install command, unless conventional is off", async (t) => {
   const commitlint = await loadCommitlint(emptyDir(t));
   assert.equal(commitlint, null);
