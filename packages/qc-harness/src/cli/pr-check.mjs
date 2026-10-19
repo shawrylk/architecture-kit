@@ -46,17 +46,26 @@ export async function checkPullRequest(event, { gh = runGh, hasToken, ci = false
       notes: [],
     };
   }
-  if (!hasToken) return { problems: [], notes: ["no GH_TOKEN, so the issues were not looked up"] };
+  // The CI template sets GH_TOKEN, so a CI run without one had it removed, and would pass unread.
+  if (!hasToken) {
+    return ci
+      ? { problems: ["no GH_TOKEN, so the issues cannot be looked up. Set GH_TOKEN for this step."], notes: [] }
+      : { problems: [], notes: ["no GH_TOKEN, so the issues were not looked up"] };
+  }
 
   const problems = [];
   const notes = [];
+  let unseen = 0;
   for (const { repo, number } of references) {
     const name = `${repo}#${number}`;
     const result = await gh(["issue", "view", String(number), "-R", repo, "--json", "createdAt"]);
     if (!result.ok) {
       const stderr = result.stderr ?? "";
       if (NO_ISSUE.test(stderr)) problems.push(`${name} does not exist. Open the issue, then reference it.`);
-      else if (NO_REPOSITORY.test(stderr)) notes.push(`the token cannot see ${repo}, so ${name} was not looked up`);
+      else if (NO_REPOSITORY.test(stderr)) {
+        unseen++;
+        notes.push(`the token cannot see ${repo}, so ${name} was not looked up`);
+      }
       else if (ci && result.missing) problems.push(`gh is not installed, so ${name} cannot be checked`);
       else {
         const message = `could not reach GitHub for ${name}: ${stderr.trim().split("\n")[0]}`;
@@ -68,6 +77,10 @@ export async function checkPullRequest(event, { gh = runGh, hasToken, ci = false
     if (Date.parse(created) > Date.parse(pr.created_at)) {
       problems.push(`${name} was opened after the pull request. Register the work before it starts.`);
     }
+  }
+  // A reference the token cannot read proves nothing, so a body of only those names no issue.
+  if (unseen === references.length) {
+    problems.push(`pull request #${pr.number} names only issues the token cannot see. Also name an issue in ${event.repository?.full_name}.`);
   }
   return { problems, notes };
 }
