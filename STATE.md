@@ -12,7 +12,7 @@ Both halves are built, and `quality-control-mono` now runs on them.
 | `packages/qc-harness/src/cli/` | `qc check｜init｜feature｜install-hooks｜config`, and the workflow commands: `integrate`, `migrations`, `watch`, `gate-slot`, `throwaway-db`, `retry-failed` |
 | `packages/qc-harness/templates/` | decisions, architecture, enforcement, guards, performance, glossary, ui, CLAUDE.md, thresholds, git hook, CI |
 
-`pnpm test`: 1,789 tests on 2026-10-19. On a machine without Google Chrome, six screen tests skip.
+`pnpm test`: 1,792 tests on 2026-10-19. On a machine without Google Chrome, six screen tests skip.
 
 ## Acceptance, passed
 
