@@ -64,8 +64,16 @@ async function main() {
     process.exit(await runStack(rest));
   }
   if (command === "screens") {
-    const { runScreens } = await import("./screens.mjs");
-    process.exit(await runScreens(rest));
+    // The screen packages are optional peers: only this command needs them, so a repository installs them for it.
+    try {
+      const { runScreens } = await import("./screens.mjs");
+      process.exit(await runScreens(rest));
+    } catch (error) {
+      const missing = /Cannot find package '(playwright|pixelmatch|pngjs)'/.exec(error?.message ?? "");
+      if (error?.code !== "ERR_MODULE_NOT_FOUND" || !missing) throw error;
+      console.error(`qc screens needs the ${missing[1]} package. Install the screen packages: pnpm add -D playwright pixelmatch pngjs`);
+      process.exit(2);
+    }
   }
   // A broken qc.config.json must not keep a lease in place, so the lease runs before the load.
   if (command === "lease") {
