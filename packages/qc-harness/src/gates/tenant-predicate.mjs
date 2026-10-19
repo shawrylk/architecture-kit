@@ -20,31 +20,57 @@ const DEFAULT_TENANT_IDENTIFIER = "tenantId";
 // tenant column of another row as a correlated subquery does, but never with itself. No top-level
 // `or` sits beside it. A comment in the SQL is no condition.
 function equalsTenant(condition, column) {
-  const match = new RegExp(`^(?:(\\w+)\\.)?${escape(column)}\\s*=\\s*(\\S.*)$`, "s").exec(condition);
-  if (!match) return false;
-  const other = new RegExp(`^(?:(\\w+)\\.)?${escape(column)}$`).exec(match[2].trim());
-  if (!other) return true;
+  const equals = topLevelEquals(condition);
+  if (equals === -1) return false;
+  const side = new RegExp(`^(?:(\\w+)\\.)?${escape(column)}$`);
+  const left = side.exec(condition.slice(0, equals).trim());
+  const right = side.exec(condition.slice(equals + 1).trim());
+  // Either side may hold the column, as in `$1 = tenant_id`.
+  if (!left || !right) return Boolean(left || right);
   // Two rows of one tenant: both sides name their row, and the rows differ.
-  return Boolean(match[1] && other[1] && match[1] !== other[1]);
+  return Boolean(left[1] && right[1] && left[1] !== right[1]);
+}
+
+/** The index of the first `=` outside parentheses that is no part of `<=`, `>=`, `!=`, `:=` or `==`, or -1. */
+function topLevelEquals(condition) {
+  let depth = 0;
+  for (let i = 0; i < condition.length; i += 1) {
+    if (condition[i] === "(") depth += 1;
+    else if (condition[i] === ")") depth -= 1;
+    else if (depth === 0 && condition[i] === "=" && !"<>!:=".includes(condition[i - 1] ?? " ") && condition[i + 1] !== "=") return i;
+  }
+  return -1;
 }
 // A word that ends a `where` or `on` clause at its own depth.
 const CLAUSE_END =
   /^(?:where|on|group\s+by|order\s+by|limit|offset|returning|having|window|union|intersect|except|for\s+(?:update|share)|(?:(?:inner|left|right|full|cross)\s+(?:outer\s+)?)?join)\b/i;
 
-/** The SQL with each interpolation as one opaque value and each comment gone. */
+/** The index of the last `}` of the `${` that opens at `from`. */
+function interpolationEnd(sql, from) {
+  let depth = 1;
+  let i = from + 2;
+  while (i < sql.length && depth > 0) {
+    if (sql[i] === "{") depth += 1;
+    else if (sql[i] === "}") depth -= 1;
+    i += 1;
+  }
+  return i - 1;
+}
+
+/** The SQL with each interpolation and each string literal as one opaque value, and each comment gone. */
 function plainSql(sql) {
   let out = "";
   for (let i = 0; i < sql.length; i += 1) {
     if (sql.startsWith("${", i)) {
-      let depth = 1;
-      i += 2;
-      while (i < sql.length && depth > 0) {
-        if (sql[i] === "{") depth += 1;
-        else if (sql[i] === "}") depth -= 1;
-        i += 1;
-      }
-      i -= 1;
+      i = interpolationEnd(sql, i);
       out += "$x";
+    } else if (sql[i] === "'") {
+      // A quote inside the literal is doubled, and a `${}` inside it is code with quotes of its own.
+      for (i += 1; i < sql.length && !(sql[i] === "'" && sql[i + 1] !== "'"); i += 1) {
+        if (sql.startsWith("${", i)) i = interpolationEnd(sql, i);
+        else if (sql[i] === "'") i += 1;
+      }
+      out += "$s";
     } else if (sql.startsWith("--", i)) {
       while (i < sql.length && sql[i] !== "\n") i += 1;
       out += " ";
@@ -142,7 +168,9 @@ function scopedBy(sql, column) {
   const plain = plainSql(sql);
   const inserted = /insert\s+into\s+(?:\w+|\$x)\s*\(([^)]*)\)/i.exec(plain);
   if (inserted && new RegExp(`\\b${escape(column)}\\b`).test(inserted[1])) return true;
-  return conditionClauses(plain).some((clause) => conditionScopes(clause, column));
+  // Each side of a set operation reads rows of its own, so each side carries the tenant.
+  const operands = ["union", "intersect", "except"].reduce((parts, word) => parts.flatMap((part) => splitTopLevel(part, word)), [plain]);
+  return operands.every((operand) => conditionClauses(operand).some((clause) => conditionScopes(clause, column)));
 }
 
 /** A statement that reads only a bound name touches no table and needs no predicate. */
