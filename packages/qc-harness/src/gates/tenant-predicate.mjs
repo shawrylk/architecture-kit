@@ -14,10 +14,121 @@ import { scrub } from "./scrub.mjs";
 const DEFAULT_TENANT_COLUMN = "tenant_id";
 const DEFAULT_TENANT_IDENTIFIER = "tenantId";
 
-// Naming the column is not scoping by it: a select list mentioning the tenant
-// column reads every tenant's rows just as happily. The predicate is what counts.
-function scopedPattern(column) {
-  return new RegExp(`\\b${escape(column)}\\s*=`);
+// Naming the column is not scoping by it: a select list or a `set` clause that names the tenant
+// column reaches every tenant's rows just as happily. Only a condition in a `where` clause, or in
+// the `on` clause of a join, counts. The condition compares the column with a value, or with the
+// tenant column of another row as a correlated subquery does, but never with itself. No top-level
+// `or` sits beside it. A comment in the SQL is no condition.
+function equalsTenant(condition, column) {
+  const match = new RegExp(`^(?:(\\w+)\\.)?${escape(column)}\\s*=\\s*(\\S.*)$`, "s").exec(condition);
+  if (!match) return false;
+  const other = new RegExp(`^(?:(\\w+)\\.)?${escape(column)}$`).exec(match[2].trim());
+  if (!other) return true;
+  // Two rows of one tenant: both sides name their row, and the rows differ.
+  return Boolean(match[1] && other[1] && match[1] !== other[1]);
+}
+// A word that ends a `where` or `on` clause at its own depth.
+const CLAUSE_END =
+  /^(?:where|on|group\s+by|order\s+by|limit|offset|returning|having|window|union|intersect|except|for\s+(?:update|share)|(?:(?:inner|left|right|full|cross)\s+(?:outer\s+)?)?join)\b/i;
+
+/** The SQL with each interpolation as one opaque value and each comment gone. */
+function plainSql(sql) {
+  let out = "";
+  for (let i = 0; i < sql.length; i += 1) {
+    if (sql.startsWith("${", i)) {
+      let depth = 1;
+      i += 2;
+      while (i < sql.length && depth > 0) {
+        if (sql[i] === "{") depth += 1;
+        else if (sql[i] === "}") depth -= 1;
+        i += 1;
+      }
+      i -= 1;
+      out += "$x";
+    } else if (sql.startsWith("--", i)) {
+      while (i < sql.length && sql[i] !== "\n") i += 1;
+      out += " ";
+    } else if (sql.startsWith("/*", i)) {
+      const end = sql.indexOf("*/", i + 2);
+      i = end === -1 ? sql.length : end + 1;
+      out += " ";
+    } else {
+      out += sql[i];
+    }
+  }
+  return out;
+}
+
+/** The parts of a condition between each top-level `word`, or the whole condition when it has none. */
+function splitTopLevel(condition, word) {
+  const parts = [];
+  const pattern = new RegExp(`^${word}\\b`, "i");
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < condition.length; i += 1) {
+    if (condition[i] === "(") depth += 1;
+    else if (condition[i] === ")") depth -= 1;
+    else if (depth === 0 && /\W/.test(condition[i - 1] ?? " ") && pattern.test(condition.slice(i))) {
+      parts.push(condition.slice(start, i));
+      start = i + word.length;
+    }
+  }
+  parts.push(condition.slice(start));
+  return parts.map((part) => part.trim());
+}
+
+/** A condition without the parentheses that wrap all of it. */
+function unwrap(condition) {
+  let text = condition.trim();
+  while (text.startsWith("(") && text.endsWith(")")) {
+    let depth = 0;
+    let closesAtEnd = true;
+    for (let i = 0; i < text.length - 1; i += 1) {
+      if (text[i] === "(") depth += 1;
+      else if (text[i] === ")") depth -= 1;
+      if (depth === 0) {
+        closesAtEnd = false;
+        break;
+      }
+    }
+    if (!closesAtEnd) break;
+    text = text.slice(1, -1).trim();
+  }
+  return text;
+}
+
+/** True when every row the condition admits has the tenant column equal to one value. */
+function conditionScopes(condition, column) {
+  const text = unwrap(condition);
+  if (splitTopLevel(text, "or").length > 1) return false;
+  const conjuncts = splitTopLevel(text, "and");
+  if (conjuncts.length > 1) return conjuncts.some((conjunct) => conditionScopes(conjunct, column));
+  return equalsTenant(text, column);
+}
+
+/** Each `where` clause, and each `on` clause of a join, with the text up to its end. */
+function conditionClauses(sql) {
+  const clauses = [];
+  const keyword = /\b(where|on)\b(?!\s+conflict\b)/gi;
+  for (let match = keyword.exec(sql); match !== null; match = keyword.exec(sql)) {
+    let depth = 0;
+    let end = sql.length;
+    for (let i = match.index + match[0].length; i < sql.length; i += 1) {
+      if (sql[i] === "(") depth += 1;
+      else if (sql[i] === ")") {
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+        depth -= 1;
+      } else if (depth === 0 && /\W/.test(sql[i - 1]) && CLAUSE_END.test(sql.slice(i))) {
+        end = i;
+        break;
+      }
+    }
+    clauses.push(sql.slice(match.index + match[0].length, end));
+  }
+  return clauses;
 }
 // Nine of eleven features write their generic helpers with the table name as a
 // runtime value — `from ${table}`. Matching only literal names skipped those
@@ -28,9 +139,10 @@ const DYNAMIC_TABLE = /\b(?:from|join|into|update)\s+\$\{/;
 
 /** True when the statement actually filters or writes the tenant, not merely names it. */
 function scopedBy(sql, column) {
-  if (scopedPattern(column).test(sql)) return true;
-  const inserted = /insert\s+into\s+(?:\w+|\$\{[^}]*\})\s*\(([^)]*)\)/i.exec(sql);
-  return inserted ? new RegExp(`\\b${escape(column)}\\b`).test(inserted[1]) : false;
+  const plain = plainSql(sql);
+  const inserted = /insert\s+into\s+(?:\w+|\$x)\s*\(([^)]*)\)/i.exec(plain);
+  if (inserted && new RegExp(`\\b${escape(column)}\\b`).test(inserted[1])) return true;
+  return conditionClauses(plain).some((clause) => conditionScopes(clause, column));
 }
 
 /** A statement that reads only a bound name touches no table and needs no predicate. */
