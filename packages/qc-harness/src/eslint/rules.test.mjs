@@ -106,9 +106,17 @@ tester.run("no-raw-fetch", rules["no-raw-fetch"], {
     { code: "function load(fetch) { return fetch(url); }", filename: "/a/features/pins/index.ts" },
     { code: "await client.fetch(url);", filename: "/a/features/pins/index.ts" },
     { code: "const options = { fetch: true };", filename: "/a/features/pins/index.ts" },
+    { code: "const self = { fetch() {} }; self.fetch();", filename: "/a/features/pins/index.ts" },
+    { code: "function load(window) { return window.fetch(url); }", filename: "/a/features/pins/index.ts" },
   ],
   invalid: [
     { code: "await fetch(url);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
+    {
+      code: "await fetch(url); await window.fetch(url);",
+      filename: "/a/features/pins/index.ts",
+      languageOptions: { globals: { fetch: "readonly", window: "readonly" } },
+      errors: [{ messageId: "raw" }, { messageId: "raw" }],
+    },
     { code: "new URL(path);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
     { code: "await window.fetch(url);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },
     { code: "await globalThis['fetch'](url);", filename: "/a/features/pins/index.ts", errors: [{ messageId: "raw" }] },

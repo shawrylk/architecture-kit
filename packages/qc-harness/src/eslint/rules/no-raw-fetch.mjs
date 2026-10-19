@@ -14,7 +14,16 @@ function keyName(node, computed) {
   return null;
 }
 
-const isGlobalObject = (node) => node?.type === "Identifier" && GLOBAL_OBJECTS.has(node.name);
+/** True when the name resolves to no declaration in the code: an undeclared global, or one the config declares. */
+function isGlobalName(sourceCode, identifier) {
+  for (let scope = sourceCode.getScope(identifier); scope; scope = scope.upper) {
+    const variable = scope.set.get(identifier.name);
+    if (variable) return variable.defs.length === 0;
+  }
+  return true;
+}
+
+const isGlobalObject = (sourceCode, node) => node?.type === "Identifier" && GLOBAL_OBJECTS.has(node.name) && isGlobalName(sourceCode, node);
 
 export default {
   meta: {
@@ -30,18 +39,22 @@ export default {
     return {
       // Every use of the global fetch, not only a call: `const f = fetch` hands the same function on.
       // A local binding named fetch is not the global, and a `typeof fetch` type reads no value.
+      // A global the config declares, as browser globals declare fetch, holds its references itself
+      // and leaves `through`, so both lists are read.
       "Program:exit"() {
-        for (const reference of context.sourceCode.scopeManager.globalScope.through) {
-          const { identifier } = reference;
+        const { globalScope } = context.sourceCode.scopeManager;
+        const declared = globalScope.set.get("fetch");
+        const references = [...globalScope.through, ...(declared?.defs.length === 0 ? declared.references : [])];
+        for (const { identifier } of references) {
           if (identifier.name !== "fetch" || identifier.parent?.type === "TSTypeQuery") continue;
           report(identifier);
         }
       },
       MemberExpression(node) {
-        if (isGlobalObject(node.object) && keyName(node.property, node.computed) === "fetch") report(node);
+        if (isGlobalObject(context.sourceCode, node.object) && keyName(node.property, node.computed) === "fetch") report(node);
       },
       VariableDeclarator(node) {
-        if (node.id.type !== "ObjectPattern" || !isGlobalObject(node.init)) return;
+        if (node.id.type !== "ObjectPattern" || !isGlobalObject(context.sourceCode, node.init)) return;
         for (const property of node.id.properties) {
           if (property.type === "Property" && keyName(property.key, property.computed) === "fetch") report(property);
         }
