@@ -1,9 +1,12 @@
 ---
 name: enforcement
-description: Every rule beside the check that enforces it, and what to do when one fails. Use when a gate, lint rule or hook blocks an edit, when adding a new rule, or when deciding whether something should be a rule at all.
+description: Every rule beside the check that enforces it, and what to do when one fails. Use only in a repository with a `qc.config.json` at its root, when a gate, lint rule or hook blocks an edit, when adding a new rule, or when deciding whether something should be a rule at all.
 ---
 
 # Enforcement
+
+This skill applies only to a repository with a `qc.config.json` at its root. Without that file,
+stop reading: none of its rules apply.
 
 A rule that cannot name its check is deleted or converted into one — QC-007.
 

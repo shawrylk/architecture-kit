@@ -1,9 +1,12 @@
 ---
 name: architecture-security
-description: The security model of this architecture — tenant isolation, presigned URLs, secrets, audit log, and what never gets logged. Use when touching repositories, storage access, authentication, secrets, or anything that crosses a tenant boundary.
+description: The security model of this architecture — tenant isolation, presigned URLs, secrets, audit log, and what never gets logged. Use only in a repository with a `qc.config.json` at its root, when touching repositories, storage access, authentication, secrets, or anything that crosses a tenant boundary.
 ---
 
 # Security
+
+This skill applies only to a repository with a `qc.config.json` at its root. Without that file,
+stop reading: none of its rules apply.
 
 - **Tenant isolation is the security model**: scoped repository predicate, row-level-security
   backstop, and a two-tenant test asserting zero cross-reads. A new repository without that test

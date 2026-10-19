@@ -1,9 +1,12 @@
 ---
 name: codex
-description: How a Claude controller runs Codex implementers through `qc codex-implement` with lean context — roles, the brief, the launch, the result files, CI, the branch review, and the merge. Use when you dispatch implementer work, fix a CI failure or a review finding, or drive a pull request to a green, merged state.
+description: How a Claude controller runs Codex implementers through `qc codex-implement` with lean context — roles, the brief, the launch, the result files, CI, the branch review, and the merge. Use only in a repository with a `qc.config.json` at its root, when you dispatch implementer work, fix a CI failure or a review finding, or drive a pull request to a green, merged state.
 ---
 
 # Codex implementers
+
+This skill applies only to a repository with a `qc.config.json` at its root. Without that file,
+stop reading: none of its rules apply.
 
 ## Roles
 

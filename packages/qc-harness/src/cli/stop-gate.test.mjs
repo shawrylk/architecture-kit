@@ -441,6 +441,23 @@ test("a new commit makes the next stop run the full gate", (t) => {
   assert.equal(ws.ran().length, 2);
 });
 
+test("a new installed harness on an unchanged checkout makes the next stop run the full gate", (t) => {
+  const ws = gitWorkspace(t);
+  ws.run();
+  writeFileSync(path.join(ws.repo, "node_modules", "architecture-harness", "package.json"), '{"version":"9.9.9"}');
+  ws.run();
+  assert.equal(ws.ran().length, 2);
+  ws.run();
+  assert.equal(ws.ran().length, 2);
+});
+
+test("a new extra stop step on an unchanged checkout makes the next stop run the full gate", (t) => {
+  const ws = gitWorkspace(t);
+  ws.run();
+  ws.run({}, { QC_STOP_EXTRA: "true" });
+  assert.equal(ws.ran().length, 2);
+});
+
 test("a red first run stores nothing, so the next stop runs the full gate again", (t) => {
   const ws = gitWorkspace(t, { codes: { check: 1 }, withDoctor: false });
   assert.equal(ws.run().status, 2);

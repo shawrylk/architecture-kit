@@ -28,6 +28,41 @@ test("an update that does not carry the tenant is a finding", () => {
   assert.equal(problems.length, 1);
 });
 
+test("a tenant in the set clause of an update is not a predicate: the row may belong to any tenant", () => {
+  assert.equal(checkTenantPredicate(one("update projects set tenant_id = $1 where id = $2"), owned).length, 1);
+});
+
+test("a tenant beside a top-level or admits every tenant's rows, and is a finding", () => {
+  assert.equal(checkTenantPredicate(one("select id from projects where id = $1 or tenant_id = $2"), owned).length, 1);
+  assert.equal(checkTenantPredicate(one("select id from projects where tenant_id = $1 or true"), owned).length, 1);
+  assert.equal(checkTenantPredicate(one("select id from projects where (tenant_id = $1 or id = $2) and code = $3"), owned).length, 1);
+});
+
+test("an or nested inside a conjunct beside the tenant passes", () => {
+  const sql = "select id from projects where tenant_id = $1 and (status = $2 or status = $3)";
+  assert.deepEqual(checkTenantPredicate(one(sql), owned), []);
+});
+
+test("a tenant column compared with itself is a finding", () => {
+  assert.equal(checkTenantPredicate(one("select id from projects where tenant_id = tenant_id"), owned).length, 1);
+  assert.equal(checkTenantPredicate(one("select id from projects p where p.tenant_id = p.tenant_id"), owned).length, 1);
+});
+
+test("a correlated subquery that matches the tenant of the outer row passes", () => {
+  const sql = "exists (select 1 from projects v where v.tenant_id = outer_row.tenant_id and v.id = outer_row.project_id)";
+  assert.deepEqual(checkTenantPredicate(one(sql), owned), []);
+});
+
+test("a tenant inside an sql comment is no predicate", () => {
+  assert.equal(checkTenantPredicate(one("delete from projects where id = $1 -- tenant_id = $2"), owned).length, 1);
+  assert.equal(checkTenantPredicate(one("delete from projects where id = $1 /* and tenant_id = $2 */"), owned).length, 1);
+});
+
+test("an interpolated tenant value passes, and an interpolation cannot hide an or", () => {
+  assert.deepEqual(checkTenantPredicate(one("select id from projects where tenant_id = ${tenantId}"), owned), []);
+  assert.equal(checkTenantPredicate(one("select id from projects where tenant_id = ${f(\"a\")} or id = $2"), owned).length, 1);
+});
+
 test("a statement reading only a common table expression needs no predicate", () => {
   const bound = new Set(["projects"]);
   assert.deepEqual(checkTenantPredicate(one("select id from projects", bound), owned), []);

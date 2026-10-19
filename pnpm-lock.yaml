@@ -9,16 +9,6 @@ importers:
   .: {}
 
   packages/qc-harness:
-    dependencies:
-      pixelmatch:
-        specifier: ^8.0.0
-        version: 8.0.0
-      playwright:
-        specifier: ^1.64.1
-        version: 1.64.1
-      pngjs:
-        specifier: ^7.0.0
-        version: 7.0.0
     devDependencies:
       '@commitlint/config-conventional':
         specifier: ^21.2.3
@@ -41,6 +31,15 @@ importers:
       eslint-plugin-sonarjs:
         specifier: ^3
         version: 3.0.7(eslint@9.39.5)
+      pixelmatch:
+        specifier: ^8.0.0
+        version: 8.0.0
+      playwright:
+        specifier: ^1.64.1
+        version: 1.64.1
+      pngjs:
+        specifier: ^7.0.0
+        version: 7.0.0
       typescript:
         specifier: ^5
         version: 5.9.3

@@ -175,9 +175,9 @@ export async function run(root) {
   return decide(call, root);
 }
 
-/** The verdict on one Write or Edit call. @returns a deny payload, or null to allow it. */
+/** The verdict on one Write, Edit, MultiEdit or NotebookEdit call. @returns a deny payload, or null to allow it. */
 export async function decide(call, root) {
-  const file = call.tool_input?.file_path;
+  const file = call.tool_input?.file_path ?? call.tool_input?.notebook_path;
   if (!file) return null;
   const absolute = path.resolve(root, file);
   const rel = path.relative(root, absolute).split(path.sep).join("/");

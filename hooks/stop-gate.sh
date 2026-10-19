@@ -49,7 +49,8 @@ try {
 '
 
 # The fingerprint of the checkout: the HEAD sha, the porcelain status, and the content hash of every
-# changed or untracked file, hashed into one value. One file per checkout root, keyed by a hash of the
+# changed or untracked file, with the installed harness manifest, the plugin manifest and path, and
+# QC_STOP_EXTRA, hashed into one value. One file per checkout root, keyed by a hash of the
 # absolute root path, under the folder that holds the memory of the last refusal. `check` prints
 # `same` when the stored value equals the current one, else `diff:<current>`. `store <value>` writes
 # the value a green run started from. Any error, a git error or a missing file included, prints nothing,
@@ -80,6 +81,14 @@ try {
     try { digest = sha(fs.readFileSync(path.join(root, name))); } catch {}
     h.update("\0" + name + "\0" + digest);
   }
+  // The setup judges the tree too: a new harness, a new plugin, or a new extra step runs the full gate again.
+  const plugin = process.env.CLAUDE_PLUGIN_ROOT ?? "";
+  for (const file of [path.join(root, "node_modules", "architecture-harness", "package.json"), path.join(plugin, ".claude-plugin", "plugin.json")]) {
+    let text = "absent";
+    try { text = fs.readFileSync(file, "utf8"); } catch {}
+    h.update("\0" + text);
+  }
+  h.update("\0" + plugin + "\0" + (process.env.QC_STOP_EXTRA ?? ""));
   const value = h.digest("hex");
   let stored = "";
   try { stored = fs.readFileSync(file, "utf8"); } catch {}

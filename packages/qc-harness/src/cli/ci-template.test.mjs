@@ -26,3 +26,13 @@ test("the e2e job installs the browsers before it runs a spec", () => {
   const run = steps.findIndex((step) => /pnpm e2e/.test(step.run ?? ""));
   assert.ok(install >= 0 && install < run);
 });
+
+test("the gates job typechecks and lints on every push, with no step left commented out", () => {
+  const text = readFileSync(WORKFLOW, "utf8");
+  const runs = parse(text).jobs.gates.steps.map((step) => step.run ?? "").join("\n");
+  assert.match(runs, /pnpm run typecheck/);
+  assert.match(runs, /tsc -b/);
+  assert.match(runs, /pnpm run lint/);
+  assert.match(runs, /eslint \. --max-warnings 0/);
+  assert.doesNotMatch(text, /^\s*# - run:/m);
+});
