@@ -308,6 +308,12 @@ async function sqlAgreement(config, tree, taken, lines) {
   const scoped = scanned.map(({ path: file, source }) => ({ path: file, statements: sqlStatements(source) }));
   taken.push(...exemptions(scoped));
 
+  lines.push(
+    migrations.length === 0 && scoped.every((resource) => resource.statements.length === 0)
+      ? `OK  sql          skipped: no migration under ${migrationDir} and no sql statement in a resource`
+      : "OK  sql          every column is declared, every statement and every exempt helper's caller carries the tenant",
+  );
+
   const tenantOptions = { column: config.tenant.sqlColumn };
   const problems = [];
   if (enabled(config.gates, "audit-append-only")) {
@@ -374,7 +380,7 @@ async function triggers(config, tree) {
 /** Every unit's definition of done ends here: a claim a route makes must be backed. */
 async function claimAgreement(config, routes) {
   const entries = await registered(path.join(config.root, config.paths.traceability));
-  if (entries.length === 0) return [];
+  if (entries.length === 0) return null;
   const tests = new Map(entries.map((entry) => [entry.id, entry.tests ?? []]));
   return checkClaimedRequirements(routes, tests);
 }
@@ -383,7 +389,7 @@ async function claimAgreement(config, routes) {
 async function publicRouteAgreement(config, routes) {
   const file = path.join(config.root, config.paths.publicRoutes);
   const allowed = await read(file);
-  if (allowed === null) return [];
+  if (allowed === null) return null;
   return checkPublicRoutes(
     declaredPublicRoutes(routes.map((route) => route.source)),
     allowedPublicRoutes(allowed),
@@ -400,7 +406,7 @@ async function internalRouteAgreement(config, tree, routes) {
     .map((worker) => `${join(root, worker)}/${config.paths.workerEntry}`)
     .filter((rel) => tree.isFile(rel));
   const entries = (await readEach(config.root, rels)).map(({ path: file, contents }) => ({ path: file, source: contents }));
-  if (entries.length === 0) return [];
+  if (entries.length === 0) return null;
   return checkInternalRoutes(
     declaredInternalRoutes(routes.map((route) => route.source)),
     calledInternalRoutes(entries),
@@ -750,7 +756,6 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   }
 
   if (enabled(config.gates, "sql-identifiers") || enabled(config.gates, "tenant-predicate")) {
-    lines.push("OK  sql          every column is declared, every statement and every exempt helper's caller carries the tenant");
     problems.push(...(await sqlAgreement(config, tree, taken, lines)));
     // An exemption is counted and named, so it stays a decision rather than a habit.
     for (const exemption of taken) lines.push(`  exempt       ${exemption.path}: ${exemption.reason}`);
@@ -775,7 +780,9 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
         sources,
       }),
     );
-    lines.push(`OK  sagas        ${sagas.length} workflow(s), each named by a test that runs without a view`);
+    lines.push(sagas.length === 0
+      ? "OK  sagas        skipped: no workflow declared"
+      : `OK  sagas        ${sagas.length} workflow(s), each named by a test that runs without a view`);
   }
 
   if (enabled(config.gates, "tenant-isolation-test")) {
@@ -788,7 +795,10 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
       column: config.tenant.column,
     };
     problems.push(...checkTenantIsolationTests(features, isolation));
-    lines.push(`OK  tenancy      ${tenantFeatures(features, isolation).length} feature(s) with tenant tables, each with a two-tenant test`);
+    const tenanted = tenantFeatures(features, isolation).length;
+    lines.push(tenanted === 0
+      ? "OK  tenancy      skipped: no feature declares a tenant table"
+      : `OK  tenancy      ${tenanted} feature(s) with tenant tables, each with a two-tenant test`);
   }
 
   if (enabled(config.gates, "gate-tests")) {
@@ -818,16 +828,25 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
 
   const routes = await triggers(config, tree);
   if (enabled(config.gates, "claimed-requirements")) {
-    problems.push(...(await claimAgreement(config, routes)));
-    lines.push("OK  claims       every requirement a route claims names a test that proves it");
+    const found = await claimAgreement(config, routes);
+    problems.push(...(found ?? []));
+    lines.push(found === null
+      ? `OK  claims       skipped: no requirement in ${config.paths.traceability}`
+      : "OK  claims       every requirement a route claims names a test that proves it");
   }
   if (enabled(config.gates, "public-routes")) {
-    problems.push(...(await publicRouteAgreement(config, routes)));
-    lines.push("OK  public       the edge lets through exactly the routes the api serves without a session");
+    const found = await publicRouteAgreement(config, routes);
+    problems.push(...(found ?? []));
+    lines.push(found === null
+      ? `OK  public       skipped: no ${config.paths.publicRoutes}`
+      : "OK  public       the edge lets through exactly the routes the api serves without a session");
   }
   if (enabled(config.gates, "internal-routes")) {
-    problems.push(...(await internalRouteAgreement(config, tree, routes)));
-    lines.push("OK  internal     every path a worker posts to is a route the api serves");
+    const found = await internalRouteAgreement(config, tree, routes);
+    problems.push(...(found ?? []));
+    lines.push(found === null
+      ? `OK  internal     skipped: no worker entry under ${config.paths.workers}`
+      : "OK  internal     every path a worker posts to is a route the api serves");
   }
   if (enabled(config.gates, "headless-sagas")) {
     lines.push("OK  headless     pipelines are headless and triggers remain thin presenters");
@@ -855,7 +874,9 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     problems.push(...mirrorProblems);
     if (mirrorProblems.length === 0) {
       const judged = mirrorRoots.map((root) => root.tests).join(", ") || "no configured root";
-      lines.push(`OK  mirror       tests mirror src paths 1:1, no orphaned test, in ${judged}`);
+      lines.push(all.length === 0
+        ? `OK  mirror       skipped: no file under ${judged}`
+        : `OK  mirror       tests mirror src paths 1:1, no orphaned test, in ${judged}`);
     }
   }
 

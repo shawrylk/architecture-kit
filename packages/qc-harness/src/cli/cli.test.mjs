@@ -280,6 +280,17 @@ test("a fresh init repository with the default config passes the hooks check", a
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("a gate with nothing to judge says skipped and names what is missing, never a bare OK", async () => {
+  const dir = repo();
+  await quiet(() => runInit(load(dir)));
+  const { lines } = await runCheck(load(dir));
+  for (const name of ["sql", "claims", "public", "internal", "mirror"]) {
+    const line = lines.find((entry) => entry.startsWith(`OK  ${name} `));
+    assert.match(line ?? "", /skipped: no /, `${name} line: ${line}`);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("a config with only extraExemptHelpers checks the kit defaults and the extra helper", async () => {
   const dir = repo();
   await quiet(() => runInit(load(dir)));
