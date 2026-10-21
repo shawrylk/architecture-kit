@@ -283,6 +283,15 @@ export const defaults = {
     required: { "pre-commit": ["qc work-order-check"], "commit-msg": ["qc commit-msg"], "pre-push": ["qc check"] },
   },
 
+  check: {
+    // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
+    related: null,
+    // Commands receive no extra arguments; for example, ["node script/check-comments.mjs --base origin/dev"].
+    commands: [],
+    // The merge base with this ref selects committed and staged changes.
+    base: "origin/main",
+  },
+
   // `conventional` runs commitlint's conventional rules, an optional peer dependency the repository
   // installs. `attribution` requires a Co-Authored-By trailer. The English rule always runs.
   commitMessage: { conventional: true, attribution: false },
@@ -631,6 +640,12 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
+  const { related, commands, base } = config.check;
+  const command = (value) => typeof value === "string" && value.trim().length > 0;
+  if (related !== null && !command(related)) throw new TypeError("check.related must be a non-empty string or null");
+  if (!Array.isArray(commands) || !commands.every(command)) throw new TypeError("check.commands must be an array of non-empty strings");
+  if (!command(base)) throw new TypeError("check.base must be a non-empty string");
   config.root = root;
   return config;
 }

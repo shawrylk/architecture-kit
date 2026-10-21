@@ -101,8 +101,9 @@ async function main() {
     case "check": {
       const { files, listed } = await checkFiles(rest);
       // An empty list means nothing staged to check, not the full check.
-      if (listed && files.length === 0) return;
-      const { problems, lines } = await runCheck(config, files);
+      const { problems, lines } = listed && files.length === 0
+        ? { problems: [], lines: [] }
+        : await runCheck(config, files);
       if (problems.length > 0) {
         for (const problem of problems) {
           console.error(`FAIL  ${problem.feature ?? problem.path}  ${problem.rule}: ${problem.detail}`);
@@ -111,6 +112,8 @@ async function main() {
         process.exit(1);
       }
       for (const line of lines) console.log(line);
+      const { runCheckCommands } = await import("./check-commands.mjs");
+      process.exitCode = await runCheckCommands(config);
       return;
     }
     case "init": {
