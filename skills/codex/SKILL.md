@@ -42,8 +42,8 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 - It never re-verifies a finished item, never repeats a failed probe, and reads only the line ranges the item needs.
 - It loads no skill and reads no `SKILL.md` or plugin file: the runner turns off every plugin the user's Codex config enables, and `superpowers@claude-plugins-official`, with `-c`.
 - It searches with `rg -n -m 20` and a path, reads at most 150 lines per call, limits any command that can print over 4,000 characters, never runs `gh issue view`, and uses `git status --short` and `git log -n 5 --oneline`. The runner also sets `tool_output_token_limit=4000` and `model_auto_compact_token_limit` from `codex.compactTokens` (default 300000).
-- It starts no helper agents, and the runner turns off the Codex `multi_agent` and `multi_agent_v2` features with `-c`. It runs no broad audit, Playwright, or full gate: the touched tests, and the local check once before the push.
-- It writes every item first. Then it runs the local check once, makes one commit, and pushes once. It keeps the report under 15 lines.
+- It starts no helper agents, and the runner turns off the Codex `multi_agent` and `multi_agent_v2` features with `-c`. It runs no broad audit, Playwright, or full gate. It runs the touched tests, then `qc check` once before the push. That command runs the related tests and the repository's checks; touched test files alone are not enough.
+- It writes every item first. Then it runs `qc check` once, makes one commit, and pushes once. It keeps the report under 15 lines.
 - A lean rule never drops a security, tenant, data, or correctness check that the brief asks for.
 - A lean rule never overrides the brief on commits or pushes. Where the brief says not to commit, Codex makes no commit. Where it says not to push, Codex pushes nothing.
 

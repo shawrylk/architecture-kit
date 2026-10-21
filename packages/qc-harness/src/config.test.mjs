@@ -1,13 +1,45 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaults, load, merge, requiredHooks } from "./config.mjs";
 import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+test("check defaults leave repository commands off", () => {
+  assert.deepEqual(load(here).check, { related: null, commands: [], base: "origin/main" });
+});
+
+test("check configuration accepts commands and preserves omitted defaults", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-check-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const check = { related: "pnpm exec vitest related --run", commands: ["node script/check-comments.mjs --base origin/dev"] };
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ check }));
+  assert.deepEqual(load(root).check, { ...check, base: "origin/main" });
+});
+
+test("check configuration rejects invalid types and empty commands or refs", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-check-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const check of [null, [], false, "command"]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ check }));
+    assert.throws(() => load(root), /check must be an object/);
+  }
+  for (const [key, values] of Object.entries({
+    related: [false, 1, [], {}, "", "  "],
+    commands: [null, false, "node", [1], [null], [""], ["  "]],
+    base: [null, false, 1, [], "", "  "],
+  })) {
+    for (const value of values) {
+      writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ check: { [key]: value } }));
+      assert.throws(() => load(root), new RegExp(`check\\.${key}`));
+    }
+  }
+});
 
 // A switch naming a rule that no longer exists silently stops switching anything.
 // This is the test that catches the next rename, not the last one.
