@@ -1,6 +1,7 @@
 // A pipeline that runs repository commands after the architecture checks pass.
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import spawn from "cross-spawn";
 
 // Quotes group arguments; shell expansion stays off, and Windows path separators stay literal.
 function commandWords(command) {
@@ -46,7 +47,7 @@ function changedFiles(root, base) {
     console.log(`WARN  merge base with ${base} is unavailable; running related tests without file arguments`);
     return null;
   }
-  return git("diff", "--cached", "--name-only", "-z", "--no-renames", mergeBase, "--").split("\0").filter(Boolean);
+  return git("diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=d", mergeBase, "--").split("\0").filter(Boolean);
 }
 
 async function runCommand(root, command, files = []) {

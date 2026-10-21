@@ -32,8 +32,8 @@ function fixture(t, check = {}) {
   return root;
 }
 
-function check(root, args = [], input) {
-  return spawnSync(process.execPath, [qc, "check", ...args], { cwd: root, encoding: "utf8", input });
+function check(root, args = [], input, env = process.env) {
+  return spawnSync(process.execPath, [qc, "check", ...args], { cwd: root, encoding: "utf8", input, env });
 }
 
 test("related receives committed and staged paths once, without unstaged or untracked files", (t) => {
@@ -95,6 +95,27 @@ test("repository commands run in order and stop with the failing command's exit 
   assert.match(run.stdout, /first command/);
   assert.equal(run.stdout.split("\n").filter((line) => line.startsWith("RUN  ")).length, 2);
   assert.equal(existsSync(path.join(root, "args.json")), false);
+});
+
+test("commands resolve PATH shims and preserve literal arguments and exit codes", (t) => {
+  const bin = mkdtempSync(path.join(tmpdir(), "qc command shims "));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  const source = 'require("node:fs").writeFileSync("args.json", JSON.stringify(process.argv.slice(3))); console.log("shim output"); process.exit(Number(process.argv[2]));\n';
+  if (process.platform === "win32") {
+    writeFileSync(path.join(bin, "shim.cjs"), source);
+    writeFileSync(path.join(bin, "qc-command-shim.cmd"), `@echo off\r\n"${process.execPath}" "%~dp0shim.cjs" %*\r\nexit /b %errorlevel%\r\n`);
+  } else {
+    writeFileSync(path.join(bin, "qc-command-shim"), `#!/usr/bin/env node\n${source}`, { mode: 0o755 });
+  }
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== "path"));
+  env.PATH = `${bin}${path.delimiter}${process.env.PATH ?? process.env.Path ?? ""}`;
+  for (const code of [0, 6]) {
+    const root = fixture(t, { commands: [`qc-command-shim ${code} "literal && $HOME $(echo hi)" "" escaped\\ space`] });
+    const run = check(root, [], undefined, env);
+    assert.equal(run.status, code, run.stderr);
+    assert.match(run.stdout, /shim output/);
+    assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["literal && $HOME $(echo hi)", "", "escaped space"]);
+  }
 });
 
 test("a failed architecture check prevents repository commands", (t) => {
@@ -159,10 +180,11 @@ test("related uses the merge base instead of changes on the base branch", (t) =>
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["feature.mjs"]);
 });
 
-test("related includes deleted paths", (t) => {
+test("related excludes staged deletions and receives the new path of a staged rename", (t) => {
   const root = fixture(t, { related: record });
   git(root, "rm", "committed.mjs");
+  git(root, "mv", "unstaged.mjs", "renamed file.mjs");
   const run = check(root);
   assert.equal(run.status, 0, run.stderr);
-  assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["committed.mjs"]);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["renamed file.mjs"]);
 });
