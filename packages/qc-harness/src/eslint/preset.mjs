@@ -77,13 +77,17 @@ function ruleOptions(config) {
   };
 }
 
+// Rules on the style of a comment: a finding is advice, so it prints and never fails a change.
+const ADVICE = new Set(["no-comment-paragraph", "no-number-in-comment", "no-supersession-trail"]);
+
 function entries(config, names) {
   const options = ruleOptions(config);
   const out = {};
   for (const name of names) {
     if (!enabled(config.rules, name)) continue;
     const given = options[name];
-    out[`qc/${name}`] = given && Object.keys(given).length > 0 ? ["error", given] : "error";
+    const level = ADVICE.has(name) ? "warn" : "error";
+    out[`qc/${name}`] = given && Object.keys(given).length > 0 ? [level, given] : level;
   }
   return out;
 }
@@ -128,8 +132,9 @@ export function preset(options = {}) {
   const max = (id) => gates[id]?.value;
   const { tseslint, boundaries, sonarjs } = options.plugins ?? {};
 
-  // No file carries its own exemption: a rule is switched off in config, where a reviewer sees it.
-  const blocks = [{ ignores: ignoresOf(config) }, { linterOptions: { noInlineConfig: true, reportUnusedDisableDirectives: "error" } }];
+  // A disable comment is allowed, and one that disables nothing is an error. `qc lint` judges only the
+  // changed lines, so a new disable comment is part of the change a reviewer reads.
+  const blocks = [{ ignores: ignoresOf(config) }, { linterOptions: { reportUnusedDisableDirectives: "error" } }];
 
   const base = {
     files: ["**/*.{ts,tsx,mjs}"],

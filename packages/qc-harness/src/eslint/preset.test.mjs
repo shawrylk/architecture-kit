@@ -153,7 +153,7 @@ test("a session lifetime in code fails outside its reader, through the whole pre
 });
 
 test("the ime config reaches qc/ime-safe-key", () => {
-  const setting = emitted(preset({ config: config({ ime: { guards: ["isImeComposing"] } }) })).get("qc/ime-safe-key");
+  const setting = emitted(preset({ config: config({ ime: { guards: ["isImeComposing"] }, rules: { "ime-safe-key": true } }) })).get("qc/ime-safe-key");
   assert.deepEqual(setting[1], { components: [], guards: ["isImeComposing"] });
 });
 
@@ -175,18 +175,25 @@ test("the mutationControl config reaches qc/mutation-control-pending", () => {
   assert.deepEqual(setting[1], { button: "Action", prop: "busy", handlers: ["onClick", "onSelect", "onConfirm"] });
 });
 
-test("the preset refuses an inline config comment in every file", () => {
+test("the preset reports an unused disable comment in every file", () => {
   const block = preset({ config: config() }).find((b) => b.linterOptions);
   assert.ok(block, "no linterOptions block emitted");
   assert.equal(block.files, undefined, "linterOptions must reach every file");
-  assert.deepEqual(block.linterOptions, { noInlineConfig: true, reportUnusedDisableDirectives: "error" });
+  assert.deepEqual(block.linterOptions, { reportUnusedDisableDirectives: "error" });
 });
 
-test("an inline disable comment does not silence a rule", () => {
-  const messages = lint("// eslint-disable-next-line qc/no-sql-raw\nawait db.execute(sql.raw(text));\n", RESOURCE);
-  assert.equal(byRule(messages, "qc/no-sql-raw").length, 1, "the disable comment silenced the rule");
-  const directive = messages.find((m) => m.ruleId === null && /noInlineConfig/.test(m.message));
-  assert.ok(directive, "the ignored disable comment is not reported");
+test("a disable comment silences its rule, and one that silences nothing is an error", () => {
+  const used = lint("// eslint-disable-next-line qc/no-sql-raw\nawait db.execute(sql.raw(text));\n", RESOURCE);
+  assert.equal(byRule(used, "qc/no-sql-raw").length, 0);
+  const unused = lint("// eslint-disable-next-line qc/no-sql-raw\nconst a = 1;\n", RESOURCE);
+  assert.ok(unused.some((m) => m.ruleId === null && m.severity === 2 && /Unused eslint-disable/.test(m.message)), JSON.stringify(unused));
+});
+
+test("a comment-style rule warns, and a rule of the reference stack is off until a repository turns it on", () => {
+  const rules = emitted(preset({ config: config() }));
+  for (const name of ["no-comment-paragraph", "no-number-in-comment", "no-supersession-trail"]) assert.equal([rules.get(`qc/${name}`)].flat()[0], "warn", name);
+  for (const name of ["no-offset-pagination", "no-status-literal", "no-promise-then", "signal-last-param", "ime-safe-key"]) assert.equal(rules.get(`qc/${name}`), undefined, name);
+  assert.equal([emitted(preset({ config: config({ rules: { "no-offset-pagination": true } }) })).get("qc/no-offset-pagination")].flat()[0], "error");
 });
 
 test("sql.raw fails, and sqlRaw.allow lets one reviewed file through", () => {
