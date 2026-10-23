@@ -1,0 +1,19 @@
+approval_policy = "never"
+default_permissions = ":danger-full-access"
+model = "gpt-6.1-sol"
+model_reasoning_effort = "medium"
+model_auto_compact_token_limit = 300000
+model_post_turn_compact_threshold_percent = 40
+service_tier = "default"
+
+[plugins."superpowers@claude-plugins-official"]
+enabled = true
+
+[plugins."cocoindex-code@cocoindex-code"]
+enabled = false
+
+[plugins."architecture@architecture-kit"]
+enabled = false
+
+[plugins."frontend-design@claude-plugins-official"]
+enabled = true
