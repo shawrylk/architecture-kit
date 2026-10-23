@@ -1,0 +1,74 @@
+{
+  "cleanupPeriodDays": 90,
+  "syncClaudeAiPlugins": false,
+  "env": {
+    "CLAUDE_CODE_DISABLE_MOUSE": "1",
+    "CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP": "1"
+  },
+  "permissions": {
+    "defaultMode": "auto"
+  },
+  "model": "opus",
+  "skillOverrides": {
+    "csharp-lsp": "off",
+    "gitnexus-debugging": "off",
+    "gitnexus-guide": "off",
+    "gitnexus-pdg-query": "off",
+    "gitnexus-pr-review": "off",
+    "gitnexus-refactoring": "off",
+    "gitnexus-taint-analysis": "off"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "node \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.js\""
+  },
+  "enabledPlugins": {
+    "cocoindex-code@cocoindex-code": true,
+    "context-mode@context-mode": true,
+    "superpowers@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "architecture@architecture-kit": true
+  },
+  "extraKnownMarketplaces": {
+    "cocoindex-code": {
+      "source": {
+        "source": "github",
+        "repo": "cocoindex-io/cocoindex-code"
+      }
+    },
+    "leky90": {
+      "source": {
+        "source": "github",
+        "repo": "leky90/product-delivery-harness"
+      }
+    },
+    "ldk-tools": {
+      "source": {
+        "source": "github",
+        "repo": "ArentInc/ldk-roleflow"
+      }
+    }
+  },
+  "effortLevel": "xhigh",
+  "modelSettings": {
+    "claude-sonnet-5": {
+      "effortLevel": "high"
+    },
+    "claude-sonnet-4-6": {
+      "effortLevel": "xhigh"
+    },
+    "claude-opus-5-5": {
+      "effortLevel": "high",
+      "autoCompactWindow": 233000
+    }
+  },
+  "awaySummaryEnabled": false,
+  "autoUpdatesChannel": "latest",
+  "tui": "fullscreen",
+  "skipWorkflowUsageWarning": true,
+  "theme": "dark",
+  "autoCompactEnabled": true,
+  "autoContinueAtUsageLimit": false,
+  "agentPushNotifEnabled": true,
+  "skipAutoPermissionPrompt": true
+}

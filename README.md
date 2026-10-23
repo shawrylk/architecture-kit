@@ -106,6 +106,52 @@ Every gate reads one file list: `git ls-files --cached --others --exclude-standa
 `ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
 `qc decisions`. Outside a git work tree, the check walks the tree instead.
 
+### Shared user configuration
+
+The root `user-config/` folder holds the shared Claude status line, Claude settings, and Codex settings.
+The plugin includes this folder. The npm package stages the same files during `prepack`.
+
+```bash
+npx qc user-config check
+npx qc user-config apply --dry-run
+npx qc user-config apply
+npx qc user-config capture --dry-run
+npx qc user-config capture
+```
+
+Run `apply` yourself after installing the release. It merges shared keys and copies the status line.
+Each changed file gets a `<file>.bak-<yyyymmdd-hhmmss>` backup before the write.
+The command prints each changed key. Matching files keep their contents and modification times.
+`--dry-run` prints changes without writing files or backups.
+
+`check` exits with `0` when settings match, `1` for drift, and `2` for a configuration or usage error.
+`apply` and `capture` exit with `0` on success and `2` on error.
+`capture` updates the kit files from your machine and backs up changed kit files.
+Review the captured diff before committing it.
+
+Claude shares `cleanupPeriodDays`, `syncClaudeAiPlugins`, `env`, `permissions`, `model`, `skillOverrides`, `statusLine`, `enabledPlugins`, `extraKnownMarketplaces`, `effortLevel`, and `modelSettings`.
+It also shares `awaySummaryEnabled`, `autoUpdatesChannel`, `tui`, `skipWorkflowUsageWarning`, `theme`, `autoCompactEnabled`, `autoContinueAtUsageLimit`, `agentPushNotifEnabled`, and `skipAutoPermissionPrompt`.
+Only `CLAUDE_CODE_DISABLE_MOUSE` and `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP` are shared under `env`.
+Only `defaultMode` is shared under `permissions`.
+The `statusLine.command` stays `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.js"`.
+The status line needs a Nerd Font for its powerline glyphs.
+
+Codex shares `approval_policy`, `default_permissions`, `model`, `model_reasoning_effort`, `model_auto_compact_token_limit`, `model_post_turn_compact_threshold_percent`, and `service_tier`.
+It also shares `enabled` in each listed `[plugins."<name>"]` table.
+Register remote Codex marketplaces separately before enabling their plugins.
+Codex leaves `notify`, `[desktop]`, marketplace definitions, and other local tables alone.
+Capture excludes plugins from local marketplaces.
+
+An omitted shared key keeps its machine value.
+Claude plugin and marketplace maps merge by entry. Codex plugin tables merge by field.
+Other Claude values replace their listed key. The TOML editor preserves unrelated lines and comments.
+Claude capture includes remote Git and GitHub marketplaces and excludes directory marketplaces and their plugins.
+
+The defaults use `os.homedir()`, `CLAUDE_CONFIG_DIR`, and `CODEX_HOME` on Windows and POSIX systems.
+Use `--kit-dir`, `--claude-dir`, or `--codex-dir` to select another folder.
+The command reads only the settings files and the status line.
+It refuses `.claude.json`, `.credentials.json`, and `auth.json`, including symbolic links to those filenames.
+
 ### 5. Lint
 
 Replace your eslint config with the preset, so rules and thresholds are imported, never restated:

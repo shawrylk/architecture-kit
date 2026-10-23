@@ -1,3 +1,4 @@
 node_modules/
 *.tsbuildinfo
 .worktree/
+packages/qc-harness/user-config/

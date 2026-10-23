@@ -1,6 +1,6 @@
 {
   "name": "architecture-harness",
-  "version": "0.23.1",
+  "version": "0.24.0",
   "type": "module",
   "description": "Architecture gates, lint rules and scaffolding for the bounded-vertical-slice architecture",
   "license": "MIT",
@@ -47,9 +47,11 @@
   "files": [
     "src",
     "templates",
+    "user-config",
     "README.md"
   ],
   "scripts": {
+    "prepack": "node src/cli/user-config-package.mjs",
     "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\"",
     "test:browser": "node --test \"src/**/*.browser-test.mjs\""
   },

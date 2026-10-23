@@ -11,6 +11,8 @@ const USAGE = `qc — architecture gates
   qc check [file...] [--files-from <path|->]
                            every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
   qc init                  scaffold the docs, config, hooks and workflow into this repository
+  qc user-config apply|check|capture [--dry-run]
+                           synchronize the shared Claude and Codex user settings
   qc feature <name>        scaffold a feature in the configured anatomy
   qc run [name]            drive one feature command headless; no name lists them
   qc install-hooks         point git at the kit's pre-commit hook
@@ -59,6 +61,10 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "user-config") {
+    const { runUserConfig } = await import("./user-config.mjs");
+    process.exit(await runUserConfig(rest));
+  }
   if (command === "stack") {
     const { runStack } = await import("./stack.mjs");
     process.exit(await runStack(rest));
