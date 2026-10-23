@@ -60,7 +60,7 @@ export function decide(call) {
     return null;
   }
   const rel = path.relative(root, file).split(path.sep).join("/");
-  const rerun = `Change its source, then run \`${generated.command}\`.`;
+  const rerun = generated.command ? `Change its source, then run \`${generated.command}\`.` : "Change its source, then run the generator that writes it.";
   if (globMatcher(generated.globs)(rel)) {
     return deny(`Generated-file guard: ${rel} is generated. ${rerun}`);
   }

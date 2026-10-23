@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // The one entrypoint. A hook, a git hook and CI all call this, so they cannot drift.
 
+import { existsSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
 import { load } from "../config.mjs";
 import { runCheck } from "./check.mjs";
@@ -10,10 +12,13 @@ const USAGE = `qc — architecture gates
 
   qc check [file...] [--files-from <path|->]
                            every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
-  qc init                  scaffold the docs, config, hooks and workflow into this repository
+  qc lint [--staged] [--base <ref>] [file...]
+                           ESLint on the changed lines only: a problem on an untouched line never fails
+  qc typecheck             the typecheck script, else tsc; writes no build output
+  qc init [--full]         scaffold the config, hooks and workflow; --full adds the reference architecture
   qc user-config apply|check|capture [--dry-run]
                            synchronize the shared Claude and Codex user settings
-  qc feature <name>        scaffold a feature in the configured anatomy
+  qc feature <name>        scaffold a feature of the reference architecture; needs qc init --full
   qc run [name]            drive one feature command headless; no name lists them
   qc install-hooks         point git at the kit's pre-commit hook
   qc work-order-check      refuse to commit on the wrong branch, per .claude/work-order.local.json
@@ -114,13 +119,22 @@ async function main() {
         for (const problem of problems) {
           console.error(`FAIL  ${problem.feature ?? problem.path}  ${problem.rule}: ${problem.detail}`);
         }
-        console.error(`\n${problems.length} problem(s). ${config.docs.enforcement}`);
+        const guide = existsSync(path.join(config.root, config.docs.enforcement)) ? ` ${config.docs.enforcement}` : "";
+        console.error(`\n${problems.length} problem(s).${guide}`);
         process.exit(1);
       }
       for (const line of lines) console.log(line);
       const { runCheckCommands } = await import("./check-commands.mjs");
       process.exitCode = await runCheckCommands(config);
       return;
+    }
+    case "lint": {
+      const { runLintChanged } = await import("./lint-changed.mjs");
+      process.exit(await runLintChanged(config, rest));
+    }
+    case "typecheck": {
+      const { runTypecheck } = await import("./typecheck.mjs");
+      process.exit(runTypecheck(config));
     }
     case "init": {
       const { runInit } = await import("./init.mjs");

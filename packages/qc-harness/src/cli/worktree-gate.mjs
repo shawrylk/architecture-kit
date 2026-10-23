@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// The Stop trigger of QC-015: a PR this session merged leaves no worktree, local branch, or remote branch on its
-// head. It reads the merge records of the ledger, and runs git only for a merge of this session.
+// The Stop trigger of QC-015: it names the worktree, local branch, or remote branch that a PR this session merged
+// leaves on its head. It advises and never blocks, since a developer can keep a merged branch on purpose. It reads
+// the merge records of the ledger, and runs git only for a merge of this session.
 
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -52,7 +53,7 @@ function cleanupOf(merge, { main, folder }) {
 const memoryOf = (tmp, session) => path.join(tmp, "qc-worktree-gate", `${fileSafe(session)}.last`);
 const hashOf = (text) => createHash("sha256").update(text).digest("hex");
 
-function lastBlock(file) {
+function lastNote(file) {
   try {
     return readFileSync(file, "utf8");
   } catch {
@@ -60,7 +61,7 @@ function lastBlock(file) {
   }
 }
 
-/** The verdict on one Stop. @returns the hook output, or null to let the turn end with no message. */
+/** The note on one Stop. @returns the hook output, or null to let the turn end with no message. */
 export function decide(call, { tmp = os.tmpdir(), projectDir = process.env.CLAUDE_PROJECT_DIR } = {}) {
   if (call.hook_event_name !== "Stop") return null;
   const rule = worktreeRuleAt(call.cwd ?? process.cwd()) ?? (projectDir ? worktreeRuleAt(projectDir) : null);
@@ -81,21 +82,19 @@ export function decide(call, { tmp = os.tmpdir(), projectDir = process.env.CLAUD
     rmSync(memory, { force: true });
     return null;
   }
-  const reason = [
+  const message = [
     `Worktree check: a PR this session merged leaves its worktree or its branch. From the main checkout (${rule.main}), run:`,
     ...lines,
   ].join("\n");
-  // A repeat stop with the same leftovers ends with a note, so a removal the agent cannot run never loops.
-  const note = { systemMessage: `Worktree check: the same leftovers as at the last block remain. Remove them by hand: ${lines[0].slice(2)}` };
-  if (call.stop_hook_active === true && lastBlock(memory) === hashOf(reason)) return note;
+  // The note names one set of leftovers once, so a branch kept on purpose costs one line.
+  if (lastNote(memory) === hashOf(message)) return null;
   try {
     mkdirSync(path.dirname(memory), { recursive: true });
-    writeFileSync(memory, hashOf(reason));
+    writeFileSync(memory, hashOf(message));
   } catch {
-    // With no memory, a repeat stop cannot tell a change, so it ends with the note.
-    if (call.stop_hook_active === true) return note;
+    // With no memory, the note repeats at each stop.
   }
-  return { decision: "block", reason };
+  return { systemMessage: message };
 }
 
 async function readStdin() {

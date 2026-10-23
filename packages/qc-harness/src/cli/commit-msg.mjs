@@ -67,16 +67,10 @@ export async function checkCommitMessage(raw, options, commitlint) {
     .join("\n")
     .trim();
   const problems = [];
-  if (options.conventional !== false) {
-    if (commitlint) {
-      const report = await commitlint.lint(message, commitlint.rules, commitlint.parserOpts ? { parserOpts: commitlint.parserOpts } : {});
-      for (const error of report.errors) problems.push({ rule: `conventional/${error.name}`, detail: error.message });
-    } else {
-      problems.push({
-        rule: "commitlint-missing",
-        detail: `commitlint is not installed here. Run \`${INSTALL_HINT}\`, or set commitMessage.conventional to false.`,
-      });
-    }
+  // A repository without commitlint has chosen no commit convention, so the conventional rules skip.
+  if (options.conventional !== false && commitlint) {
+    const report = await commitlint.lint(message, commitlint.rules, commitlint.parserOpts ? { parserOpts: commitlint.parserOpts } : {});
+    for (const error of report.errors) problems.push({ rule: `conventional/${error.name}`, detail: error.message });
   }
   const script = scriptPattern(options.scripts ?? ["cjk"]);
   message.split("\n").forEach((line, index) => {
@@ -91,6 +85,9 @@ export async function checkCommitMessage(raw, options, commitlint) {
 export async function runCommitMsg(config, file) {
   const options = { ...config.commitMessage, scripts: config.language?.scripts };
   const commitlint = options.conventional === false ? null : await loadCommitlint(config.root);
+  if (options.conventional !== false && !commitlint) {
+    console.error(`NOTE  commit-msg  commitlint is not installed, so the conventional rules skip. Run \`${INSTALL_HINT}\` to turn them on.`);
+  }
   const problems = await checkCommitMessage(readFileSync(file, "utf8"), options, commitlint);
   for (const problem of problems) console.error(`FAIL  commit-msg  ${problem.rule}: ${problem.detail}`);
   return problems.length > 0 ? 1 : 0;

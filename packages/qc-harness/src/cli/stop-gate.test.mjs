@@ -43,7 +43,10 @@ function workspace(t, installed) {
     const cli = path.join(repo, "node_modules", "architecture-harness", "src", "cli");
     stubHarness(cli, "installed", log, installed.codes, installed.withDoctor, installed.outputs);
   }
-  const ran = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+  // The typecheck and the lint run on every stop; `ran` lists the gates that judge the structure, `tools` the other two.
+  const lines = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n") : []);
+  const ran = () => lines().filter((line) => !/ (?:typecheck|lint)$/.test(line));
+  const tools = () => lines().filter((line) => / (?:typecheck|lint)$/.test(line));
   // Each workspace owns its temp folder, so the gate's memory of a block is shared with no other test.
   const tmp = path.join(base, "tmp");
   mkdirSync(tmp, { recursive: true });
@@ -62,7 +65,7 @@ function workspace(t, installed) {
       },
       encoding: "utf8",
     });
-  return { ran, run, tmpDir: tmp, installedCli: installed ? path.join(repo, "node_modules", "architecture-harness", "src", "cli") : null };
+  return { ran, tools, run, tmpDir: tmp, installedCli: installed ? path.join(repo, "node_modules", "architecture-harness", "src", "cli") : null };
 }
 
 test("an installed harness newer than the bundled one judges the repository, and the stop passes", (t) => {
@@ -80,43 +83,35 @@ test("with no installed harness, the bundled copy judges the repository", (t) =>
   assert.match(result.stderr, /FAIL {2}check from plugin/);
 });
 
-test("drift alone refuses the first stop, and names the setup, not the code", (t) => {
+test("drift alone never blocks: the stop passes with a note that names the setup", (t) => {
   const ws = workspace(t, { codes: { doctor: 1 }, withDoctor: true });
   const result = ws.run();
-  assert.equal(result.status, 2);
-  assert.deepEqual(ws.ran(), ["installed doctor", "installed check"]);
-  assert.match(result.stderr, /FAIL {2}doctor from installed/);
-  assert.match(result.stderr, /kit setup, not in your code/);
-});
-
-test("drift alone after a refused stop lets the session end with a note, so a stale plugin never loops it", (t) => {
-  const ws = workspace(t, { codes: { doctor: 1 }, withDoctor: true });
-  const result = ws.run({ stop_hook_active: true });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(JSON.parse(result.stdout).systemMessage, /The kit setup still drifts/);
+  assert.deepEqual(ws.ran(), ["installed doctor", "installed check"]);
+  const message = JSON.parse(result.stdout).systemMessage;
+  assert.match(message, /kit setup drifts/);
+  assert.match(message, /FAIL {2}doctor from installed/);
 });
 
-test("a red check after a refused stop still refuses, because only drift is excused", (t) => {
+test("a red check beside drift blocks, and the block text carries the code failure, not the drift", (t) => {
   const ws = workspace(t, { codes: { doctor: 1, check: 1 }, withDoctor: true });
-  const result = ws.run({ stop_hook_active: true });
+  const result = ws.run();
   assert.equal(result.status, 2);
   assert.match(result.stderr, /FAIL {2}check from installed/);
+  assert.doesNotMatch(result.stderr, /doctor from installed/);
 });
 
 const HOOK_DRIFT = "FAIL  .githooks/pre-commit  hook-drift: pre-commit never calls `qc work-order-check`, so that step is off.";
 
-test("hook drift reported only through qc check is drift, so a refused stop may end with a note", (t) => {
+test("hook drift reported only through qc check is drift, so the stop passes with a note", (t) => {
   const output = [HOOK_DRIFT, "", "1 problem(s). docs/enforcement.md"].join("\n");
   const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: output } });
-  const refused = ws.run();
-  assert.equal(refused.status, 2);
-  assert.match(refused.stderr, /kit setup, not in your code/);
-  const result = ws.run({ stop_hook_active: true });
+  const result = ws.run();
   assert.equal(result.status, 0, result.stderr);
-  assert.match(JSON.parse(result.stdout).systemMessage, /The kit setup still drifts/);
+  assert.match(JSON.parse(result.stdout).systemMessage, /kit setup drifts/);
 });
 
-test("hook drift beside a real gate failure still refuses a stop after a refused one", (t) => {
+test("hook drift beside a real gate failure blocks", (t) => {
   const output = [HOOK_DRIFT, "FAIL  orders  citations: ADR-0099 is cited but not defined", "", "2 problem(s)."].join("\n");
   const ws = workspace(t, { codes: { check: 1 }, withDoctor: false, outputs: { check: output } });
   const result = ws.run({ stop_hook_active: true });
@@ -276,116 +271,25 @@ test("the memory file holds a hash of the failure text, not the text", (t) => {
   assert.ok(!stored.includes("ADR-0099"));
 });
 
-/**
- * A workspace whose typecheck is `npx tsc`, answered by a stub `npx` first on the PATH. `runs` lists each run's exit code and output;
- * a run past the list repeats the last. `count()` is the number of times the gate ran the typecheck.
- */
-function tscWorkspace(t, runs) {
-  const ws = workspace(t, { codes: {}, withDoctor: false });
-  const base = path.dirname(ws.tmpDir);
-  const repo = path.join(base, "repo");
-  mkdirSync(path.join(repo, "node_modules", ".bin"), { recursive: true });
-  writeFileSync(path.join(repo, "node_modules", ".bin", "tsc"), "");
-  const stubDir = path.join(base, "stub");
-  mkdirSync(stubDir, { recursive: true });
-  runs.forEach((run, i) => {
-    writeFileSync(path.join(stubDir, `run-${i + 1}.code`), String(run.code));
-    writeFileSync(path.join(stubDir, `run-${i + 1}.out`), run.out);
-  });
-  const counter = path.join(stubDir, "count");
-  writeFileSync(
-    path.join(stubDir, "npx"),
-    [
-      "#!/usr/bin/env bash",
-      `[ "$1" = tsc ] || exit 0`,
-      `n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "${counter}"`,
-      `while [ ! -f "${stubDir}/run-$n.code" ]; do n=$((n - 1)); done`,
-      `cat "${stubDir}/run-$n.out"`,
-      `exit $(cat "${stubDir}/run-$n.code")`,
-    ].join("\n") + "\n",
-    { mode: 0o755 },
-  );
-  const run = (input = {}) => ws.run(input, { PATH: `${stubDir}${path.delimiter}${process.env.PATH}` });
-  const count = () => (existsSync(counter) ? Number(readFileSync(counter, "utf8")) : 0);
-  return { run, count };
-}
-
-const TS2307 = "src/a.ts(1,22): error TS2307: Cannot find module 'zod' or its corresponding type declarations.\n";
-const TS2322 = "src/b.ts(4,7): error TS2322: Type 'string' is not assignable to type 'number'.\n";
-
-test("a typecheck that fails only with TS2307 runs once more, and a second pass ends the stop green", (t) => {
-  const gate = tscWorkspace(t, [{ code: 2, out: TS2307 }, { code: 0, out: "" }]);
-  const result = gate.run();
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(gate.count(), 2);
+test("an installed harness with `qc lint` runs the typecheck and the lint, and an older one leaves both to the plugin", (t) => {
+  const current = workspace(t, { codes: {}, withDoctor: false });
+  writeFileSync(path.join(current.installedCli, "lint-changed.mjs"), "");
+  assert.equal(current.run().status, 0);
+  assert.deepEqual(current.tools(), ["installed typecheck", "installed lint"]);
+  const older = workspace(t, { codes: {}, withDoctor: false });
+  assert.equal(older.run().status, 0);
+  assert.deepEqual(older.tools(), ["plugin typecheck", "plugin lint"]);
 });
 
-test("a typecheck that still fails with TS2307 on the second run blocks, with the second run's text", (t) => {
-  const gate = tscWorkspace(t, [{ code: 2, out: TS2307 }, { code: 2, out: TS2307.replace("zod", "hono") }]);
-  const result = gate.run();
-  assert.equal(result.status, 2);
-  assert.equal(gate.count(), 2);
-  assert.match(result.stderr, /typecheck failed/);
-  assert.match(result.stderr, /hono/);
-});
-
-test("a TS2322 next to a TS2307 does not retry, and a TS2322 alone does not either", (t) => {
-  for (const out of [TS2322 + TS2307, TS2322]) {
-    const gate = tscWorkspace(t, [{ code: 2, out }, { code: 0, out: "" }]);
-    const result = gate.run();
+test("a red typecheck or a red lint blocks, each under its own heading", (t) => {
+  for (const command of ["typecheck", "lint"]) {
+    const ws = workspace(t, { codes: { [command]: 1 }, withDoctor: false });
+    writeFileSync(path.join(ws.installedCli, "lint-changed.mjs"), "");
+    const result = ws.run();
     assert.equal(result.status, 2);
-    assert.equal(gate.count(), 1);
-    assert.match(result.stderr, /TS2322/);
+    assert.match(result.stderr, new RegExp(`${command} failed:\nFAIL {2}${command} from installed`));
+    assert.match(result.stderr, /The change is red/);
   }
-});
-
-test("a large TS2322 log does not retry, since the early exit of the filter must not read as a pipe failure", (t) => {
-  const out = TS2322.repeat(20_000);
-  const gate = tscWorkspace(t, [{ code: 2, out }, { code: 0, out: "" }]);
-  const result = gate.run();
-  assert.equal(result.status, 2);
-  assert.equal(gate.count(), 1);
-});
-
-test("a failing typecheck with no error line does not retry, and a passing one runs once", (t) => {
-  const broken = tscWorkspace(t, [{ code: 1, out: "tsc: command crashed\n" }, { code: 0, out: "" }]);
-  assert.equal(broken.run().status, 2);
-  assert.equal(broken.count(), 1);
-  const green = tscWorkspace(t, [{ code: 0, out: "" }]);
-  assert.equal(green.run().status, 0);
-  assert.equal(green.count(), 1);
-});
-
-test("a root typecheck script replaces tsc -b, keeps the TS2307 retry, and the lint call carries a cache", (t) => {
-  const ws = workspace(t, { codes: {}, withDoctor: false });
-  const base = path.dirname(ws.tmpDir);
-  const repo = path.join(base, "repo");
-  mkdirSync(path.join(repo, "node_modules", ".bin"), { recursive: true });
-  writeFileSync(path.join(repo, "node_modules", ".bin", "eslint"), "");
-  writeFileSync(path.join(repo, "package.json"), JSON.stringify({ scripts: { typecheck: "tsgo" } }));
-  writeFileSync(path.join(repo, "pnpm-lock.yaml"), "");
-  const stubDir = path.join(base, "stub");
-  mkdirSync(stubDir, { recursive: true });
-  const calls = path.join(stubDir, "calls");
-  const counter = path.join(stubDir, "count");
-  writeFileSync(
-    path.join(stubDir, "pnpm"),
-    [
-      "#!/usr/bin/env bash",
-      `echo "pnpm $*" >> "${calls}"`,
-      `n=$(cat "${counter}" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "${counter}"`,
-      `if [ $n -eq 1 ]; then printf '%s' "${TS2307.trim()}"; exit 2; fi`,
-      "exit 0",
-    ].join("\n") + "\n",
-    { mode: 0o755 },
-  );
-  writeFileSync(path.join(stubDir, "npx"), ["#!/usr/bin/env bash", `echo "npx $*" >> "${calls}"`, "exit 0"].join("\n") + "\n", { mode: 0o755 });
-  const result = ws.run({}, { PATH: `${stubDir}${path.delimiter}${process.env.PATH}` });
-  assert.equal(result.status, 0, result.stderr);
-  const lines = readFileSync(calls, "utf8").trim().split("\n");
-  assert.deepEqual(lines.slice(0, 2), ["pnpm run -s typecheck", "pnpm run -s typecheck"]);
-  assert.ok(!lines.some((l) => l.startsWith("npx tsc")));
-  assert.ok(lines.includes("npx eslint . --max-warnings 0 --cache --cache-location node_modules/.cache/eslint-stop-gate"));
 });
 
 /** A workspace whose repository is a git repository with one commit, so the gate can fingerprint it. */

@@ -16,6 +16,14 @@ export const USAGE = `qc worktree — a linked worktree under .worktree/ in the 
           The default is worktree.base in qc.config.json. The install is worktree.install.
           The folder is worktree.dir. remove also finds a worktree at ../<name>, beside the main checkout.`;
 
+/** The install of the package manager whose lockfile `root` holds, or null for a folder with no package.json. */
+export function installCommand(root) {
+  if (existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm install --frozen-lockfile";
+  if (existsSync(path.join(root, "yarn.lock"))) return "yarn install --frozen-lockfile";
+  if (existsSync(path.join(root, "package-lock.json"))) return "npm ci";
+  return existsSync(path.join(root, "package.json")) ? "npm install" : null;
+}
+
 function git(cwd, ...args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   return { ok: result.status === 0, out: (result.stdout ?? "").trim(), err: (result.stderr ?? "").trim() };
@@ -85,7 +93,7 @@ async function add(config, main, target, branch, from) {
     }
   }
   // Every add runs the install, so a second add finishes what a failed install left.
-  const install = config.worktree?.install;
+  const install = config.worktree?.install ?? installCommand(target);
   if (install) {
     const ran = spawnSync(install, { cwd: target, shell: true, stdio: "inherit" });
     if (ran.status !== 0) {

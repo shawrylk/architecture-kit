@@ -43,13 +43,16 @@ test("the diff that git commit -v puts under the scissors line is not part of th
   assert.deepEqual(await checkCommitMessage(raw, {}, commitlint), []);
 });
 
-test("with no commitlint installed, the check fails with the install command, unless conventional is off", async (t) => {
-  const commitlint = await loadCommitlint(emptyDir(t));
-  assert.equal(commitlint, null);
-  const problems = await checkCommitMessage("feat: x\n", {}, commitlint);
-  assert.deepEqual(problems.map((problem) => problem.rule), ["commitlint-missing"]);
-  assert.ok(problems[0].detail.includes(INSTALL_HINT));
-  assert.deepEqual(await checkCommitMessage("feat: x\n", { conventional: false }, null), []);
+test("with no commitlint installed, the conventional rules skip and the hook names the install command", async (t) => {
+  const dir = emptyDir(t);
+  assert.equal(await loadCommitlint(dir), null);
+  assert.deepEqual(await checkCommitMessage("WIP\n", {}, null), []);
+  const file = path.join(dir, "COMMIT_EDITMSG");
+  writeFileSync(file, "WIP\n");
+  const notes = [];
+  t.mock.method(console, "error", (line) => notes.push(line));
+  assert.equal(await runCommitMsg({ root: dir, commitMessage: defaults.commitMessage, language: {} }, file), 0);
+  assert.ok(notes.some((line) => line.startsWith("NOTE") && line.includes(INSTALL_HINT)), notes.join("\n"));
 });
 
 test("attribution is off by default, so a Claude trailer passes; on, a message without the trailer fails", async () => {

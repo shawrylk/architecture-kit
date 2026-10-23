@@ -38,41 +38,41 @@ function workspace(t, config = {}) {
 }
 
 const merge = (extra = {}) => ({ type: "merge", session: "s", pr: 60, repo: "o/r", sha: "abc1234", branch: BRANCH, base: "main", mergedAt: null, issues: [], ...extra });
-const stopCall = (cwd, active = false) => ({ session_id: "s", cwd, hook_event_name: "Stop", stop_hook_active: active });
-const gate = (ws, cwd = ws.main, active = false, projectDir = undefined) => decide(stopCall(cwd, active), { tmp: ws.tmp, projectDir });
+const stopCall = (cwd) => ({ session_id: "s", cwd, hook_event_name: "Stop" });
+const gate = (ws, cwd = ws.main, projectDir = undefined) => decide(stopCall(cwd), { tmp: ws.tmp, projectDir });
 const dropWorktree = (ws) => git(ws.main, "worktree", "remove", "--force", ws.worktree);
 const dropBranch = (ws) => git(ws.main, "branch", "-D", BRANCH);
 const dropRemote = (ws) => git(ws.main, "push", "-q", "origin", "--delete", BRANCH);
 
-test("a merged PR whose worktree remains blocks the stop, and names qc worktree remove", (t) => {
+test("a merged PR whose worktree remains gets a note that names qc worktree remove", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledger, merge());
   const output = gate(ws);
-  assert.equal(output?.decision, "block");
-  assert.match(output.reason, /o\/r#60 \(feat\/62-x\): `npx qc worktree remove kit-62`/);
-  assert.match(output.reason, /from the main checkout/i);
+  assert.equal(output?.decision, undefined);
+  assert.match(output.systemMessage, /o\/r#60 \(feat\/62-x\): `npx qc worktree remove kit-62`/);
+  assert.match(output.systemMessage, /from the main checkout/i);
 });
 
-test("a merged PR whose local branch remains blocks the stop, and names git branch -D", (t) => {
+test("a merged PR whose local branch remains gets a note that names git branch -D", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledger, merge());
   dropWorktree(ws);
   dropRemote(ws);
   const output = gate(ws);
-  assert.equal(output?.decision, "block");
-  assert.match(output.reason, /`git branch -D feat\/62-x`/);
-  assert.doesNotMatch(output.reason, /qc worktree remove|push origin --delete/);
+  assert.equal(output?.decision, undefined);
+  assert.match(output.systemMessage, /`git branch -D feat\/62-x`/);
+  assert.doesNotMatch(output.systemMessage, /qc worktree remove|push origin --delete/);
 });
 
-test("a merged PR whose remote branch remains blocks the stop, and names git push origin --delete", (t) => {
+test("a merged PR whose remote branch remains gets a note that names git push origin --delete", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledger, merge());
   dropWorktree(ws);
   dropBranch(ws);
   const output = gate(ws);
-  assert.equal(output?.decision, "block");
-  assert.match(output.reason, /`git push origin --delete feat\/62-x`/);
-  assert.doesNotMatch(output.reason, /branch -D/);
+  assert.equal(output?.decision, undefined);
+  assert.match(output.systemMessage, /`git push origin --delete feat\/62-x`/);
+  assert.doesNotMatch(output.systemMessage, /branch -D/);
 });
 
 test("a merged PR with its worktree, its branch, and its remote branch gone passes", (t) => {
@@ -106,35 +106,34 @@ test("the main checkout on the merged branch is told to switch to the base first
   dropRemote(ws);
   git(ws.main, "switch", "-q", BRANCH);
   const output = gate(ws);
-  assert.match(output.reason, /`git switch main`, then `git branch -D feat\/62-x`/);
+  assert.match(output.systemMessage, /`git switch main`, then `git branch -D feat\/62-x`/);
 });
 
-test("a repeat stop with the same leftovers ends with a note, and a changed one blocks again", (t) => {
+test("a repeat stop with the same leftovers is silent, and a changed set gets a note again", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledger, merge());
-  assert.equal(gate(ws)?.decision, "block");
-  const repeat = gate(ws, ws.main, true);
-  assert.equal(repeat?.decision, undefined);
-  assert.match(repeat.systemMessage, /same.*kit-62/s);
+  assert.match(gate(ws)?.systemMessage, /kit-62/);
+  assert.equal(gate(ws), null);
   dropWorktree(ws);
   dropRemote(ws);
-  assert.equal(gate(ws, ws.main, true)?.decision, "block", "a changed text blocks again");
+  assert.match(gate(ws)?.systemMessage, /branch -D/, "a changed set gets a note again");
   dropBranch(ws);
-  assert.equal(gate(ws, ws.main, true), null);
-  assert.deepEqual(readdirSync(path.join(ws.tmp, "qc-worktree-gate")), [], "a clean stop forgets the last block");
+  assert.equal(gate(ws), null);
+  assert.deepEqual(readdirSync(path.join(ws.tmp, "qc-worktree-gate")), [], "a clean stop forgets the last note");
 });
 
 test("a stop whose cwd is a removed worktree judges its main checkout, and one outside every checkout reads the project dir", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledger, merge());
   const gone = path.join(ws.main, ".worktree", "kit-61");
-  assert.equal(gate(ws, gone)?.decision, "block");
+  assert.match(gate(ws, gone)?.systemMessage, /kit-62/);
+  rmSync(path.join(ws.tmp, "qc-worktree-gate"), { recursive: true, force: true });
   const outside = path.join(ws.top, "tmp");
   assert.equal(gate(ws, outside), null);
-  assert.equal(gate(ws, outside, false, ws.main)?.decision, "block");
+  assert.match(gate(ws, outside, ws.main)?.systemMessage, /kit-62/);
 });
 
-test("the hook process is silent in a checkout with no merge, and prints the block after one", (t) => {
+test("the hook process is silent in a checkout with no merge, and prints the note after one", (t) => {
   const ws = workspace(t);
   const run = () => spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(stopCall(ws.main)),
@@ -145,8 +144,8 @@ test("the hook process is silent in a checkout with no merge, and prints the blo
   assert.equal(quiet.status, 0, quiet.stderr);
   assert.equal(quiet.stdout, "");
   appendRecord(ws.ledger, merge());
-  const blocked = run();
-  assert.equal(blocked.status, 0, blocked.stderr);
-  assert.equal(JSON.parse(blocked.stdout).decision, "block");
+  const noted = run();
+  assert.equal(noted.status, 0, noted.stderr);
+  assert.match(JSON.parse(noted.stdout).systemMessage, /kit-62/);
   assert.ok(existsSync(ws.worktree));
 });

@@ -4,7 +4,7 @@
 // The emitted files import their runtime from `kernelModule` in qc.config.json, never
 // from this package: the kit prescribes the shape and ships no runtime to depend on.
 
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -150,6 +150,16 @@ test("the pipeline is declared headlessly", () => {
   };
 }
 
+/** Adds `root` to featureRoots in qc.config.json, so the anatomy gate sweeps the new feature. */
+async function addFeatureRoot(config, root) {
+  const file = path.join(config.root, "qc.config.json");
+  if (config.featureRoots.includes(root) || !existsSync(file)) return;
+  const qcConfig = JSON.parse(await readFile(file, "utf8"));
+  qcConfig.featureRoots = [...(qcConfig.featureRoots ?? config.featureRoots), root];
+  await writeFile(file, `${JSON.stringify(qcConfig, null, 2)}\n`);
+  console.log(`added       ${root} to featureRoots in qc.config.json`);
+}
+
 export async function runScaffold(config, args = []) {
   const name = args.find((arg) => !arg.startsWith("-"));
   if (!name || !NAME.test(name)) {
@@ -159,9 +169,19 @@ export async function runScaffold(config, args = []) {
     return;
   }
 
+  // The emitted files cite the reference architecture, so a repository without it fails its citations gate.
+  const architecture = path.posix.join(config.docs.root, "architecture.md");
+  if (!existsSync(path.join(config.root, architecture))) {
+    console.error(`qc feature writes the reference architecture, and its files cite ${architecture}.`);
+    console.error("Run `npx qc init --full` first.");
+    process.exitCode = 1;
+    return;
+  }
+
   const flat = args.includes("--flat");
   const rootArg = args[args.indexOf("--root") + 1];
-  const root = args.includes("--root") && rootArg ? rootArg : config.paths.serverFeatures;
+  const given = args.includes("--root") && rootArg ? rootArg : config.paths.serverFeatures;
+  const root = path.relative(config.root, path.resolve(config.root, given)).split(path.sep).join("/");
   const dir = path.join(config.root, root, name);
 
   if (existsSync(dir)) {
@@ -188,6 +208,7 @@ export async function runScaffold(config, args = []) {
     await writeFile(target, contents);
     console.log(`written     ${path.relative(config.root, target)}`);
   }
+  await addFeatureRoot(config, root);
   console.log(`
 ${flat ? "Flat pipeline" : "Bounded vertical slice"} anatomy. An empty block is a review finding:
 fill each file or delete the ones this feature does not need, then \`qc check\`.`);

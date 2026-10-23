@@ -81,7 +81,7 @@ function heldRefusal(held, { branch, now, leaseFile, root, qc }) {
   return (
     `Another agent (session ${held.holder}) is already working in this worktree on ` +
     `"${held.branch ?? branch}". Two agents on one branch lose each other's edits. ` +
-    `Take your own: \`git worktree add ../<slug> -b <branch>\`. ` +
+    `Take your own: \`npx qc worktree add <slug> <branch>\`. ` +
     `The lease is ${leaseFile}, written ${duration(held.age)} ago; it lapses at ` +
     `${timestamp(held.lapsesAt)}, in ${duration(held.lapsesAt - now)}. See it: \`${qc} lease status ${at}\`. ` +
     `Its holder releases it: \`${qc} lease release ${at} --session <id>\`. ` +
@@ -106,13 +106,13 @@ export function isolationRefusal(state) {
   if (settings.protectedBranches.includes(branch)) {
     return (
       `"${branch}" is a protected branch and an agent does not generate code on it. ` +
-      `Create a work order's own branch first: \`git worktree add ../<slug> -b <branch>\`.`
+      `Create a work order's own branch first: \`npx qc worktree add <slug> <branch>\`.`
     );
   }
   if (settings.require === WORKTREE && kind === "primary") {
     return (
       `This is the primary worktree, shared by every session that opens the repository. ` +
-      `Give this work order its own: \`git worktree add ../<slug> -b ${branch}\` from a clean checkout.`
+      `Give this work order its own: \`npx qc worktree add <slug> ${branch}\`.`
     );
   }
   const held = leaseHeldByAnother(lease, sessionId, now, settings.leaseHours);

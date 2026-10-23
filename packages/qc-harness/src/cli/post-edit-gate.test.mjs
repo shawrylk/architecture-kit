@@ -31,7 +31,8 @@ function workspace() {
     path.join(cli, "qc.mjs"),
     `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(log)}, process.cwd() + String.fromCharCode(10));\nprocess.exit(1);\n`,
   );
-  const ranIn = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((dir) => realpathSync.native(dir)) : []);
+  // The hook calls the CLI twice, for lint and for check; each folder it ran in counts once.
+  const ranIn = () => (existsSync(log) ? [...new Set(readFileSync(log, "utf8").trim().split("\n").map((dir) => realpathSync.native(dir)))] : []);
   return { project, linked, plain, outside, pluginRoot: path.join(base, "plugin"), ranIn, cleanup: () => rmSync(base, { recursive: true, force: true }) };
 }
 
@@ -87,6 +88,7 @@ test("a checkout with its own installed harness is checked by that copy, not the
   const cli = path.join(ws.linked, "node_modules", "architecture-harness", "src", "cli");
   mkdirSync(cli, { recursive: true });
   writeFileSync(path.join(cli, "qc.mjs"), "process.exit(0);\n");
+  writeFileSync(path.join(cli, "lint-changed.mjs"), "");
   assert.equal(runHook(ws, path.join(ws.linked, "backend", "src")), 0);
   assert.deepEqual(ws.ranIn(), []);
 });

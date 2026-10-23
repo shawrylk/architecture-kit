@@ -50,13 +50,16 @@ jobs:
       - name: a fresh repository reaches a green check
         run: |
           set -euo pipefail
-          workdir=$(mktemp -d)
-          cd "$workdir"
-          git init -q
-          echo '{"name":"smoke","private":true,"type":"module"}' > package.json
-          node "$GITHUB_WORKSPACE/packages/qc-harness/src/cli/qc.mjs" init
-          node "$GITHUB_WORKSPACE/packages/qc-harness/src/cli/qc.mjs" feature orders
-          node "$GITHUB_WORKSPACE/packages/qc-harness/src/cli/qc.mjs" check
+          qc="$GITHUB_WORKSPACE/packages/qc-harness/src/cli/qc.mjs"
+          fresh() { cd "$(mktemp -d)"; git init -q; echo '{"name":"smoke","private":true,"type":"module"}' > package.json; }
+          fresh
+          node "$qc" init
+          node "$qc" check
+          if node "$qc" feature orders; then exit 1; fi
+          fresh
+          node "$qc" init --full
+          node "$qc" feature orders
+          node "$qc" check
 
       # The kit is bound by the kit. A rule it ships and cannot itself satisfy is not a rule.
       - name: the kit passes its own gates

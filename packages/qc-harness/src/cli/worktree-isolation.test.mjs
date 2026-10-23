@@ -54,7 +54,7 @@ test("an ignored path is still refused on a detached HEAD", () => {
 test("generating code on a protected branch is refused and names the branch", () => {
   const reason = isolationRefusal(base({ branch: "main" }));
   assert.match(reason, /"main" is a protected branch/);
-  assert.match(reason, /git worktree add/);
+  assert.match(reason, /qc worktree add/);
 });
 
 test("the protected branch list is configurable", () => {

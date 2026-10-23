@@ -1,8 +1,8 @@
-// Scaffold the documents and configuration a new repository needs before any gate
-// can pass. The citations gate reads docs/decisions.md; without it, gate one fails
-// on every file. So `init` is not a convenience — it is the gate's own precondition.
+// Scaffold what a repository needs before any gate can pass: the config, the git hooks, the CI
+// workflow, and an empty decision register. `--full` adds the reference architecture docs and
+// the policy of the reference stack. Those docs cite the reference decisions, so they come together.
 
-import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { withEnforcementMap } from "../enforcement-map.mjs";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
@@ -10,12 +10,17 @@ import { fileURLToPath } from "node:url";
 
 const templates = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../templates");
 
-// Copied into the repository root. `../decisions.examples.md` sits outside this list on
-// purpose: it cites ids the shipped register does not define, so a repository that took it
-// would fail the citations gate. A new
-// repository should not carry somebody else's domain decisions.
-const FILES = [
-  ["qc.config.json", "qc.config.json"],
+// Every repository gets these. They judge the change, not the layout.
+const CORE = [
+  ["githooks/pre-commit", ".githooks/pre-commit"],
+  ["githooks/commit-msg", ".githooks/commit-msg"],
+  ["githooks/pre-push", ".githooks/pre-push"],
+  ["github/workflows/ci.yml", ".github/workflows/ci.yml"],
+];
+
+// `--full` only: the reference architecture, its decisions, and its policy. `../decisions.examples.md`
+// stays out: it cites ids the shipped register does not define, so it would fail the citations gate.
+const FULL = [
   ["quality-thresholds.json", "quality-thresholds.json"],
   [".jscpd.json", ".jscpd.json"],
   ["docs/decisions.md", "docs/decisions.md"],
@@ -26,14 +31,52 @@ const FILES = [
   ["docs/pagination.md", "docs/pagination.md"],
   ["docs/glossary.md", "docs/glossary.md"],
   ["docs/ui.md", "docs/ui.md"],
-  ["githooks/pre-commit", ".githooks/pre-commit"],
-  ["githooks/commit-msg", ".githooks/commit-msg"],
-  ["githooks/pre-push", ".githooks/pre-push"],
-  ["github/workflows/ci.yml", ".github/workflows/ci.yml"],
+  ["github/workflows/pr-policy.yml", ".github/workflows/pr-policy.yml"],
   // The prose style `qc prose` hands to Vale: one config and one file per rule.
   ["vale/.vale.ini", ".vale/.vale.ini"],
   ...readdirSync(path.join(templates, "vale/styles/Qc")).map((rule) => [`vale/styles/Qc/${rule}`, `.vale/styles/Qc/${rule}`]),
 ];
+
+const EMPTY_REGISTER = `# Decisions
+
+Every id cited in this repository's code or docs is defined here. A citation to an id that is
+not listed fails the citations gate. Ids are stable: never renumber one.
+
+| id | decision | the rule it imposes |
+|---|---|---|
+`;
+
+// Folders that hold no source of the repository's own.
+const SKIP = new Set(["node_modules", "dist", "build", "out", "coverage", "vendor"]);
+
+/** Every folder named `featureDir` within four levels of the root, as a POSIX path. None found is an empty list. */
+export function detectFeatureRoots(root, featureDir) {
+  const found = [];
+  const walk = (dir, depth) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith(".") || SKIP.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.name === featureDir) found.push(path.relative(root, full).split(path.sep).join("/"));
+      else if (depth < 4) walk(full, depth + 1);
+    }
+  };
+  walk(root, 1);
+  return found.sort();
+}
+
+async function writeIfAbsent(to, text, force) {
+  if (existsSync(to) && !force) return { to, status: "kept" };
+  const overwriting = existsSync(to);
+  await mkdir(path.dirname(to), { recursive: true });
+  await writeFile(to, text);
+  return { to, status: overwriting ? "overwritten" : "written" };
+}
 
 // The enforcement map is filled in on the way out, so a rule added to the kit cannot ship a
 // template that fails the kit's own enforcement-map gate.
@@ -51,7 +94,6 @@ async function copyTemplate(from, to, force, config) {
 
 const SCRIPTS = {
   "spec:check": "qc check",
-  "gen:feature": "qc feature",
   prepare: "qc install-hooks",
 };
 
@@ -81,18 +123,24 @@ async function ignoreWorktrees(config) {
 
 export async function runInit(config, args = []) {
   const force = args.includes("--force");
+  const full = args.includes("--full");
   const results = [];
-  for (const [source, target] of FILES) {
+
+  // The roots this repository has, not the reference layout: a root that matches nothing fails `qc check`.
+  const featureRoots = detectFeatureRoots(config.root, config.featureDir);
+  const qcConfig = { $comment: "Every key is optional. `qc config` prints what is in force.", featureRoots, foreign: [], agreements: [] };
+  results.push(await writeIfAbsent(path.join(config.root, "qc.config.json"), `${JSON.stringify(qcConfig, null, 2)}\n`, force));
+
+  for (const [source, target] of [...CORE, ...(full ? FULL : [])]) {
     results.push(await copyTemplate(path.join(templates, source), path.join(config.root, target), force, config));
   }
+  if (!full) results.push(await writeIfAbsent(path.join(config.root, config.docs.decisions), EMPTY_REGISTER, force));
 
   for (const name of ["pre-commit", "commit-msg", "pre-push"]) {
     const hook = path.join(config.root, ".githooks", name);
     if (existsSync(hook)) await writeFile(hook, await readFile(hook, "utf8"), { mode: 0o755 });
   }
 
-  // The docs and the CI workflow both tell a reader to run these, so `init` puts them
-  // where a reader will look rather than leaving the instruction dangling.
   results.push(...(await addScripts(config)));
   results.push(await ignoreWorktrees(config));
 
@@ -103,12 +151,9 @@ export async function runInit(config, args = []) {
   const kept = results.filter((result) => result.status === "kept").length;
   if (kept > 0) console.log(`\n${kept} file(s) already existed and were left alone. --force overwrites.`);
   console.log(`
+featureRoots: ${featureRoots.length > 0 ? featureRoots.join(", ") : "none found, so no feature gate runs"}.
 Next:
-  1. Edit docs/decisions.md — delete what does not apply, add your own. Ids are stable;
-     never renumber, because every citation points at a number.
-  2. Edit docs/glossary.md and the per-surface table in docs/performance.md.
-  3. Point qc.config.json at your layout if it differs from the reference. \`qc config\`
-     prints what is in force — featureRoots matching nothing is a failed check, not a pass.
-  4. \`qc install-hooks\` to bind the pre-commit, commit-msg and pre-push hooks.
-  5. \`qc feature <domain-name>\` to scaffold the first slice, then \`qc check\`.`);
+  1. \`qc install-hooks\` to bind the pre-commit, commit-msg, and pre-push hooks.
+  2. \`qc check\`, \`qc typecheck\`, and \`qc lint\` to see the gates pass.${full ? "" : `
+  3. \`qc init --full\` adds the reference architecture docs, their decisions, and the PR policy workflow.`}`);
 }

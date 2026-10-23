@@ -28,13 +28,32 @@ const quiet = (run) => {
   }
 };
 
-test("init writes the documents the gates read", async () => {
+test("init writes the config, the hooks, CI, and an empty register, and the reference docs only with --full", async () => {
   const dir = repo();
   await quiet(() => runInit(load(dir)));
-  for (const file of ["qc.config.json", "docs/decisions.md", "docs/enforcement.md", "docs/pagination.md", ".githooks/pre-commit", ".githooks/commit-msg", ".githooks/pre-push"]) {
+  for (const file of ["qc.config.json", "docs/decisions.md", ".githooks/pre-commit", ".githooks/commit-msg", ".githooks/pre-push", ".github/workflows/ci.yml"]) {
     assert.ok(existsSync(path.join(dir, file)), `${file} is missing`);
   }
+  for (const file of ["docs/enforcement.md", "docs/pagination.md", ".vale/.vale.ini", ".github/workflows/pr-policy.yml"]) assert.equal(existsSync(path.join(dir, file)), false, file);
+  assert.doesNotMatch(readFileSync(path.join(dir, "docs/decisions.md"), "utf8"), /ADR-\d+/);
+  await quiet(() => runInit(load(dir), ["--full"]));
+  for (const file of ["docs/enforcement.md", "docs/pagination.md", ".github/workflows/pr-policy.yml"]) assert.ok(existsSync(path.join(dir, file)), `${file} is missing`);
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("init sets featureRoots to the feature folders the repository has, and to none on a flat one", async () => {
+  const flat = repo();
+  mkdirSync(path.join(flat, "src"));
+  writeFileSync(path.join(flat, "src", "index.ts"), "export {};\n");
+  await quiet(() => runInit(load(flat)));
+  assert.deepEqual(JSON.parse(readFileSync(path.join(flat, "qc.config.json"), "utf8")).featureRoots, []);
+  const { problems } = await runCheck(load(flat));
+  assert.deepEqual(problems, [], "a flat repository passes qc check right after init");
+  const sliced = repo();
+  for (const dir of ["api/src/features/orders", "web/src/features/cart", "node_modules/x/features"]) mkdirSync(path.join(sliced, dir), { recursive: true });
+  await quiet(() => runInit(load(sliced)));
+  assert.deepEqual(JSON.parse(readFileSync(path.join(sliced, "qc.config.json"), "utf8")).featureRoots, ["api/src/features", "web/src/features"]);
+  for (const root of [flat, sliced]) rmSync(root, { recursive: true, force: true });
 });
 
 // The examples cite ids the shipped register does not define; a repository that
@@ -96,6 +115,7 @@ test("install-hooks refuses before init rather than configuring nothing", async 
 test("a config whose every feature root is missing is a problem", async () => {
   const dir = repo();
   await quiet(() => runInit(load(dir)));
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ featureRoots: ["backend/src/features", "frontend/src/features"] }));
   const { problems, lines } = await runCheck(load(dir));
   assert.ok(
     problems.some((problem) => problem.rule === "unfound-root"),

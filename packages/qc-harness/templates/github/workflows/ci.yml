@@ -1,107 +1,40 @@
 name: ci
 on:
   push:
-  # `edited` re-runs the prose check when a pull request body changes.
   pull_request:
-    types: [opened, synchronize, reopened, edited]
 
 jobs:
   gates:
     runs-on: ubuntu-latest
     steps:
-      # Full history: the threshold ratchet compares the registry with the merge base.
+      # Full history: `qc lint` judges the lines since the merge base.
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v5
-        with: { node-version-file: package.json }
-      - run: corepack enable
-      - run: pnpm install --frozen-lockfile
+        with: { node-version: lts/* }
 
-      # The structural gates. This step needs no package script of its own.
-      - run: npx qc check
-
-      # A pull request names the issue it closes, and the issue predates it.
-      - if: github.event_name == 'pull_request'
-        run: npx qc pr-check
-        env: { GH_TOKEN: "${{ github.token }}" }
-
-      # The lines a pull request adds, and its body, meet the prose style. Vale is a pinned release,
-      # and the download is checked against its published hash before it is unpacked.
-      - if: github.event_name == 'pull_request'
-        run: |
+      # Install with the package manager of the lockfile, and keep its name for the test step.
+      - run: |
           set -euo pipefail
-          cd "$RUNNER_TEMP"
-          curl -sSfL -O https://github.com/errata-ai/vale/releases/download/v3.9.1/vale_3.9.1_Linux_64-bit.tar.gz
-          echo "fbc2eb47d0b8c50220ed1a2c5c611fbe0904ed567d638143d482016a18fd2db0  vale_3.9.1_Linux_64-bit.tar.gz" | sha256sum -c -
-          tar -xzf vale_3.9.1_Linux_64-bit.tar.gz vale
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - if: github.event_name == 'pull_request'
-        run: npx qc prose --base "origin/$GITHUB_BASE_REF" --pr-body-event
-
-      # Typecheck and lint as the stop gate runs them: a root script wins, else the installed tool.
-      # CI is the one check an agent cannot skip, so each step is on, and without its tool it says it skipped.
-      - run: |
-          if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then pnpm run typecheck
-          elif [ -x node_modules/.bin/tsc ]; then pnpm exec tsc -b --pretty false
-          else echo "::notice::typecheck skipped: no typecheck script and no tsc"
+          if [ -f pnpm-lock.yaml ]; then corepack enable; pnpm install --frozen-lockfile; echo "PM=pnpm" >> "$GITHUB_ENV"
+          elif [ -f yarn.lock ]; then corepack enable; yarn install --immutable; echo "PM=yarn" >> "$GITHUB_ENV"
+          elif [ -f package-lock.json ]; then npm ci; echo "PM=npm" >> "$GITHUB_ENV"
+          else npm install; echo "PM=npm" >> "$GITHUB_ENV"
           fi
+
+      # The same three checks the hooks run. Each says when it has nothing to check.
+      - run: npx qc check
+      - run: npx qc typecheck
+      # Only the lines this change adds: a problem older than the change never fails it.
+      - run: npx qc lint --base "$BASE"
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'HEAD^' }}
+
+      # The repository's own tests, when it has a test script.
       - run: |
-          if node -e "process.exit(require('./package.json').scripts?.lint ? 0 : 1)"; then pnpm run lint
-          elif [ -x node_modules/.bin/eslint ]; then pnpm exec eslint . --max-warnings 0
-          else echo "::notice::lint skipped: no lint script and no eslint"
+          if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then "$PM" run test
+          else echo "::notice::tests skipped: no test script"
           fi
-      - run: pnpm run --if-present dup:check
 
-  # Unit tests in eight hosted shards. A self-hosted runner that goes offline leaves a job queued;
-  # `qc watch --pr` reports a check queued for over 15 minutes. A repository with no test:unit script skips it.
-  unit:
-    runs-on: ubuntu-latest
-    strategy: { fail-fast: false, matrix: { shard: [1, 2, 3, 4, 5, 6, 7, 8] } }
-    steps:
-      - uses: actions/checkout@v5
-      - id: script
-        run: node -e "console.log('present=' + Boolean(require('./package.json').scripts?.['test:unit']))" >> "$GITHUB_OUTPUT"
-      - if: steps.script.outputs.present == 'true'
-        uses: actions/setup-node@v5
-        with: { node-version-file: package.json }
-      - if: steps.script.outputs.present == 'true'
-        run: corepack enable && pnpm install --frozen-lockfile
-      - if: steps.script.outputs.present == 'true'
-        run: pnpm test:unit --shard=${{ matrix.shard }}/${{ strategy.job-total }}
-
-  # Integration tests in two hosted shards. Add the services the tests need, such as a database.
-  integration:
-    runs-on: ubuntu-latest
-    strategy: { fail-fast: false, matrix: { shard: [1, 2] } }
-    steps:
-      - uses: actions/checkout@v5
-      - id: script
-        run: node -e "console.log('present=' + Boolean(require('./package.json').scripts?.['test:integration']))" >> "$GITHUB_OUTPUT"
-      - if: steps.script.outputs.present == 'true'
-        uses: actions/setup-node@v5
-        with: { node-version-file: package.json }
-      - if: steps.script.outputs.present == 'true'
-        run: corepack enable && pnpm install --frozen-lockfile
-      - if: steps.script.outputs.present == 'true'
-        run: pnpm test:integration --shard=${{ matrix.shard }}/${{ strategy.job-total }}
-
-  # Browser tests: the specs a pull request affects, by the repository's own e2e:affected script,
-  # and every spec on a push.
-  e2e:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
-      - id: script
-        run: node -e "const s = require('./package.json').scripts ?? {}; console.log('present=' + Boolean(s.e2e && s['e2e:affected']))" >> "$GITHUB_OUTPUT"
-      - if: steps.script.outputs.present == 'true'
-        uses: actions/setup-node@v5
-        with: { node-version-file: package.json }
-      - if: steps.script.outputs.present == 'true'
-        run: corepack enable && pnpm install --frozen-lockfile
-      - if: steps.script.outputs.present == 'true'
-        run: pnpm exec playwright install --with-deps
-      - if: steps.script.outputs.present == 'true' && github.event_name == 'pull_request'
-        run: pnpm e2e:affected "origin/$GITHUB_BASE_REF"
-      - if: steps.script.outputs.present == 'true' && github.event_name != 'pull_request'
-        run: pnpm e2e
+      # More checks are opt-in, one step each: `npx qc pr-check` (a pull request names an earlier
+      # issue) and `npx qc prose` (Vale on the docs a change adds). docs/enforcement.md lists them.

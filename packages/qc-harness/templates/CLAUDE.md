@@ -20,12 +20,12 @@ undefined id, a missing doc path, or a reference to another repository fails the
 
 ## Commands
 
-`qc init` added the first three. Add the rest as the repository grows them, and list
+`qc init` added `spec:check`. Add the rest as the repository grows them, and list
 every one here — this table is what an agent reads instead of guessing.
 
 ```bash
 pnpm spec:check            # every structural gate (qc check)
-pnpm gen:feature <name>    # scaffold a feature. Full domain name, never a code
+npx qc feature <name>      # scaffold a feature. Full domain name, never a code
 npx qc check <file>...     # the fast path a post-edit hook or a commit takes
 npx qc config              # print the configuration in force
 ```

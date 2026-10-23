@@ -2,18 +2,17 @@
 // An agent does not count its own calls, and each call re-sends its whole transcript, so the hook
 // counts for it and closes every tool except the hand-off once the budget is spent.
 
-import { defaults } from "../config.mjs";
 import { gitCall, isReadOnly, segmentsOf, writesRedirect } from "./shell-command.mjs";
 
-export const DEFAULT_BUDGET = defaults.swarm.toolCallBudget;
 const REMIND_PERCENT = 70;
 const REMIND_EVERY = 10;
 const KEY = "swarm.toolCallBudget";
 const HANDOFF_GIT = new Set(["status", "diff", "log", "add", "commit", "push"]);
 
-/** @returns the budget from the `swarm` config section, or throws naming the key a repository got wrong. */
+/** @returns the budget from the `swarm` config section, null when it is off, or throws naming the key a repository got wrong. */
 export function budgetOf(swarm = {}) {
-  const budget = swarm.toolCallBudget ?? DEFAULT_BUDGET;
+  const budget = swarm.toolCallBudget ?? null;
+  if (budget === null) return null;
   if (!Number.isInteger(budget) || budget < 1) {
     throw new Error(`${KEY} in qc.config.json must be a positive whole number, got ${JSON.stringify(swarm.toolCallBudget)}`);
   }
