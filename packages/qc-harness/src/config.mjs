@@ -247,8 +247,9 @@ export const defaults = {
   // restricted. `require`: off | branch (refuse the trunk) | worktree (also refuse the primary).
   swarm: {
     isolation: { require: "off", protectedBranches: ["main", "master"], leaseHours: 8, allow: [] },
-    // Tool calls per subagent. The hook reminds at seventy percent and denies all but the hand-off at the budget.
-    toolCallBudget: 100,
+    // Tool calls per subagent: off by default. A whole number turns the budget on: the hook reminds at seventy
+    // percent and denies all but the hand-off at the budget.
+    toolCallBudget: null,
     // Off until a repository writes the section. `{}` turns it on, and `dispatchDefaults` fills each key it omits.
     dispatch: null,
     // Read only while `dispatch` is on. `reviewDefaults` fills each key it omits.
@@ -257,13 +258,13 @@ export const defaults = {
     direct: null,
   },
 
-  // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`.
-  generated: { globs: ["**/*.generated.*"], command: "pnpm codegen" },
+  // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`, when set.
+  generated: { globs: ["**/*.generated.*"], command: null },
 
-  // `qc worktree`. `install` runs in each new worktree. `base` is the default `--from`: the ref a
+  // `qc worktree`. `install` runs in each new worktree; null picks it from the lockfile. `base` is the default `--from`: the ref a
   // branch starts at, and the ref `remove` checks a merge against.
   // `dir` holds each worktree, inside the main checkout. `enforce: false` turns off the QC-015 hooks.
-  worktree: { install: "pnpm install --frozen-lockfile", base: "origin/main", dir: ".worktree", enforce: true },
+  worktree: { install: null, base: "origin/main", dir: ".worktree", enforce: true },
 
   // Names that must be registered scoped, never singleton.
   scopedSuffixes: ["Repository", "Saga", "UnitOfWork", "UnitOfWorkFactory"],
@@ -432,20 +433,21 @@ export const defaults = {
   rules: {
     "no-comment-paragraph": true,
     "name-the-pattern": false,
-    "no-promise-then": true,
+    // Opt-in: a style or a domain policy of the reference stack, not a defect in any repository.
+    "no-promise-then": false,
     "no-number-in-comment": true,
     "no-cross-feature-internals": true,
-    "no-offset-pagination": true,
+    "no-offset-pagination": false,
     "no-orchestration-in-trigger": true,
-    "no-status-literal": true,
+    "no-status-literal": false,
     "scoped-repository": true,
     "storage-only-in-resource": true,
     "external-service-only-in-adapter": true,
     "tenant-scoped-table": true,
-    "signal-last-param": true,
+    "signal-last-param": false,
     "no-raw-fetch": true,
     "no-sql-raw": true,
-    "ime-safe-key": true,
+    "ime-safe-key": false,
     // A policy rule: a repository turns it on once its controls carry the pending prop.
     "mutation-control-pending": false,
     "registry-literal": true,

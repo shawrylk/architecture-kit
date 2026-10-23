@@ -1,16 +1,16 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { DEFAULT_BUDGET, budgetOf, budgetVerdict, isHandoffCall } from "./budget.mjs";
+import { budgetOf, budgetVerdict, isHandoffCall } from "./budget.mjs";
 
 const bash = (command) => ({ tool_name: "Bash", tool_input: { command } });
 const write = (file_path) => ({ tool_name: "Write", tool_input: { file_path, content: "x" } });
 const edit = (file_path) => ({ tool_name: "Edit", tool_input: { file_path, old_string: "a", new_string: "b" } });
 const verdict = (count, call = bash("npm test"), budget = 100) => budgetVerdict({ count, budget, call });
 
-test("the budget is swarm.toolCallBudget, and one hundred calls without it", () => {
-  assert.equal(DEFAULT_BUDGET, 100);
-  assert.equal(budgetOf(), 100);
-  assert.equal(budgetOf({}), 100);
+test("the budget is swarm.toolCallBudget, and off without it", () => {
+  assert.equal(budgetOf(), null);
+  assert.equal(budgetOf({}), null);
+  assert.equal(budgetOf({ toolCallBudget: null }), null);
   assert.equal(budgetOf({ toolCallBudget: 40 }), 40);
 });
 

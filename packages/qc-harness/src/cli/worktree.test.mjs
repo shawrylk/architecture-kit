@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { load } from "../config.mjs";
-import { runWorktree } from "./worktree.mjs";
+import { installCommand, runWorktree } from "./worktree.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
@@ -54,6 +54,21 @@ function added(main, name, branch) {
   assert.equal(result.status, 0, result.stderr);
   return lastLine(result.stdout);
 }
+
+test("with no install configured, the lockfile picks the install, and a folder with no package.json installs nothing", () => {
+  const dir = realpathSync.native(mkdtempSync(path.join(tmpdir(), "qc-install-")));
+  try {
+    assert.equal(installCommand(dir), null);
+    writeFileSync(path.join(dir, "package.json"), "{}");
+    assert.equal(installCommand(dir), "npm install");
+    for (const [lockfile, command] of [["package-lock.json", "npm ci"], ["yarn.lock", "yarn install --frozen-lockfile"], ["pnpm-lock.yaml", "pnpm install --frozen-lockfile"]]) {
+      writeFileSync(path.join(dir, lockfile), "");
+      assert.equal(installCommand(dir), command);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("add makes a worktree under .worktree/ in the main checkout and installs it; remove deletes it and its merged branch", () => {
   const { top, main } = fixture();

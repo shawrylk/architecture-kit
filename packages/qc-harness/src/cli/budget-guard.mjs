@@ -33,6 +33,7 @@ export function decide(call, tmp = os.tmpdir()) {
     // A config typo must not stop every agent; the agent sees the error and reports it.
     return context(`Tool-call budget is off: ${error.message}`);
   }
+  if (budget === null) return null;
   let count;
   try {
     count = bumpCount(counterFileOf(call.session_id ?? "session", agentId, tmp));

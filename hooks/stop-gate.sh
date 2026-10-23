@@ -118,6 +118,9 @@ if [ -f "$ROOT/node_modules/architecture-harness/src/cli/qc.mjs" ]; then
 else
   QC_CLI="${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"
 fi
+# `qc typecheck` and `qc lint` came after `check`: an installed harness too old to carry them leaves
+# both to the bundled copy, which reads only this repository's own tsc and ESLint.
+if [ -f "$(dirname "$QC_CLI")/lint-changed.mjs" ]; then TOOL_CLI="$QC_CLI"; else TOOL_CLI="${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"; fi
 # A real newline, so the failure text prints as it is, backslashes and all.
 NL=$'\n'
 FAIL=""
@@ -125,39 +128,15 @@ FAIL=""
 FULL=""
 DRIFT=""
 
-# A root `typecheck` script wins: a repository may typecheck with a faster compiler than `tsc -b`.
-# `tsc -b` stays the fallback. The package manager follows the lockfile.
-TYPECHECK=""
-if [ -f "$ROOT/package.json" ] && node -e 'try{process.exit(typeof JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).scripts?.typecheck==="string"?0:1)}catch{process.exit(1)}' "$ROOT/package.json" 2>/dev/null; then
-  if [ -f "$ROOT/pnpm-lock.yaml" ]; then TYPECHECK="pnpm run -s typecheck"
-  elif [ -f "$ROOT/yarn.lock" ]; then TYPECHECK="yarn run -s typecheck"
-  else TYPECHECK="npm run -s typecheck"
-  fi
-fi
-if [ -n "$TYPECHECK" ] || [ -f "$ROOT/node_modules/.bin/tsc" ]; then
-  TSC_FAILED=""
-  run_typecheck() {
-    if [ -n "$TYPECHECK" ]; then $TYPECHECK; else npx tsc -b --pretty false; fi
-  }
-  run_typecheck >"$LOGS/tsc" 2>&1 || TSC_FAILED=1
-  # A concurrent `pnpm install` makes a module vanish for a moment, which tsc reports as TS2307.
-  # When that is the only error, run it once more and judge the second run.
-  # The filter reads the whole log: an early exit would SIGPIPE the upstream grep, and pipefail reads that as no match.
-  if [ -n "$TSC_FAILED" ] && grep -q 'error TS' "$LOGS/tsc" && ! grep 'error TS' "$LOGS/tsc" | grep -v 'error TS2307' >/dev/null; then
-    TSC_FAILED=""
-    run_typecheck >"$LOGS/tsc" 2>&1 || TSC_FAILED=1
-  fi
-  if [ -n "$TSC_FAILED" ]; then
-    FAIL+="typecheck failed:${NL}$(tail -20 "$LOGS/tsc")${NL}"
-    FULL+="typecheck failed:${NL}$(cat "$LOGS/tsc")${NL}"
-  fi
-fi
-if [ -f "$ROOT/node_modules/.bin/eslint" ]; then
-  npx eslint . --max-warnings 0 --cache --cache-location node_modules/.cache/eslint-stop-gate >"$LOGS/lint" 2>&1 || {
-    FAIL+="lint failed:${NL}$(tail -20 "$LOGS/lint")${NL}"
-    FULL+="lint failed:${NL}$(cat "$LOGS/lint")${NL}"
-  }
-fi
+node "$TOOL_CLI" typecheck >"$LOGS/tsc" 2>&1 || {
+  FAIL+="typecheck failed:${NL}$(tail -20 "$LOGS/tsc")${NL}"
+  FULL+="typecheck failed:${NL}$(cat "$LOGS/tsc")${NL}"
+}
+# Only the lines this branch and the working tree change: an older problem is not this session's to fix.
+node "$TOOL_CLI" lint >"$LOGS/lint" 2>&1 || {
+  FAIL+="lint failed:${NL}$(tail -20 "$LOGS/lint")${NL}"
+  FULL+="lint failed:${NL}$(cat "$LOGS/lint")${NL}"
+}
 # The doctor compares the plugin, the lockfile and the git hooks. Its findings are about the setup,
 # not the code, so they are kept apart from the code's failures.
 # A copy too old to carry `doctor` answers with its usage text and exit 1, which is not drift.
@@ -201,24 +180,18 @@ if [ -n "$FAIL" ]; then
     node -e 'process.stdout.write(JSON.stringify({systemMessage: process.argv[1]}))' "$MESSAGE"
     exit 0
   fi
-  [ -n "$DRIFT" ] && printf '%s\n' "$DRIFT" >&2
   printf '%s' "$FAIL" >&2
-  echo "The repo is red. Do not stop here — fix it. docs/enforcement.md." >&2
+  echo "The change is red. Fix what it broke before you stop." >&2
   exit 2
 fi
 # A green gate forgets the last block of this session.
 node -e "$MEMORY_JS" clear "$SESSION" </dev/null 2>/dev/null
-if [ -n "$DRIFT" ]; then
-  # A second refusal for drift alone would loop the session: an agent cannot restart its own plugin.
-  if [ -n "$ACTIVE" ]; then
-    MESSAGE="The kit setup still drifts (qc doctor or hook-drift), not the code. Fix it outside this session: $(printf '%s' "$DRIFT" | head -1)"
-    node -e 'process.stdout.write(JSON.stringify({systemMessage: process.argv[1]}))' "$MESSAGE"
-    exit 0
-  fi
-  printf '%s\n' "$DRIFT" >&2
-  echo "This is drift in the kit setup, not in your code: qc doctor or hook-drift. Fix what it names." >&2
-  exit 2
-fi
-# Only a fully green run, with no failure and no drift, stores the fingerprint it started from.
+# Only a green run stores the fingerprint it started from, so drift alone notes once per change.
 node -e "$FINGERPRINT_JS" store "$ROOT" "$FINGERPRINT" </dev/null 2>/dev/null
+# Drift is in the setup, which a session cannot repair: a stale plugin or a hooks path the user chose.
+# Refusing a stop for it ends no turn, so it is a note to the user and never a block.
+if [ -n "$DRIFT" ]; then
+  MESSAGE="The kit setup drifts (qc doctor or hook-drift), not the code: $(printf '%s' "$DRIFT" | grep -m1 .)"
+  node -e 'process.stdout.write(JSON.stringify({systemMessage: process.argv[1]}))' "$MESSAGE"
+fi
 exit 0

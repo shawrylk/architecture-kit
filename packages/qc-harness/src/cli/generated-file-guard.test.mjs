@@ -46,13 +46,15 @@ const edit = (file, old_string, tool_input = {}) => ({
 const write = (file) => ({ ...edit(file, ""), tool_name: "Write", tool_input: { file_path: file, content: "x" } });
 const reasonOf = (output) => (output?.hookSpecificOutput?.permissionDecision === "deny" ? output.hookSpecificOutput.permissionDecisionReason : null);
 
-test("an edit of a generated file is denied, and the reason names the command that writes it", (t) => {
-  const ws = workspace(t);
+test("an edit of a generated file is denied, and the reason names the command that writes it, when set", (t) => {
+  const ws = workspace(t, { generated: { command: "pnpm codegen" } });
   for (const call of [edit(ws.at("src/routes.generated.ts"), "a"), write(ws.at("src/routes.generated.ts"))]) {
     const reason = reasonOf(decide(call));
     assert.match(reason, /src\/routes\.generated\.ts is generated/);
     assert.match(reason, /`pnpm codegen`/);
   }
+  const unset = workspace(t);
+  assert.match(reasonOf(decide(write(unset.at("src/routes.generated.ts")))), /run the generator that writes it\.$/);
 });
 
 test("a generated file at the repository root is denied too", (t) => {

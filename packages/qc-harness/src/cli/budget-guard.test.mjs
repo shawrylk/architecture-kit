@@ -81,8 +81,14 @@ test("in a linked worktree, the budget from qc.config.json denies the call that 
   assert.equal(runGuard(ws, callOf(ws.linked, "agent-1", "Bash", { command: "git push" })), null);
 });
 
-test("the default budget reminds at its seventieth call", (t) => {
+test("with no budget set, the guard counts nothing and stays silent", (t) => {
   const ws = workspace(t, {});
+  assert.equal(runGuard(ws, callOf(ws.linked, "agent-1")), null);
+  assert.equal(existsSync(ws.counters), false);
+});
+
+test("a budget of one hundred reminds at its seventieth call", (t) => {
+  const ws = workspace(t, { toolCallBudget: 100 });
   mkdirSync(ws.counters, { recursive: true });
   writeFileSync(path.join(ws.counters, "session-aaaa-agent-1.json"), JSON.stringify({ count: 69 }));
   const output = runGuard(ws, callOf(ws.linked, "agent-1"));
