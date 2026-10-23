@@ -6,7 +6,7 @@ set -uo pipefail
 FILE=$(node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(j.tool_input?.file_path??"")}catch{}})' 2>/dev/null)
 [ -z "$FILE" ] && exit 0
 # A Windows hook input uses backslashes, which neither `case` nor `dirname` reads as separators.
-FILE=${FILE//\//}
+FILE=${FILE//\\//}
 case "$FILE" in
   *.ts|*.tsx|*.mts|*.cts|*.js|*.jsx|*.mjs|*.cjs) ;;
   *) exit 0 ;;
