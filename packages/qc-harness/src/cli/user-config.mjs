@@ -24,7 +24,9 @@ const USAGE = "qc user-config apply|check|capture [--dry-run] [--kit-dir <path>]
 
 export function assertSafePath(file) {
   const name = file.replaceAll("\\", "/").split("/").at(-1).toLowerCase();
-  if ([".claude.json", ".credentials.json", "auth.json"].includes(name)) throw new Error(`Refusing credential file: ${file}`);
+  if ([".claude.json", ".credentials.json", "auth.json"].includes(name) || /token|secret|credential|auth/i.test(name)) {
+    throw new Error(`Refusing credential file: ${file}`);
+  }
 }
 
 function safeFile(file) {
@@ -102,10 +104,9 @@ function stamp(now) {
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
-function writeBackup(file, text, now) {
+function backupFile(file, now) {
   mkdirSync(path.dirname(file), { recursive: true });
   if (existsSync(file)) copyFileSync(file, `${file}.bak-${stamp(now)}`, constants.COPYFILE_EXCL);
-  writeFileSync(file, text, { mode: 0o600 });
 }
 
 export async function runUserConfig(args, options = {}) {
@@ -137,7 +138,12 @@ export async function runUserConfig(args, options = {}) {
     });
     for (const plan of plans) {
       for (const key of plan.changed) log(`${values["dry-run"] ? "Would change" : verb === "check" ? "Drift" : "Change"} ${plan.target}: ${key}`);
-      if (plan.changed.length && verb !== "check" && !values["dry-run"]) writeBackup(plan.target, plan.text, options.now ?? new Date());
+    }
+    if (verb !== "check" && !values["dry-run"]) {
+      const changes = plans.filter((plan) => plan.changed.length);
+      const now = options.now ?? new Date();
+      for (const plan of changes) backupFile(plan.target, now);
+      for (const plan of changes) writeFileSync(plan.target, plan.text, { mode: 0o600 });
     }
     const drift = plans.some((plan) => plan.changed.length);
     if (!drift) log("Shared user configuration matches.");

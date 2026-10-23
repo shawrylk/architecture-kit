@@ -50,6 +50,16 @@ test("TOML preserves multiline local values and ignores fake headers inside stri
   assert.equal(result.text, local.replace('model = "old"', 'model = "new"'));
 });
 
+test("TOML consumes multiline values of bare and quoted dotted keys", () => {
+  for (const key of ["x.y", '"x" . \'y\'', '\'x\' . "y" . z']) {
+    for (const quote of ['"""', "'''"]) {
+      const local = `${key} = ${quote}\nmodel = "inner"\n[plugins."fake@r"]\nenabled = false\n${quote}\n`;
+      assert.equal(mergeCodexConfig(local, 'model = "new"\n').text, `${local}model = "new"\n`);
+      assert.equal(captureCodexConfig(local), "");
+    }
+  }
+});
+
 test("TOML handles a final value without a newline and compares string values", () => {
   assert.equal(mergeCodexConfig('model = "old"', 'model = "new"').text, 'model = "new"');
   const local = "model = 'same' # keep quotes\n";
@@ -60,6 +70,24 @@ test("a shared plugin field keeps local fields and adds the missing enabled fiel
   const local = '[plugins."kit@remote"]\nlocal = true';
   const merged = mergeCodexConfig(local, '[plugins."kit@remote"]\nenabled = true\n');
   assert.equal(merged.text, `${local}\nenabled = true\n`);
+});
+
+test("TOML fills existing plugin sections before appending new tables", () => {
+  const shared = '[plugins."A@r"]\nenabled = true\n[plugins."B@r"]\nenabled = true\n';
+  for (const eol of ["\n", "\r\n"]) {
+    for (const suffix of ["", eol]) {
+      const local = `# keep${eol}[plugins."B@r"]${suffix}`;
+      const expected = '# keep\n[plugins."B@r"]\nenabled = true\n\n[plugins."A@r"]\nenabled = true\n'.replaceAll("\n", eol);
+      assert.equal(mergeCodexConfig(local, shared).text, expected);
+    }
+  }
+});
+
+test("TOML refuses inline plugin tables before adding a plugin section", () => {
+  for (const key of ["plugins", '"plugins"', "'plugins'"]) {
+    const local = `${key} = { "A@r" = { enabled = false } }\n`;
+    assert.throws(() => mergeCodexConfig(local, '[plugins."A@r"]\nenabled = true\n'), /inline.*plugins.*table/i);
+  }
 });
 
 test("malformed shared configuration fails before any target changes", async (t) => {
@@ -79,6 +107,25 @@ test("backup collisions fail without overwriting the backup or original file", a
   assert.equal(await runUserConfig(["apply"], f), 2);
   assert.equal(readFileSync(backup, "utf8"), "keep backup");
   assert.equal(readFileSync(paths.claude, "utf8"), '{"model":"local"}');
+});
+
+test("a later backup collision stops all target writes", async (t) => {
+  const f = fixture(t);
+  const paths = configPaths(f.home, f.env);
+  mkdirSync(path.dirname(paths.claude), { recursive: true });
+  mkdirSync(path.dirname(paths.codex), { recursive: true });
+  const originals = new Map([
+    [paths.claude, '{"model":"local"}\n'],
+    [paths.codex, 'model = "local"\n'],
+    [paths.statusline, "local status\n"],
+  ]);
+  for (const [file, text] of originals) writeFileSync(file, text);
+  const backup = `${paths.codex}.bak-20260102-030405`;
+  writeFileSync(backup, "keep backup");
+  assert.equal(await runUserConfig(["apply"], f), 2);
+  assert.match(f.lines.at(-1), /EEXIST/);
+  for (const [file, text] of originals) assert.equal(readFileSync(file, "utf8"), text);
+  assert.equal(readFileSync(backup, "utf8"), "keep backup");
 });
 
 test("capture excludes local marketplaces, their plugins, notify, and desktop settings", () => {
@@ -125,12 +172,16 @@ test("capture writes shared data only and supports dry-run", async (t) => {
   assert.equal(readFileSync(path.join(f.kitDir, "claude/statusline.js"), "utf8"), "status source\n");
 });
 
-for (const filename of [".claude.json", ".credentials.json", "auth.json"]) {
+for (const filename of [".claude.json", ".credentials.json", "auth.json", "api-token.json", "service-secret.toml", "my-credential.txt", "oauth-cache.json"]) {
   test(`refuses credential filename ${filename} on Windows and POSIX paths`, async (t) => {
     const f = fixture(t);
     for (const name of [`/home/a/${filename}`, `C:\\Users\\a\\${filename.toUpperCase()}`]) {
       assert.throws(() => assertSafePath(name), /credential/i);
-      for (const verb of ["apply", "capture"]) assert.equal(await runUserConfig([verb, name], f), 2);
+      for (const verb of ["apply", "capture"]) {
+        f.lines.length = 0;
+        assert.equal(await runUserConfig([verb, "--dry-run", "--codex-dir", name], f), 2);
+        assert.match(f.lines.at(-1), /Refusing credential file:/);
+      }
     }
     assert.deepEqual(readdirSync(f.root), ["kit"]);
   });

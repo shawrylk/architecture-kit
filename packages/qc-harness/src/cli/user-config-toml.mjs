@@ -52,9 +52,9 @@ function documentOf(text) {
       section = { name: header[1], kind: named?.[1], plugin: named && unquote(named[2]), start: offset, end: text.length, fields: new Map() };
       sections.push(section);
     } else {
-      const assignment = /^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[\w-]+)\s*=\s*/.exec(line);
+      const assignment = /^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[\w-]+)((?:\s*\.\s*(?:"(?:[^"\\]|\\.)*"|'[^']*'|[\w-]+))*)\s*=\s*/.exec(line);
       if (assignment) {
-        const key = unquote(assignment[1]);
+        const key = assignment[2] ? `${assignment[1]}${assignment[2]}` : unquote(assignment[1]);
         const start = offset + assignment[0].length;
         const value = scanValue(text, start);
         const raw = text.slice(start, value.end).trimEnd();
@@ -99,13 +99,17 @@ export function captureCodexConfig(text) {
 
 export function mergeCodexConfig(local, shared) {
   const sections = documentOf(local);
+  if (sections[0].fields.get("plugins")?.raw.startsWith("{")) {
+    throw new Error('Inline TOML plugins tables are unsupported; use [plugins."name"] tables.');
+  }
   const desired = sharedFields(shared);
   const edits = [];
   const additions = new Map();
+  const newTables = [];
   const changed = [];
   const eol = local.includes("\r\n") ? "\r\n" : "\n";
-  function add(offset, line) {
-    additions.set(offset, [...(additions.get(offset) ?? []), line]);
+  function add(section, line) {
+    additions.set(section, [...(additions.get(section) ?? []), line]);
   }
   function merge(section, fields, label) {
     for (const [key, value] of fields) {
@@ -113,7 +117,7 @@ export function mergeCodexConfig(local, shared) {
       if (previous && unquote(previous.raw) === unquote(value.raw)) continue;
       changed.push(`${label}${key}`);
       if (previous) edits.push({ start: previous.start, end: previous.end, text: value.raw });
-      else add(section.end, `${key} = ${value.raw}`);
+      else add(section, `${key} = ${value.raw}`);
     }
   }
   merge(sections[0], desired.top, "");
@@ -122,13 +126,19 @@ export function mergeCodexConfig(local, shared) {
     if (matches.length > 1) throw new Error(`Duplicate plugin table: ${plugin.plugin}`);
     if (matches.length) merge(matches[0], plugin.fields, `plugins.${plugin.plugin}.`);
     else {
-      add(local.length, `${eol}[plugins.${JSON.stringify(plugin.plugin)}]`);
-      merge({ end: local.length, fields: new Map() }, plugin.fields, `plugins.${plugin.plugin}.`);
+      const section = { fields: new Map() };
+      newTables.push(section);
+      add(section, `[plugins.${JSON.stringify(plugin.plugin)}]`);
+      merge(section, plugin.fields, `plugins.${plugin.plugin}.`);
     }
   }
-  for (const [offset, lines] of additions) edits.push({ start: offset, end: offset,
-    text: `${offset && local[offset - 1] !== "\n" ? eol : ""}${lines.join(eol)}${eol}` });
+  for (const section of sections) {
+    const lines = additions.get(section);
+    if (lines) edits.push({ start: section.end, end: section.end,
+      text: `${section.end && local[section.end - 1] !== "\n" ? eol : ""}${lines.join(eol)}${eol}` });
+  }
   let text = local;
   for (const edit of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, edit.start) + edit.text + text.slice(edit.end);
+  for (const section of newTables) text += `${text && !text.endsWith("\n") ? eol : ""}${eol}${additions.get(section).join(eol)}${eol}`;
   return { text, changed };
 }
