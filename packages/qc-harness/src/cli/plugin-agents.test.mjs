@@ -8,7 +8,7 @@ import { REMINDER } from "./dispatch-reminder.mjs";
 import { dispatchRefusal, dispatchSettings } from "./dispatch.mjs";
 
 const AGENTS = fileURLToPath(new URL("../../../../agents/", import.meta.url));
-const README = fileURLToPath(new URL("../../../../README.md", import.meta.url));
+const README = fileURLToPath(new URL("../../../../docs/reference.md", import.meta.url));
 const PLUGIN = "architecture";
 // The built-in tools a background subagent keeps, as the Claude Code sub-agents page lists them.
 // Claude Code drops any other listed name without an error, so such a name is dead weight.

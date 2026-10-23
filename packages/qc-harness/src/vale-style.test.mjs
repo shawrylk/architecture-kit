@@ -101,7 +101,7 @@ test("init copies the Vale config and every rule where qc prose looks for them",
   const log = console.log;
   console.log = () => {};
   try {
-    await runInit(load(dir));
+    await runInit(load(dir), ["--full"]);
     assert.ok(existsSync(path.join(dir, ".vale/.vale.ini")));
     for (const rule of Object.keys(rules)) assert.ok(existsSync(path.join(dir, ".vale/styles/Qc", `${rule}.yml`)), rule);
   } finally {
@@ -112,7 +112,7 @@ test("init copies the Vale config and every rule where qc prose looks for them",
 
 const HASH = "fbc2eb47d0b8c50220ed1a2c5c611fbe0904ed567d638143d482016a18fd2db0";
 const TARBALL = "vale_3.9.1_Linux_64-bit.tar.gz";
-const templateWorkflow = readFileSync(path.join(vale, "../github/workflows/ci.yml"), "utf8");
+const templateWorkflow = readFileSync(path.join(vale, "../github/workflows/pr-policy.yml"), "utf8");
 const kitWorkflow = readFileSync(path.resolve(vale, "../../../../.github/workflows/ci.yml"), "utf8");
 
 /** @returns the `run` script of the step that installs Vale in `text`. */
@@ -121,7 +121,7 @@ function installStep(text) {
   return steps.find((step) => /releases\/download/.test(step.run ?? ""))?.run ?? "";
 }
 
-test("the template workflow runs qc prose on a pull request, with a pinned Vale release", () => {
+test("the PR policy template runs qc prose on a pull request, with a pinned Vale release", () => {
   assert.match(templateWorkflow, /releases\/download\/v\d+\.\d+\.\d+\/vale_/);
   assert.match(templateWorkflow, /npx qc prose --base "origin\/\$GITHUB_BASE_REF" --pr-body-event/);
 });
@@ -151,8 +151,8 @@ test("the kit's own CI installs Vale on the ubuntu leg, so the real-Vale test ru
   assert.ok(order < steps.findIndex((step) => step.run === "pnpm test"), "Vale is installed before the tests run");
 });
 
-test("the README and the enforcement page state that an alert lands on the line where a sentence starts", () => {
-  const readme = readFileSync(path.resolve(vale, "../../../../README.md"), "utf8");
+test("the reference and the enforcement page state that an alert lands on the line where a sentence starts", () => {
+  const readme = readFileSync(path.resolve(vale, "../../../../docs/reference.md"), "utf8");
   const enforcement = readFileSync(path.join(vale, "../docs/enforcement.md"), "utf8");
   for (const text of [readme, enforcement]) assert.match(text.replace(/\s+/g, " "), /alert lands on the line where the sentence or phrase starts, so an edit to a later line of it is not judged/);
 });
