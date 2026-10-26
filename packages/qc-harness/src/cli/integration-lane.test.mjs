@@ -5,8 +5,9 @@ import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { integrationLane, REGENERATE_SUBJECT } from "./integration-lane.mjs";
+import { mergeVerdict } from "./merge-guard.mjs";
 
-function integrationRepo(t, { config = {}, conflict = false } = {}) {
+function integrationRepo(t, { config = { generated: { globs: ["generated.txt"] } }, conflict = false } = {}) {
   const root = realpathSync.native(mkdtempSync(path.join(tmpdir(), "qc-integration-lane-")));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const git = (...args) => execFileSync("git", args, { cwd: root, stdio: "pipe", encoding: "utf8" }).trim();
@@ -104,6 +105,7 @@ test("hand-resolved merges need an approved head at or after the merge", (t) => 
 test("other branches bypass the integration lane", (t) => {
   const repo = integrationRepo(t);
   assert.deepEqual(judge(repo, [], { headBranch: "feat/8-other" }), { applies: false });
+  assert.deepEqual(judge(repo, [], { headBranch: "fix/12-integration-tests" }), { applies: false });
 });
 
 test("the base configuration can disable integration reviews", (t) => {
@@ -149,4 +151,63 @@ test("a failed history read reports a git problem", (t) => {
   const result = judge(repo, [], { sha: "invalid" });
   assert.equal(result.applies, true);
   assert.match(result.problem, /git cannot/);
+});
+
+test("every dispatched scope blocks until it approves across head changes", (t) => {
+  const repo = integrationRepo(t);
+  const head = repo.mergeHeads[1];
+  const records = [
+    ...["a", "b"].map((scope) => ({ type: "dispatch", branch: repo.headBranch, head, scope })),
+    approved(head, "a"),
+  ];
+  const lane = (merge) => {
+    const result = judge(repo, records, { sha: merge.sha });
+    return result.applies ? { problem: result.problem, note: "lane" } : null;
+  };
+  const refusal = (sha) => mergeVerdict([{ sha }], records, "branch", lane).refusal;
+  assert.match(refusal(head), /scope "b"/);
+  assert.match(refusal(repo.sha) ?? "", /scope "b"/);
+  repo.git("switch", "-q", "main");
+  repo.baseOid = repo.commit("base-change.txt", "base update\n", "update the base");
+  repo.git("switch", "-q", repo.headBranch);
+  repo.git("merge", "--no-ff", "-q", "-m", "merge the base", "main");
+  const sha = repo.git("rev-parse", "HEAD");
+  assert.match(refusal(sha) ?? "", /scope "b"/);
+  assert.match(judge(repo, [...records, approved(head, "b", "task")], { sha }).problem ?? "", /scope "b"/);
+  assert.match(judge(repo, [...records, approved(repo.baseOid, "b")], { sha }).problem ?? "", /scope "b"/);
+  assert.equal(judge(repo, [...records, approved(head, "b")], { sha }).problem, null);
+  assert.match(judge(repo, [...records, approved(head, "b"), { ...approved(sha, "b"), verdict: "CHANGES_REQUIRED" }], { sha }).problem, /scope "b"/);
+});
+
+test("dispatches on other branches do not require their scopes", (t) => {
+  const repo = integrationRepo(t);
+  const records = [approved(repo.sha, "a"), { type: "dispatch", branch: "feat/8-integration", head: repo.sha, scope: "b" }];
+  assert.equal(judge(repo, records).problem, null);
+});
+
+test("a regenerate title needs coverage when any changed file is outside the base globs", (t) => {
+  const repo = integrationRepo(t);
+  const records = repo.taskHeads.map((sha) => approved(sha));
+  repo.commit("generated.txt", "new generated output\n", "prepare generated output");
+  repo.git("reset", "--soft", "HEAD^");
+  const sha = repo.commit("x.js", "unreviewed code\n", REGENERATE_SUBJECT);
+  assert.match(judge(repo, records, { sha }).problem ?? "", /hold no APPROVED review/);
+  assert.equal(judge(repo, [...records, approved(sha)], { sha }).problem, null);
+});
+
+test("short shas count for approvals and newer scope rejections", (t) => {
+  const repo = integrationRepo(t);
+  const records = [
+    approved(repo.taskHeads[0].slice(0, 7), "api"),
+    { ...approved(repo.mergeHeads[0].slice(0, 7), "api"), verdict: "CHANGES_REQUIRED" },
+    approved(repo.sha.slice(0, 7), "ui"),
+  ];
+  assert.match(judge(repo, records).problem ?? "", /scope "api"/);
+  assert.equal(judge(repo, [...records, approved(repo.sha.slice(0, 7), "api")]).problem, null);
+});
+
+test("regenerate paths keep leading whitespace when the lane checks the globs", (t) => {
+  const repo = integrationRepo(t);
+  const sha = repo.commit(" generated.txt", "source outside the generated globs\n", REGENERATE_SUBJECT);
+  assert.match(judge(repo, repo.taskHeads.map((head) => approved(head)), { sha }).problem ?? "", /hold no APPROVED review/);
 });

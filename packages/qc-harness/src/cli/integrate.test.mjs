@@ -83,6 +83,69 @@ test("--pr opens a draft pull request and strips origin from the base", async (t
   assert.ok(io.events.includes("pr     https://github.com/example/repo/pull/9"));
 });
 
+test("--pr strips another remote from the base", async (t) => {
+  const dir = batchWithOrigin(t);
+  git(dir, "remote", "add", "upstream", git(dir, "remote", "get-url", "origin"));
+  git(dir, "push", "origin", "main");
+  git(dir, "fetch", "upstream");
+  const io = pullRequestIo(dir);
+  assert.equal(await runIntegrate(config(dir), ["--pr", "--issue", "7", "--from", "upstream/main", "feat/1-a"], io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+});
+
+test("--pr from a sha uses integrate.base or main", async (t) => {
+  for (const base of [undefined, "origin/release"]) {
+    await t.test(String(base), async (t) => {
+      const dir = batchWithOrigin(t);
+      git(dir, "branch", "release", "main");
+      git(dir, "push", "origin", "release");
+      const settings = { ...config(dir), integrate: { base } };
+      const io = pullRequestIo(dir);
+      assert.equal(await runIntegrate(settings, ["--pr", "--issue", "7", "--from", git(dir, "rev-parse", "main"), "feat/1-a"], io), 0);
+      const calls = structuredClone(pullRequestCalls);
+      calls[1][calls[1].indexOf("--base") + 1] = base ? "release" : "main";
+      assert.deepEqual(io.events.filter(Array.isArray), calls);
+    });
+  }
+});
+
+test("--pr rejects a base that is not a branch before any gh call", async (t) => {
+  for (const base of ["HEAD~1", "HEAD", "v1", "bad..branch", "sha"]) {
+    await t.test(base, async (t) => {
+      const dir = batchWithOrigin(t);
+      git(dir, "tag", "v1", "main");
+      const settings = { ...config(dir), integrate: { base: base === "sha" ? git(dir, "rev-parse", "main") : base } };
+      const errors = [];
+      t.mock.method(console, "error", quiet(errors));
+      const io = pullRequestIo(dir);
+      const before = git(dir, "rev-parse", "HEAD");
+      assert.equal(await runIntegrate(settings, ["--pr", "--issue", "7", "--from", git(dir, "rev-parse", "main"), "feat/1-a"], io), 1);
+      assert.match(errors.join("\n"), /base.*branch/i);
+      assert.deepEqual(io.events, []);
+      assert.equal(git(dir, "rev-parse", "HEAD"), before);
+    });
+  }
+});
+
+test("integrate refuses every other author before merging that branch", async (t) => {
+  const dir = batch(t);
+  git(dir, "switch", "-q", "feat/2-b");
+  for (const email of ["first@example.com", "second@example.com"]) {
+    git(dir, "config", "user.email", email);
+    commitFile(dir, `${email}.txt`, `${email}\n`);
+  }
+  git(dir, "config", "user.email", "qc@example.com");
+  git(dir, "switch", "-q", "main");
+  const errors = [];
+  t.mock.method(console, "error", quiet(errors));
+  assert.equal(await runIntegrate(config(dir, null), ["--issue", "7", "--from", "main", "feat/1-a", "feat/2-b"], { say: () => {}, run }), 1);
+  for (const value of ["feat/2-b", "first@example.com", "second@example.com"]) assert.ok(errors.join("\n").includes(value));
+  git(dir, "merge-base", "--is-ancestor", "feat/1-a", "HEAD");
+  assert.throws(() => git(dir, "merge-base", "--is-ancestor", "feat/2-b", "HEAD"));
+  assert.equal(existsSync(path.join(dir, "first@example.com.txt")), false);
+  assert.equal(git(dir, "status", "--porcelain"), "");
+});
+
 test("--pr reports an existing pull request without creating another", async (t) => {
   const dir = batchWithOrigin(t);
   const io = pullRequestIo(dir, { view: '{"number":9}' });

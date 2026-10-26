@@ -70,7 +70,7 @@ test("integrate defaults push every three merges", () => {
   const config = load(here);
   assert.equal(config.integrate.ciEvery, 3);
   assert.equal(config.integrate.push, true);
-  assert.equal(config.integrate.branchPattern, "^[a-z]+/[0-9]+-integration");
+  assert.equal(config.integrate.branchPattern, "^[a-z]+/[0-9]+-integration$");
   assert.equal(config.integrate.review, true);
 });
 
@@ -80,12 +80,12 @@ test("integrate configuration preserves omitted defaults", (t) => {
   writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { ciEvery: 2 } }));
   assert.equal(load(root).integrate.ciEvery, 2);
   assert.equal(load(root).integrate.push, true);
-  assert.equal(load(root).integrate.branchPattern, "^[a-z]+/[0-9]+-integration");
+  assert.equal(load(root).integrate.branchPattern, "^[a-z]+/[0-9]+-integration$");
   assert.equal(load(root).integrate.review, true);
   writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { push: false } }));
   assert.equal(load(root).integrate.ciEvery, 3);
   assert.equal(load(root).integrate.push, false);
-  assert.equal(load(root).integrate.branchPattern, "^[a-z]+/[0-9]+-integration");
+  assert.equal(load(root).integrate.branchPattern, "^[a-z]+/[0-9]+-integration$");
   assert.equal(load(root).integrate.review, true);
   writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { branchPattern: "^release/", review: false } }));
   assert.equal(load(root).integrate.branchPattern, "^release/");

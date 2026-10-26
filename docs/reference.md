@@ -1394,12 +1394,22 @@ each reference to an old name. A second run changes nothing.
 related branches. It merges each branch in order and renumbers its migrations. It regenerates files
 before each push, pushes after every three merges by default, and pushes any remainder at the end.
 Add `--pr` to open one draft pull request after the first push; an existing pull request stays open.
+The pull request base strips the remote prefix from a branch ref, such as `origin/main` or `upstream/main`.
+With `--from <sha>`, it uses `integrate.base`, or `main` when that setting is absent.
+The base must name a branch; an invalid base stops the command before any GitHub call.
+Use `--type` and `--slug` to change the integration branch name.
+A custom slug outside `integrate.branchPattern` skips the integration lane and needs the usual head review.
+
+Each branch must belong to the developer whose email appears in the local `git config user.email`.
+The command checks every author email in `<base>..<branch>` before it merges that branch.
+It refuses a branch with other authors and lists their emails and the branch name.
+It keeps branches that it merged before that refusal.
 
 | Key | Default | Behavior |
 |---|---|---|
 | `integrate.ciEvery` | `3` | Push after this many merges, then push any remainder. |
 | `integrate.push` | `true` | Push to `origin` when that remote exists; `false` keeps the batch local. |
-| `integrate.branchPattern` | `^[a-z]+/[0-9]+-integration` | Select the branches that use the integration lane. |
+| `integrate.branchPattern` | `^[a-z]+/[0-9]+-integration$` | Select the branches that use the integration lane. |
 | `integrate.review` | `true` | Enable the integration lane for the merge guard. |
 
 The CI template runs on pull requests and pushes to `main` or `master`.
@@ -1407,7 +1417,13 @@ Edit the trunk list for another base branch. A task branch push with no pull req
 Each push to an open integration pull request starts CI and cancels its stale run.
 
 The integration lane accepts per-feature `Scope:` reviews on the integration head.
-Every commit must fall under an approved review, except regenerate commits and clean merges.
+Each reviewer needs green CI on the head.
+Every scope dispatched on the head branch needs an `APPROVED` verdict of the merge guard's review kind.
+The newest verdict for each scope in the integration history decides; a missing verdict or a newer `CHANGES_REQUIRED` blocks the lane.
+Short verdict SHAs match their full commit SHAs.
+Every commit needs coverage from an approved review, except regenerate commits that touch only generated files and clean merges.
+A regenerate commit needs the exact title `chore: regenerate the generated files`.
+Every file it changes must match `generated.globs` from the base configuration.
 A hand-resolved merge needs a review after that merge; give its conflict resolution a separate scope.
 A conflict in files that `generated.globs` matches uses `generated.command`.
 Any other conflict stops the run with the file list.
