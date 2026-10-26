@@ -262,24 +262,27 @@ async function runJob(argv, {
     }
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     const line = limitLineOf(result.tail ?? "", prompt);
-    if (!line) rmSync(limitFileOf(env), { force: true });
+    if (!line) clearLimit(limitFileOf(env), say);
     if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
     if (line) {
       const recordedAt = now();
       const reset = resetTimeOf(line, recordedAt);
+      if (settings.waitReset) resetDeadline ??= recordedAt + settings.maxHours * 60 * 60 * 1000;
       try {
-        writeLimit(limitFileOf(env), { until: reset ?? recordedAt + 3_600_000, source: reset === null ? "default" : "codex" }, recordedAt);
+        writeLimit(limitFileOf(env), {
+          until: Math.max(reset ?? recordedAt + 3_600_000, resetDeadline ?? 0),
+          source: reset === null ? "default" : "codex",
+        }, recordedAt);
       } catch (error) {
         say(`qc codex-implement: cannot write the limit state: ${error.message}`);
       }
       if (!settings.waitReset) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
       const hit = recordedAt;
-      resetDeadline ??= hit + settings.maxHours * 60 * 60 * 1000;
       const remaining = resetDeadline - hit;
       if (remaining <= 0 || !await waitForCodexReset({
         since: new Date(hit).toISOString(), maxHours: remaining / (60 * 60 * 1000), fetch, now, sleep, say,
       })) return finish(say, "Codex reset wait bound reached", 2);
-      rmSync(limitFileOf(env), { force: true });
+      clearLimit(limitFileOf(env), say);
       // A usage limit leaves the run unfinished, so its retry keeps the same run allowance.
       count -= 1;
     }
@@ -291,6 +294,15 @@ async function runJob(argv, {
 function limitLineOf(tail, prompt) {
   const echoed = new Set(prompt.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
   return tail.split(/\r?\n/).find((line) => LIMIT.test(line) && !echoed.has(line.trim())) ?? null;
+}
+
+/** Branch: reports a state removal error without changing the run result. */
+function clearLimit(file, say) {
+  try {
+    rmSync(file, { force: true });
+  } catch (error) {
+    say(`qc codex-implement: cannot clear the limit state: ${error.message}`);
+  }
 }
 
 function finish(say, message, code) {

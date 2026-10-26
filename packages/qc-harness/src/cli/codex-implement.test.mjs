@@ -87,6 +87,78 @@ for (const status of [0, 1]) {
   });
 }
 
+test("a failed limit clear preserves a finished run and reports a note", async (t) => {
+  const { argv, dir, progress } = setup(t);
+  const file = path.join(dir, "blocked-state");
+  mkdirSync(file);
+  const said = [];
+  const code = await runCodexImplement(argv, {
+    env: { QC_CODEX_LIMIT_FILE: file }, say: (line) => said.push(line), out: quiet,
+    run: async () => {
+      appendFileSync(progress, `${DONE_MARKER}\n`);
+      return { status: 0, tail: "done" };
+    },
+  });
+  assert.equal(code, 0);
+  assert.match(said.join("\n"), /cannot clear the limit state:/);
+});
+
+test("a failed limit clear after a reset preserves the retry", async (t) => {
+  const { argv, dir, progress } = setup(t);
+  const file = path.join(dir, "limit.json");
+  const timer = resetClock();
+  const said = [];
+  let runs = 0;
+  const code = await runCodexImplement([...argv, "--wait-reset"], {
+    ...timer, env: { QC_CODEX_LIMIT_FILE: file }, say: (line) => said.push(line), out: quiet,
+    run: async () => {
+      if (++runs === 1) return { status: 2, tail: "usage limit" };
+      appendFileSync(progress, `${DONE_MARKER}\n`);
+      return { status: 0, tail: "done" };
+    },
+    fetch: async () => {
+      rmSync(file);
+      mkdirSync(file);
+      return { ok: true, json: async () => ({ data: { latest_reset: {
+        announced_at: new Date(timer.now() + 1000).toISOString(),
+      } } }) };
+    },
+  });
+  assert.equal(code, 0);
+  assert.equal(runs, 2);
+  assert.match(said.join("\n"), /cannot clear the limit state:/);
+});
+
+for (const tail of ["usage limit", "usage limit. Try again in 20s"]) {
+  test(`the limit state lasts through a reset wait beyond one hour: ${tail}`, async (t) => {
+    const { argv, dir, progress } = setup(t);
+    const file = path.join(dir, "limit.json");
+    const timer = resetClock();
+    const start = timer.now();
+    const states = [];
+    let runs = 0;
+    const code = await runCodexImplement([...argv, "--wait-reset"], {
+      ...timer, env: { QC_CODEX_LIMIT_FILE: file }, say: quiet, out: quiet,
+      run: async () => {
+        if (++runs === 1) return { status: 2, tail };
+        appendFileSync(progress, `${DONE_MARKER}\n`);
+        return { status: 0, tail: "done" };
+      },
+      fetch: async () => {
+        states.push(readLimit(file, timer.now()));
+        return { ok: true, json: async () => ({ data: { latest_reset: {
+          announced_at: new Date(start + (timer.now() > start + 3_600_000 ? 1000 : 0)).toISOString(),
+        } } }) };
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(runs, 2);
+    assert.equal(states.length, 6);
+    assert.ok(states.every((state) => state?.until.getTime() === start + 6 * 3_600_000));
+    assert.equal(existsSync(file), false);
+  });
+}
+
 test("one limit hit shares its recorded timestamp with the reset wait", async (t) => {
   const { argv, progress } = setup(t);
   let time = T;

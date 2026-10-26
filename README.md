@@ -95,6 +95,7 @@ Failed or running CI lets the next implementer continue the task when its prompt
 
 `Fix: ci` needs known-red CI on the current head.
 `Fix: review` needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop.
+The newest stop needs no review if the prompt continues its `HANDOFF:`.
 A merge that requires branch reviews waits for approval of every dispatched scope.
 A merge that requires task reviews uses task verdicts.
 

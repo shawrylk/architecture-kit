@@ -25,7 +25,8 @@ export function roleBudgetVerdict({ role, tokens, budget, call, state }) {
     if (isHandoffCall(call)) return null;
     const steps = role === "reviewer"
       ? "Put the full review in your final report. If files remain, open with `VERDICT: CHANGES_REQUIRED <sha>`, then add a line " +
-        "`UNREVIEWED:` listing the files left. The controller sends a fresh reviewer with `Scope:` for those files."
+        "`UNREVIEWED:` listing the files left. The controller sends a fresh reviewer with `Scope:` for those files. " +
+        "The partial reviewer's scope needs a new APPROVED review on the head before merge."
       : HANDOFF_STEPS;
     return {
       hookSpecificOutput: {

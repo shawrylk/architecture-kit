@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -16,11 +16,25 @@ function setup(t) {
   return { dir, file: path.join(dir, "state", "limit.json") };
 }
 
-test("limitFileOf uses the override or the architecture-kit folder in the temporary directory", async () => {
+test("limitFileOf uses the override or its private folder in the temporary directory", async () => {
   const { limitFileOf } = await limit();
   assert.equal(limitFileOf({ QC_CODEX_LIMIT_FILE: "custom.json" }, "tmp"), "custom.json");
-  assert.equal(limitFileOf({}, "tmp"), path.join("tmp", "architecture-kit", "codex-limit.json"));
-  assert.equal(limitFileOf({ QC_CODEX_LIMIT_FILE: "" }, "tmp"), path.join("tmp", "architecture-kit", "codex-limit.json"));
+  const folder = `codex-${process.getuid?.() ?? os.userInfo().username}`;
+  assert.equal(limitFileOf({}, "tmp"), path.join("tmp", "architecture-kit", folder, "codex-limit.json"));
+  assert.equal(limitFileOf({ QC_CODEX_LIMIT_FILE: "" }, "tmp"), path.join("tmp", "architecture-kit", folder, "codex-limit.json"));
+});
+
+test("the private limit folder works under a group-writable shared parent", { skip: process.platform === "win32" }, async (t) => {
+  const { limitFileOf, readLimit, writeLimit } = await limit();
+  const { dir } = setup(t);
+  const parent = path.join(dir, "architecture-kit");
+  mkdirSync(parent);
+  chmodSync(parent, 0o775);
+  const file = limitFileOf({}, dir);
+  writeLimit(file, { until: T + 1000, source: "codex" }, T);
+  assert.deepEqual(readLimit(file, T), { until: new Date(T + 1000), source: "codex" });
+  assert.equal(statSync(parent).mode & 0o777, 0o775);
+  assert.equal(statSync(path.dirname(file)).mode & 0o777, 0o700);
 });
 
 test("resetTimeOf adds every relative day, hour, and minute unit regardless of case", async () => {
@@ -43,6 +57,13 @@ test("resetTimeOf parses seconds and abbreviated relative units", async () => {
     assert.equal(resetTimeOf(`rate limit: try again in ${duration}`, T), T + milliseconds, duration);
   }
 });
+
+for (const [duration, seconds] of [["1.898s", 2], ["500ms", 1], ["6m0s", 360], ["1h2m3s", 3723]]) {
+  test(`resetTimeOf parses ${duration} and rounds up to a whole second`, async () => {
+    const { resetTimeOf } = await limit();
+    assert.equal(resetTimeOf(`try again in ${duration}`, T), T + seconds * 1000);
+  });
+}
 
 test("resetTimeOf uses today or tomorrow for a bare clock time", async () => {
   const { resetTimeOf } = await limit();

@@ -156,7 +156,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - Read the failed step and the assertion before you act. Fetch the log of a job with `gh api repos/<owner>/<repo>/actions/jobs/<job id>/logs`.
 - Rerun a known flake once with `gh run rerun <run id> --failed`.
 - A runner or Docker failure that comes back, or a runner that stays offline, needs the user. Never change the CI routing, and never skip CI.
-- A real failure is a Codex brief. A Claude implementer for a CI fix carries the prompt line `Fix: ci`, which needs known-red CI on the current head. A review fix carries `Fix: review`, which needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop.
+- A real failure is a Codex brief. A Claude implementer for a CI fix carries the prompt line `Fix: ci`, which needs known-red CI on the current head. A review fix carries `Fix: review`, which needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop. The newest stop needs no review if the prompt continues its `HANDOFF:`.
 - Give each fix round to a fresh agent. Split a large round by file ownership: one worktree and sub-branch for each owner, merged into the branch by the controller.
 - `qc retry-failed` reruns the failed files of a local run once; a flake in CI gets one `gh run rerun <run id> --failed`.
 

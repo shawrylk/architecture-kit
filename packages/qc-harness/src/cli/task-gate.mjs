@@ -34,7 +34,8 @@ const fixRoundRefusal = (branch, sha, type) =>
 const unreviewedRefusal = (branch, stopHead, head) =>
   `Task gate: an implementer stopped on ${branch} at ${short(stopHead)}, and no review in the ledger names ${short(stopHead)} or a later commit. ` +
   `Dispatch the task reviewer on ${short(head)} first; its first line \`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>\` records the review. ` +
-  `The review runs once CI on the head is green: when CI on ${short(head)} has failed or still runs, the next implementer continues the task and this gate passes it. ` +
+  `The review runs once CI on the head is green. ` +
+  `The gate passes only a prompt with no \`Fix:\` line when CI on ${short(head)} has failed or still runs. ` +
   `If that stop handed off, its report named \`HANDOFF: <note path>\`; the same line in the next implementer prompt continues the task. ` +
   `\`qc ledger ${branch}\` lists what is recorded. A CI fix adds a line \`Fix: ci\`, and a review fix adds \`Fix: review\`.`;
 
@@ -81,7 +82,7 @@ export function continuedStop(records, branch, handoff) {
   return reviewed ? null : stop;
 }
 
-/** A CI fix needs known-red CI; a review fix needs CHANGES_REQUIRED and a review of every implementer stop. */
+/** A CI fix needs known-red CI; a review fix needs CHANGES_REQUIRED and reviews of stops, except the newest continued HANDOFF. */
 function fixVerdict({ records, branch, head, fix, ciStatus, cwd, git, handoff }) {
   if (fix === "ci") {
     const state = ciStatus(head);

@@ -59,7 +59,9 @@ export function reportProblems(role, text, verdict, lookup, named, handoff = nul
     return problems;
   }
   if (!verdict) return ["a first line `VERDICT: APPROVED <sha>` or `VERDICT: CHANGES_REQUIRED <sha>`, where <sha> is the commit you reviewed"];
-  if (verdict.verdict === "APPROVED" && /^[ \t]*UNREVIEWED:[ \t]*\S[^\r\n]*$/m.test(text)) {
+  const unreviewedFiles = [...text.matchAll(/^[ \t]*UNREVIEWED:[ \t]*(\S[^\r\n]*)$/gm)]
+    .some((match) => match[1].trim().toLowerCase() !== "none");
+  if (verdict.verdict === "APPROVED" && unreviewedFiles) {
     return ["a CHANGES_REQUIRED verdict when UNREVIEWED: lists files"];
   }
   if (lookup?.unknown && named) return [`a sha this repository holds, and ${verdict.sha} names no commit (git rev-parse)`];

@@ -442,9 +442,9 @@ The plugin ships four subagent types for `superpowers:subagent-driven-developmen
 | `architecture:sdd-implementer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
 | `architecture:sdd-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
 | `architecture:sdd-branch-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
-| `architecture:codex` | `haiku` | none | `Bash` | starts one `qc codex-implement` job in the background and waits on it in bounded steps, so the job shows in the agent panel |
+| `architecture:codex` | `haiku` | none | `Bash` | requires the description prefix `Codex <model> · `; starts one `qc codex-implement` job and waits in bounded steps |
 
-The watcher is not a role: it writes no code and reads no source. Dispatch it with `model: haiku` (or `sonnet`); the guard accepts both for `architecture:codex`. Its wait step polls the wrapper file with `until grep -q`, because `tail -f | grep -m1` holds the pipe open and makes every step last the full timeout.
+The watcher is not a role: it writes no code and reads no source. Dispatch it with `model: haiku` (or `sonnet`); the guard accepts both for `architecture:codex`. Its description starts with `Codex <model> · `, where `<model>` names the Codex model. Its wait step polls the wrapper file with `until grep -q`, because `tail -f | grep -m1` holds the pipe open and makes every step last the full timeout.
 
 Every role says `model: inherit` and `effort: high`, so a subagent runs on the model family of
 the session that dispatches it. The dispatch guard picks each role's models from the runtime:
@@ -645,6 +645,7 @@ The reviewer puts the full review in its final report.
 If files remain, it opens with `VERDICT: CHANGES_REQUIRED <sha>` and adds an `UNREVIEWED:` line that lists them.
 The report gate refuses `APPROVED` when `UNREVIEWED:` lists files.
 The controller sends a fresh reviewer with `Scope:` for those files.
+The partial reviewer's scope needs a new `APPROVED` review on the head before merge.
 
 `qc budget report` reads the agent ledger and reports the median and 90th percentile of context at the end of each task.
 It also reports the share of tasks whose `peakContext` reaches `handoffAt`.
@@ -709,12 +710,16 @@ The runner validates only `budgets.codex`; a bad budget for another role leaves 
 
 An unfinished run counts as limited only when its output contains a limit line that the prompt did not echo.
 A bare status `2` counts as a failed run and consumes the run allowance. The restart loop continues while runs remain.
-On a limit line, the runner writes `<os.tmpdir()>/architecture-kit/codex-limit.json`, including during `--wait-reset`.
+On a limit line, the runner writes `<os.tmpdir()>/architecture-kit/codex-<uid>/codex-limit.json`, including during `--wait-reset`.
+On POSIX, `<uid>` is the user ID; Windows uses the login name. The private folder has mode `0o700` on POSIX.
 Set a non-empty `QC_CODEX_LIMIT_FILE` to use another path.
 The JSON stores `until`, `source`, and `recordedAt`, with both times as ISO strings.
-The `codex` source uses the reset time from Codex, including relative seconds, minutes, hours, and days.
+The `codex` source parses relative days, hours, minutes, seconds, and milliseconds, including `1.898s`, `500ms`, `6m0s`, and `1h2m3s`.
+It rounds a fractional duration up to the next whole second.
 The `default` source uses 60 minutes after the limit when the line gives no valid reset time.
+With `--wait-reset`, either source keeps the state until at least the job's reset wait bound.
 The state means Codex is limited now. The runner deletes it after a reset and after every run without a limit line.
+If deletion fails, the runner writes a note to stderr and keeps the run's exit code.
 `qc codex status` prints `Codex: free` for missing, invalid, or expired state.
 For an active limit, it prints the ISO reset time and its source. The status command reads no configuration.
 
@@ -915,6 +920,7 @@ The keys go under `swarm.review`. A list replaces its default, and `reviewerType
 
 An implementer prompt marks its purpose with `Fix: ci` or `Fix: review`, and the ledger records it.
 A CI fix requires known-red CI. A review fix requires a review of every implementer stop.
+The newest stop needs no review if the prompt continues its `HANDOFF:`.
 
 Several branch reviewers can review one head at once, each with its own prompt line `Scope: <name>`.
 The one-review rule counts each scope on its own.

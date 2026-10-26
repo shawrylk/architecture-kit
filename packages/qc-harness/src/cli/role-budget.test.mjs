@@ -77,6 +77,7 @@ test("each role closes work calls at handoffAt and permits the hand-off", () => 
 test("a reviewer hand-off requires CHANGES_REQUIRED for files left unreviewed", () => {
   const output = roleBudgetVerdict({ role: "reviewer", budget, call, state: {}, tokens: 150_000 });
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /VERDICT: CHANGES_REQUIRED <sha>.*UNREVIEWED:/);
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /partial reviewer's scope needs a new APPROVED review on the head before merge/);
 });
 
 test("a reviewer hand-off carries the full review in the final report", () => {

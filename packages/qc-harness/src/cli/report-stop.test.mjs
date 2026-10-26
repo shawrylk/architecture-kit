@@ -118,6 +118,17 @@ test("a partial review requires CHANGES_REQUIRED for every reviewer role", () =>
   }
 });
 
+for (const value of ["none", "NONE", "NoNe"]) {
+  test(`UNREVIEWED: ${value} is an empty list for every reviewer role`, () => {
+    for (const role of ["task", "branch", "architecture", "security"]) {
+      const report = `VERDICT: APPROVED abc1234\nRED-CHECKED: the test failed\n  UNREVIEWED: ${value} \t\n`;
+      assert.deepEqual(reportProblems(role, report, verdictOf(report), null, false), []);
+      const partial = `${report}UNREVIEWED: x.mjs\n`;
+      assert.match(reportProblems(role, partial, verdictOf(partial), null, false).join(" "), /CHANGES_REQUIRED.*UNREVIEWED/);
+    }
+  });
+}
+
 test("a task APPROVED needs a RED-CHECKED line, and CHANGES_REQUIRED does not", (t) => {
   const ws = workspace(t);
   const sha = ws.head.slice(0, 7);
