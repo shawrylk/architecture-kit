@@ -1,4 +1,4 @@
-// A branch that judges the newest run of each check suite and name.
+// A branch that judges the newest check for each workflow and name.
 
 const GREEN = new Set(["success", "neutral", "skipped"]);
 
@@ -22,9 +22,13 @@ export function pendingCiReason(names, workflowRuns = [], requiredChecks = []) {
 }
 
 export function checkRunsState(runs, { workflowRuns = [], requiredChecks = [] } = {}) {
+  const workflowBySuite = new Map(workflowRuns.filter((run) => run.path && run.check_suite_id != null)
+    .map((run) => [run.check_suite_id, run.path]));
   const newestByCheck = new Map();
   for (const entry of runs) {
-    const key = JSON.stringify([entry.check_suite?.id, entry.name]);
+    const suite = entry.check_suite?.id;
+    const workflow = workflowBySuite.get(suite);
+    const key = JSON.stringify([workflow === undefined ? ["suite", suite] : ["workflow", workflow], entry.name]);
     const current = newestByCheck.get(key);
     const newer = current && entry.started_at && current.started_at && entry.started_at !== current.started_at
       ? entry.started_at > current.started_at

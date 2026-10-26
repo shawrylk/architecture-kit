@@ -51,16 +51,39 @@ test("unreadable workflow lists keep a green-looking head unknown", () => {
   }
 });
 
-test("ciState reads required checks from the checkout configuration", (t) => {
+test("unreadable workflows preserve pending and failed checks", () => {
+  for (const answer of [null, "not JSON", "{}", '[{"workflow_runs":[]},{}]']) {
+    for (const [status, conclusion] of [["in_progress", null], ["completed", "failure"]]) {
+      const gh = (args) => args[1].includes("/actions/runs") ? answer : reply(run("build", status, conclusion));
+      assert.deepEqual(ciState(SHA, "/c", { gh, origin: () => "o/r" }), {
+        reason: `CI on aaaaaaa: build ${status === "completed" ? "ended failure" : "is in_progress"}`,
+        unknown: null,
+        ...(status === "completed" ? {} : { pending: true }),
+      });
+    }
+  }
+});
+
+test("workflow paths let a newer suite supersede a cancelled suite", () => {
+  const checks = [
+    { ...run("build", "completed", "cancelled"), check_suite: { id: 1 }, id: 1 },
+    { ...run("build", "completed", "success"), check_suite: { id: 2 }, id: 2 },
+  ];
+  const workflows = checks.map((check) => ({ check_suite_id: check.check_suite.id, path: ".github/workflows/ci.yml", head_sha: SHA, status: "completed" }));
+  assert.deepEqual(ciState(SHA, "/c", { gh: ciGh(checks, { workflow_runs: workflows }), origin: () => "o/r" }), { reason: null, unknown: null });
+});
+
+test("ciState uses caller-required checks and ignores invalid checkout configuration", (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-ci-required-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ ci: { requiredChecks: ["build"] } }));
+  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ ci: null }));
   for (const checks of [[], [run("lint", "completed", "success")]]) {
-    const state = ciState(SHA, cwd, { gh: ciGh(checks, [{ workflow_runs: [] }]), origin: () => "o/r" });
+    const state = ciState(SHA, cwd, { gh: ciGh(checks, [{ workflow_runs: [] }]), origin: () => "o/r", requiredChecks: ["build"] });
     assert.equal(state.pending, true);
     assert.equal(state.reason, "CI on aaaaaaa: build is missing");
   }
   assert.deepEqual(ciState(SHA, cwd, { gh: ciGh([run("build", "completed", "success")], [{ workflow_runs: [] }]), origin: () => "o/r" }), { reason: null, unknown: null });
+  assert.deepEqual(ciState(SHA, cwd, { gh: ciGh([run("lint", "completed", "success")], [{ workflow_runs: [] }]), origin: () => "o/r" }), { reason: null, unknown: null });
 });
 
 test("checks with the same name in different suites remain separate", () => {
@@ -163,7 +186,8 @@ test("ciNotGreen reads the check runs of the sha from the repository of origin",
   };
   const reason = ciNotGreen(SHA, "/checkout", { gh, origin: () => "o/r" });
   assert.match(reason ?? "", /^CI on aaaaaaa:.*build.*failure/);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].args[1], /actions\/runs\?head_sha=/);
   assert.equal(calls[0].args[0], "api");
   assert.ok(calls[0].args[1].startsWith(`repos/o/r/commits/${SHA}/check-runs`));
   assert.equal(calls[0].options.cwd, "/checkout");

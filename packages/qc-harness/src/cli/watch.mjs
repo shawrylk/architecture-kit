@@ -6,6 +6,7 @@ import path from "node:path";
 import { parseApiList, runGhResult } from "./gh-run.mjs";
 import { checkVerdict, pendingCiReason } from "./check-verdict.mjs";
 import { load } from "../config.mjs";
+import { checkoutRootOf } from "./checkout-root.mjs";
 
 const DEFAULT_MAX_MINUTES = 55;
 const DEFAULT_INTERVAL_SECONDS = 60;
@@ -112,7 +113,8 @@ function pullRequestWatcher(number, { repo, gh, now, requiredChecks }) {
     if ([...queuedSince.values()].some((since) => at - since > QUEUED_LIMIT_MS)) return { state: "queued", detail: head, code: EXIT.QUEUED };
     if (states.length > 0 && states.every(([, state]) => state === "passed")) {
       const workflows = parseApiList(gh(["api", `repos/${repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate", "--slurp"]), "workflow_runs");
-      if (workflows === null || pendingCiReason(states.map(([name]) => name), workflows.filter((run) => run.head_sha === head), requiredChecks)) return null;
+      const checkNames = view.statusCheckRollup.filter((entry) => entry.__typename !== "StatusContext" && entry.context === undefined).map((entry) => entry.name);
+      if (workflows === null || pendingCiReason(checkNames, workflows.filter((run) => run.head_sha === head), requiredChecks)) return null;
       return { state: "passed", detail: head, code: EXIT.PASSED };
     }
     return null;
@@ -132,12 +134,13 @@ function codexWatcher(file) {
  * or the one that `@<sha>` pins. A run of an earlier head never fires.
  */
 function runWatcher({ workflow, branch, sha }, { repo, gh }) {
-  const headArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/commits/${encodeURIComponent(branch)}`, "--jq", ".sha"];
-  const listArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(branch)}&per_page=100`, "--paginate", "--slurp"];
+  const headArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/commits/${encodeURIComponent(sha ?? branch)}`, "--jq", ".sha"];
+  let pinnedHead = sha?.length === 40 ? sha : null;
   return () => {
-    const head = sha ?? gh(headArgs)?.trim();
+    const head = sha ? (pinnedHead ??= gh(headArgs)?.trim()) : gh(headArgs)?.trim();
     if (!head) return null;
-    const runs = parseApiList(gh(listArgs), "workflow_runs")?.filter((run) => typeof run.head_sha === "string" && run.head_sha.toLowerCase().startsWith(head.toLowerCase()));
+    const listArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(branch)}&head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate", "--slurp"];
+    const runs = parseApiList(gh(listArgs), "workflow_runs")?.filter((run) => typeof run.head_sha === "string" && run.head_sha.toLowerCase() === head.toLowerCase());
     if (!runs?.length || pendingCiReason([], runs)) return null;
     const latest = runs[0];
     return checkVerdict(latest) === "passed"
@@ -161,13 +164,23 @@ const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param deps `gh` returns stdout, null, or throws; `say`, `warn`, `now` and `sleep` replace the output and the clock, for a test.
  * @returns the exit code: 0 an item finished well, 4 the bound passed, 5 a check or run failed, 6 a job stayed queued.
  */
-export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep, requiredChecks = load().ci.requiredChecks } = {}) {
+export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep, requiredChecks, cwd = process.cwd() } = {}) {
   let parsed;
   try {
     parsed = parseWatchArgs(argv);
   } catch (error) {
     console.error(`${error.message}\n${USAGE}`);
     return EXIT.BAD_INPUT;
+  }
+  if (parsed.repo) requiredChecks = [];
+  if (requiredChecks === undefined) {
+    requiredChecks = [];
+    try {
+      const root = checkoutRootOf(cwd);
+      if (root) requiredChecks = load(root).ci.requiredChecks;
+    } catch (error) {
+      warn(`watch: cannot read qc.config.json: ${String(error?.message ?? error).split(/\r?\n/)[0]}`);
+    }
   }
   const read = (args) => {
     try {

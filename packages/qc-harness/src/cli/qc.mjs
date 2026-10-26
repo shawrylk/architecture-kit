@@ -141,7 +141,7 @@ async function main() {
     const { runGateSlot } = await import("./gate-slot.mjs");
     process.exit(await runGateSlot(rest));
   }
-  // The watcher reads no configuration either.
+  // The watcher handles unreadable configuration so the wait can continue.
   if (command === "watch") {
     const { runWatch } = await import("./watch.mjs");
     process.exit(await runWatch(rest));

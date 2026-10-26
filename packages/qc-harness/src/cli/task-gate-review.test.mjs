@@ -63,6 +63,20 @@ const reviewPrompt = (ws, more = "") => `Review the branch.\nWorktree: ${ws.link
 const judge = (ws, type, prompt, deps = { ciState: green }) => judgeTask(call(ws, type, prompt), ws.tmp, deps);
 const branchVerdict = (ws, sha) => appendRecord(ws.ledger, { type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "feat/1-x" });
 
+test("the task gate passes required checks from the repository despite an invalid worktree config", (t) => {
+  const ws = workspace(t, { swarm: { dispatch: {} }, ci: { requiredChecks: ["build"] } });
+  writeFileSync(path.join(ws.linked, "qc.config.json"), JSON.stringify({ ci: null }));
+  const seen = [];
+  const task = judge(ws, BRANCH_REVIEWER, reviewPrompt(ws), {
+    ciState: (sha, cwd, options) => {
+      seen.push({ sha, cwd, options });
+      return { reason: "CI on head: build is missing", unknown: null, pending: true };
+    },
+  });
+  assert.match(task.refusal ?? "", /build is missing/);
+  assert.deepEqual(seen, [{ sha: git(ws.linked, "rev-parse", "HEAD"), cwd: ws.linked, options: { requiredChecks: ["build"] } }]);
+});
+
 test("a reviewer whose head holds the tip of the base, with green CI, passes with no note", (t) => {
   const ws = workspace(t);
   const task = judge(ws, BRANCH_REVIEWER, reviewPrompt(ws));

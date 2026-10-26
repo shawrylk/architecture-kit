@@ -825,7 +825,7 @@ Its exit code says which:
 
 | Exit | Meaning |
 |---|---|
-| 0 | Every check is done and green, with no unfinished workflow or missing required check |
+| 0 | The first item finishes: a pull request has green checks and meets its requirements, a workflow passes, or a Codex wrapper reports an exit |
 | 1 | A bad argument |
 | 4 | `--max` minutes passed (55 by default) |
 | 5 | A completed check or workflow has a conclusion outside the green allowlist |
@@ -835,8 +835,14 @@ A new head starts the queued timers over. Run it as one background command for e
 Only `success`, `neutral`, and `skipped` are green; the same allowlist applies to pull-request rollup states.
 An unfinished workflow on the head keeps the pull-request watch pending, even before its first check appears.
 Workflow reads use `gh api --paginate`, so runs on later pages also count.
-Set `ci.requiredChecks` in `qc.config.json` to a list of check names that must appear before the pull-request watch passes.
+`--run` filters workflow runs by `head_sha=<head>` and branch on each poll.
+A short pinned SHA resolves through `commits/<sha>` before the workflow read; a full pinned SHA needs no commit read.
+`--run` ignores `ci.requiredChecks`; it watches the named workflow on the armed head.
+Set `ci.requiredChecks` in `qc.config.json` to the check-run names that must appear before the pull-request watch passes.
 The default is an empty list. A missing required check stays pending.
+The watch reads this configuration at the git top level of the current folder, only without `--repo`.
+An unreadable configuration writes one warning to stderr and uses an empty list.
+A commit status never counts as a required check, even when its context matches the configured name.
 
 With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
 The context watch speaks only to the main session, in every repository where `swarm.dispatch` is off.
@@ -935,7 +941,7 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
 | One branch review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an `sdd-branch-reviewer` dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch, or one whose sha no branch verdict on that branch names. Write the last head a branch review named, so the review reads only the increment. Key `oneBranchReview` |
 | Code-review skill | `PreToolUse` on `Skill`, `skill-guard.mjs` | a model call to a skill that `codeReviewSkills` names, bare or after a `plugin:` prefix. Dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review`, which never reaches this hook |
-| Green head | `PreToolUse` on `Agent` | a reviewer dispatch, task or branch kind, while CI on the head is red or running, by default. With `requireGreen: "not-red"`, unfinished checks pass with a note that names the check. A head with no check runs passes with a note, and so does a `gh` failure. Key `requireGreen` |
+| Green head | `PreToolUse` on `Agent` | a reviewer dispatch while CI is red or pending, including unfinished workflows and missing required checks. With `requireGreen: "not-red"`, pending CI passes with a note. An unreadable CI state passes with a note. An empty check list counts as unknown only when no workflow or required check is pending. Key `requireGreen` |
 | Current head | the same | a reviewer dispatch when the head lacks the tip of `worktree.base`. Merge the base into the branch first: Step 0 of a fix round. Key `requireBase` |
 | Product decisions | the same | an implementer dispatch with no `Brief: <path>` line, or one whose file is missing or unreadable, and a brief whose `## Product decisions` heading is absent or has no text under it. Ask the user in one question, then write the rulings, or the word `none`. Key `productDecisions` |
 | Round size | the same | nothing: it warns on an implementer brief with more numbered findings (lines that start `1. `) than `roundFindings`, or more distinct file paths than `roundFiles`. Split the round in parallel on disjoint paths, with sub-branches in separate worktrees. `0` turns a limit off |
@@ -956,12 +962,21 @@ The `swarm.review` keys that these rows name:
 
 With `requireGreen: "not-red"`, any completed check outside `success`, `neutral`, and `skipped` refuses the review, including `stale` and `startup_failure`.
 CI reads check runs and workflow runs with `gh api --paginate`.
-Check runs use `filter=all` and group by check suite and name; the newest run in each group decides.
+Check runs use `filter=all` and group by workflow and name; the newest run in each group decides.
+The workflow-run read maps each check suite to its workflow path.
+A suite with no matching workflow run keeps its suite id as the group key.
+A newer run of the same workflow supersedes a cancelled run on the same head.
 Two workflows with the same job name remain separate checks.
 A queued or running check allows the review with a note that names the check.
 An unfinished workflow on the head also counts as pending, even before it creates a check run.
 The optional `ci.requiredChecks` list in `qc.config.json` defaults to an empty list.
+It names check runs only. A commit status never counts as a required check.
 A missing required check counts as pending, including when no checks have appeared.
+The task gate reads this list from the configuration at the root that `workflowOfRepo` selects.
+The repository decides, never the checkout under review.
+`ciState` reads no configuration; each caller passes its required checks.
+A failed workflow read preserves pending or red checks and returns unknown only when the checks alone look green.
+A head with no checks passes with an unknown-state note only when no workflow or required check is pending.
 
 The hooks read these markers:
 
