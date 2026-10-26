@@ -10,7 +10,7 @@ import { checkFiles } from "./check-input.mjs";
 
 const USAGE = `qc — architecture gates
 
-  qc check [file...] [--files-from <path|->]
+  qc check [file...] [--files-from <path|->] [--since-push]
                            every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
   qc lint [--staged] [--base <ref>] [file...]
                            ESLint on the changed lines only: a problem on an untouched line never fails
@@ -110,7 +110,8 @@ async function main() {
 
   switch (command) {
     case "check": {
-      const { files, listed } = await checkFiles(rest);
+      const sincePush = rest.includes("--since-push");
+      const { files, listed } = await checkFiles(rest.filter((arg) => arg !== "--since-push"));
       // An empty list means nothing staged to check, not the full check.
       const { problems, lines } = listed && files.length === 0
         ? { problems: [], lines: [] }
@@ -125,7 +126,7 @@ async function main() {
       }
       for (const line of lines) console.log(line);
       const { runCheckCommands } = await import("./check-commands.mjs");
-      process.exitCode = await runCheckCommands(config);
+      process.exitCode = await runCheckCommands(config, { sincePush });
       return;
     }
     case "lint": {

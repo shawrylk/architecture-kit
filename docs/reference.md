@@ -99,7 +99,11 @@ to `featureRoots` when the root is missing there.
 npx qc check                 # every structural gate
 npx qc check <file>...       # the fast per-file path a post-edit hook takes
 npx qc check --files-from -  # the same path, with NUL-separated files on stdin; no length limit
+npx qc check --since-push
 ```
+
+`--since-push` runs `check.sincePush` (else `check.related`) with the files changed since the last push plus the staged files.
+It falls back to the merge base with `check.base` and prints a warning when the branch has no upstream.
 
 With files given, the check reads only the features that hold them, once each, and reports every
 problem before it exits 1. It also runs the per-file English rules on exactly those files.

@@ -287,6 +287,8 @@ export const defaults = {
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
     related: null,
+    // --since-push appends paths changed after the push; null uses related.
+    sincePush: null,
     // Commands receive no extra arguments; for example, ["node script/check-comments.mjs --base origin/dev"].
     commands: [],
     // The merge base with this ref selects committed and staged changes.
@@ -647,9 +649,10 @@ export function load(root = process.cwd()) {
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
-  const { related, commands, base } = config.check;
+  const { related, sincePush, commands, base } = config.check;
   const command = (value) => typeof value === "string" && value.trim().length > 0;
   if (related !== null && !command(related)) throw new TypeError("check.related must be a non-empty string or null");
+  if (sincePush !== null && !command(sincePush)) throw new TypeError("check.sincePush must be a non-empty string or null");
   if (!Array.isArray(commands) || !commands.every(command)) throw new TypeError("check.commands must be an array of non-empty strings");
   if (!command(base)) throw new TypeError("check.base must be a non-empty string");
   config.root = root;

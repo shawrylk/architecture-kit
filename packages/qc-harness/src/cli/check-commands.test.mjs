@@ -36,6 +36,63 @@ function check(root, args = [], input, env = process.env) {
   return spawnSync(process.execPath, [qc, "check", ...args], { cwd: root, encoding: "utf8", input, env });
 }
 
+// Fixture fragment with commits before and after the push.
+function sincePushFixture(t, config, { push = true, changes = true } = {}) {
+  const root = fixture(t, config);
+  const origin = mkdtempSync(path.join(tmpdir(), "qc-check-origin-"));
+  t.after(() => rmSync(origin, { recursive: true, force: true }));
+  git(origin, "init", "-q", "--bare");
+  git(root, "remote", "add", "origin", origin);
+  writeFileSync(path.join(root, "early.mjs"), "export {};\n");
+  git(root, "add", "early.mjs");
+  git(root, "commit", "-q", "-m", "test(qc): add early module");
+  if (push) git(root, "push", "-u", "origin", "feat/170-related");
+  if (changes) {
+    writeFileSync(path.join(root, "late.mjs"), "export {};\n");
+    git(root, "add", "late.mjs");
+    git(root, "commit", "-q", "-m", "test(qc): add late module");
+    writeFileSync(path.join(root, "staged.mjs"), "export {};\n");
+    git(root, "add", "staged.mjs");
+  }
+  return root;
+}
+
+test("--since-push runs sincePush with committed and staged files after the push", (t) => {
+  const root = sincePushFixture(t, { sincePush: record, related: node("process.exit(9)") });
+  const run = check(root, ["--since-push"]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["late.mjs", "staged.mjs"]);
+});
+
+test("a check without --since-push runs related with all branch changes", (t) => {
+  const root = sincePushFixture(t, { related: record, sincePush: node("process.exit(9)") });
+  const run = check(root);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["early.mjs", "late.mjs", "staged.mjs"]);
+});
+
+test("--since-push warns and uses the base merge base when the branch has no upstream", (t) => {
+  const root = sincePushFixture(t, { sincePush: record }, { push: false });
+  const run = check(root, ["--since-push"]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.match(run.stdout, /no upstream/);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["early.mjs", "late.mjs", "staged.mjs"]);
+});
+
+test("--since-push uses related with the narrow list when sincePush is null", (t) => {
+  const root = sincePushFixture(t, { sincePush: null, related: record });
+  const run = check(root, ["--since-push"]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["late.mjs", "staged.mjs"]);
+});
+
+test("--since-push skips sincePush when nothing changed after the push", (t) => {
+  const root = sincePushFixture(t, { sincePush: node("process.exit(9)") }, { changes: false });
+  const run = check(root, ["--since-push"]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.doesNotMatch(run.stdout, /RUN  /);
+});
+
 test("related receives committed and staged paths once, without unstaged or untracked files", (t) => {
   const root = fixture(t, { related: record });
   writeFileSync(path.join(root, "committed.mjs"), "export const value = 2;\n");
