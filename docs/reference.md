@@ -773,7 +773,7 @@ Known limits:
 |---|---|
 | Error | `no-cross-feature-internals`, `storage-only-in-resource`, `external-service-only-in-adapter`, `scoped-repository`, `tenant-scoped-table`, `no-raw-fetch`, `no-orchestration-in-trigger`, `no-sql-raw`, `registry-literal`, `durable-idempotency-key` |
 | Warning | `no-comment-paragraph`, `no-number-in-comment`, `no-supersession-trail`: each judges the style of a comment |
-| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `one-component-per-file`, `raw-element-in-primitive`, `no-arbitrary-class-value`, `no-literal-color`, `name-the-pattern` |
+| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `one-component-per-file`, `raw-element-in-primitive`, `no-arbitrary-class-value`, `no-literal-color`, `no-static-inline-style`, `name-the-pattern` |
 
 An `eslint-disable` comment silences its rule, and a disable comment that silences nothing is an
 error. `qc lint` judges only the changed lines, so a new disable comment is part of the change a
@@ -971,16 +971,40 @@ The preset passes `ui.layers.primitive` as the `primitive` rule option, which ac
 Both read class strings through the shared UI parser, including `className`, `class`, `ui.classCallees`, and `cva` variants.
 The preset passes `ui.classCallees` as the `classCallees` rule option. Use theme tokens and CSS variables for presentation values.
 
+`qc/no-static-inline-style` rejects a JSX `style` object whose values are all literals, such as `style={{ display: "flex", width: 12 }}`.
+Move those values to classes or theme tokens.
+A runtime value, such as `style={{ width: size }}`, permits the object, including mixed literal and runtime values.
+Spreads and runtime property names also pass. Empty objects pass because they hold no presentation values.
+
 These rules ship off. Enable them under `rules` in `qc.config.json`; the preset applies them to `clientFiles`.
 
 ```json
-{ "rules": { "one-component-per-file": true, "raw-element-in-primitive": true, "no-arbitrary-class-value": true, "no-literal-color": true } }
+{ "rules": { "one-component-per-file": true, "raw-element-in-primitive": true, "no-arbitrary-class-value": true, "no-literal-color": true, "no-static-inline-style": true } }
 ```
 
-Use ESLint's `eslint-suppressions.json` as the baseline with ESLint 9.24 or later.
-Create the initial baseline with ESLint's `--suppress-rule` option for each rule, then commit it.
-The baseline may only shrink. ESLint fails on unused suppressions by default; keep that check enabled.
-After you remove violations, use `--prune-suppressions` to remove their baseline entries.
+### Adopt the UI rules with a baseline that only shrinks
+
+The five UI rules in #144 share ESLint's bulk suppressions mechanism:
+
+- `qc/one-component-per-file`
+- `qc/raw-element-in-primitive`
+- `qc/no-arbitrary-class-value`
+- `qc/no-literal-color`
+- `qc/no-static-inline-style`
+
+Use ESLint 9.24 or later; the kit uses ESLint 9.39.
+For an existing frontend, `eslint --suppress-rule <rule>` writes `eslint-suppressions.json` for the selected rule.
+Create the initial baseline for all five rules, then commit the file:
+
+```sh
+npx eslint frontend/src --suppress-rule qc/one-component-per-file --suppress-rule qc/raw-element-in-primitive --suppress-rule qc/no-arbitrary-class-value --suppress-rule qc/no-literal-color --suppress-rule qc/no-static-inline-style
+```
+
+After adoption, run `npx eslint frontend/src` without suppression-generation flags. Findings beyond the recorded counts fail.
+ESLint fails on unused suppressions by default, so a stale entry fails after you remove its violation.
+Run `npx eslint frontend/src --prune-suppressions` to remove stale entries, then commit the smaller file.
+Keep the default unused-suppression check enabled. Accept only baseline changes that remove entries or reduce counts.
+Use this file as the sole lint baseline; it may only shrink after adoption.
 
 ### Show the pending state on a write control
 

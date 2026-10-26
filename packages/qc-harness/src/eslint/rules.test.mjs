@@ -2,6 +2,38 @@ import { RuleTester } from "eslint";
 import tsparser from "@typescript-eslint/parser";
 import { rules } from "./index.mjs";
 
+new RuleTester({
+  languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
+}).run("no-static-inline-style", rules["no-static-inline-style"], {
+  valid: [
+    { code: '<div className="w-full" />;', filename: "view.tsx" },
+    { code: '<div style={{ width: size }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: size, display: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: getSize() }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: sizes.width }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: `${size}px` }} />;', filename: "view.tsx" },
+    { code: '<div style={{ ...styles, display: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={{ [property]: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={styles} />;', filename: "view.tsx" },
+    { code: '<div style={enabled ? styles : undefined} />;', filename: "view.tsx" },
+    { code: '<div style={{}} />;', filename: "view.tsx" },
+    { code: '<div data-style={{ width: 12 }} />;', filename: "view.tsx" },
+    { code: '<div style />;', filename: "view.tsx" },
+  ],
+  invalid: [
+    { code: '<div style={{ width: 12 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ display: "flex", opacity: 1 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<Box style={{ marginTop: -2, zIndex: +1 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ display: `flex` }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<Box style={{ visible: false, color: null }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ ["display"]: "flex" }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={({ width: 12 } as const)} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ width: 12 as number }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ width: 12 } satisfies CSSProperties} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<><div style={{ width: 12 }} /><div style={{ height: 8 }} /></>;', filename: "view.tsx", errors: [{ messageId: "static" }, { messageId: "static" }] },
+  ],
+});
+
 const tester = new RuleTester({
   languageOptions: { ecmaVersion: 2023, sourceType: "module" },
 });

@@ -30,3 +30,30 @@ WCAG 2.2 AA. Every drag has a non-drag equivalent. The focus ring is never remov
 Data-oriented discipline applies to any hot loop: per frame, or over a large item count, or
 allocating per iteration on the interaction thread. Assert it by measuring allocation, not by
 reading the code.
+
+## Adopt the UI lint rules
+
+Enable these five rules under `rules` in `qc.config.json`:
+
+- `one-component-per-file`
+- `raw-element-in-primitive`
+- `no-arbitrary-class-value`
+- `no-literal-color`
+- `no-static-inline-style`
+
+The preset applies them to `clientFiles`. The primitive folders come from `ui.layers.primitive`.
+Use classes and theme tokens for static presentation. Inline styles with runtime values, such as `style={{ width: size }}`, pass.
+An object with only literal values, such as `style={{ width: 12 }}`, fails `qc/no-static-inline-style`.
+
+For an existing frontend, use ESLint 9.24 or later; the kit uses ESLint 9.39.
+`eslint --suppress-rule <rule>` writes `eslint-suppressions.json` as the sole lint baseline.
+Create the initial baseline, then commit it:
+
+```sh
+npx eslint frontend/src --suppress-rule qc/one-component-per-file --suppress-rule qc/raw-element-in-primitive --suppress-rule qc/no-arbitrary-class-value --suppress-rule qc/no-literal-color --suppress-rule qc/no-static-inline-style
+```
+
+After adoption, run `npx eslint frontend/src` without suppression-generation flags. Findings beyond the baseline counts fail.
+An unused suppression fails by default; keep that check enabled.
+After you fix findings, run `npx eslint frontend/src --prune-suppressions` and commit the smaller file.
+The baseline may only shrink: accept removals and lower counts.

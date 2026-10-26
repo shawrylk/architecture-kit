@@ -129,6 +129,7 @@ const CLIENT = [
   "raw-element-in-primitive",
   "no-arbitrary-class-value",
   "no-literal-color",
+  "no-static-inline-style",
 ];
 
 /**

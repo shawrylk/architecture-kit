@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Linter } from "eslint";
@@ -176,7 +179,7 @@ test("the mutationControl config reaches qc/mutation-control-pending", () => {
 });
 
 test("the UI rules reach only clientFiles and use the configured primitive folders and class callees", () => {
-  const names = ["one-component-per-file", "raw-element-in-primitive", "no-arbitrary-class-value", "no-literal-color"];
+  const names = ["one-component-per-file", "raw-element-in-primitive", "no-arbitrary-class-value", "no-literal-color", "no-static-inline-style"];
   const clientFiles = ["app/**/*.tsx"];
   const blocks = preset({
     config: config({ clientFiles, rules: Object.fromEntries(names.map((name) => [name, true])), ui: { layers: { primitive: ["app/primitives", "app/controls"] }, classCallees: ["classes", "cva"] } }),
@@ -189,7 +192,7 @@ test("the UI rules reach only clientFiles and use the configured primitive folde
     assert.equal(emitted(blocks.filter((block) => block !== client)).has(`qc/${name}`), false);
   }
   assert.deepEqual(client.rules["qc/raw-element-in-primitive"][1], { primitive: ["app/primitives", "app/controls"] });
-  for (const name of names.slice(2)) assert.deepEqual(client.rules[`qc/${name}`][1], { classCallees: ["classes", "cva"] });
+  for (const name of names.slice(2, 4)) assert.deepEqual(client.rules[`qc/${name}`][1], { classCallees: ["classes", "cva"] });
   const linter = new Linter({ configType: "flat" });
   const messages = (code, filename, name) => byRule(linter.verify(code, blocks, filename), `qc/${name}`);
   const pair = "const First = () => <div />; const Second = () => <span />;";
@@ -199,10 +202,60 @@ test("the UI rules reach only clientFiles and use the configured primitive folde
   assert.equal(messages("<input />;", "app/controls/input.tsx", names[1]).length, 0);
   assert.equal(messages('classes("text-[11px]");', "app/view.tsx", names[2]).length, 1);
   assert.equal(messages('classes("bg-[#abc]");', "app/view.tsx", names[3]).length, 1);
-  for (const name of names.slice(2)) {
+  for (const name of names.slice(2, 4)) {
     assert.equal(messages('cn("bg-[#abc]");', "app/view.tsx", name).length, 0);
     assert.equal(messages('classes("bg-[#abc]");', "elsewhere/view.tsx", name).length, 0);
     assert.equal(messages('cva("p-2", { variants: { tone: { custom: "bg-[#abc]" } } });', "app/view.tsx", name).length, 1);
+  }
+  assert.equal(messages('<div style={{ width: 12 }} />;', "app/view.tsx", names[4]).length, 1);
+  assert.equal(messages('<div style={{ width: size }} />;', "app/view.tsx", names[4]).length, 0);
+  assert.equal(messages('<div style={{ width: 12 }} />;', "elsewhere/view.tsx", names[4]).length, 0);
+});
+
+test("the ESLint baseline suppresses existing UI findings and fails on a stale entry by default", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-ui-suppressions-"));
+  const require = createRequire(import.meta.url);
+  const cli = path.join(path.dirname(require.resolve("eslint/package.json")), "bin/eslint.js");
+  const parser = pathToFileURL(require.resolve("@typescript-eslint/parser")).href;
+  const presetUrl = new URL("./preset.mjs", import.meta.url).href;
+  const configUrl = new URL("../config.mjs", import.meta.url).href;
+  const switches = Object.fromEntries(Object.keys(allRules).map((name) => [name, name === "no-static-inline-style"]));
+  const run = (...args) => {
+    const result = spawnSync(process.execPath, [cli, "view.tsx", ...args], { cwd: root, encoding: "utf8", timeout: 30_000 });
+    assert.ifError(result.error);
+    return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
+  };
+  try {
+    writeFileSync(path.join(root, "eslint.config.mjs"), `
+      import parser from ${JSON.stringify(parser)};
+      import { preset } from ${JSON.stringify(presetUrl)};
+      import { defaults, merge } from ${JSON.stringify(configUrl)};
+      export default preset({
+        config: { ...merge(defaults, ${JSON.stringify({ clientFiles: ["**/*.tsx"], rules: switches })}), root: process.cwd() },
+        languageOptions: { parser },
+      });
+    `);
+    const fixture = path.join(root, "view.tsx");
+    writeFileSync(fixture, '<div style={{ width: 12 }} />;\n');
+    const unsuppressed = run();
+    assert.equal(unsuppressed.status, 1, unsuppressed.output);
+    assert.match(unsuppressed.output, /qc\/no-static-inline-style/);
+    const generated = run("--suppress-rule", "qc/no-static-inline-style");
+    assert.equal(generated.status, 0, generated.output);
+    const baseline = JSON.parse(readFileSync(path.join(root, "eslint-suppressions.json"), "utf8"));
+    assert.equal(baseline["view.tsx"]["qc/no-static-inline-style"].count, 1);
+    const existing = run();
+    assert.equal(existing.status, 0, existing.output);
+    writeFileSync(fixture, '<><div style={{ width: 12 }} /><div style={{ height: 8 }} /></>;\n');
+    const increased = run();
+    assert.equal(increased.status, 1, increased.output);
+    assert.match(increased.output, /qc\/no-static-inline-style/);
+    writeFileSync(fixture, '<div style={{ width: size }} />;\n');
+    const stale = run();
+    assert.equal(stale.status, 2, stale.output);
+    assert.match(stale.output, /suppressions left that do not occur anymore/i);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
