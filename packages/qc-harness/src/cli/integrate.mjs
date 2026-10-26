@@ -14,20 +14,20 @@ export const USAGE = `qc integrate — one integration branch for a batch of bra
       then run generated.command and commit what it changes. A conflict stops the run and lists the
       files. Resolve it, commit, and run the same command again: a branch already merged is skipped.`;
 
-function tryGit(cwd, args) {
+export function tryGit(cwd, args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
   return { ok: result.status === 0, out: result.stdout ?? "", err: (result.stderr ?? "").trim() };
 }
 
-function git(cwd, args) {
+export function git(cwd, args) {
   const result = tryGit(cwd, args);
   if (!result.ok) throw new Error(`git ${args.join(" ")}: ${result.err || "failed"}`);
   return result.out;
 }
 
-const lines = (text) => text.split(/\r?\n/).filter(Boolean);
+export const lines = (text) => text.split(/\r?\n/).filter(Boolean);
 
-function runShell(command, cwd) {
+export function runShell(command, cwd) {
   return spawnSync(command, { cwd, shell: true, stdio: "inherit", windowsHide: true }).status ?? 1;
 }
 
