@@ -133,6 +133,29 @@ for (const exists of [false, true]) {
   });
 }
 
+for (const exists of [false, true]) {
+  test(`an invalid committer identity stops before fetching or switching to an ${exists ? "existing" : "absent"} integration branch`, async (t) => {
+    const dir = batchWithOrigin(t);
+    if (exists) git(dir, "branch", "feat/7-integration", "main");
+    const before = git(dir, "rev-parse", "HEAD");
+    authorEnvironment(t, {
+      GIT_AUTHOR_NAME: "qc",
+      GIT_AUTHOR_EMAIL: "qc@example.com",
+      GIT_COMMITTER_NAME: "",
+      GIT_COMMITTER_EMAIL: "",
+    });
+    const errors = [];
+    t.mock.method(console, "error", quiet(errors));
+    assert.equal(await runIntegrate(config(dir, null), ["--issue", "7", "feat/1-a"], { say: () => {}, run }), 1);
+    assert.match(errors.join("\n"), /git var GIT_COMMITTER_IDENT/);
+    assert.equal(existsSync(path.join(dir, ".git", "FETCH_HEAD")), false);
+    assert.equal(git(dir, "branch", "--show-current"), "main");
+    assert.equal(git(dir, "rev-parse", "HEAD"), before);
+    assert.equal(git(dir, "status", "--porcelain"), "");
+    if (!exists) assert.throws(() => git(dir, "show-ref", "--verify", "refs/heads/feat/7-integration"));
+  });
+}
+
 test("--pr opens a draft pull request and strips origin from the base", async (t) => {
   const dir = batchWithOrigin(t);
   git(dir, "push", "origin", "main");

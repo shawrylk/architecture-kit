@@ -45,7 +45,7 @@ export function decide(call, { tmp = os.tmpdir() } = {}) {
       const stale = `${lock}.${randomUUID()}`;
       renameSync(lock, stale);
       if (Date.now() - statSync(stale).mtimeMs <= 30_000) {
-        renameSync(stale, lock);
+        rmdirSync(stale);
         return null;
       }
       rmdirSync(stale);
@@ -70,7 +70,11 @@ export function decide(call, { tmp = os.tmpdir() } = {}) {
     // Only a compaction below compactAt resets the thresholds already noted.
     if (step > kept || (step === -1 && kept !== -1)) writeState(file, { step });
   } finally {
-    rmdirSync(lock);
+    try {
+      rmdirSync(lock);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
   }
   if (step <= kept) return null;
   const k = Math.round(tokens / 1000);

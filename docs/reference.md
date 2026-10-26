@@ -969,7 +969,7 @@ It adds `Reviewed: <sha>` to the brief and the dispatch, and lists files changed
 The brief states the previous verdict.
 After `CHANGES_REQUIRED`, the dispatch tells the controller to add `Previous review: <path>` to the reviewer prompt, naming the earlier review file.
 The brief tells the reviewer to check each finding in that file and confirm its resolution, not only the increment.
-Keep that line in the reviewer prompt so the gate accepts the review round.
+Keep `Reviewed: <sha>` in the reviewer prompt so the gate accepts the review round.
 The increment uses `git diff --name-only <reviewed>..<head> --`; fetch both commits into the checkout before you run the command.
 Its four checks cover infrastructure, migrations, workflows, and secrets in logs.
 
@@ -1421,6 +1421,8 @@ A custom slug outside `integrate.branchPattern` skips the integration lane and n
 
 Each branch must belong to the developer whose email matches the effective Git author email.
 Git reports this email through `git var GIT_AUTHOR_IDENT`, which honors `GIT_AUTHOR_EMAIL`.
+Before it fetches or switches branches, the command checks the author identity and the committer identity.
+It reads the committer through `git var GIT_COMMITTER_IDENT` and exits 1 with a committer error if that identity is missing.
 The command checks every author email in `<base>..<branch>` before it merges that branch.
 It refuses a branch with other authors and lists their emails and the branch name.
 It keeps branches that it merged before that refusal.
