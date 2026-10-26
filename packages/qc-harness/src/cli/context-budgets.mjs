@@ -12,7 +12,6 @@ function positiveWhole(key, value) {
   return value;
 }
 
-// This fragment validates limits before a hook or runner acts on them.
 export function budgetsOf(config) {
   const budgets = config.budgets === undefined ? defaults.budgets : config.budgets;
   if (!isObject(budgets)) invalid("budgets", "an object", budgets);
@@ -27,12 +26,16 @@ export function budgetsOf(config) {
       continue;
     }
     if (!isObject(value)) invalid(`budgets.${role}`, "an object or null", value);
+    const keys = Object.keys(defaults.budgets[role]);
+    for (const key of Object.keys(value)) {
+      if (!keys.includes(key)) invalid(`budgets.${role}.${key}`, `a known key (${keys.join(", ")})`, value[key]);
+    }
     const resolved = { ...defaults.budgets[role], ...value };
     if (role === "codex" && resolved.compactAt === null) {
       const fallback = config.codex === undefined ? defaults.codex.compactTokens : config.codex?.compactTokens;
       resolved.compactAt = positiveWhole("codex.compactTokens", fallback);
     }
-    for (const key of Object.keys(defaults.budgets[role])) {
+    for (const key of keys) {
       positiveWhole(`budgets.${role}.${key}`, resolved[key]);
     }
     if (resolved.remindAt >= resolved.handoffAt) {

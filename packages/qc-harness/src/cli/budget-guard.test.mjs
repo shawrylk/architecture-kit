@@ -233,6 +233,16 @@ test("with swarm.dispatch off no role budget fires", (t) => {
   assert.equal(runGuard(ws, signalCall(ws, transcripts(ws, "a1", [10_000, 160_000]))), null);
 });
 
+test("unused invalid budgets stay silent with dispatch off or an unrelated agent", (t) => {
+  for (const swarm of [{}, { dispatch: {} }]) {
+    const ws = workspace(t, swarm, { budgets: false });
+    const call = signalCall(ws, transcripts(ws, "a1", [10_000, 160_000]));
+    if (swarm.dispatch) call.agent_type = "general-purpose";
+    assert.equal(runGuard(ws, call), null);
+    assert.equal(existsSync(ws.counters), false);
+  }
+});
+
 test("swarm.toolCallBudget still denies when the context is small", (t) => {
   const ws = workspace(t, { dispatch: {}, toolCallBudget: 2 });
   const call = signalCall(ws, transcripts(ws, "a1", [10_000, 12_000]));

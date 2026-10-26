@@ -43,7 +43,6 @@ export function decide(call, tmp = os.tmpdir()) {
   return context(existing ? `${existing}\n${note}` : note);
 }
 
-// This branch keeps the main session's counter and compaction reminder separate from agent limits.
 function orchestratorOutput(call, tmp) {
   try {
     const root = checkoutRootOf(call.cwd ?? process.cwd());
@@ -87,7 +86,7 @@ function toolCallOutput(call, root, swarm, tmp) {
   return withSignal(verdict, contextSignal(call, { swarm, count, budget, tmp }), call);
 }
 
-// This branch reads state after the context signal writes its keys.
+// Read after the context signal so its keys survive this write.
 function roleBudgetOutput(call, root, swarm, tmp) {
   try {
     const file = stateFileOf(call.session_id ?? "session", call.agent_id, tmp);
@@ -95,8 +94,9 @@ function roleBudgetOutput(call, root, swarm, tmp) {
     let budgets;
     let role;
     try {
-      budgets = budgetsOf(load(root));
       role = budgetRoleOf(call.agent_type, swarm);
+      if (!role) return null;
+      budgets = budgetsOf(load(root));
     } catch (error) {
       if (state.budgetError === error.message) return null;
       writeState(file, { ...state, budgetError: error.message });

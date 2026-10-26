@@ -91,7 +91,7 @@ read-only, so the hooks run at the commit you make after the Codex run.
 ## Task and merge gates
 
 The task gate reads CI on the current branch head, including commits after an implementer stops.
-Failed or running CI lets the next implementer continue the task.
+Failed or running CI lets the next implementer continue the task when its prompt has no `Fix:` line.
 
 `Fix: ci` needs known-red CI on the current head.
 `Fix: review` needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop.

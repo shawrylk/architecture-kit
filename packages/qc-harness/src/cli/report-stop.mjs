@@ -59,6 +59,9 @@ export function reportProblems(role, text, verdict, lookup, named, handoff = nul
     return problems;
   }
   if (!verdict) return ["a first line `VERDICT: APPROVED <sha>` or `VERDICT: CHANGES_REQUIRED <sha>`, where <sha> is the commit you reviewed"];
+  if (verdict.verdict === "APPROVED" && /^[ \t]*UNREVIEWED:[ \t]*\S[^\r\n]*$/m.test(text)) {
+    return ["a CHANGES_REQUIRED verdict when UNREVIEWED: lists files"];
+  }
   if (lookup?.unknown && named) return [`a sha this repository holds, and ${verdict.sha} names no commit (git rev-parse)`];
   if (role === "task" && verdict.verdict === "APPROVED" && !RED_CHECKED_LINE.test(text)) {
     return ["a line that starts `RED-CHECKED:` and says how you saw the test fail before the code"];

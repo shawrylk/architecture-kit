@@ -82,7 +82,7 @@ export function continuedStop(records, branch, handoff) {
 }
 
 /** A CI fix needs known-red CI; a review fix needs CHANGES_REQUIRED and a review of every implementer stop. */
-function fixVerdict({ records, branch, head, fix, ciStatus, cwd, git }) {
+function fixVerdict({ records, branch, head, fix, ciStatus, cwd, git, handoff }) {
   if (fix === "ci") {
     const state = ciStatus(head);
     if (state.reason === null) {
@@ -96,7 +96,9 @@ function fixVerdict({ records, branch, head, fix, ciStatus, cwd, git }) {
     return { refusal: `Task gate: \`Fix: review\` on ${branch}, where no review in the ledger asks for changes. Drop the line, or dispatch the reviewer first.` };
   }
   const unreviewed = unreviewedImplementerStop({ records, branch, head, cwd, git });
-  if (unreviewed) return { refusal: unreviewedRefusal(branch, unreviewed.head, head) };
+  if (unreviewed && unreviewed !== continuedStop(records, branch, handoff)) {
+    return { refusal: unreviewedRefusal(branch, unreviewed.head, head) };
+  }
   return { refusal: null, fix };
 }
 
@@ -107,7 +109,7 @@ function fixVerdict({ records, branch, head, fix, ciStatus, cwd, git }) {
  * checkout; `git` reads it, and `ci` answers why CI on a sha is not green, or null.
  */
 export function gateVerdict({ records, branch, head, reason, type, cwd, git = gitRead, handoff = null, ci = (sha) => ciNotGreen(sha, cwd), fix = null, ciStatus = (sha) => readCiState(sha, cwd) }) {
-  if (fix !== null) return fixVerdict({ records, branch, head, fix, ciStatus, cwd, git });
+  if (fix !== null) return fixVerdict({ records, branch, head, fix, ciStatus, cwd, git, handoff });
   // A continuation of the newest stop's hand-off is the same task, so it is neither a fix round nor a new task.
   const continued = continuedStop(records, branch, handoff);
   const why = reason ?? (continued ? `continues the hand-off ${continued.handoff}` : null);

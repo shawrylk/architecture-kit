@@ -621,10 +621,11 @@ Three limits apply together. Each measures a different part of an agent's work.
 | `reviewer` | `{ "remindAt": 80000, "handoffAt": 120000 }` |
 | `codex` | `{ "compactAt": null, "toolOutputTokens": 4000 }` |
 
-The orchestrator, implementer, and reviewer budgets apply only when `swarm.dispatch` is on.
+With `swarm.dispatch` on, the budget guard applies the orchestrator, implementer, and reviewer budgets.
 `qc codex-implement` reads `budgets.codex` for its launch overrides.
 Set a role to `null` to turn its budget off.
 Each number must be a positive whole number, and `remindAt` must be smaller than `handoffAt`.
+An unknown key inside a role is an error that names the key.
 A null `budgets.codex.compactAt` uses `codex.compactTokens`, whose default is `300000`.
 
 At `budgets.orchestrator.compactAt`, the orchestrator gets a note to run `/compact` at the next green step.
@@ -633,8 +634,9 @@ The note asks it to keep the plan path, open pull request numbers, branches, hea
 The implementer and both reviewer types get one reminder at their role's `remindAt`.
 At `handoffAt`, only calls that finish the handoff can run.
 The implementer writes a handoff note and reports its path on a `HANDOFF:` line.
-The reviewer sends a report that opens with `VERDICT:` for the work it reviewed.
-It adds an `UNREVIEWED:` line that lists the files left.
+The reviewer puts the full review in its final report.
+If files remain, it opens with `VERDICT: CHANGES_REQUIRED <sha>` and adds an `UNREVIEWED:` line that lists them.
+The report gate refuses `APPROVED` when `UNREVIEWED:` lists files.
 The controller sends a fresh reviewer with `Scope:` for those files.
 
 `qc budget report` reads the agent ledger and reports the median and 90th percentile of context at the end of each task.
@@ -644,6 +646,7 @@ The report lists the implementer before the reviewer and omits roles whose budge
 The cost roles `reviewer` and `branch-reviewer` both count as `reviewer`.
 The latest cost record replaces older records from a resumed agent.
 The report skips and counts cost records without `endContext`.
+An invalid budget prints one error line and exits with code `1`.
 The orchestrator and Codex leave no cost record, so the report says so in one line.
 
 | Report result | Advice |
@@ -749,9 +752,13 @@ Its exit code says which:
 
 A new head starts the queued timers over. Run it as one background command for each head.
 
-The session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
-The context watch speaks from 150K tokens in steps of 50K tokens.
-It shows the user a line from 300K tokens.
+With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
+The context watch speaks only to the main session, in every repository where `swarm.dispatch` is off.
+It starts at `budgets.orchestrator.compactAt` (default `200000`) and notes each threshold once, in steps of 50K tokens.
+Compaction below `compactAt` resets the thresholds.
+A null orchestrator budget turns the context watch off.
+The watch shows the user a line from 300K tokens when it reaches a threshold.
+With `swarm.dispatch` on, the budget guard owns the compaction reminder, and the context watch stays silent.
 
 A `TaskStop` frees the implementer slot of the agent it stopped, since that agent sends no
 `SubagentStop`. A session `startup` or `resume` frees every slot of the session. A subagent may not

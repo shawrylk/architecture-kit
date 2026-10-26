@@ -495,6 +495,18 @@ test("after CHANGES_REQUIRED, a continuation of the fix round's hand-off needs n
   assert.equal(refusalOf(ws, `HANDOFF: ${note}`), null);
 });
 
+test("Fix: review continues only the matching hand-off of the newest stop", (t) => {
+  const ws = workspace(t);
+  const reviewed = commitIn(ws.linked, "reviewed.txt");
+  implementerStop(ws, reviewed);
+  verdict(ws, reviewed, "CHANGES_REQUIRED");
+  const note = path.join(ws.tmp, "handoffs", "fix-review.md");
+  implementerStop(ws, commitIn(ws.linked, "partial.txt"), "feat/1-x", note);
+  assert.match(refusalOf(ws, "Fix: review") ?? "", /no review/);
+  assert.match(refusalOf(ws, `Fix: review\nHANDOFF: ${note}.other`) ?? "", /no review/);
+  assert.equal(refusalOf(ws, `Fix: review\nHANDOFF: ${note}`), null);
+});
+
 test("a stop that a later CHANGES_REQUIRED reviewed is no longer continued by its HANDOFF line", (t) => {
   const ws = workspace(t);
   const note = path.join(ws.tmp, "handoffs", "t1-1.md");

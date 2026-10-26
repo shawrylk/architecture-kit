@@ -74,6 +74,16 @@ test("each role closes work calls at handoffAt and permits the hand-off", () => 
   }
 });
 
+test("a reviewer hand-off requires CHANGES_REQUIRED for files left unreviewed", () => {
+  const output = roleBudgetVerdict({ role: "reviewer", budget, call, state: {}, tokens: 150_000 });
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /VERDICT: CHANGES_REQUIRED <sha>.*UNREVIEWED:/);
+});
+
+test("a reviewer hand-off carries the full review in the final report", () => {
+  const output = roleBudgetVerdict({ role: "reviewer", budget, call, state: {}, tokens: 150_000 });
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /full review in (?:the|your) final report/i);
+});
+
 test("a disabled role budget or missing usage leaves the call alone", () => {
   assert.equal(roleBudgetVerdict({ role: "implementer", budget: null, call, state: {}, tokens: 160_000 }), null);
   assert.equal(roleBudgetVerdict({ role: "implementer", budget, call, state: {}, tokens: undefined }), null);

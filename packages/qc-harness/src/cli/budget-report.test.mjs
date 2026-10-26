@@ -117,6 +117,15 @@ test("runBudget reads the checkout ledger and resolved budgets", (t) => {
   assert.match(lines[1], /^reviewer: no cost record/);
 });
 
+test("qc budget report prints a budget error as one line and exits one", (t) => {
+  const { root } = workspace(t);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ budgets: false }));
+  const report = spawnSync(process.execPath, [QC, "budget", "report"], { cwd: root, encoding: "utf8" });
+  assert.equal(report.status, 1);
+  assert.equal(report.stdout, "");
+  assert.equal(report.stderr.trim(), "budgets in qc.config.json must be an object, got false");
+});
+
 test("only the exact report subcommand is accepted", (t) => {
   const error = t.mock.method(console, "error", () => {});
   for (const args of [[], ["other"], ["report", "extra"]]) {
