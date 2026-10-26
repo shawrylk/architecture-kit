@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The context-watch trigger reminds the main session to compact at a clean break.
 
-import { mkdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,8 +40,15 @@ export function decide(call, { tmp = os.tmpdir() } = {}) {
     mkdirSync(lock);
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
-    if (Date.now() - statSync(lock).mtimeMs <= 30_000) return null;
-    rmdirSync(lock);
+    try {
+      if (Date.now() - statSync(lock).mtimeMs <= 30_000) return null;
+      const stale = `${lock}.${randomUUID()}`;
+      renameSync(lock, stale);
+      rmdirSync(stale);
+    } catch (claimError) {
+      if (claimError.code === "ENOENT") return null;
+      throw claimError;
+    }
     try {
       mkdirSync(lock);
     } catch (retryError) {

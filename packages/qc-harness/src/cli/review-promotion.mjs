@@ -5,16 +5,16 @@ import { globMatcher } from "../glob.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut } from "./git-read.mjs";
 import { ledgerFileOf, readLedger } from "./ledger.mjs";
+import { promotionBranchName } from "./promotion-branch.mjs";
 import { reviewSettings } from "./workflow-settings.mjs";
 
 const USAGE = "Usage: qc review promotion <pr>";
 const MAX_PATHS = 200;
-
-/** The fragment that normalizes a promotion branch from the config or PR metadata. */
-export const promotionBranchName = (branch) => branch?.replace(/^origin\//, "");
+const FILES_TIMEOUT_MS = 120_000;
+const API_FILE_LIMIT = 3000;
 
 /** The fragment that formats the scope and checks for a promotion reviewer. */
-export function promotionBrief({ pr, head, reviewed, integration, release, files, total }) {
+export function promotionBrief({ pr, head, reviewed, previous, integration, release, files, total }) {
   const listCommand = reviewed
     ? `git diff --name-only ${reviewed}..${head} --`
     : `gh api --paginate repos/{owner}/{repo}/pulls/${pr}/files --jq '.[].filename'`;
@@ -24,6 +24,8 @@ export function promotionBrief({ pr, head, reviewed, integration, release, files
     `Head: ${head}`,
     `Scope: ${PROMOTION_SCOPE}`,
     ...(reviewed ? [`Reviewed: ${reviewed}`] : []),
+    ...(previous ? [`Previous verdict: ${previous.verdict ?? "unknown"}`, ...(previous.file ? [`Previous review: ${previous.file}`] : [])] : []),
+    ...(previous?.verdict === "CHANGES_REQUIRED" ? ["Check each earlier finding and confirm its resolution, not only the increment."] : []),
     "",
     "## Review these files",
     "",
@@ -58,7 +60,7 @@ export function runReview(config, args, { gh = runGh, git = gitOut, out = consol
     const integration = promotionBranchName(promotion.integration);
     const release = promotionBranchName(promotion.release);
     const { surfaces } = promotion;
-    const answer = gh(["pr", "view", number, "--json", "number,headRefName,baseRefName,headRefOid,url,isCrossRepository"], { cwd: root });
+    const answer = gh(["pr", "view", number, "--json", "number,headRefName,baseRefName,headRefOid,url,isCrossRepository,changedFiles"], { cwd: root });
     if (answer === null) throw new Error(`gh could not read PR #${number}.`);
     let pr;
     try {
@@ -70,6 +72,7 @@ export function runReview(config, args, { gh = runGh, git = gitOut, out = consol
       throw new Error(`gh returned an invalid PR #${number} head.`);
     }
     if (pr.isCrossRepository !== false) throw new Error(`PR #${number} must have its head and base in the same repository.`);
+    if (!Number.isSafeInteger(pr.changedFiles) || pr.changedFiles < 0) throw new Error(`PR #${number} has an invalid changedFiles count: ${JSON.stringify(pr.changedFiles)}.`);
     if (promotionBranchName(pr.headRefName) !== integration || promotionBranchName(pr.baseRefName) !== release) {
       throw new Error(`PR #${number} must promote ${integration} -> ${release}; got ${pr.headRefName} -> ${pr.baseRefName}.`);
     }
@@ -81,12 +84,15 @@ export function runReview(config, args, { gh = runGh, git = gitOut, out = consol
     if (last && !/^[0-9a-f]{7,40}$/i.test(reviewed ?? "")) throw new Error(`The last promotion verdict for PR #${number} has an invalid reviewed head.`);
     const changed = reviewed
       ? git(root, "diff", "--name-only", `${reviewed}..${pr.headRefOid}`, "--")
-      : gh(["api", "--paginate", `repos/{owner}/{repo}/pulls/${number}/files`, "--jq", ".[].filename"], { cwd: root });
+      : gh(["api", "--paginate", `repos/{owner}/{repo}/pulls/${number}/files`, "--jq", ".[].filename"], { cwd: root, timeoutMs: FILES_TIMEOUT_MS });
     if (changed === null) throw new Error(reviewed
       ? `git could not read the increment for PR #${number}; fetch commits ${reviewed} and ${pr.headRefOid}.`
       : `gh could not read changed files for PR #${number}.`);
     const files = changed.split(/\r?\n/).filter(Boolean);
-    const brief = promotionBrief({ pr: pr.number, head: pr.headRefOid, reviewed, integration, release, files: files.filter(globMatcher(surfaces)), total: files.length });
+    if (!reviewed && (files.length !== pr.changedFiles || files.length >= API_FILE_LIMIT)) {
+      throw new Error(`PR #${number}: read ${files.length} files; changedFiles ${pr.changedFiles}. ${files.length >= API_FILE_LIMIT ? "The GitHub API has a 3,000-file limit. " : ""}Refusing to brief a partial file list.`);
+    }
+    const brief = promotionBrief({ pr: pr.number, head: pr.headRefOid, reviewed, previous: last, integration, release, files: files.filter(globMatcher(surfaces)), total: files.length });
     const file = path.join(path.dirname(ledger), "promotion", `pr-${number}.md`);
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, brief);

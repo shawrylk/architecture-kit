@@ -131,6 +131,8 @@ for (const [name, promotion, key] of [
   ["empty release", { integration: "dev", release: "" }, "promotion.release"],
   ["blank release", { integration: "dev", release: "  " }, "promotion.release"],
   ["equal branches", { integration: "dev", release: "dev" }, "promotion.release"],
+  ["equal normalized integration", { integration: "origin/main", release: "main" }, "promotion.release"],
+  ["equal normalized release", { integration: "main", release: "origin/main" }, "promotion.release"],
   ["a string for surfaces", { integration: "dev", release: "main", surfaces: "infra/**" }, "promotion.surfaces"],
   ["empty surfaces", { integration: "dev", release: "main", surfaces: [] }, "promotion.surfaces"],
   ["an empty glob", { integration: "dev", release: "main", surfaces: [""] }, "promotion.surfaces"],

@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { integrationBranch, runIntegrate } from "./integrate.mjs";
+import { integrationBranch, runIntegrate, USAGE } from "./integrate.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 const quiet = (lines) => (line) => lines.push(line);
@@ -72,6 +72,61 @@ const pullRequestCalls = [
   ["pr", "view", "feat/7-integration", "--json", "number"],
   ["pr", "create", "--draft", "--head", "feat/7-integration", "--base", "main", "--title", "feat: integrate the batch for #7", "--body", "Refs #7"],
 ];
+
+test("integrate usage states the effective author rule", () => {
+  assert.match(USAGE, /refuses.*branch.*author email.*effective Git author email/i);
+});
+
+function authorEnvironment(t, values) {
+  for (const [key, value] of Object.entries(values)) {
+    const previous = process.env[key];
+    process.env[key] = value;
+    t.after(() => {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    });
+  }
+}
+
+for (const setting of ["different", "absent local"]) {
+  test(`integrate uses GIT_AUTHOR_EMAIL with ${setting} user.email`, async (t) => {
+    const dir = batch(t);
+    if (setting === "different") git(dir, "config", "user.email", "other@example.com");
+    else git(dir, "config", "--unset", "user.email");
+    authorEnvironment(t, { GIT_AUTHOR_NAME: "qc", GIT_AUTHOR_EMAIL: "qc@example.com" });
+    const errors = [];
+    t.mock.method(console, "error", quiet(errors));
+    assert.equal(await runIntegrate(config(dir, null), ["--issue", "7", "feat/1-a"], { say: () => {}, run }), 0, errors.join("\n"));
+    git(dir, "merge-base", "--is-ancestor", "feat/1-a", "HEAD");
+  });
+}
+
+test("integrate rejects a branch whose authors differ from GIT_AUTHOR_EMAIL", async (t) => {
+  const dir = batch(t);
+  authorEnvironment(t, { GIT_AUTHOR_NAME: "other", GIT_AUTHOR_EMAIL: "other@example.com" });
+  const errors = [];
+  t.mock.method(console, "error", quiet(errors));
+  assert.equal(await runIntegrate(config(dir, null), ["--issue", "7", "feat/1-a"], { say: () => {}, run }), 1);
+  assert.match(errors.join("\n"), /feat\/1-a.*other@example\.com.*qc@example\.com/);
+  assert.throws(() => git(dir, "merge-base", "--is-ancestor", "feat/1-a", "HEAD"));
+});
+
+for (const exists of [false, true]) {
+  test(`an invalid author identity stops before switching to an ${exists ? "existing" : "absent"} integration branch`, async (t) => {
+    const dir = batch(t);
+    if (exists) git(dir, "branch", "feat/7-integration", "main");
+    const before = git(dir, "rev-parse", "HEAD");
+    authorEnvironment(t, { GIT_AUTHOR_NAME: "", GIT_AUTHOR_EMAIL: "" });
+    const errors = [];
+    t.mock.method(console, "error", quiet(errors));
+    assert.equal(await runIntegrate(config(dir, null), ["--issue", "7", "feat/1-a"], { say: () => {}, run }), 1);
+    assert.match(errors.join("\n"), /git var GIT_AUTHOR_IDENT/);
+    assert.equal(git(dir, "branch", "--show-current"), "main");
+    assert.equal(git(dir, "rev-parse", "HEAD"), before);
+    assert.equal(git(dir, "status", "--porcelain"), "");
+    if (!exists) assert.throws(() => git(dir, "show-ref", "--verify", "refs/heads/feat/7-integration"));
+  });
+}
 
 test("--pr opens a draft pull request and strips origin from the base", async (t) => {
   const dir = batchWithOrigin(t);

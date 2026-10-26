@@ -698,6 +698,9 @@ export function load(root = process.cwd()) {
     }
   }
   if (!isPlainObject(config.integrate)) throw new TypeError("integrate must be an object");
+  if (config.integrate.base !== undefined && (typeof config.integrate.base !== "string" || !config.integrate.base.trim())) {
+    throw new TypeError("integrate.base must be a non-empty string");
+  }
   const { ciEvery, push, branchPattern, review } = config.integrate;
   if (!Number.isInteger(ciEvery) || ciEvery < 1) throw new TypeError("integrate.ciEvery must be a positive integer");
   if (typeof push !== "boolean") throw new TypeError("integrate.push must be a boolean");

@@ -16,7 +16,8 @@ export const USAGE = `qc integrate — one integration branch for a batch of bra
       (3 by default), then settle and push any remaining changes. Set integrate.push to false for
       manual pushes. An absent origin skips pushes. A conflict stops the run and lists the files.
       Resolve it, commit, and run the same command again: a branch already merged is skipped.
-      --pr opens a draft pull request after the first push; it requires pushes and an origin remote.`;
+      --pr opens a draft pull request after the first push; it requires pushes and an origin remote.
+      It refuses each branch with an author email other than the effective Git author email.`;
 
 export function tryGit(cwd, args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -95,6 +96,9 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
     if (options.pr && !canPush) throw new Error("a pull request needs a pushed branch: enable integrate.push and configure origin");
     if (tryGit(root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).ok) throw new Error("a merge is in progress: resolve it, commit it, then run qc integrate again");
     if (git(root, ["status", "--porcelain"]).trim() !== "") throw new Error("the working tree has changes: commit or stash them first");
+    const identity = git(root, ["var", "GIT_AUTHOR_IDENT"]).trim();
+    const email = /<([^<>]+)> \d+ [+-]\d{4}$/.exec(identity)?.[1];
+    if (!email) throw new Error("git var GIT_AUTHOR_IDENT returned no author email");
     tryGit(root, ["fetch", "--quiet", "origin"]);
     const base = options.from ?? config.worktree?.base ?? "origin/main";
     const prBase = options.pr
@@ -151,10 +155,9 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
       ensurePullRequest();
     }
 
-    const email = git(root, ["config", "user.email"]).trim();
     for (const branch of options.branches) {
       const others = [...new Set(lines(git(root, ["log", "--format=%ae", `${base}..${branch}`, "--"])))].filter((author) => author !== email);
-      if (others.length > 0) throw new Error(`refuse branch ${branch}: authors differ from local git config user.email ${email}: ${others.join(", ")}`);
+      if (others.length > 0) throw new Error(`refuse branch ${branch}: authors differ from effective Git author email ${email}: ${others.join(", ")}`);
       if (tryGit(root, ["merge-base", "--is-ancestor", branch, "HEAD"]).ok) {
         say(`skip   ${branch}: already merged`);
         continue;

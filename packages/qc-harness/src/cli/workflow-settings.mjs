@@ -9,6 +9,7 @@ import { configAtBase, directSettings } from "./direct-lane.mjs";
 import { dispatchSettings } from "./dispatch.mjs";
 import { fileSafe } from "./edit-batch-state.mjs";
 import { ledgerFileOf } from "./ledger.mjs";
+import { promotionBranchName } from "./promotion-branch.mjs";
 
 const KEY = "swarm.review";
 const MERGE_KINDS = ["branch", "task"];
@@ -40,7 +41,7 @@ export function reviewSettings(swarm = {}) {
     for (const key of ["integration", "release"]) {
       if (typeof promotion[key] !== "string" || !promotion[key].trim()) throw wrong(`promotion.${key}`, promotion[key], "a non-empty branch name");
     }
-    if (promotion.integration === promotion.release) throw wrong("promotion.release", promotion.release, "different from swarm.review.promotion.integration");
+    if (promotionBranchName(promotion.integration) === promotionBranchName(promotion.release)) throw wrong("promotion.release", promotion.release, "different from swarm.review.promotion.integration");
     if (!isNameList(promotion.surfaces) || promotion.surfaces.length === 0 || promotion.surfaces.some((glob) => !glob.trim())) {
       throw wrong("promotion.surfaces", promotion.surfaces, "a non-empty list of non-empty globs");
     }

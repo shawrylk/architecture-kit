@@ -106,12 +106,21 @@ test("integrate configuration rejects invalid types and cadences", (t) => {
     push: ["yes"],
     branchPattern: [null, false, 1, [], {}, "["],
     review: [null, "true", 1, [], {}],
+    base: [null, false, 5, [], {}, "", "  "],
   })) {
     for (const value of values) {
       writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { [key]: value } }));
       assert.throws(() => load(root), { name: "TypeError", message: new RegExp(`integrate\\.${key}`) });
     }
   }
+});
+
+test("integrate.base accepts a non-empty branch string and stays unset by default", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-integrate-base-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(load(root).integrate.base, undefined);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { base: "origin/release" } }));
+  assert.equal(load(root).integrate.base, "origin/release");
 });
 
 test("check defaults leave repository commands off", () => {
