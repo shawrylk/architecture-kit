@@ -13,9 +13,9 @@ const GH_SETTINGS = ["GH_CONFIG_DIR", "GH_HOST", "GH_REPO"];
 const VALUE_FLAGS = new Set(["-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit", "--repo"]);
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 const POWERSHELL_ENV = /^\$env:([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$/is;
-const MERGE_ENDPOINT = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge\/?(?:\?.*)?$/;
+const MERGE_ENDPOINT = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge\/?$/;
 const MERGE_MUTATION = /\bmergePullRequest\b/;
-const GRAPHQL_ENDPOINT = /(?:^|\/)graphql\/?(?:\?.*)?$/;
+const GRAPHQL_ENDPOINT = /(?:^|\/)graphql\/?$/;
 const FIELD_FLAGS = new Set(["--field", "--raw-field"]);
 const PR_URL = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/;
 const REST_PATH = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?repos\//;
@@ -24,6 +24,8 @@ const MERGE_VALUE_LETTERS = "bFtAR";
 const API_VALUE_LETTERS = "FfHXqtp";
 const API_VALUE_FLAGS = new Set(["--field", "--raw-field", "--header", "--method", "--jq", "--template", "--input", "--hostname", "--cache", "--preview"]);
 const MAX_QUERY_BYTES = 1024 * 1024;
+
+const endpointPathFragment = (endpoint) => endpoint.split(/[?#]/, 1)[0];
 
 /** Only the settings that choose gh's account or host; a token is a credential and is never kept. */
 const kept = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => GH_SETTINGS.includes(name)));
@@ -228,7 +230,7 @@ function apiEndpoint(args) {
 
 /**
  * Each `gh api` call that merges with no review check, as `{ endpoint, nodeId, unreadable }`. `endpoint` is the PR merge
- * endpoint as written, or the GraphQL URL as written (`graphql` when the call spells none). A call holds a
+ * endpoint or GraphQL URL without its query or fragment (`graphql` when the call spells none). A call holds a
  * `mergePullRequest` mutation when any argument, or any query file it reads, names it, whatever the URL spelling.
  * `nodeId` names each GraphQL mutation's PR, or null when its input cannot name one.
  * A GraphQL call whose query file the guard cannot read fails closed, and `unreadable` names that file.
@@ -247,8 +249,9 @@ export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
         else if (args[i].startsWith("--hostname=")) settings.GH_HOST = args[i].slice("--hostname=".length);
       }
       const withSettings = (calls) => calls.map((call) => ({ ...call, env: settings }));
-      const found = args.filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
-      const endpoint = apiEndpoint(args);
+      const found = args.map(endpointPathFragment).filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
+      const spelled = apiEndpoint(args);
+      const endpoint = spelled === null ? null : endpointPathFragment(spelled);
       if (isRestPath(endpoint ?? "")) return withSettings(found);
       const graphql = endpoint !== null && GRAPHQL_ENDPOINT.test(endpoint) ? endpoint : undefined;
       let mutation = args.some((word) => MERGE_MUTATION.test(word));

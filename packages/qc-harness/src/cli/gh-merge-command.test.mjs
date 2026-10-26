@@ -58,6 +58,21 @@ test("a gh api call to a PR's merge endpoint is found, in each spelling, and no 
 
 const MUTATION = "mutation { mergePullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }";
 
+test("API endpoint matching strips the query and fragment while keeping the host", () => {
+  for (const parse of [segmentsOf, powershellSegments]) {
+    for (const suffix of ["#x", "?x=1", "?x=1#fragment", "#fragment?x=1"]) {
+      for (const endpoint of ["graphql", "https://ghe.example.com/api/graphql"]) {
+        assert.deepEqual(ghApiMerges(`gh api '${endpoint}${suffix}' --input -`, parse), [
+          { endpoint, unreadable: "-", env: {} },
+        ]);
+      }
+      assert.deepEqual(ghApiMerges(`gh api 'repos/o/r/pulls/1/merge${suffix}' -X PUT`, parse), [
+        { endpoint: "repos/o/r/pulls/1/merge", env: {} },
+      ]);
+    }
+  }
+});
+
 test("a mutation word in any argument is found, whatever the spelling of the GraphQL URL", () => {
   for (const url of ["graphql", "/graphql", "https://api.github.com/graphql", "https://ghe.example.com/api/graphql", "graphql/"]) {
     assert.deepEqual(ghApiMerges(`gh api ${url} -f query='${MUTATION}'`, segmentsOf).map((call) => call.endpoint), [url], url);
