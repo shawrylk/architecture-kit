@@ -9,6 +9,7 @@
 // This applies in every checkout, with `swarm.dispatch` on or off.
 
 import { fileURLToPath } from "node:url";
+import { PROMOTION_SCOPE } from "../config.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
@@ -34,7 +35,7 @@ const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", 
  * Judges each merge: an APPROVED review of `kind` on its head, or else the direct lane that `lane(merge)` decides.
  * @returns `{ refusal }` for the first merge that may not run, or `{ refusal: null, direct }` with the lane notes.
  */
-export function mergeVerdict(merges, records, kind, lane = null) {
+export function mergeVerdict(merges, records, kind, lane = null, promotion = null) {
   const direct = [];
   for (const merge of merges) {
     if (!merge.sha) {
@@ -44,7 +45,6 @@ export function mergeVerdict(merges, records, kind, lane = null) {
     const missing = dispatchedScopesFor(records, merge.sha).find(
       (scope) => latestVerdictFor(records, merge.sha, [kind], scope)?.verdict !== "APPROVED",
     );
-    if (verdict?.verdict === "APPROVED" && missing === undefined) continue;
     if (missing !== undefined) {
       return {
         refusal:
@@ -52,7 +52,15 @@ export function mergeVerdict(merges, records, kind, lane = null) {
           `Dispatch ${REVIEWER[kind]} with \`Scope: ${missing}\` on that head, and merge after every scope approves.`,
       };
     }
-    const fit = lane ? lane(merge) : null;
+    if (promotion && kind === "branch" && latestVerdictFor(records, merge.sha, ["branch"], promotion)?.verdict !== "APPROVED") {
+      return {
+        refusal:
+          `Merge guard: the ledger holds no APPROVED branch review of scope "${promotion}" on ${merge.sha}. ` +
+          `Run \`qc review promotion ${merge.selector || "<pr>"}\` on that head, and merge after every scope approves.`,
+      };
+    }
+    if (verdict?.verdict === "APPROVED") continue;
+    const fit = !promotion && lane ? lane(merge) : null;
     if (fit && fit.problem === null) {
       direct.push(fit.note);
       continue;
@@ -73,17 +81,17 @@ export function mergeVerdict(merges, records, kind, lane = null) {
 /** @returns the reason the first of `merges` may not run, or null when each pins an approved head. */
 export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict(merges, records, kind, lane).refusal;
 
-/** The base the PR of `merge` merges into, as gh reads it before the merge: `{ name, oid }`, or null. `oid` is null when gh names none. */
+/** The PR base selects its review policy; its head identifies a promotion. Missing base details keep the guard closed. */
 function prBaseOf(merge, cwd, gh, timeoutMs) {
   const args = merge.nodeId
     ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner}}}}", "-f", `id=${merge.nodeId}`]
-    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid"];
+    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName"];
   try {
     const answer = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
     const pr = merge.nodeId ? answer?.data?.node : answer;
     if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
       typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
-    return typeof pr?.baseRefName === "string" ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null } : null;
+    return typeof pr?.baseRefName === "string" ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null } : null;
   } catch {
     return null;
   }
@@ -259,7 +267,10 @@ export function decide(call, { gh = runGh } = {}) {
         workflow = policy.workflow;
         if (!workflow) continue;
         const records = readLedger(workflow.ledger);
-        const result = mergeVerdict([merge], records, workflow.review.merge, laneOf(workflow, records, pr, deadline));
+        const promotion = workflow.review.promotion;
+        const promotionScope = promotion && pr.head?.replace(/^origin\//, "") === promotion.integration.replace(/^origin\//, "") &&
+          pr.name.replace(/^origin\//, "") === promotion.release.replace(/^origin\//, "") ? PROMOTION_SCOPE : null;
+        const result = mergeVerdict([merge], records, workflow.review.merge, laneOf(workflow, records, pr, deadline), promotionScope);
         if (result.refusal) return deny(result.refusal);
         notes.push(...result.direct);
       } catch (error) {
