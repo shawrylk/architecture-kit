@@ -18,7 +18,7 @@ test(`spawnCommand resolves ${command} and preserves literal shim arguments`, { 
   try {
     const child = spawnCommand(command, args, {
       cwd: root,
-      env: { ...process.env, PATH: bin, PATHEXT: ".EXE;.CMD" },
+      env: { ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !["PATH", "PATHEXT"].includes(key.toUpperCase()))), Path: root, PATH: bin, Pathext: ".EXE", PATHEXT: ".EXE;.CMD" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
@@ -44,4 +44,21 @@ test("spawnCommand forces shell off for native executables", async () => {
     child.on("close", resolve);
   });
   assert.equal(code, 0);
+});
+
+test("spawnCommand rejects line breaks in batch arguments and names the command", { skip: process.platform !== "win32" }, () => {
+  const root = mkdtempSync(join(tmpdir(), "qc-spawn-newline-"));
+  try {
+    const shim = join(root, "probe.cmd");
+    writeFileSync(shim, "@exit /b 0\r\n");
+    for (const argument of ["first\nsecond", "first\rsecond", "first\r\nsecond"]) {
+      assert.throws(() => spawnCommand(shim, [argument], { stdio: "ignore" }), (error) => {
+        assert.ok(error.message.includes(shim));
+        assert.match(error.message, /line break/i);
+        return true;
+      });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

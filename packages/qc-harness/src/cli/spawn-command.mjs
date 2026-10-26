@@ -13,7 +13,7 @@ function quoteArgument(value) {
 }
 
 function resolveCommand(command, cwd, env) {
-  const get = (key) => env[Object.keys(env).find((name) => name.toUpperCase() === key)] ?? "";
+  const get = (key) => env[Object.keys(env).findLast((name) => name.toUpperCase() === key)] ?? "";
   const extensions = get("PATHEXT").split(";").filter(Boolean);
   const suffixes = path.extname(command) ? [""] : (extensions.length ? extensions : [".COM", ".EXE", ".BAT", ".CMD"]);
   const directories = /[\\/]/.test(command) ? [cwd] : [cwd, ...get("PATH").split(";").map((entry) => entry.replace(/^"|"$/g, ""))];
@@ -36,6 +36,9 @@ export function spawnCommand(command, args = [], options = {}) {
   const env = options.env ?? process.env;
   const executable = resolveCommand(command, options.cwd ?? process.cwd(), env);
   if (!/\.(cmd|bat)$/i.test(executable)) return spawn(executable, args, settings);
+  if (args.some((argument) => /[\r\n]/.test(String(argument)))) {
+    throw new Error(`Cannot run ${command}: a cmd.exe argument contains a line break`);
+  }
   const line = [escapeMeta(executable), ...args.map(quoteArgument)].join(" ");
   return spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"${line}"`], {
     ...settings,

@@ -537,7 +537,7 @@ async function contractIdempotency(config, lines) {
   if (text === null) return [];
   let operations;
   try {
-    operations = await contractOperations(text);
+    operations = await contractOperations(text, { root: config.root });
   } catch (error) {
     const rule = error.code === "CONTRACT_PEER_MISSING" ? "contract-reader-unavailable" : "unreadable-contract";
     return [{ path: contract, rule, detail: error.message }];
@@ -568,7 +568,7 @@ async function contractRouteAgreement(config, routes, lines) {
   if (text === null) return [];
   let operations;
   try {
-    operations = await contractOperations(text);
+    operations = await contractOperations(text, { root: config.root });
   } catch (error) {
     const rule = error.code === "CONTRACT_PEER_MISSING" ? "contract-reader-unavailable" : "unreadable-contract";
     return [{ path: contract, rule, detail: error.message }];

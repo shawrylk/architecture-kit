@@ -117,18 +117,28 @@ function compactTokensOf(worktree) {
 /** The brief is read again for each run, so an edit reaches the next session. */
 const promptFor = (settings) => readFileSync(settings.brief, "utf8") + continuationNote(settings.progress);
 
-/** Runs one codex process with no shell and a closed stdin, appends its output to the log, and resolves with the exit status and the output tail. */
-function spawnRun({ command, args, env, log }, codexCommand) {
+/** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
+function spawnRun({ command, args, input, env, log }, codexCommand) {
   const [bin, ...prefix] = codexCommand;
   mkdirSync(path.dirname(log), { recursive: true });
   const start = existsSync(log) ? statSync(log).size : 0;
   const fd = openSync(log, "a");
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, [...prefix, ...args], { env, stdio: ["ignore", fd, fd], windowsHide: true });
-    child.on("error", (error) => {
+    let child;
+    try {
+      child = spawn(bin, [...prefix, ...args], { env, stdio: ["pipe", fd, fd], windowsHide: true });
+    } catch (error) {
       closeSync(fd);
       reject(error);
+      return;
+    }
+    child.on("error", (error) => {
+      reject(error);
     });
+    child.stdin.on("error", (error) => {
+      if (error.code !== "EPIPE") reject(error);
+    });
+    child.stdin.end(input);
     child.on("close", (status) => {
       closeSync(fd);
       const text = readFileSync(log, "utf8");
@@ -144,7 +154,7 @@ const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${lin
 /**
  * The last stdout line is `exit <code>` on every path, so a redirect of the runner into a wrapper log carries
  * the end of the job for `qc watch --codex`, in any shell.
- * @param run `({ command, args, env, log }) => Promise<{ status, tail }>`; the default spawns `codexCommand`.
+ * @param run `({ command, args, input, env, log }) => Promise<{ status, tail }>`; the default spawns `codexCommand`.
  * @param out `(line) => Promise|void` writes the `exit` line; the default writes to stdout.
  * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs.
  */
@@ -179,10 +189,10 @@ async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, 
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
     const limits = ["-c", `model_auto_compact_token_limit=${compactTokens}`, "-c", `tool_output_token_limit=${TOOL_OUTPUT_TOKENS}`];
-    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env), ...limits, prompt];
+    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env), ...limits, "-"];
     let result;
     try {
-      result = await execute({ command: codexCommand[0], args, env: { ...env, QC_ROLE: "implementer" }, log: settings.log });
+      result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...env, QC_ROLE: "implementer" }, log: settings.log });
     } catch (error) {
       return finish(say, `codex did not run: ${error.message}`, 1);
     }
