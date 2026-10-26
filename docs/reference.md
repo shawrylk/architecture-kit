@@ -1980,7 +1980,9 @@ exempt. `valeConfig` names the repository's Vale config and defaults to `.vale/.
 ### Redact public posts and label AI text
 
 Every title, body, and comment the kit posts to GitHub passes through `output-redaction.mjs`.
-It uses `secret-patterns.mjs` to replace detected credential tokens and private-key headers with `[REDACTED]`.
+It matches credential patterns over the whole text and replaces each match, including its secret value, with `[REDACTED]`.
+It redacts each PEM private key from its `BEGIN` header through its matching `END` header, across lines or on one line.
+A `BEGIN` header without a matching `END` header redacts through the end of the text.
 The commit guard's `qc-allow-secret` directive never exempts a public post from redaction.
 `qc integrate --pr` applies these rules to its pull request title and body.
 
