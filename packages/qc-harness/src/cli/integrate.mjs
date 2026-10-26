@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { globMatcher } from "../glob.mjs";
 import { runGh } from "./gh-run.mjs";
+import { postBody, redactOutput } from "./output-redaction.mjs";
 import { pauseRefusal } from "./pause.mjs";
 import { posixDir, renumber } from "./migrations.mjs";
 
@@ -137,7 +138,8 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
       } else {
         const result = gh([
           "pr", "create", "--draft", "--head", name, "--base", prBase,
-          "--title", `${options.type ?? "feat"}: integrate the batch for #${options.issue}`, "--body", `Refs #${options.issue}`,
+          "--title", redactOutput(`${options.type ?? "feat"}: integrate the batch for #${options.issue}`),
+          "--body", postBody(`Refs #${options.issue}`, config),
         ], { cwd: root });
         if (result === null) throw new Error("gh pr create failed");
         say(`pr     ${result.trim()}`);

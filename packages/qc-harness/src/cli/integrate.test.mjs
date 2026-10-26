@@ -70,8 +70,23 @@ function pullRequestIo(dir, { view = null, create = "  https://github.com/exampl
 
 const pullRequestCalls = [
   ["pr", "view", "feat/7-integration", "--json", "number"],
-  ["pr", "create", "--draft", "--head", "feat/7-integration", "--base", "main", "--title", "feat: integrate the batch for #7", "--body", "Refs #7"],
+  ["pr", "create", "--draft", "--head", "feat/7-integration", "--base", "main", "--title", "feat: integrate the batch for #7", "--body", "Refs #7\n\nWritten by an AI agent with architecture-kit."],
 ];
+
+for (const aiLabel of [undefined, true, false]) {
+  test(`--pr applies the public body attribution setting ${aiLabel}`, async (t) => {
+    const dir = batchWithOrigin(t);
+    const settings = config(dir, null);
+    if (aiLabel !== undefined) settings.post = { aiLabel };
+    const io = pullRequestIo(dir);
+    assert.equal(await runIntegrate(settings, ["--issue", "7", "--pr", "feat/1-a"], io), 0);
+    const create = io.events.find((event) => Array.isArray(event) && event[1] === "create");
+    assert.equal(create[create.indexOf("--title") + 1], "feat: integrate the batch for #7");
+    assert.equal(create[create.indexOf("--body") + 1], aiLabel === false
+      ? "Refs #7"
+      : "Refs #7\n\nWritten by an AI agent with architecture-kit.");
+  });
+}
 
 test("an operator pause refuses integration before any branch changes", async (t) => {
   const dir = batch(t);

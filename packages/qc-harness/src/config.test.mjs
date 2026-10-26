@@ -10,6 +10,26 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("post.aiLabel defaults on and accepts an explicit boolean", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-post-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(defaults.post, { aiLabel: true });
+  assert.equal(load(root).post.aiLabel, true);
+  for (const post of [{}, { aiLabel: false }, { aiLabel: true }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ post }));
+    assert.equal(load(root).post.aiLabel, post.aiLabel ?? true);
+  }
+});
+
+test("post.aiLabel rejects malformed configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-post-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const post of [null, [], false, "post", { aiLabel: null }, { aiLabel: "false" }, { aiLabel: 0 }, { aiLabel: [] }, { aiLabel: {} }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ post }));
+    assert.throws(() => load(root), /post/);
+  }
+});
+
 test("merge.holdLabel defaults to hold and accepts a repository label", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-hold-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

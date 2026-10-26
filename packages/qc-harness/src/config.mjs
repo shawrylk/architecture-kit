@@ -9,6 +9,7 @@ import path from "node:path";
 export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
+  post: { aiLabel: true },
   ci: { requiredChecks: [] },
   guard: { protectedPaths: [".github/workflows/**", ".husky/**", ".githooks/**", "qc.config.json", ".claude/settings*.json"] },
   // Where features live. Every structural gate walks these.
@@ -687,6 +688,8 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (Object.hasOwn(user, "post") && !isPlainObject(user.post)) throw new TypeError("post must be an object");
+  if (typeof config.post.aiLabel !== "boolean") throw new TypeError("post.aiLabel must be a boolean");
   if (Object.hasOwn(user, "guard") && !isPlainObject(user.guard)) throw new TypeError("guard must be an object");
   if (!Array.isArray(config.guard.protectedPaths) || !config.guard.protectedPaths.every((glob) => typeof glob === "string" && glob.trim())) {
     throw new TypeError("guard.protectedPaths must be an array of non-empty strings");

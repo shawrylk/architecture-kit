@@ -1934,6 +1934,29 @@ qc prose --pr-body-event                  # also the body of the pull request in
 `paths` and `exempt` are globs over markdown files. The ADR log, `adr.root` and `docs.decisions`, is always
 exempt. `valeConfig` names the repository's Vale config and defaults to `.vale/.vale.ini`.
 
+### Redact public posts and label AI text
+
+Every title, body, and comment the kit posts to GitHub passes through `output-redaction.mjs`.
+It uses `secret-patterns.mjs` to replace detected credential tokens and private-key headers with `[REDACTED]`.
+The commit guard's `qc-allow-secret` directive never exempts a public post from redaction.
+`qc integrate --pr` applies these rules to its pull request title and body.
+
+`post.aiLabel` defaults to `true`.
+Each body or comment ends with this line, once:
+
+```text
+Written by an AI agent with architecture-kit.
+```
+
+Set `post.aiLabel` to `false` in `qc.config.json` to disable the label.
+Redaction stays enabled, and titles receive no label.
+
+```json
+{
+  "post": { "aiLabel": false }
+}
+```
+
 ## Prepare local screen fixtures
 
 `qc screens setup --map screens.json --target legacy-local` prepares matching content through the application's own UI.
