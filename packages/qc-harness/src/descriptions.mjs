@@ -27,6 +27,7 @@ export const gateDescriptions = Object.freeze({
   "comment-style": "A comment under infra/ is one line of why, never a paragraph, a banner or code",
   parity: "Every server slice has a client slice of its name and the reverse, a divergence is registered, and no slice is a no-op",
   "integration-imports": "An integration test imports the product it integrates with",
+  "feature-switches": "An unwire constant lives in the feature's switch file, never beside the code that reads it",
   "closed-set-writers": "Every key of a closed set has a writer, and every writer writes a key of the set",
   "tenant-isolation-test": "A feature that owns a tenant table has a test in its folder that calls the two-tenant helper",
   "doc-claims": "A state-claim block in a document still matches the file it counts",

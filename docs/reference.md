@@ -99,7 +99,11 @@ to `featureRoots` when the root is missing there.
 npx qc check                 # every structural gate
 npx qc check <file>...       # the fast per-file path a post-edit hook takes
 npx qc check --files-from -  # the same path, with NUL-separated files on stdin; no length limit
+npx qc check --since-push
 ```
+
+`--since-push` runs `check.sincePush` (else `check.related`) with the files changed since the last push plus the staged files.
+It falls back to the merge base with `check.base` and prints a warning when the branch has no upstream.
 
 With files given, the check reads only the features that hold them, once each, and reports every
 problem before it exits 1. It also runs the per-file English rules on exactly those files.
@@ -119,6 +123,33 @@ An empty list checks nothing.
 Every gate reads one file list: `git ls-files --cached --others --exclude-standard`, minus
 `ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
 `qc decisions`. Outside a git work tree, the check walks the tree instead.
+
+### Run the affected e2e specs before a push
+
+Set `check.e2e` in `qc.config.json` to your repository's command for the affected end-to-end (e2e) specs:
+
+```json
+{
+  "check": {
+    "e2e": "node script/e2e-affected.mjs --project=chromium --project=firefox"
+  }
+}
+```
+
+`qc e2e` appends the committed and staged files changed against the merge base with `check.base` as arguments.
+Your repository's command picks the specs and names the browsers, for example both `--project=chromium` and `--project=firefox`.
+The kit ships no Playwright logic.
+
+Run the command on a throwaway database before a push:
+
+```bash
+npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e
+```
+
+The wrapper creates a database on a free port and removes it when the command exits.
+`qc e2e` runs only when asked; `qc check` and the pre-push hook never run it.
+The default `check.e2e: null` skips the command, and an empty file list also skips it.
+When the merge base is unavailable, the command runs without file arguments.
 
 ### Shared user configuration
 
@@ -1277,6 +1308,44 @@ a pattern of `productPackages` counts anywhere. A test that imports none fails a
 
 ```json
 { "gates": { "integration-imports": true }, "integrationImports": { "productPackages": ["^@app/(?:domain|contracts)(?:/|$)"] } }
+```
+
+### Keep an unwired control behind a feature switch
+
+Use one `features/<feature>/feature-switches.ts` file per feature. Export one object whose keys hold boolean values:
+
+```ts
+export const featureSwitches = {
+  SHOW_DELETE: false,
+  EXPORT_WIRED: false,
+};
+```
+
+Keep an unwired control in JSX behind its key, so the control keeps an importer and the dead-code gate stays green:
+
+```tsx
+import { featureSwitches } from "./feature-switches";
+import { DeleteButton } from "./delete-button";
+
+export function View() {
+  return <>{featureSwitches.SHOW_DELETE && <DeleteButton />}</>;
+}
+```
+
+The `feature-switches` gate ships off. Set `gates["feature-switches"]` to `true` to check source files in each folder under `featureRoots`.
+The gate skips test files, dependencies, and build output. A matching `const`, `let`, or `var` declaration outside the switch file fails as `unwire-constant-outside-switch-file`.
+
+`featureSwitches.file` sets the switch filename. `featureSwitches.patterns` lists regular expressions for declaration names.
+The defaults match names containing `UNWIRED`, starting with `SHOW_`, or ending with `_WIRED`.
+
+```json
+{
+  "gates": { "feature-switches": true },
+  "featureSwitches": {
+    "file": "feature-switches.ts",
+    "patterns": ["UNWIRED", "^SHOW_", "_WIRED$"]
+  }
+}
 ```
 
 ### Give every key of a closed set a writer

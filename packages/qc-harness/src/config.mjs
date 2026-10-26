@@ -307,6 +307,9 @@ export const defaults = {
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
     related: null,
+    // --since-push appends paths changed after the push; null uses related.
+    sincePush: null,
+    e2e: null,
     // Commands receive no extra arguments; for example, ["node script/check-comments.mjs --base origin/dev"].
     commands: [],
     // The merge base with this ref selects committed and staged changes.
@@ -358,6 +361,9 @@ export const defaults = {
     productRoots: ["backend", "bff", "frontend", "workers"],
     productPackages: [],
   },
+
+  // Keep unwired controls in JSX while their feature switch controls their visibility.
+  featureSwitches: { file: "feature-switches.ts", patterns: ["UNWIRED", "^SHOW_", "_WIRED$"] },
 
   // Each set: `source` declares the keys, `key` and `writer` are patterns whose first group is a key,
   // `roots` hold the writers, and `declaredAhead` maps a key with no writer yet to its reason.
@@ -431,6 +437,7 @@ export const defaults = {
     // sets, its claims. Shipped on, each would also red a consumer's enforcement map on upgrade.
     parity: false,
     "integration-imports": false,
+    "feature-switches": false,
     "closed-set-writers": false,
     "doc-claims": false,
     "tenant-isolation-test": false,
@@ -668,9 +675,11 @@ export function load(root = process.cwd()) {
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
-  const { related, commands, base } = config.check;
+  const { related, sincePush, e2e, commands, base } = config.check;
   const command = (value) => typeof value === "string" && value.trim().length > 0;
   if (related !== null && !command(related)) throw new TypeError("check.related must be a non-empty string or null");
+  if (sincePush !== null && !command(sincePush)) throw new TypeError("check.sincePush must be a non-empty string or null");
+  if (e2e !== null && !command(e2e)) throw new TypeError("check.e2e must be a non-empty string or null");
   if (!Array.isArray(commands) || !commands.every(command)) throw new TypeError("check.commands must be an array of non-empty strings");
   if (!command(base)) throw new TypeError("check.base must be a non-empty string");
   config.root = root;
