@@ -693,7 +693,7 @@ The runner validates the worktree's brief and Codex settings before launch:
 |---|---|
 | `--max-runs` | `1`; a positive whole number, capped by `codex.maxRuns` (default `2`) |
 | `--effort` | optional; `low`, `medium`, or `high`; omission keeps the Codex config value |
-| `--poll-minutes` | `30`; a positive finite interval in minutes for `--wait-reset` |
+| `--poll-minutes` | `30`; a positive interval of at most 35791 minutes for `--wait-reset` |
 | `codex.briefMaxLines` | `40` non-blank lines in the brief |
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |

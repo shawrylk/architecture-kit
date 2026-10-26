@@ -97,7 +97,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - Start Codex only inside a worktree from `qc worktree add`. Never start it in the main checkout, the scratchpad, or the home folder. A run outside a repository can make a code indexer read the whole home folder.
 - The command defaults to one run. Use `--max-runs 2` for a second session, or raise `codex.maxRuns` for more sessions.
 - Use `--wait-reset` to resume after a Codex reset. It polls every 30 minutes without a model call.
-- Set `--poll-minutes <n>` to a positive finite interval in minutes. `qc codex-wait-reset` accepts the same flag.
+- Set `--poll-minutes <n>` to a positive interval of at most 35791 minutes, the longest Node timer. `qc codex-wait-reset` accepts the same flag.
 - Codex runs count as implementers. Run one at a time, as the swarm rules say. Run more only up to `swarm.dispatch.implementerSlots`, on disjoint paths, and with more than 4 GB of free memory for each extra run.
 
 ## Read the result
