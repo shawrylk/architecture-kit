@@ -8,6 +8,12 @@ import { fileURLToPath } from "node:url";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test("help describes the Codex limit expiry time", () => {
+  const run = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /qc codex status[^\n]*with the expiry time and its source/);
+});
+
 function fixture(t, contents) {
   const root = mkdtempSync(path.join(tmpdir(), "qc-cli-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

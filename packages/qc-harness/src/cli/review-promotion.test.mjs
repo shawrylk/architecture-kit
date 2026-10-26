@@ -82,12 +82,12 @@ for (const changedFiles of [undefined, null, "3", -1]) {
   });
 }
 
-test("a repeated approved promotion names its verdict and review file", async (t) => {
-  const f = await fixture(t, { records: [{ type: "verdict", kind: "branch", branch: "dev", scope: "promotion", verdict: "APPROVED", sha: "b".repeat(40), file: "reviews/promotion.md" }] });
+test("a repeated approved promotion names its verdict without a review file", async (t) => {
+  const f = await fixture(t, { records: [{ type: "verdict", session: "s", agentId: "reviewer", kind: "branch", verdict: "APPROVED", sha: "b".repeat(40), branch: "dev", redChecked: false, scope: "promotion" }] });
   assert.equal(f.run(), 0);
   const brief = readFileSync(f.file, "utf8");
   assert.match(brief, /Previous verdict: APPROVED/);
-  assert.match(brief, /Previous review: reviews\/promotion\.md/);
+  assert.doesNotMatch(brief + f.out.join("\n"), /Previous review:/);
   assert.doesNotMatch(brief, /Check each earlier finding/);
 });
 
@@ -190,10 +190,10 @@ test("qc review uses configured surfaces", async (t) => {
 
 test("a repeated promotion names the newest scoped branch verdict and briefs its increment", async (t) => {
   const reviewed = "b".repeat(40);
-  const record = { type: "verdict", kind: "branch", branch: "dev", scope: "promotion", verdict: "APPROVED", sha: "c".repeat(40) };
+  const record = { type: "verdict", session: "s", agentId: "reviewer", kind: "branch", verdict: "APPROVED", sha: "c".repeat(40), branch: "dev", redChecked: false, scope: "promotion" };
   const f = await fixture(t, { records: [
     record,
-    { ...record, sha: reviewed, verdict: "CHANGES_REQUIRED", file: "reviews/changes-required.md" },
+    { ...record, sha: reviewed, verdict: "CHANGES_REQUIRED" },
     { ...record, branch: "other" },
     { ...record, kind: "task" },
     { ...record, scope: "security" },
@@ -203,9 +203,11 @@ test("a repeated promotion names the newest scoped branch verdict and briefs its
   const brief = readFileSync(f.file, "utf8");
   assert.ok(brief.includes(`\nReviewed: ${reviewed}\n`));
   assert.match(brief, /Previous verdict: CHANGES_REQUIRED/);
-  assert.match(brief, /Previous review: reviews\/changes-required\.md/);
+  assert.doesNotMatch(brief, /^Previous review:/m);
+  assert.match(brief, /Check each earlier finding in the file named by `Previous review:`/);
   assert.match(brief, /Check each earlier finding.*not only the increment/);
   assert.ok(f.out[1].includes(`\nReviewed: ${reviewed}\n`));
+  assert.match(f.out[1], /Add a `Previous review: <path>` line naming the earlier review file/);
   assert.match(brief, /1 of 2/);
   assert.match(brief, /infra\/increment\.tf/);
   assert.doesNotMatch(brief, /infra\/net\.tf|0042\.sql/);

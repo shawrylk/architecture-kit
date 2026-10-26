@@ -40,7 +40,7 @@ const USAGE = `qc — architecture gates
                            --wait-reset polls every 15 minutes without a model, then resumes the same brief; --max-hours defaults to 6
   qc codex-wait-reset --since <iso> [--max-hours <n>]
                            wait for a later Codex reset without a model; exit 0 on a reset, 1 at the bound; default 6 hours
-  qc codex status         print whether Codex is free or limited, with the reset time and its source
+  qc codex status         print whether Codex is free or limited, with the expiry time and its source
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
   qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]

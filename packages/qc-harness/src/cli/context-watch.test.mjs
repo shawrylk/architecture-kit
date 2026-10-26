@@ -196,6 +196,38 @@ test("a competing stale lock claim stays silent", (t) => {
   assert.equal(fs.existsSync(f.state), false);
 });
 
+test("a lock that turns fresh before the stale rename returns to its owner", (t) => {
+  const f = fixture(t);
+  const lock = `${f.state}.lock`;
+  mkdirSync(lock, { recursive: true });
+  const old = new Date(Date.now() - 31_000);
+  utimesSync(lock, old, old);
+  const originalRename = fs.renameSync;
+  let moved;
+  let restored = false;
+  t.mock.method(fs, "renameSync", (from, to) => {
+    if (from === lock) {
+      fs.rmdirSync(lock);
+      mkdirSync(lock);
+      moved = to;
+    } else if (from === moved) {
+      assert.equal(to, lock);
+      restored = true;
+    }
+    return originalRename(from, to);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const result = f.at(210_000);
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.equal(result, null);
+  assert.equal(restored, true);
+  assert.equal(fs.existsSync(lock), true);
+  assert.equal(fs.existsSync(moved), false);
+  assert.equal(fs.existsSync(f.state), false);
+});
+
 test("a lock at most 30 seconds old stays held", (t) => {
   const f = fixture(t);
   const lock = `${f.state}.lock`;

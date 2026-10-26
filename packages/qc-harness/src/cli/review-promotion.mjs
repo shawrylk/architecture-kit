@@ -24,8 +24,8 @@ export function promotionBrief({ pr, head, reviewed, previous, integration, rele
     `Head: ${head}`,
     `Scope: ${PROMOTION_SCOPE}`,
     ...(reviewed ? [`Reviewed: ${reviewed}`] : []),
-    ...(previous ? [`Previous verdict: ${previous.verdict ?? "unknown"}`, ...(previous.file ? [`Previous review: ${previous.file}`] : [])] : []),
-    ...(previous?.verdict === "CHANGES_REQUIRED" ? ["Check each earlier finding and confirm its resolution, not only the increment."] : []),
+    ...(previous ? [`Previous verdict: ${previous.verdict ?? "unknown"}`] : []),
+    ...(previous?.verdict === "CHANGES_REQUIRED" ? ["Check each earlier finding in the file named by `Previous review:` and confirm its resolution, not only the increment."] : []),
     "",
     "## Review these files",
     "",
@@ -97,7 +97,7 @@ export function runReview(config, args, { gh = runGh, git = gitOut, out = consol
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, brief);
     out(`Wrote ${file}`);
-    out(`Dispatch architecture:sdd-branch-reviewer with model opus:\nBrief: ${file}\nScope: ${PROMOTION_SCOPE}\n${reviewed ? `Reviewed: ${reviewed}\n` : ""}Worktree: <a worktree on ${integration} at ${pr.headRefOid}>`);
+    out(`Dispatch architecture:sdd-branch-reviewer with model opus:\nBrief: ${file}\nScope: ${PROMOTION_SCOPE}\n${reviewed ? `Reviewed: ${reviewed}\n` : ""}Worktree: <a worktree on ${integration} at ${pr.headRefOid}>${last?.verdict === "CHANGES_REQUIRED" ? "\nAdd a `Previous review: <path>` line naming the earlier review file to the reviewer prompt." : ""}`);
     out(`Merge with --match-head-commit ${pr.headRefOid} after the review approves.`);
     return 0;
   } catch (error) {

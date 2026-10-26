@@ -191,27 +191,32 @@ test("one limit hit shares its recorded timestamp with the reset wait", async (t
   assert.equal(checked, true);
 });
 
-for (const tail of ["usage limit", "usage limit. Try again in 20s", "usage limit. Try again in 8h"]) {
-test(`--wait-reset leaves a fresh default limit at its bound: ${tail}`, async (t) => {
-  const { argv } = setup(t);
-  const timer = resetClock();
-  let runs = 0;
-  const exits = [];
-  const code = await runCodexImplement([...argv, "--wait-reset", "--max-hours", "0.3"], {
-    ...timer, say: quiet, out: (line) => exits.push(line),
-    run: async () => { runs += 1; return { status: 1, tail }; },
-    fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: { announced_at: "2025-12-31T23:00:00.000Z" } } }) }),
+for (const [tail, until, source] of [
+  ["usage limit", "2026-01-01T01:18:00.000Z", "default"],
+  ["usage limit. Try again in 20s", "2026-01-01T01:18:00.000Z", "default"],
+  ["usage limit. Try again in 8h", "2026-01-01T08:00:00.000Z", "codex"],
+  ["usage limit. Try again in 30m", "2026-01-01T01:18:00.000Z", "default"],
+]) {
+  test(`--wait-reset keeps the later estimate or default at its bound: ${tail}`, async (t) => {
+    const { argv } = setup(t);
+    const timer = resetClock();
+    let runs = 0;
+    const exits = [];
+    const code = await runCodexImplement([...argv, "--wait-reset", "--max-hours", "0.3"], {
+      ...timer, say: quiet, out: (line) => exits.push(line),
+      run: async () => { runs += 1; return { status: 1, tail }; },
+      fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: { announced_at: "2025-12-31T23:00:00.000Z" } } }) }),
+    });
+    assert.equal(code, 2);
+    assert.equal(runs, 1);
+    assert.equal(timer.now(), Date.parse("2026-01-01T00:18:00.000Z"));
+    assert.deepEqual(exits, ["exit 2"]);
+    assert.deepEqual(readLimit(process.env.QC_CODEX_LIMIT_FILE, timer.now()), {
+      until: new Date(until), source,
+    });
+    const record = JSON.parse(readFileSync(process.env.QC_CODEX_LIMIT_FILE, "utf8"));
+    assert.equal(record.recordedAt, new Date(timer.now()).toISOString());
   });
-  assert.equal(code, 2);
-  assert.equal(runs, 1);
-  assert.equal(timer.now(), Date.parse("2026-01-01T00:18:00.000Z"));
-  assert.deepEqual(exits, ["exit 2"]);
-  assert.deepEqual(readLimit(process.env.QC_CODEX_LIMIT_FILE, timer.now()), {
-    until: new Date(timer.now() + 3_600_000), source: "default",
-  });
-  const record = JSON.parse(readFileSync(process.env.QC_CODEX_LIMIT_FILE, "utf8"));
-  assert.equal(record.recordedAt, new Date(timer.now()).toISOString());
-});
 }
 
 for (const [duration, milliseconds, source] of [["20s", 16 * 60_000, "wait"], ["8h", 8 * 3_600_000, "codex"]]) {
@@ -981,4 +986,4 @@ test("the CLI prints `exit 1` as the last stdout line after a usage error", () =
   const result = spawnSync(process.execPath, [QC, "codex-implement"], { encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.equal(result.stdout.trimEnd().split("\n").at(-1), "exit 1");
-  });
+});

@@ -730,7 +730,8 @@ Without `--wait-reset`, a limit ends the runner with exit `2`.
 With `--wait-reset`, it polls `https://codex-resets.com/api/v1/status` every 15 minutes without a model call.
 An announced reset after the limit clears the state before the same brief resumes. A limit retry keeps its run allowance.
 `--max-hours` defaults to `6`, accepts positive finite hours, and bounds all reset waits in the job together.
-At the bound, the runner records a `default` limit for 60 minutes after that moment, then exits `2`.
+At the bound, the runner keeps the later of the estimate and 60 minutes after that moment, then exits `2`.
+It keeps the estimate's source when the estimate wins; otherwise, it uses `default`.
 
 The standalone command waits for a reset without starting a model or changing the limit state:
 
@@ -957,8 +958,9 @@ If the counts differ or the list reaches 3,000 files, the command prints both co
 It writes no brief.
 For a repeated promotion, the command finds the newest branch verdict with `Scope: promotion` on the integration branch.
 It adds `Reviewed: <sha>` to the brief and the dispatch, and lists files changed since that commit.
-The brief states the previous verdict and names its review file when the ledger records one.
-After `CHANGES_REQUIRED`, the reviewer must check each earlier finding and confirm its resolution, not only the increment.
+The brief states the previous verdict.
+After `CHANGES_REQUIRED`, the dispatch tells the controller to add `Previous review: <path>` to the reviewer prompt, naming the earlier review file.
+The brief tells the reviewer to check each finding in that file and confirm its resolution, not only the increment.
 Keep that line in the reviewer prompt so the gate accepts the review round.
 The increment uses `git diff --name-only <reviewed>..<head> --`; fetch both commits into the checkout before you run the command.
 Its four checks cover infrastructure, migrations, workflows, and secrets in logs.
@@ -1409,7 +1411,8 @@ The base must name a branch; an invalid base stops the command before any GitHub
 Use `--type` and `--slug` to change the integration branch name.
 A custom slug outside `integrate.branchPattern` skips the integration lane and needs the usual head review.
 
-Each branch must belong to the developer whose email appears in the local `git config user.email`.
+Each branch must belong to the developer whose email matches the effective Git author email.
+Git reports this email through `git var GIT_AUTHOR_IDENT`, which honors `GIT_AUTHOR_EMAIL`.
 The command checks every author email in `<base>..<branch>` before it merges that branch.
 It refuses a branch with other authors and lists their emails and the branch name.
 It keeps branches that it merged before that refusal.
@@ -1534,7 +1537,7 @@ Nested files with the switch filename receive the same check as other source fil
 The gate prints one summary across all feature folders.
 
 `featureSwitches.file` sets the switch filename. `featureSwitches.patterns` lists regular expressions for declaration names.
-`load()` requires a filename without folders and an array of strings.
+`load()` requires a filename without folders and an array of valid regular expressions.
 For any config validation error, `qc` prints `qc: invalid qc.config.json: <message>` and exits 1.
 The defaults match names containing `UNWIRED`, starting with `SHOW_`, or ending with `_WIRED`.
 

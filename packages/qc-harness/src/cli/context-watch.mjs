@@ -44,6 +44,10 @@ export function decide(call, { tmp = os.tmpdir() } = {}) {
       if (Date.now() - statSync(lock).mtimeMs <= 30_000) return null;
       const stale = `${lock}.${randomUUID()}`;
       renameSync(lock, stale);
+      if (Date.now() - statSync(stale).mtimeMs <= 30_000) {
+        renameSync(stale, lock);
+        return null;
+      }
       rmdirSync(stale);
     } catch (claimError) {
       if (claimError.code === "ENOENT") return null;

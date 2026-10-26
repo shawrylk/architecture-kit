@@ -301,7 +301,8 @@ async function runJob(argv, {
         },
       })) {
         const expiredAt = now();
-        recordLimit(expiredAt + 3_600_000, "default", expiredAt);
+        const until = Math.max(estimate, expiredAt + 3_600_000);
+        recordLimit(until, estimate > expiredAt + 3_600_000 ? source : "default", expiredAt);
         return finish(say, "Codex reset wait bound reached", 2);
       }
       clearLimit(limitFileOf(env), say);
