@@ -34,12 +34,119 @@ function batch(t) {
   return dir;
 }
 
+function batchWithOrigin(t) {
+  const dir = batch(t);
+  const origin = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-integrate-origin-")));
+  t.after(() => rmSync(origin, { recursive: true, force: true }));
+  git(origin, "init", "-q", "--bare");
+  git(dir, "remote", "add", "origin", origin);
+  git(dir, "switch", "-q", "-c", "feat/3-c", "main");
+  commitFile(dir, "db/0002_c.sql", "select 'c';\n");
+  git(dir, "switch", "-q", "main");
+  return dir;
+}
+
 const config = (dir, command = "node gen.mjs") => ({
   root: dir,
   paths: { migrations: "db" },
   generated: { globs: ["**/*.generated.*"], command },
   branches: { pattern: "^[a-z]+/[0-9]+-" },
   worktree: { base: "main" },
+});
+
+function pullRequestIo(dir, { view = null, create = "  https://github.com/example/repo/pull/9\n" } = {}) {
+  const events = [];
+  return {
+    events,
+    say: quiet(events),
+    run,
+    gh(args, { cwd }) {
+      assert.equal(cwd, dir);
+      events.push(args);
+      return args[1] === "view" ? view : create;
+    },
+  };
+}
+
+const pullRequestCalls = [
+  ["pr", "view", "feat/7-integration", "--json", "number"],
+  ["pr", "create", "--draft", "--head", "feat/7-integration", "--base", "main", "--title", "feat: integrate the batch for #7", "--body", "Refs #7"],
+];
+
+test("--pr opens a draft pull request and strips origin from the base", async (t) => {
+  const dir = batchWithOrigin(t);
+  git(dir, "push", "origin", "main");
+  const io = pullRequestIo(dir);
+  const argv = ["--pr", "--issue", "7", "--from", "origin/main", "feat/1-a", "feat/2-b"];
+  assert.equal(await runIntegrate(config(dir), argv, io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+  assert.ok(io.events.includes("pr     https://github.com/example/repo/pull/9"));
+});
+
+test("--pr reports an existing pull request without creating another", async (t) => {
+  const dir = batchWithOrigin(t);
+  const io = pullRequestIo(dir, { view: '{"number":9}' });
+  assert.equal(await runIntegrate(config(dir), ["--pr", "--issue", "7", "--from", "main", "feat/1-a"], io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), [pullRequestCalls[0]]);
+  assert.ok(io.events.includes("pr     exists"));
+});
+
+test("integrate without --pr never calls gh", async (t) => {
+  const dir = batchWithOrigin(t);
+  const io = pullRequestIo(dir);
+  assert.equal(await runIntegrate(config(dir), ["--issue", "7", "--from", "main", "feat/1-a"], io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), []);
+});
+
+test("--pr needs a pushed branch before any merge", async (t) => {
+  for (const reason of ["push disabled", "origin absent"]) {
+    await t.test(reason, async (t) => {
+      const dir = reason === "push disabled" ? batchWithOrigin(t) : batch(t);
+      const settings = { ...config(dir), integrate: { push: reason !== "push disabled" } };
+      const before = git(dir, "rev-parse", "HEAD");
+      const errors = [];
+      t.mock.method(console, "error", quiet(errors));
+      const io = pullRequestIo(dir);
+      assert.equal(await runIntegrate(settings, ["--pr", "--issue", "7", "--from", "main", "feat/1-a"], io), 1);
+      assert.match(errors.join("\n"), /pull request needs a pushed branch/i);
+      assert.equal(git(dir, "rev-parse", "HEAD"), before);
+      assert.equal(git(dir, "branch", "--show-current"), "main");
+      assert.deepEqual(io.events, []);
+    });
+  }
+});
+
+test("--pr creates the pull request before the second cadence push", async (t) => {
+  const dir = batchWithOrigin(t);
+  const io = pullRequestIo(dir);
+  const settings = { ...config(dir), integrate: { ciEvery: 2 } };
+  const argv = ["--pr", "--issue", "7", "--from", "main", "feat/1-a", "feat/2-b", "feat/3-c"];
+  assert.equal(await runIntegrate(settings, argv, io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+  const pushes = io.events.flatMap((event, i) => typeof event === "string" && event.startsWith("push") ? [i] : []);
+  assert.equal(pushes.length, 2);
+  const created = io.events.findIndex((event) => Array.isArray(event) && event[1] === "create");
+  assert.ok(pushes[0] < created && created < pushes[1]);
+});
+
+test("--pr reports gh pr create when creation fails", async (t) => {
+  const dir = batchWithOrigin(t);
+  const io = pullRequestIo(dir, { create: null });
+  const errors = [];
+  t.mock.method(console, "error", quiet(errors));
+  assert.equal(await runIntegrate(config(dir), ["--pr", "--issue", "7", "--from", "main", "feat/1-a"], io), 1);
+  assert.match(errors.join("\n"), /gh pr create/);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+});
+
+test("--pr opens the pull request for an existing remote branch without another push", async (t) => {
+  const dir = batchWithOrigin(t);
+  const argv = ["--issue", "7", "--from", "main", "feat/1-a"];
+  assert.equal(await runIntegrate(config(dir), argv, { say: () => {}, run }), 0);
+  const io = pullRequestIo(dir);
+  assert.equal(await runIntegrate(config(dir), ["--pr", ...argv], io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+  assert.equal(io.events.filter((event) => typeof event === "string" && event.startsWith("push")).length, 0);
 });
 
 test("the integration branch names its issue, and an issue that is no number is refused", () => {
@@ -56,6 +163,61 @@ test("integrate merges each branch in order and renumbers the later branch's mig
   assert.equal(git(dir, "branch", "--show-current"), "feat/7-integration");
   assert.deepEqual(readdirSync(path.join(dir, "db")).sort(), ["0001_init.sql", "0002_a.sql", "0003_b.sql"]);
   assert.equal(readFileSync(path.join(dir, "out.generated.txt"), "utf8"), "regenerated\n");
+  assert.equal(git(dir, "status", "--porcelain"), "");
+  assert.equal(said.filter((line) => line.startsWith("push")).length, 0);
+});
+
+test("integrate pushes every two merges and pushes the remaining merge", async (t) => {
+  const dir = batchWithOrigin(t);
+  const said = [];
+  const settings = { ...config(dir), integrate: { ciEvery: 2 } };
+  const argv = ["--issue", "7", "--from", "main", "feat/1-a", "feat/2-b", "feat/3-c"];
+  assert.equal(await runIntegrate(settings, argv, { say: quiet(said), run }), 0, said.join("\n"));
+  assert.equal(said.filter((line) => line.startsWith("push")).length, 2);
+  assert.equal(git(dir, "ls-remote", "origin", "refs/heads/feat/7-integration").split(/\s+/)[0], git(dir, "rev-parse", "HEAD"));
+  assert.ok(!said.find((line) => line.startsWith("OK")).includes("Push it:"));
+});
+
+test("integrate pushes once for three merges at a cadence of three", async (t) => {
+  const dir = batchWithOrigin(t);
+  const said = [];
+  const settings = { ...config(dir), integrate: { ciEvery: 3 } };
+  assert.equal(await runIntegrate(settings, ["--issue", "7", "--from", "main", "feat/1-a", "feat/2-b", "feat/3-c"], { say: quiet(said), run }), 0, said.join("\n"));
+  assert.equal(said.filter((line) => line.startsWith("push")).length, 1);
+});
+
+test("integrate can disable pushes and shows the manual push command", async (t) => {
+  const dir = batchWithOrigin(t);
+  const said = [];
+  const settings = { ...config(dir), integrate: { push: false } };
+  assert.equal(await runIntegrate(settings, ["--issue", "7", "--from", "main", "feat/1-a", "feat/2-b", "feat/3-c"], { say: quiet(said), run }), 0, said.join("\n"));
+  assert.equal(said.filter((line) => line.startsWith("push")).length, 0);
+  assert.match(said.find((line) => line.startsWith("OK")), /Push it: git push -u origin feat\/7-integration$/);
+  assert.equal(git(dir, "ls-remote", "origin", "refs/heads/feat/7-integration"), "");
+});
+
+test("integrate skips pushes on a second run with nothing new", async (t) => {
+  const dir = batchWithOrigin(t);
+  const settings = config(dir);
+  const argv = ["--issue", "7", "--from", "main", "feat/1-a", "feat/2-b", "feat/3-c"];
+  const first = [];
+  assert.equal(await runIntegrate(settings, argv, { say: quiet(first), run }), 0, first.join("\n"));
+  assert.equal(first.filter((line) => line.startsWith("push")).length, 1);
+  const said = [];
+  assert.equal(await runIntegrate(settings, argv, { say: quiet(said), run }), 0, said.join("\n"));
+  assert.equal(said.filter((line) => line.startsWith("push")).length, 0);
+});
+
+test("a failed push reports git push and keeps the local merges", async (t) => {
+  const dir = batchWithOrigin(t);
+  git(dir, "remote", "set-url", "origin", path.join(dir, "missing-origin.git"));
+  const said = [];
+  const errors = [];
+  t.mock.method(console, "error", quiet(errors));
+  assert.equal(await runIntegrate(config(dir), ["--issue", "7", "--from", "main", "feat/1-a", "feat/2-b", "feat/3-c"], { say: quiet(said), run }), 1);
+  assert.match(errors.join("\n"), /git push/);
+  assert.equal(git(dir, "branch", "--show-current"), "feat/7-integration");
+  for (const branch of ["feat/1-a", "feat/2-b", "feat/3-c"]) git(dir, "merge-base", "--is-ancestor", branch, "HEAD");
   assert.equal(git(dir, "status", "--porcelain"), "");
 });
 

@@ -304,6 +304,9 @@ export const defaults = {
     required: { "pre-commit": ["qc work-order-check"], "commit-msg": ["qc commit-msg"], "pre-push": ["qc check"] },
   },
 
+  // Push settled output in merge batches so each push triggers CI.
+  integrate: { ciEvery: 3, push: true, branchPattern: "^[a-z]+/[0-9]+-integration", review: true },
+
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
     related: null,
@@ -696,6 +699,17 @@ export function load(root = process.cwd()) {
       invalidSwitches(`.patterns contains an invalid regular expression: ${JSON.stringify(pattern)}`);
     }
   }
+  if (!isPlainObject(config.integrate)) throw new TypeError("integrate must be an object");
+  const { ciEvery, push, branchPattern, review } = config.integrate;
+  if (!Number.isInteger(ciEvery) || ciEvery < 1) throw new TypeError("integrate.ciEvery must be a positive integer");
+  if (typeof push !== "boolean") throw new TypeError("integrate.push must be a boolean");
+  if (typeof branchPattern !== "string") throw new TypeError("integrate.branchPattern must be a regular expression string");
+  try {
+    new RegExp(branchPattern);
+  } catch {
+    throw new TypeError("integrate.branchPattern must be a valid regular expression");
+  }
+  if (typeof review !== "boolean") throw new TypeError("integrate.review must be a boolean");
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
   const { related, sincePush, e2e, commands, base } = config.check;
   const command = (value) => typeof value === "string" && value.trim().length > 0;

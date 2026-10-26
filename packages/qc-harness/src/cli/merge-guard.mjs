@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The trigger that holds `gh pr merge` to its review. Before the call it needs `--match-head-commit` and an
-// APPROVED review of `swarm.review.merge` for that sha, or a head inside the direct lane of `swarm.direct`.
+// APPROVED review of `swarm.review.merge` for that sha, or a head inside the direct or integration lane.
 // After the call it records the merge and its issues.
 // A `gh pr merge` that names another repository than the checkout's `origin` is that repository's own, so it passes.
 // A raw API merge, REST or GraphQL, reads the base policy of its PR. It passes with `swarm.dispatch` off.
@@ -15,6 +15,7 @@ import { LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
+import { integrationLane } from "./integration-lane.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
@@ -73,17 +74,17 @@ export function mergeVerdict(merges, records, kind, lane = null) {
 /** @returns the reason the first of `merges` may not run, or null when each pins an approved head. */
 export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict(merges, records, kind, lane).refusal;
 
-/** The base the PR of `merge` merges into, as gh reads it before the merge: `{ name, oid }`, or null. `oid` is null when gh names none. */
+/** The fragment that reads the PR's `{ name, oid, head }` before the merge; null when gh cannot read the base. */
 function prBaseOf(merge, cwd, gh, timeoutMs) {
   const args = merge.nodeId
     ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner}}}}", "-f", `id=${merge.nodeId}`]
-    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid"];
+    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName"];
   try {
     const answer = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
     const pr = merge.nodeId ? answer?.data?.node : answer;
     if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
       typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
-    return typeof pr?.baseRefName === "string" ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null } : null;
+    return typeof pr?.baseRefName === "string" ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null } : null;
   } catch {
     return null;
   }
@@ -114,21 +115,28 @@ function apiPrOf({ endpoint, env, nodeId }) {
   return { selector: match[3], repo, env: settings };
 }
 
-/**
- * The direct lane of one workflow, as `mergeVerdict` asks it. Either config can close it with `swarm.direct: false`; a wrong
- * value names itself. The lane judges against the base commit that gh names for the PR, so no local ref decides.
- * A PR into a branch other than `worktree.base` stays out of it. The merges of one call share one time budget.
- */
+/** The branch that tries the direct lane, then the integration lane, against the PR base policy within one shared deadline. */
 function laneOf(workflow, records, pr, deadline) {
   const { direct, directProblem, base } = workflow;
-  if (!direct) return directProblem ? () => ({ problem: directProblem }) : null;
-  return (merge) => {
+  const kind = workflow.review.merge;
+  const directLane = !direct ? (directProblem ? () => ({ problem: directProblem }) : null) : (merge) => {
     if (pr === null) return { problem: "gh cannot read the base branch of the PR within the time budget of the lane" };
     if (pr.name !== base && `origin/${pr.name}` !== base) return { problem: `the PR merges into ${pr.name}, and the lane measures against ${base}` };
     const fit = mergeLane({ root: workflow.root, baseOid: pr.oid, protectedBranches: workflow.protectedBranches, sha: merge.sha, records, budgetMs: deadline - Date.now() });
     if (fit.problem !== null) return fit;
     const reviewed = fit.review ? `the APPROVED ${fit.review.kind} review of ${fit.review.sha}` : "no review";
     return { problem: null, note: `Merge guard: ${merge.sha} merges through the direct lane, with ${sizeLine(fit.size, fit.direct)} and ${reviewed}.` };
+  };
+  return (merge) => {
+    const fit = directLane ? directLane(merge) : null;
+    if (fit?.problem === null) return fit;
+    if (pr === null || !pr.head) return fit;
+    const result = integrationLane({ root: workflow.root, baseOid: pr.oid, headBranch: pr.head, sha: merge.sha, records, kinds: [kind], budgetMs: deadline - Date.now() });
+    if (!result.applies) return fit;
+    if (result.problem === null) {
+      return { problem: null, note: `Merge guard: ${merge.sha} merges through the integration lane of ${pr.head}, with ${result.heads} reviewed heads and no commit past a review.` };
+    }
+    return { problem: (fit?.problem ? fit.problem + "; " : "") + "the integration lane does not apply: " + result.problem };
   };
 }
 

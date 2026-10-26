@@ -24,7 +24,7 @@ Paths: `<owned files or folders>`
 5. Wrap each heavy command in `npx qc gate-slot --`: the local check, a test run of more than one file, a browser test, a live database test, a commit, and a push.
 6. When you touch server code, run its live database tests before the push: `npx qc gate-slot -- npx qc throwaway-db -- <test command>`. Set `throwawayDb.schemaCommand` in `qc.config.json` to the project's schema command, for example, `pnpm exec drizzle-kit push --force`. `npx qc throwaway-db -- <test command>` runs that schema step on the fresh database before the tests. The setting defaults to none. A hook timeout on a fresh database means the schema step is missing. Never raise a timeout. Never use port 5432 or another port the local stack owns. When `check.e2e` is set, also run `npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e` before the push.
 7. Never skip a git hook. Never stop to ask: write the question in the report and continue.
-8. Open every PR as a draft, because `pr:ready` refuses a PR that is not a draft.
+8. In a batch, push the branch and open no pull request. Otherwise, open every pull request as a draft, because `pr:ready` refuses a PR that is not a draft.
 
 ## Commit
 

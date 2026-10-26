@@ -63,6 +63,18 @@ test("a second branch review that carries a Reviewed line passes", () => {
   assert.equal(check({ records: [branchVerdict], prompt: branchPrompt("Reviewed: ccccccc") }).refusal, null);
 });
 
+test("scoped reviews share an integration head when CI is unknown", () => {
+  const over = {
+    branch: "feat/7-integration",
+    records: [{ ...branchVerdict, branch: "feat/7-integration", scope: "a" }],
+    ciState: () => ({ reason: null, unknown: "no check runs" }),
+  };
+  assert.equal(check({ ...over, prompt: branchPrompt("Scope: b") }).refusal, null);
+  const { refusal, note } = check({ ...over, prompt: branchPrompt("Scope: a\nReviewed: ccccccc") });
+  assert.equal(refusal, null);
+  assert.match(note, /unknown/);
+});
+
 test("the refusal and the Reviewed line speak of the last head a branch review named", () => {
   assert.match(check({ records: [branchVerdict] }).refusal, /the last head a branch review named/);
 });
