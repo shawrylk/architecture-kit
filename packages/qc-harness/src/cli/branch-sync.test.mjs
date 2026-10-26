@@ -3,12 +3,31 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import { runBranch, syncBranch } from "./branch-sync.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 const quiet = (lines) => (line) => lines.push(line);
 const run = (command, cwd) => spawnSync(command, { cwd, shell: true, stdio: "pipe" }).status ?? 1;
+
+beforeEach((t) => {
+  const previous = process.env.QC_GATE_SLOT_DIR;
+  const directory = mkdtempSync(path.join(os.tmpdir(), "qc-branch-sync-slots-"));
+  process.env.QC_GATE_SLOT_DIR = directory;
+  t.after(() => {
+    if (previous === undefined) delete process.env.QC_GATE_SLOT_DIR;
+    else process.env.QC_GATE_SLOT_DIR = previous;
+    rmSync(directory, { recursive: true, force: true });
+  });
+});
+
+test("each branch-sync test uses a private gate-slot folder", () => {
+  const directory = process.env.QC_GATE_SLOT_DIR;
+  assert.ok(directory);
+  assert.match(path.basename(directory), /^qc-branch-sync-slots-/);
+  assert.ok(existsSync(directory));
+  assert.notEqual(directory, path.join(os.tmpdir(), "architecture-kit", "gate-slots"));
+});
 
 function commitFile(dir, file, text) {
   mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });

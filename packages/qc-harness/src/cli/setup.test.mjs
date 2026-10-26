@@ -210,6 +210,14 @@ test("removes a personal skill that matches its enabled plugin copy", async (t) 
   assert.ok(f.logs.some((line) => line.startsWith(`Change ${folder}: `)));
 });
 
+test("names the kept skill folder in the step text", async (t) => {
+  const f = fixture(t);
+  const folder = personalSkill(f);
+  writeFileSync(join(folder, "SKILL.md"), "personal rule\n");
+  assert.equal(await runSetup([], f.options), 0);
+  assert.ok(f.logs.includes(`  - Check ${folder}: it differs from the plugin copy`));
+});
+
 test("ends the log with each step for a person", async (t) => {
   const f = fixture(t);
   assert.equal(await runSetup([], f.options), 0);
