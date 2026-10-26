@@ -554,6 +554,10 @@ Its exit code says which:
 
 A new head starts the queued timers over. Run it as one background command for each head.
 
+The session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
+The context watch speaks from 150K tokens in steps of 50K tokens.
+It shows the user a line from 300K tokens.
+
 A `TaskStop` frees the implementer slot of the agent it stopped, since that agent sends no
 `SubagentStop`. A session `startup` or `resume` frees every slot of the session. A subagent may not
 touch a slot folder: the slot guard refuses the command or the edit.
