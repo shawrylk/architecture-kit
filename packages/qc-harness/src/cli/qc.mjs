@@ -42,6 +42,7 @@ const USAGE = `qc — architecture gates
   qc stack up|down|status [names...] [--timeout <milliseconds>]
                            run repository plugins from ~/.qc/stacks.json
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
+  qc review promotion <pr>  write the scoped promotion brief for the configured integration and release branches
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
   qc throwaway-db [--port <n>|auto] -- <command...>
@@ -178,6 +179,10 @@ async function main() {
     case "plan-check": {
       const { runPlanCheck } = await import("./plan-check.mjs");
       process.exit(runPlanCheck(config, rest));
+    }
+    case "review": {
+      const { runReview } = await import("./review-promotion.mjs");
+      process.exit(runReview(config, rest));
     }
     case "tokens": {
       const { runTokens } = await import("./tokens.mjs");
