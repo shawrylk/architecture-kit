@@ -641,7 +641,7 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
 | One branch review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an `sdd-branch-reviewer` dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch, or one whose sha no branch verdict on that branch names. Write the last head a branch review named, so the review reads only the increment. Key `oneBranchReview` |
 | Code-review skill | `PreToolUse` on `Skill`, `skill-guard.mjs` | a model call to a skill that `codeReviewSkills` names, bare or after a `plugin:` prefix. Dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review`, which never reaches this hook |
-| Green head | `PreToolUse` on `Agent` | a reviewer dispatch, task or branch kind, while CI on the head is red or running. A head with no check runs passes with a note, and so does a `gh` failure. Wait for green, or fix the head. Key `requireGreen` |
+| Green head | `PreToolUse` on `Agent` | a reviewer dispatch, task or branch kind, while CI on the head is red or running, by default. With `requireGreen: "not-red"`, unfinished checks pass with a note that names the check. A head with no check runs passes with a note, and so does a `gh` failure. Key `requireGreen` |
 | Current head | the same | a reviewer dispatch when the head lacks the tip of `worktree.base`. Merge the base into the branch first: Step 0 of a fix round. Key `requireBase` |
 | Product decisions | the same | an implementer dispatch with no `Brief: <path>` line, or one whose file is missing or unreadable, and a brief whose `## Product decisions` heading is absent or has no text under it. Ask the user in one question, then write the rulings, or the word `none`. Key `productDecisions` |
 | Round size | the same | nothing: it warns on an implementer brief with more numbered findings (lines that start `1. `) than `roundFindings`, or more distinct file paths than `roundFiles`. Split the round in parallel on disjoint paths, with sub-branches in separate worktrees. `0` turns a limit off |
@@ -654,12 +654,14 @@ The `swarm.review` keys that these rows name:
 |---|---|---|
 | `oneBranchReview` | `true` | refuse a branch review with no `Reviewed: <sha>` line once a branch verdict exists |
 | `codeReviewSkills` | `["code-review"]` | skill names the model may not call; `[]` turns the check off |
-| `requireGreen` | `true` | refuse a reviewer dispatch while CI on the head is red or running |
+| `requireGreen` | `true` | `true` waits for green CI on the head. `false` skips the CI check. `"not-red"` refuses red CI and allows unfinished checks. |
 | `requireBase` | `true` | refuse a reviewer dispatch when the head lacks the tip of `worktree.base` |
 | `productDecisions` | `true` | refuse an implementer brief with no `## Product decisions` heading |
 | `roundFindings` | `8` | warn on a brief with more numbered findings; `0` turns it off |
 | `roundFiles` | `10` | warn on a brief that names more distinct file paths; `0` turns it off |
 
+With `requireGreen: "not-red"`, a failed, cancelled, timed-out, or action-required check refuses the review.
+A queued or running check allows the review with a note that names the check.
 
 The hooks read these markers:
 

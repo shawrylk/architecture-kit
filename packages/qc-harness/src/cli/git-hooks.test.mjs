@@ -37,7 +37,7 @@ test("the kit's template hooks, installed through core.hooksPath, carry every re
   assert.deepEqual(hookDrift(r.root, REQUIRED).problems, []);
 });
 
-test("a pre-commit that never calls qc work-order-check fails, as quality-control-mono's did", (t) => {
+test("a pre-commit that never calls qc work-order-check fails, as example-app's did", (t) => {
   const r = repo(t);
   r.hook(".githooks", "pre-commit", "#!/usr/bin/env bash\nset -euo pipefail\nnpx eslint $STAGED --max-warnings 0\n");
   r.hook(".githooks", "pre-push", "#!/usr/bin/env bash\nnpx qc check\n");

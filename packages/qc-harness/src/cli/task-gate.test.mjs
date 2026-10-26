@@ -71,6 +71,21 @@ const verdict = (ws, sha, value = "APPROVED", kind = "task") =>
   appendRecord(ws.ledger, { type: "verdict", kind, verdict: value, sha, branch: "feat/1-x" });
 const refusalOf = (ws, more = "") => judgeTask(dispatch(ws.main, taskPrompt(ws.linked, more)), ws.tmp).refusal;
 
+test("CI on the branch head lets an implementer continue after a controller commit", (t) => {
+  const ws = workspace(t);
+  const stopped = commitIn(ws.linked, "implementer.txt");
+  implementerStop(ws, stopped);
+  const head = commitIn(ws.linked, "controller.txt");
+  for (const state of ["build ended failure", "build is in_progress"]) {
+    const ci = (sha) => sha === head ? `CI on ${sha.slice(0, 7)}: ${state}` : null;
+    const task = judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci });
+    assert.equal(task.refusal, null);
+    assert.deepEqual(task.record.ciPass, { sha: head, reason: ci(head) });
+    const refusal = judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci: () => null }).refusal;
+    assert.ok(refusal.includes(`when CI on ${head.slice(0, 7)}`));
+  }
+});
+
 test("the prompt lines are read exactly", () => {
   assert.equal(worktreeNamed("x\n  Worktree:  C:/a b/wt  \ny"), "C:/a b/wt");
   assert.equal(worktreeNamed("worktree: /tmp/wt"), "/tmp/wt");
@@ -582,13 +597,18 @@ test("a Fix: ci line passes an unreviewed implementer commit while CI on the hea
   assert.match(refusalOf(ws) ?? "", /Fix: ci/);
 });
 
-test("a Fix: review line passes a fresh implementer after CHANGES_REQUIRED and over an unreviewed fix commit", (t) => {
+test("a Fix: review line needs CHANGES_REQUIRED and refuses an unreviewed fix stop", (t) => {
   const ws = workspace(t);
   const moved = commitIn(ws.linked, "b.txt");
   implementerStop(ws, moved);
   verdict(ws, moved, "CHANGES_REQUIRED", "branch");
-  implementerStop(ws, commitIn(ws.linked, "c.txt"));
+  assert.equal(refusalOf(ws, "Fix: review"), null);
+  const fixed = commitIn(ws.linked, "c.txt");
+  implementerStop(ws, fixed);
   assert.notEqual(refusalOf(ws), null);
+  assert.match(refusalOf(ws, "Fix: review") ?? "", /no review in the ledger/);
+  assert.match(judgeTask(dispatch(ws.main, taskPrompt(ws.linked, "Fix: review")), ws.tmp, { ci: () => "red" }).refusal ?? "", /no review in the ledger/);
+  verdict(ws, fixed, "CHANGES_REQUIRED");
   assert.equal(refusalOf(ws, "Fix: review"), null);
 });
 

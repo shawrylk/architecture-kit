@@ -49,14 +49,13 @@ test("every hook script in src/cli is registered, in hooks.json or in a shell ho
   assert.deepEqual(unregistered, [], "each hook entry point must be registered, or it never runs");
 });
 
-test("each workflow script is silent in a checkout without swarm.dispatch", (t) => {
+test("workflow scripts stay silent without swarm.dispatch, and the merge guard denies an unreadable base", (t) => {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-workflow-hooks-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   execFileSync("git", ["init", "-q"], { cwd: base, stdio: "pipe" });
   writeFileSync(path.join(base, "qc.config.json"), JSON.stringify({ swarm: {} }));
   const events = {
     "controller-guard.mjs": { hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: path.join(base, "src", "a.ts") } },
-    "merge-guard.mjs": { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh pr merge 1" } },
     "report-stop.mjs": { hook_event_name: "SubagentStop", agent_id: "a", agent_type: "sdd-reviewer", last_assistant_message: "x" },
     "plan-stop.mjs": { hook_event_name: "SubagentStop", agent_id: "a", agent_type: "sdd-planner", last_assistant_message: "x" },
     "issue-gate.mjs": { hook_event_name: "Stop" },
@@ -70,6 +69,21 @@ test("each workflow script is silent in a checkout without swarm.dispatch", (t) 
     assert.equal(result.status, 0, `${script}: ${result.stderr}`);
     assert.equal(result.stdout, "", script);
   }
+  const callerEnv = { ...process.env, GH_REPO: "inherited/project", GH_HOST: "inherited.invalid" };
+  const childEnv = { ...callerEnv, TEMP: base, TMP: base, TMPDIR: base };
+  delete childEnv.GH_REPO;
+  delete childEnv.GH_HOST;
+  assert.equal(childEnv.GH_REPO, undefined);
+  assert.equal(childEnv.GH_HOST, undefined);
+  const merge = spawnSync(process.execPath, [path.join(CLI, "merge-guard.mjs")], {
+    input: JSON.stringify({ session_id: "s", cwd: base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh pr merge 1" } }),
+    env: childEnv,
+    encoding: "utf8",
+  });
+  assert.equal(merge.status, 0, merge.stderr);
+  const output = JSON.parse(merge.stdout).hookSpecificOutput;
+  assert.equal(output.permissionDecision, "deny");
+  assert.match(output.permissionDecisionReason, /gh cannot read the base branch of the PR/);
 });
 
 test("hooks.json runs the skill guard on the Skill tool, and gives the dispatch guard time for its git and gh reads", () => {

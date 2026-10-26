@@ -13,6 +13,24 @@ const kinds = (found, kind) => found.filter((one) => one.kind === kind);
 
 const LONG = "flex items-center gap-2 rounded-md border px-3 py-2";
 
+test("identifier keys in clsx objects count as duplicate class text", () => {
+  const files = ["a", "b", "c"].map((name) => ({
+    path: `ui/${name}.tsx`,
+    contents: `const a = clsx({ shadow: on, ["rounded"]: on });`,
+  }));
+  const found = kinds(find(files, { minClassLength: 1 }), "class-string");
+  assert.deepEqual(found.map((one) => one.key), ["shadow"]);
+});
+
+test("a const variants object used by cva counts as duplicate class text", () => {
+  const files = ["a", "b", "c"].map((name) => ({
+    path: `ui/${name}.tsx`,
+    contents: `const variants = { size: { sm: "${LONG}" } }; const a = cva("a", { variants });`,
+  }));
+  const found = kinds(find(files), "class-string");
+  assert.deepEqual(found.map((one) => one.key), [[...LONG.split(" ")].sort().join(" ")]);
+});
+
 test("a long class string in three files is reported once, whatever the token order", () => {
   const reordered = "px-3 py-2 gap-2 flex items-center rounded-md border";
   const files = [

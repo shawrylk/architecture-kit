@@ -6,10 +6,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { appendRecord, readLedger } from "./ledger.mjs";
-import { decide, mergeVerdict, namedIssues } from "./merge-guard.mjs";
+import { decide as decideMerge, mergeVerdict, namedIssues } from "./merge-guard.mjs";
 
 const HOOK = fileURLToPath(new URL("./merge-guard.mjs", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
+const bases = new Map();
+const decide = (call, options = {}) => decideMerge(call, { gh: fakeGh(prView(bases.get(call.cwd))).gh, ...options });
 
 /** Checkouts with the checks on (merge kind branch, and task), one with them off, each with a git dir. */
 function workspace(t) {
@@ -19,6 +21,10 @@ function workspace(t) {
     const dir = path.join(base, name);
     execFileSync("git", ["init", "-q", dir], { stdio: "pipe" });
     writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify(config));
+    for (const args of [["config", "user.name", "qc"], ["config", "user.email", "qc@example.com"], ["config", "commit.gpgsign", "false"], ["add", "."], ["commit", "-q", "-m", "init"]]) {
+      execFileSync("git", args, { cwd: dir, stdio: "pipe" });
+    }
+    bases.set(dir, execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim());
     return dir;
   };
   const on = make("on", { swarm: { dispatch: {} } });
@@ -61,10 +67,10 @@ const MERGED = JSON.stringify({
 test("with swarm.dispatch off, a merge is not judged, and the merge is recorded for the worktree check", (t) => {
   const ws = workspace(t);
   const { gh, calls } = fakeGh(MERGED);
-  assert.equal(decide(shell(ws.off, "gh pr merge 60"), { gh }), null);
-  assert.equal(decide(shell(ws.off, "gh api -X PUT repos/o/r/pulls/60/merge"), { gh }), null);
-  assert.equal(calls.length, 0, "a PreToolUse call reads nothing");
+  assert.equal(decide(shell(ws.off, "gh pr merge 60")), null);
+  assert.equal(decide(shell(ws.off, "gh api -X PUT repos/o/r/pulls/60/merge")), null);
   assert.equal(decide(shell(ws.off, "gh pr merge 60", "PostToolUse"), { gh }), null);
+  assert.equal(calls.length, 1);
   const records = readLedger(ws.ledgerOf(ws.off));
   assert.deepEqual(records.map(({ type, pr, repo, branch }) => ({ type, pr, repo, branch })), [{ type: "merge", pr: 60, repo: "o/r", branch: "feat/62-x" }]);
 });
@@ -73,7 +79,7 @@ test("with swarm.dispatch off and worktree.enforce false, a merge is neither jud
   const ws = workspace(t);
   writeFileSync(path.join(ws.off, "qc.config.json"), JSON.stringify({ swarm: {}, worktree: { enforce: false } }));
   const { gh, calls } = fakeGh(MERGED);
-  assert.equal(decide(shell(ws.off, "gh pr merge 60"), { gh }), null);
+  assert.equal(decide(shell(ws.off, "gh pr merge 60")), null);
   assert.equal(decide(shell(ws.off, "gh pr merge 60", "PostToolUse"), { gh }), null);
   assert.equal(calls.length, 0);
   assert.equal(existsSync(ws.ledgerOf(ws.off)), false);
@@ -125,6 +131,36 @@ test("a gh api call to a PR's merge endpoint is refused outright, even after an 
     assert.match(denied(decide(shell(ws.on, command, "PreToolUse", tool))) ?? "", /gh pr merge <n> --match-head-commit <sha>/, command);
   }
   assert.equal(decide(shell(ws.on, "gh api repos/o/r/pulls/60/comments")), null);
+});
+
+test("an API merge reads the endpoint PR's base and settings before enforcing dispatch", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  const { gh, calls } = fakeGh(prView(base));
+  const command = "GH_CONFIG_DIR=account gh api --hostname ghe.example.com -X PUT repos/other/project/pulls/23/merge";
+  assert.equal(decide(shell(dir, command), { gh }), null);
+  assert.deepEqual(calls[0].args, ["pr", "view", "23", "-R", "other/project", "--json", "baseRefName,baseRefOid"]);
+  assert.deepEqual(calls[0].options.env, { GH_CONFIG_DIR: "account", GH_HOST: "ghe.example.com" });
+});
+
+test("an API merge passes when the base has no config and denies an unreadable PR or base", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  const command = shell(dir, "gh api -X PUT https://api.github.com/repos/o/r/pulls/23/merge");
+  const { gh, calls } = fakeGh(prView(base));
+  assert.equal(decide(command, { gh }), null);
+  assert.deepEqual(calls[0].args.slice(0, 5), ["pr", "view", "23", "-R", "o/r"]);
+  assert.equal(calls[0].options.env.GH_HOST, "github.com");
+  assert.match(denied(decide(command, { gh: () => null })) ?? "", /gh cannot read the base branch/);
+  assert.match(denied(decide(command, { gh: fakeGh(prView("f".repeat(40))).gh })) ?? "", /base commit.*not in this repository/);
+});
+
+test("every API merge in a command reads its own base policy", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } });
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: {} }));
+  gitIn(dir, "commit", "-q", "-am", "dispatch off");
+  const off = gitIn(dir, "rev-parse", "HEAD");
+  const gh = fakeGh((args) => prView(args[2] === "23" ? off : base)).gh;
+  assert.match(denied(decide(shell(dir, "gh api repos/o/r/pulls/23/merge; gh api repos/o/r/pulls/24/merge"), { gh })) ?? "", /gh pr merge/);
 });
 
 test("a merge inside a nested shell is judged too", (t) => {
@@ -362,6 +398,7 @@ function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true } = 
   git("switch", "-q", "-c", "feat/1-x");
   writeFileSync(path.join(dir, "a.ts"), "one\n2\n");
   git("commit", "-q", "-am", "fix");
+  bases.set(dir, git("rev-parse", "origin/main"));
   return { dir, head: git("rev-parse", "HEAD"), base: git("rev-parse", "origin/main"), ledger: path.join(dir, ".git", "qc", "ledger.jsonl") };
 }
 
@@ -438,10 +475,17 @@ test("a head that changes qc.config.json stays out of the direct lane", (t) => {
   assert.match(reason, /does not apply: qc\.config\.json changes on the branch, so it runs the subagent workflow/);
 });
 
-test("a base that holds no qc.config.json keeps the head out of the direct lane", (t) => {
+test("a base that holds no qc.config.json leaves the merge guard off", (t) => {
   const { dir, head, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  assert.equal(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(prView(base)).gh }), null);
+});
+
+test("a failed read of qc.config.json at the base denies the merge", (t) => {
+  const { dir, head, base } = laneRepo(t);
+  const blob = gitIn(dir, "rev-parse", `${base}:qc.config.json`);
+  rmSync(path.join(dir, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
   const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(prView(base)).gh })) ?? "";
-  assert.match(reason, /does not apply: git cannot read qc\.config\.json at the PR base/);
+  assert.match(reason, /git cannot read qc\.config\.json at the PR base/);
 });
 
 test("the note states the size against the limits of the base, not the checkout", (t) => {
@@ -453,6 +497,59 @@ test("the note states the size against the limits of the base, not the checkout"
 
 const gitIn = (dir, ...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
 const merge7 = (dir, head) => shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`);
+
+test("the merge policy at the PR base survives a removed dispatch or a weaker checkout review", (t) => {
+  const { dir, head, base, ledger } = laneRepo(t, { swarm: { dispatch: {}, direct: false } });
+  appendRecord(ledger, verdict("task", "APPROVED", head));
+  for (const config of [{ swarm: {} }, { swarm: { dispatch: {}, review: { merge: "task" } } }]) {
+    writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify(config));
+    assert.match(denied(decide(merge7(dir, head), { gh: fakeGh(prView(base)).gh })) ?? "", /no APPROVED branch review/);
+  }
+  appendRecord(ledger, verdict("branch", "APPROVED", head));
+  assert.equal(decide(merge7(dir, head), { gh: fakeGh(prView(base)).gh }), null);
+});
+
+test("each merge in one command uses its own PR base policy", (t) => {
+  const { dir, head, base, ledger } = laneRepo(t, { swarm: { dispatch: {}, direct: false } });
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: {} }));
+  gitIn(dir, "commit", "-q", "-am", "disable dispatch");
+  const offBase = gitIn(dir, "rev-parse", "HEAD");
+  const gh = fakeGh((args) => prView(args[2] === "7" ? offBase : base)).gh;
+  const command = `gh pr merge 7 --match-head-commit ${head}; gh pr merge 8 --match-head-commit ${head}`;
+  assert.match(denied(decide(shell(dir, command), { gh })) ?? "", /no APPROVED branch review/);
+  appendRecord(ledger, verdict("branch", "APPROVED", head));
+  assert.equal(decide(shell(dir, command), { gh }), null);
+});
+
+test("the hook budget includes the reads before the lane and is shared by every merge", (t) => {
+  const { dir, head, base } = laneRepo(t);
+  gitIn(dir, "remote", "add", "origin", "https://github.com/o/r.git");
+  let now = 0;
+  t.mock.method(Date, "now", () => (now += 100));
+  const timeouts = [];
+  const gh = (args, options) => {
+    timeouts.push(options.timeoutMs);
+    now += 2_000;
+    return prView(base);
+  };
+  decide(shell(dir, `gh pr merge 7 -R o/r --match-head-commit ${head}; gh pr merge 8 --match-head-commit ${head}`), { gh });
+  assert.ok(timeouts[0] < 5_900, `the first read gets ${timeouts[0]} ms`);
+  assert.ok(timeouts.length < 2 || timeouts[1] < timeouts[0] - 2_000);
+});
+
+test("merge records share the hook budget and stop gh reads when it expires", (t) => {
+  const ws = workspace(t);
+  let now = 0;
+  t.mock.method(Date, "now", () => now);
+  const timeouts = [];
+  const gh = (args, options) => {
+    timeouts.push(options.timeoutMs);
+    now = 6_001;
+    return MERGED;
+  };
+  decide(shell(ws.on, "gh pr merge 60; gh pr merge 61", "PostToolUse"), { gh });
+  assert.deepEqual(timeouts, [6_000]);
+});
 
 test("a loosening commit on the local base ref, absent from the PR base commit, does not open the lane", (t) => {
   const strict = { swarm: { dispatch: {}, direct: { reviewPaths: ["**"] } }, worktree: { base: "main" } };
@@ -480,16 +577,17 @@ test("a stale local base ref does not hide the review paths that the PR base com
   assert.match(reason, /does not apply: a\.ts matches swarm\.direct\.reviewPaths/);
 });
 
-test("a PR base commit that the local repository lacks closes the lane and says to fetch", (t) => {
-  const { dir, head } = laneRepo(t);
+test("a PR base commit that the local repository lacks blocks an approved merge and says to fetch", (t) => {
+  const { dir, head, ledger } = laneRepo(t);
+  appendRecord(ledger, verdict("branch", "APPROVED", head));
   const reason = denied(decide(merge7(dir, head), { gh: fakeGh(prView("1234567890123456789012345678901234567890")).gh })) ?? "";
-  assert.match(reason, /does not apply: the PR base commit 1234567890\w* is not in this repository, so run `git fetch`/);
+  assert.match(reason, /the PR base commit 1234567890\w* is not in this repository, so run `git fetch`/);
 });
 
-test("a gh answer with no base commit closes the lane", (t) => {
+test("a gh answer with no base commit blocks the merge policy check", (t) => {
   const { dir, head } = laneRepo(t);
   const reason = denied(decide(merge7(dir, head), { gh: fakeGh(JSON.stringify({ baseRefName: "main" })).gh })) ?? "";
-  assert.match(reason, /does not apply: gh returned no base commit for the PR/);
+  assert.match(reason, /gh returned no base commit for the PR/);
 });
 
 test("a merge waits while the newest review of any scope on the head asks for changes", () => {
@@ -513,4 +611,17 @@ test("a merge needs an APPROVED review of every scope dispatched on the branch",
   assert.match(mergeVerdict([{ sha }], records, "branch").refusal ?? "", /scope "b"/);
   records.push({ type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "f", scope: "b" });
   assert.equal(mergeVerdict([{ sha }], records, "branch").refusal, null);
+});
+
+test("task merge reviews pass despite a scoped branch dispatch", (t) => {
+  const ws = workspace(t);
+  const command = `gh pr merge 60 --match-head-commit ${SHA}`;
+  appendRecord(ws.ledgerOf(ws.task), {
+    type: "dispatch", task: false, agentType: "sdd-branch-reviewer", branch: "feat/62-x", head: SHA, scope: "security",
+  });
+  assert.match(denied(decide(shell(ws.task, command))) ?? "", /no APPROVED task review/);
+  appendRecord(ws.ledgerOf(ws.task), verdict("task", "APPROVED"));
+  assert.equal(decide(shell(ws.task, command)), null);
+  appendRecord(ws.ledgerOf(ws.task), verdict("task", "CHANGES_REQUIRED"));
+  assert.match(denied(decide(shell(ws.task, command))) ?? "", /CHANGES_REQUIRED/);
 });

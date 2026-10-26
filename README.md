@@ -88,6 +88,16 @@ A drift of the kit setup, such as a changed git hook, is a note and never blocks
 the kit through the git hooks and the CI workflow. The `workspace-write` sandbox of Codex makes `.git`
 read-only, so the hooks run at the commit you make after the Codex run.
 
+## Task and merge gates
+
+The task gate reads CI on the current branch head, including commits after an implementer stops.
+Failed or running CI lets the next implementer continue the task.
+
+`Fix: ci` needs known-red CI on the current head.
+`Fix: review` needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop.
+A merge that requires branch reviews waits for approval of every dispatched scope.
+A merge that requires task reviews uses task verdicts.
+
 ## Turn on more
 
 Every rule below is off until a repository turns it on.
