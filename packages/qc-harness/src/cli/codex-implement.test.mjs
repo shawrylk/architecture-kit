@@ -6,6 +6,7 @@ import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DONE_MARKER, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
+import { readLimit, writeLimit } from "./codex-limit.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const VALID_BRIEF = "# Brief\nPaths: src/example.mjs\n\n## Product decisions\n- Use the local rules.\n\n## Task\n1. Do task one.\n";
@@ -46,11 +47,14 @@ test("--wait-reset resumes the same brief and progress after the second poll", a
   const run = async (call) => {
     calls.push(call);
     if (calls.length === 1) return { status: 2, tail: "usage limit" };
+    assert.equal(existsSync(process.env.QC_CODEX_LIMIT_FILE), false, "the reset clears the file before Codex resumes");
+    assert.equal(readLimit(process.env.QC_CODEX_LIMIT_FILE, timer.now()), null);
     appendFileSync(progress, `${DONE_MARKER}\n`);
     return { status: 0, tail: "done" };
   };
   const fetch = async () => {
     assert.equal(calls.length, 1, "the wait never starts a model");
+    assert.ok(readLimit(process.env.QC_CODEX_LIMIT_FILE, timer.now()), "the state exists during the reset wait");
     polls += 1;
     return { ok: true, json: async () => ({ data: { latest_reset: {
       announced_at: polls === 1 ? "2026-01-01T00:00:00.000Z" : "2026-01-01T00:15:00.000Z",
@@ -63,6 +67,51 @@ test("--wait-reset resumes the same brief and progress after the second poll", a
   assert.equal(calls[0].log, calls[1].log);
   assert.deepEqual(timer.sleeps, [15 * 60 * 1000]);
   assert.deepEqual(exits, ["exit 0"]);
+});
+
+for (const status of [0, 1]) {
+  test(`a run without a limit line clears stale state after status ${status}`, async (t) => {
+    const { argv, progress } = setup(t);
+    const file = process.env.QC_CODEX_LIMIT_FILE;
+    writeLimit(file, { until: T + 3_600_000, source: "default" }, T);
+    const code = await runCodexImplement(argv, {
+      now: () => T, say: quiet, out: quiet,
+      run: async () => {
+        if (status === 0) appendFileSync(progress, `${DONE_MARKER}\n`);
+        return { status, tail: "finished without a limit" };
+      },
+    });
+    assert.equal(code, status === 0 ? 0 : 3);
+    assert.equal(existsSync(file), false);
+    assert.equal(readLimit(file, T), null);
+  });
+}
+
+test("one limit hit shares its recorded timestamp with the reset wait", async (t) => {
+  const { argv, progress } = setup(t);
+  let time = T;
+  let runs = 0;
+  let checked = false;
+  const code = await runCodexImplement([...argv, "--wait-reset"], {
+    now: () => time++, out: quiet,
+    say: (line) => {
+      const prefix = "qc codex-wait-reset: waiting for a reset after ";
+      if (!line.startsWith(prefix)) return;
+      const record = JSON.parse(readFileSync(process.env.QC_CODEX_LIMIT_FILE, "utf8"));
+      assert.equal(line.slice(prefix.length), record.recordedAt);
+      checked = true;
+    },
+    run: async () => {
+      if (++runs === 1) return { status: 1, tail: "usage limit" };
+      appendFileSync(progress, `${DONE_MARKER}\n`);
+      return { status: 0, tail: "done" };
+    },
+    fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: {
+      announced_at: new Date(T + 1000).toISOString(),
+    } } }) }),
+  });
+  assert.equal(code, 0);
+  assert.equal(checked, true);
 });
 
 test("--wait-reset exits two at its bound without another model call", async (t) => {
@@ -91,7 +140,7 @@ test("repeated limits share one wait bound and use each limit's timestamp", asyn
     run: async () => {
       runs += 1;
       if (runs === 2) await timer.sleep(1);
-      return { status: 2, tail: "" };
+      return { status: 2, tail: "usage limit" };
     },
     fetch: async () => {
       polls += 1;
@@ -105,11 +154,27 @@ test("repeated limits share one wait bound and use each limit's timestamp", asyn
   assert.equal(timer.now(), Date.parse("2026-01-01T00:30:00.000Z"));
 });
 
+test("a bare status two is a failed run without fetching or a limit state", async (t) => {
+  const { argv } = setup(t);
+  const file = process.env.QC_CODEX_LIMIT_FILE;
+  rmSync(file, { force: true });
+  let runs = 0;
+  let fetches = 0;
+  assert.equal(await runCodexImplement([...argv, "--wait-reset", "--max-runs", "2", "--max-hours", "0.001"], {
+    ...resetClock(), say: quiet, out: quiet,
+    run: async () => { runs += 1; return { status: 2, tail: "" }; },
+    fetch: async () => { fetches += 1; throw new Error("unexpected fetch"); },
+  }), 3);
+  assert.equal(runs, 2);
+  assert.equal(fetches, 0);
+  assert.equal(existsSync(file), false);
+});
+
 test("a limit without --wait-reset exits two without fetching", async (t) => {
   const { argv } = setup(t);
   assert.equal(await runCodexImplement(argv, {
     say: quiet, out: quiet,
-    run: async () => ({ status: 2, tail: "" }),
+    run: async () => ({ status: 2, tail: "usage limit" }),
     fetch: async () => assert.fail("no fetch"),
   }), 2);
 });
@@ -262,11 +327,27 @@ test("every run prompt carries the lean rules after the brief", async (t) => {
     assert.match(prompt, /never override the brief on commits or pushes/);
     assert.match(prompt, /npx qc gate-slot --/);
     assert.match(prompt, /npx qc throwaway-db --/);
+    assert.match(prompt, /no Playwright except `npx qc e2e` when `check.e2e` is set/);
+    assert.match(prompt, /Before the push, run `npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e` when `check.e2e` is set/);
     assert.match(prompt, /Never use port 5432/);
     assert.match(prompt, /at most 15 files before the first code edit/i);
     assert.match(prompt, /under 15 lines/);
     assert.match(prompt, /never drop a security, tenant, data, or correctness check/i);
   }
+});
+
+test("the codex agent's default command passes the runner's argument limits", () => {
+  const agent = readFileSync(new URL("../../../../agents/codex.md", import.meta.url), "utf8");
+  const command = agent.match(/^\s*<Qc> codex-implement (.+?) > <Log>/m)?.[1];
+  assert.ok(command);
+  const argv = command.split(/\s+/).map((arg) => ({ "<Brief>": "brief.md", "<Worktree>": ".", "<Progress>": "progress.md", "<Log>": "run.log" })[arg] ?? arg);
+  assert.equal(parseArgs(argv).maxRuns, 1);
+  assert.match(agent, /If the dispatch has a `MaxRuns:` line, append `--max-runs <MaxRuns>` before the redirect/);
+});
+
+test("the sdd implementer names the e2e exit step beside the database step", () => {
+  const agent = readFileSync(new URL("../../../../agents/sdd-implementer.md", import.meta.url), "utf8");
+  assert.match(agent, /throwaway-db[^\n]+\n[^\n]*`check.e2e`[^\n]*`npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e`/);
 });
 
 test("a run turns off the Codex helper agents with -c, before the prompt", async (t) => {
@@ -316,7 +397,7 @@ async function firstCall(t, { env = {}, config } = {}) {
     appendFileSync(progress, `${DONE_MARKER}\n`);
     return { status: 0, tail: "ok" };
   };
-  const code = await runCodexImplement(argv, { run, say: quiet, env: { CODEX_HOME: codexHome(t), ...env } });
+  const code = await runCodexImplement(argv, { run, say: quiet, env: { QC_CODEX_LIMIT_FILE: process.env.QC_CODEX_LIMIT_FILE, CODEX_HOME: codexHome(t), ...env } });
   return { code, call };
 }
 
@@ -522,6 +603,18 @@ test("a null budgets.codex turns off the limit overrides", async (t) => {
   const set = overrides(call.args);
   assert.ok(!set.some((entry) => entry.startsWith("model_auto_compact_token_limit=")));
   assert.ok(!set.some((entry) => entry.startsWith("tool_output_token_limit=")));
+});
+
+test("invalid budgets for other roles leave the Codex launch unchanged", async (t) => {
+  for (const budgets of [
+    { reviewer: { remindAt: 0 } }, { implementer: "bad" }, { planner: [] },
+    { unknownRole: "bad", codex: { compactAt: 180000, toolOutputTokens: 2000 } },
+  ]) {
+    const { code, call } = await firstCall(t, { config: { budgets } });
+    assert.equal(code, 0, JSON.stringify(budgets));
+    assert.ok(overrides(call.args).includes(`tool_output_token_limit=${budgets.codex?.toolOutputTokens ?? 4000}`));
+    assert.ok(overrides(call.args).includes(`model_auto_compact_token_limit=${budgets.codex?.compactAt ?? 300000}`));
+  }
 });
 
 test("every run prompt tells Codex to load no skill and holds the read caps", async (t) => {

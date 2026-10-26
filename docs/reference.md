@@ -654,50 +654,84 @@ The orchestrator and Codex leave no cost record, so the report says so in one li
 
 #### Run an implementer on Codex
 
-`qc codex-implement` runs one brief through `codex exec` as an implementer. Claude stays the one
-controller, and the controller workflow does not change for it.
+`qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.
 
 ```bash
-npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
+npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]
 ```
 
-The runner runs `codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> "<prompt>"`
-with `QC_ROLE=implementer` in the environment and stdin closed, and appends the output to the log
-(`<progress>.log` by default). It reads the brief file again before each run, so an edit reaches the
-next session. The prompt is the brief, a note to read `git log -n 5 --oneline`, `git status --short`, and the
-progress file and to continue from the first unfinished task, and the lean rules: a progress file of at
-most 40 lines, no re-verifying, only the needed line ranges, no skill or plugin file, read caps, no helper agents, no broad audit or full
-gate, one item per session, and a report under 15 lines. A lean rule never drops a security, tenant,
-data, or correctness check that the brief asks for. It spawns `codex` with no shell, so the binary must be
-a real executable on `PATH`. After each run it restarts a fresh session until the progress file holds
-`ALL TASKS DONE`. It never calls Claude.
+The runner passes the prompt on stdin to this command, with `QC_ROLE=implementer` in the environment:
+
+```bash
+codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> -
+```
+
+The output appends to `--log`, which defaults to `<progress>.log`. The runner reads the brief again before each run.
+The prompt starts with a fixed preamble, then `codex.preamble` (default empty), the brief, a continuation note, and the lean rules.
+The note names `git log --oneline`, `git status --short`, and the progress file, and tells the session to continue its first unfinished task.
+The lean rules cap the progress file at 40 lines and the report at 14 lines.
+They require ranged reads, forbid helper agents and broad audits, and preserve every security, tenant, data, and correctness check in the brief.
+They permit `npx qc e2e` when `check.e2e` is set.
+The exit step runs `npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e` beside the database tests.
+The runner starts a fresh session after each unfinished run, within the run allowance. It never calls Claude.
+Completion means the last non-empty progress line equals `ALL TASKS DONE` after trimming whitespace.
+
+The runner validates the worktree's brief and Codex settings before launch:
+
+| Setting or requirement | Default or rule |
+|---|---|
+| `--max-runs` | `1`; a positive whole number, capped by `codex.maxRuns` (default `2`) |
+| `codex.briefMaxLines` | `40` non-blank lines in the brief |
+| `codex.briefMaxSteps` | `6` numbered steps under the task heading |
+| Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
+| Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, and `Exit criteria` |
 
 The overrides apply to the runner's `codex exec` call only, so your interactive Codex sessions keep their plugins and skills:
 
-- `-c plugins."<name>".enabled=false` for every plugin that `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) enables, read at launch, and for `superpowers@claude-plugins-official` by name. The lean rules tell the run to load no skill.
-- `-c model_auto_compact_token_limit=<n>` reads `budgets.codex.compactAt` from the worktree's `qc.config.json`. A null value uses `codex.compactTokens` (default `300000`).
-- `-c tool_output_token_limit=<n>` reads `budgets.codex.toolOutputTokens` (default `4000`) to cap one tool output. A null `budgets.codex` omits both limit overrides.
+| Override | Source |
+|---|---|
+| `-c plugins."<name>".enabled=false` | enabled plugins in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), plus `codex.disablePlugins` (default `["superpowers@claude-plugins-official"]`) |
+| `-c model_auto_compact_token_limit=<n>` | `budgets.codex.compactAt`; null uses `codex.compactTokens` (default `300000`) |
+| `-c tool_output_token_limit=<n>` | `budgets.codex.toolOutputTokens` (default `4000`) |
 
-On exit `2`, the runner writes the limit state to `<os.tmpdir()>/architecture-kit/codex-limit.json`.
-Set `QC_CODEX_LIMIT_FILE` to use another path. The JSON stores `until`, `source`, and `recordedAt`, with both times as ISO strings.
-The `codex` source uses the reset time from Codex; the `default` source uses 60 minutes after the limit.
+The lean rules tell the run to load no skill. A null `budgets.codex` omits both limit overrides.
+The runner validates only `budgets.codex`; a bad budget for another role leaves its launch unchanged.
+
+An unfinished run counts as limited only when its output contains a limit line that the prompt did not echo.
+A bare status `2` counts as a failed run and consumes the run allowance. The restart loop continues while runs remain.
+On a limit line, the runner writes `<os.tmpdir()>/architecture-kit/codex-limit.json`, including during `--wait-reset`.
+Set a non-empty `QC_CODEX_LIMIT_FILE` to use another path.
+The JSON stores `until`, `source`, and `recordedAt`, with both times as ISO strings.
+The `codex` source uses the reset time from Codex, including relative seconds, minutes, hours, and days.
+The `default` source uses 60 minutes after the limit when the line gives no valid reset time.
+The state means Codex is limited now. The runner deletes it after a reset and after every run without a limit line.
 `qc codex status` prints `Codex: free` for missing, invalid, or expired state.
 For an active limit, it prints the ISO reset time and its source. The status command reads no configuration.
+
+Without `--wait-reset`, a limit ends the runner with exit `2`.
+With `--wait-reset`, it polls `https://codex-resets.com/api/v1/status` every 15 minutes without a model call.
+An announced reset after the limit clears the state before the same brief resumes. A limit retry keeps its run allowance.
+`--max-hours` defaults to `6`, accepts positive finite hours, and bounds all reset waits in the job together.
+At the bound, the runner exits `2` and leaves the state file in place.
+
+The standalone command waits for a reset without starting a model or changing the limit state:
+
+```bash
+npx qc codex-wait-reset --since <iso> [--max-hours <n>]
+```
+
+It uses the same polling interval and default bound. It exits `0` after a reset, or `1` at the bound or on invalid input.
 
 | Exit | Meaning |
 |---|---|
 | `0` | the progress file says `ALL TASKS DONE` |
-| `1` | a bad argument, invalid `budgets`, a bad `codex.compactTokens`, or `codex` did not start |
-| `2` | Codex reports `usage limit`, `spend cap`, `rate limit`, or `hit your limit`; record the reset for `qc codex status`, then dispatch the brief to an `architecture:sdd-implementer` (sonnet) |
-| `3` | `--max-runs` (default 12) runs ended and the progress file is not done |
+| `1` | invalid arguments, Codex settings, `budgets.codex`, or brief; a file error; or `codex` did not start |
+| `2` | an output line reports `usage limit`, `spend cap`, `rate limit`, or `hit your limit`; the runner stops immediately or reaches its reset-wait bound |
+| `3` | `--max-runs` (default `1`) runs ended and the progress file is unfinished |
 
-With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the
-controller note: work inline, never use subagent-driven development, helper agents, task reviews, or
-fix-review rounds, and per task write the failing test, run only that test file, run typecheck and
-lint on what you touched, and commit at once. It runs no full local gate and no e2e, since CI runs
-them. When every task is pushed, it appends `ALL TASKS DONE` to the progress file. A session whose
-context gets large writes notes and ends its turn, and the runner starts a fresh one. Without
-`QC_ROLE=implementer`, every hook behaves as before.
+With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the controller note.
+The runner's prompt requires tests first, the touched tests, one local check, and the brief's commit and push rules.
+The session writes the done marker only after the exit criteria hold. A session that needs more context writes notes and ends its turn.
 
 #### Wait on CI with bounds
 
@@ -796,6 +830,8 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 
 | Check | Hook | What it refuses |
 |---|---|---|
+| Runtime tag | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | a description without the expected `Codex <model> · ` or `Claude <model> · ` prefix; leading whitespace is allowed |
+| Codex route | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | a Codex dispatch while limited, or a Claude implementer while Codex is free without `Runtime: claude <reason>`; case is ignored, and whitespace after the colon is optional |
 | Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha that git reports as unknown in the repository of the named worktree, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha. A git failure or a timeout passes with a note, and the stop records the sha as written, with no branch. A sha with no named worktree that the working directory's repository lacks passes with a note, and the stop records no verdict. When the hook finds no transcript for the agent, it judges against the repository of the working directory and adds a line that says so |
 | Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:`. A report with a `HANDOFF: <path>` line needs neither; it needs a note at that path with `Brief:`, `Worktree:`, `Branch:`, and `Head:` lines and non-empty `## Done`, `## Left`, and `## Next step` sections. The stop records the note's path |
 | Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review. An implementer whose prompt has the `HANDOFF: <path>` line of the newest implementer stop on the branch continues that task and passes; the next implementer after it needs a review, and a review of the later head covers both stops. A stop head whose check runs on GitHub include a failed, cancelled, timed-out, or action-required run, or a run that has not completed, needs no review first: the next implementer continues the task and passes, and the ledger records the sha and the reason in the dispatch record. A head with all runs green, with no runs, or with no readable answer from `gh` keeps the refusal, which says the review runs once CI on the head is green |
@@ -863,13 +899,12 @@ The keys go under `swarm.review`. A list replaces its default, and `reviewerType
 
 #### A fix on a red head, and reviews in parallel
 
-A CI fix or a review fix may start on a red or unreviewed head. Its implementer prompt carries a
-line `Fix: ci` or `Fix: review`, and the ledger records the purpose. A `Fix: ci` on a head whose CI
-is green is refused, since that head waits for a review.
+An implementer prompt marks its purpose with `Fix: ci` or `Fix: review`, and the ledger records it.
+A CI fix requires known-red CI. A review fix requires a review of every implementer stop.
 
-Several branch reviewers may review one head at once, each with its own prompt line
-`Scope: <name>`. The one-review rule then counts each scope on its own, and the merge guard waits
-until the newest review of every scope on the head approves.
+Several branch reviewers can review one head at once, each with its own prompt line `Scope: <name>`.
+The one-review rule counts each scope on its own.
+With `swarm.review.merge: "branch"`, the merge guard requires the newest review of every scope on the head to approve.
 
 #### The direct lane for a small fix
 

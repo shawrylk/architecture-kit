@@ -5,7 +5,7 @@ import path from "node:path";
 import { familyOf, isImplementer, typeOf } from "./dispatch.mjs";
 
 export const isCodexType = (type) => type === "codex" || type === "architecture:codex";
-const RUNTIME_LINE = /^[\t ]*Runtime:[\t ]+claude[\t ]+\S[^\r\n]*$/m;
+export const RUNTIME_LINE = /^[\t ]*Runtime:[\t ]*claude[\t ]+(\S[^\r\n]*?)[\t ]*$/im;
 
 export function routeRefusal(input, settings, limit) {
   const type = typeOf(input);
