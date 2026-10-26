@@ -21,6 +21,7 @@ export const defaults = {
   codex: {
     compactTokens: 300000,
     disablePlugins: ["superpowers@claude-plugins-official"],
+    envAllow: [],
     preamble: "",
     briefMaxLines: 40,
     briefMaxSteps: 6,

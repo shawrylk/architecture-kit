@@ -85,8 +85,14 @@ export default preset({
 | CI | `qc check`, `qc typecheck`, `qc lint --base`, and the tests | fails the build |
 
 A drift of the kit setup, such as a changed git hook, is a note and never blocks a stop. Codex reaches
-the kit through the git hooks and the CI workflow. The `workspace-write` sandbox of Codex makes `.git`
-read-only, so the hooks run at the commit you make after the Codex run.
+the kit through the git hooks and the CI workflow. The Codex runner uses `danger-full-access`,
+so Codex commits, pushes, and runs the git hooks.
+
+The runner passes an allowlisted environment. System variables cover paths, home and profile folders,
+app data, temporary folders, locale, terminal, user, and Windows system names.
+It also passes names with the `CODEX_`, `GIT_`, or `QC_` prefix, `OPENAI_API_KEY`, and names in `codex.envAllow` (default `[]`).
+Names match without case on Windows. `GH_TOKEN` and `GITHUB_TOKEN` require an entry in `codex.envAllow`.
+A brief that needs `gh` reads its token through `gh auth token`.
 
 ## Task and merge gates
 

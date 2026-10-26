@@ -68,6 +68,7 @@ test("codex defaults bound a short session and disable the skill plugin", () => 
   assert.deepEqual(load(here).codex, {
     compactTokens: 300000,
     disablePlugins: ["superpowers@claude-plugins-official"],
+    envAllow: [],
     preamble: "",
     briefMaxLines: 40,
     briefMaxSteps: 6,
@@ -78,7 +79,7 @@ test("codex defaults bound a short session and disable the skill plugin", () => 
 test("codex configuration raises limits and preserves omitted defaults", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-codex-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const codex = { briefMaxLines: 80, briefMaxSteps: 10, maxRuns: 4, disablePlugins: ["custom@plugins"], preamble: "Use the local rules." };
+  const codex = { briefMaxLines: 80, briefMaxSteps: 10, maxRuns: 4, disablePlugins: ["custom@plugins"], envAllow: ["GITHUB_TOKEN", "PROJECT_KEY"], preamble: "Use the local rules." };
   writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ codex }));
   assert.deepEqual(load(root).codex, { ...defaults.codex, ...codex });
 });
