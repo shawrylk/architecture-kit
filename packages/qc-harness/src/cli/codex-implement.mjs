@@ -8,6 +8,7 @@ import path from "node:path";
 import { load } from "../config.mjs";
 import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, waitForCodexReset } from "./codex-reset.mjs";
+import { budgetsOf } from "./context-budgets.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -50,7 +51,6 @@ const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf
 
 const FIXED_PREAMBLE = "The brief carries every rule. Load no skill. Write no `Grammar:` line.";
 const FIXED_HEADINGS = new Set(["Product decisions", "Run shape", "Commit", "Exit criteria"]);
-const TOOL_OUTPUT_TOKENS = 4000;
 
 const LEAN_RULES = [
   "Lean rules for every session. They cut repeated reading and helper agents. Never drop a security, tenant, data, or correctness check that this brief asks for.",
@@ -152,6 +152,11 @@ function validateBrief(brief, codex) {
   if (steps > codex.briefMaxSteps) throw new Error(`codex.briefMaxSteps limit is ${codex.briefMaxSteps} numbered steps under the task; got ${steps}`);
 }
 
+/** Fragment: reads the role limits that `budgets.codex` sets; null turns the launch overrides off. */
+function codexLimitsOf(worktree) {
+  return budgetsOf(load(worktree)).codex;
+}
+
 /** The brief is read again for each run, so an edit reaches the next session. */
 const promptFor = (settings, codex) => {
   const brief = readFileSync(settings.brief, "utf8");
@@ -224,8 +229,10 @@ async function runJob(argv, {
     return 1;
   }
   let codex;
+  let codexLimits;
   try {
     codex = codexSettingsOf(settings.worktree);
+    codexLimits = codexLimitsOf(settings.worktree);
     if (settings.maxRuns > codex.maxRuns) throw new Error(`--max-runs exceeds codex.maxRuns limit of ${codex.maxRuns}; got ${settings.maxRuns}`);
   } catch (error) {
     return finish(say, error.message, 1);
@@ -241,7 +248,7 @@ async function runJob(argv, {
       return finish(say, `cannot prepare the brief: ${error.message}`, 1);
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
-    const limits = ["-c", `model_auto_compact_token_limit=${codex.compactTokens}`, "-c", `tool_output_token_limit=${TOOL_OUTPUT_TOKENS}`];
+    const limits = codexLimits === null ? [] : ["-c", `model_auto_compact_token_limit=${codexLimits.compactAt}`, "-c", `tool_output_token_limit=${codexLimits.toolOutputTokens}`];
     const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, "-"];
     let result;
     try {

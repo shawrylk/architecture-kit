@@ -525,6 +525,58 @@ The command resolves conflicts in generated files before it runs the generator.
 
 The command returns the gate slot's exit code when the push fails.
 
+#### Context budgets
+
+Three limits apply together. Each measures a different part of an agent's work.
+
+| Setting | Measure | Action |
+|---|---|---|
+| `swarm.toolCallBudget` | tool calls per subagent | reminds at 70%, then permits only the handoff at the limit; off by default |
+| `swarm.context` | latest request context divided by first request context | gives ratio reminders and handoff advice when enough calls remain |
+| `budgets` | context tokens per request, by role | reminds, compacts, or restricts work at the role's token limits |
+
+`budgets` in `qc.config.json` sets token limits for each role.
+`compactAt` triggers compaction, `remindAt` triggers a reminder, and `handoffAt` triggers a handoff.
+`toolOutputTokens` caps one Codex tool output.
+
+| Role | Default budget |
+|---|---|
+| `orchestrator` | `{ "compactAt": 200000 }` |
+| `implementer` | `{ "remindAt": 110000, "handoffAt": 150000 }` |
+| `reviewer` | `{ "remindAt": 80000, "handoffAt": 120000 }` |
+| `codex` | `{ "compactAt": null, "toolOutputTokens": 4000 }` |
+
+The orchestrator, implementer, and reviewer budgets apply only when `swarm.dispatch` is on.
+`qc codex-implement` reads `budgets.codex` for its launch overrides.
+Set a role to `null` to turn its budget off.
+Each number must be a positive whole number, and `remindAt` must be smaller than `handoffAt`.
+A null `budgets.codex.compactAt` uses `codex.compactTokens`, whose default is `300000`.
+
+At `budgets.orchestrator.compactAt`, the orchestrator gets a note to run `/compact` at the next green step.
+The note asks it to keep the plan path, open pull request numbers, branches, heads, and ledger path in the summary.
+
+The implementer and both reviewer types get one reminder at their role's `remindAt`.
+At `handoffAt`, only calls that finish the handoff can run.
+The implementer writes a handoff note and reports its path on a `HANDOFF:` line.
+The reviewer sends a report that opens with `VERDICT:` for the work it reviewed.
+It adds an `UNREVIEWED:` line that lists the files left.
+The controller sends a fresh reviewer with `Scope:` for those files.
+
+`qc budget report` reads the agent ledger and reports the median and 90th percentile of context at the end of each task.
+It also reports the share of tasks whose `peakContext` reaches `handoffAt`.
+Context counts input tokens, cache reads, and cache creation; it excludes output tokens.
+The report lists the implementer before the reviewer and omits roles whose budgets are `null`.
+The cost roles `reviewer` and `branch-reviewer` both count as `reviewer`.
+The latest cost record replaces older records from a resumed agent.
+The report skips and counts cost records without `endContext`.
+The orchestrator and Codex leave no cost record, so the report says so in one line.
+
+| Report result | Advice |
+|---|---|
+| More than 10% of tasks reach `handoffAt` | raise `handoffAt` |
+| Otherwise, the 90th percentile ends under half of `handoffAt` | lower `handoffAt` |
+| Neither condition holds | keep `handoffAt` |
+
 #### Run an implementer on Codex
 
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude stays the one
@@ -548,8 +600,8 @@ a real executable on `PATH`. After each run it restarts a fresh session until th
 The overrides apply to the runner's `codex exec` call only, so your interactive Codex sessions keep their plugins and skills:
 
 - `-c plugins."<name>".enabled=false` for every plugin that `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) enables, read at launch, and for `superpowers@claude-plugins-official` by name. The lean rules tell the run to load no skill.
-- `-c model_auto_compact_token_limit=<n>` with `n` from `codex.compactTokens` in the worktree's `qc.config.json` (default `300000`). It is a backstop for a runaway item: each item runs in a fresh session and should finish under 200K.
-- `-c tool_output_token_limit=4000`, so one command output never carries more than 4,000 tokens.
+- `-c model_auto_compact_token_limit=<n>` reads `budgets.codex.compactAt` from the worktree's `qc.config.json`. A null value uses `codex.compactTokens` (default `300000`).
+- `-c tool_output_token_limit=<n>` reads `budgets.codex.toolOutputTokens` (default `4000`) to cap one tool output. A null `budgets.codex` omits both limit overrides.
 
 On exit `2`, the runner writes the limit state to `<os.tmpdir()>/architecture-kit/codex-limit.json`.
 Set `QC_CODEX_LIMIT_FILE` to use another path. The JSON stores `until`, `source`, and `recordedAt`, with both times as ISO strings.
@@ -560,7 +612,7 @@ For an active limit, it prints the ISO reset time and its source. The status com
 | Exit | Meaning |
 |---|---|
 | `0` | the progress file says `ALL TASKS DONE` |
-| `1` | a bad argument, a bad `codex.compactTokens`, or `codex` did not start |
+| `1` | a bad argument, invalid `budgets`, a bad `codex.compactTokens`, or `codex` did not start |
 | `2` | Codex reports `usage limit`, `spend cap`, `rate limit`, or `hit your limit`; record the reset for `qc codex status`, then dispatch the brief to an `architecture:sdd-implementer` (sonnet) |
 | `3` | `--max-runs` (default 12) runs ended and the progress file is not done |
 

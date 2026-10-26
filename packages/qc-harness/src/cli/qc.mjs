@@ -30,6 +30,7 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
+  qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
@@ -195,6 +196,10 @@ async function main() {
     case "ledger": {
       const { runLedger } = await import("./ledger.mjs");
       process.exit(runLedger(config, rest));
+    }
+    case "budget": {
+      const { runBudget } = await import("./budget-report.mjs");
+      process.exit(runBudget(config, rest));
     }
     case "plan-check": {
       const { runPlanCheck } = await import("./plan-check.mjs");

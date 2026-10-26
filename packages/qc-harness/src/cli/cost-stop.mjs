@@ -7,7 +7,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { pathKey } from "./git-read.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { roleOf } from "./report-stop.mjs";
-import { agentTranscriptOf, agentTypeOf, readRequests, toolCallsIn } from "./transcript-usage.mjs";
+import { agentTranscriptOf, agentTypeOf, contextOf, readRequests, toolCallsIn } from "./transcript-usage.mjs";
 import { firstUserText, resolveNamedWorktree, workflowOfRepo } from "./workflow-place.mjs";
 import { workflowOf } from "./workflow-settings.mjs";
 import { fileURLToPath } from "node:url";
@@ -74,6 +74,8 @@ function record(call, tmp) {
     output: sum(requests, "output_tokens"),
     cacheRead: sum(requests, "cache_read_input_tokens"),
     cacheCreation: sum(requests, "cache_creation_input_tokens"),
+    endContext: contextOf(requests.at(-1).usage),
+    peakContext: Math.max(...requests.map((request) => contextOf(request.usage))),
     toolCalls: toolCallsIn(transcript),
     branch: dispatch?.branch ?? null,
     head: dispatch?.head ?? null,

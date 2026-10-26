@@ -30,6 +30,15 @@ export const defaults = {
     schemaCommand: null,
   },
 
+  // Token limits keep each role within its context: compactAt compacts, remindAt warns, and handoffAt hands off.
+  // toolOutputTokens caps one Codex tool output; null compactAt preserves codex.compactTokens.
+  budgets: {
+    orchestrator: { compactAt: 200000 },
+    implementer: { remindAt: 110000, handoffAt: 150000 },
+    reviewer: { remindAt: 80000, handoffAt: 120000 },
+    codex: { compactAt: null, toolOutputTokens: 4000 },
+  },
+
   docs: {
     root: "docs",
     decisions: "docs/decisions.md",
