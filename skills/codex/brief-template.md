@@ -5,6 +5,7 @@ Branch: `<type>/<issue>-<slug>`
 Issue: `#<issue>`
 Report: `<absolute report file>`
 Progress: `<absolute progress file>`
+Paths: `<owned files or folders>`
 
 ## Product decisions
 
@@ -12,7 +13,7 @@ Progress: `<absolute progress file>`
 
 ## Task
 
-<the exact change, the files, and the cause of a failure>
+1. <the single task's exact change, owned paths, and cause; use at most six numbered steps>
 
 ## Run shape
 

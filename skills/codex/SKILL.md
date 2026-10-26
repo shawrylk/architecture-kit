@@ -23,14 +23,33 @@ Write the brief as a markdown file in your scratchpad. It holds these parts:
 
 | Part | Content |
 |---|---|
-| Header | The worktree path, the branch, the issue, and the report file |
+| Header | The worktree path, the branch, the issue, the report file, the progress file, and a `Paths:` line naming owned files or folders |
 | `## Product decisions` | The user's answers. Codex never asks the user. |
 | Task | The exact change, the files, and the cause of a failure |
-| Constraints | What Codex must leave alone, such as a shared database or another session's worktree. Codex never bypasses a git hook and never stops to ask: it writes a question in the report and continues. |
+| Run shape | The checks, shared resources, and run rules. Codex writes questions in the report and continues. |
 | Commit | The message shape and the issue reference |
 | Exit criteria | Typecheck, the named test files, and the push; the runner supplies the done marker |
 
 Copy `brief-template.md` beside this skill. It holds the run shape, the gate slots, the live tests, and the commit rule.
+
+Keep one task heading, with at most six numbered steps under it, and at most 40 non-blank lines in the whole brief.
+Keep `## Product decisions` and `Paths:` in every brief.
+The fixed headings `## Product decisions`, `## Run shape`, `## Commit`, and `## Exit criteria` use no task budget.
+The numbered steps under `## Run shape` use no task-step budget.
+The template passes the default limits unchanged.
+
+Repositories can change these settings under `codex` in `qc.config.json`:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `briefMaxLines` | `40` | Caps non-blank lines in the brief |
+| `briefMaxSteps` | `6` | Caps numbered steps under the task |
+| `maxRuns` | `2` | Caps the requested run count; the command defaults to one run |
+| `disablePlugins` | `["superpowers@claude-plugins-official"]` | Adds plugins to the enabled user plugins that the runner turns off |
+| `preamble` | `""` | Adds text after the fixed preamble and before the brief |
+
+The fixed preamble says the brief carries every rule, forbids skill loads, and forbids a `Grammar:` line.
+Each refusal names the rule and its limit before Codex starts.
 
 A brief carries a read budget: at most 15 files before the first code edit. Research that needs more belongs to a planner, and the brief names the planner's output.
 
@@ -60,18 +79,18 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 Run this in the background from the main checkout. The form is for PowerShell:
 
 ```powershell
-npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 *> <wrapper.log>
+npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> *> <wrapper.log>
 ```
 
 - In a POSIX shell, use this form:
 
   ```bash
-  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 > <wrapper.log> 2>&1
+  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> > <wrapper.log> 2>&1
   ```
 - The runner writes `exit <code>` as its last stdout line on every exit path, so the wrapper log carries it and the forms need no `echo`. `qc watch --codex` reads that line. It decodes the UTF-16LE file that PowerShell 5.1 writes for `*>`.
-- Never call `codex exec` directly. Each run of the runner is a fresh `codex exec` in the worktree, with full access. Its prompt is the brief plus a note that points at the progress file.
+- Never call `codex exec` directly. Each run starts a fresh session with full access. The runner sends the prompt on stdin, then closes stdin.
 - Start Codex only inside a worktree from `qc worktree add`. Never start it in the main checkout, the scratchpad, or the home folder. A run outside a repository can make a code indexer read the whole home folder.
-- Use `--max-runs` from 10 to 20. Each run continues from the progress file.
+- The command defaults to one run. Use `--max-runs 2` for a second session, or raise `codex.maxRuns` for more sessions.
 - Codex runs count as implementers. Run one at a time, as the swarm rules say. Run more only up to `swarm.dispatch.implementerSlots`, on disjoint paths, and with more than 4 GB of free memory for each extra run.
 
 ## Read the result

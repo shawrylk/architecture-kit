@@ -8,7 +8,7 @@ import path from "node:path";
 import { load } from "../config.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
-const DEFAULT_MAX_RUNS = 12;
+const DEFAULT_MAX_RUNS = 1;
 const TAIL_CHARS = 4000;
 const LIMIT = /usage limit|spend cap|rate limit|hit your limit/i;
 
@@ -42,7 +42,8 @@ export function parseArgs(argv) {
 
 const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").trimEnd().split(/\r?\n/).at(-1).trim() === DONE_MARKER;
 
-const SKILL_PLUGIN = "superpowers@claude-plugins-official";
+const FIXED_PREAMBLE = "The brief carries every rule. Load no skill. Write no `Grammar:` line.";
+const FIXED_HEADINGS = new Set(["Product decisions", "Run shape", "Commit", "Exit criteria"]);
 const TOOL_OUTPUT_TOKENS = 4000;
 
 const LEAN_RULES = [
@@ -95,27 +96,63 @@ export function enabledPlugins(toml) {
   return names;
 }
 
-/** The `-c` overrides that turn off each plugin the user enabled, and the skill plugin, for this run only. */
-function pluginOverrides(env) {
+/** The `-c` overrides turn off the enabled and configured plugins for this run. */
+function pluginOverrides(env, disablePlugins) {
   const file = path.join(env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
   let enabled = [];
   try {
     enabled = enabledPlugins(readFileSync(file, "utf8"));
   } catch {
-    // A missing or unreadable config still lets the run start, with the superpowers override alone.
+    // The configured overrides also apply when the user config is unreadable.
   }
-  return [...new Set([...enabled, SKILL_PLUGIN])].flatMap((name) => ["-c", `plugins.${JSON.stringify(name)}.enabled=false`]);
+  return [...new Set([...enabled, ...disablePlugins])].flatMap((name) => ["-c", `plugins.${JSON.stringify(name)}.enabled=false`]);
 }
 
-/** @returns `codex.compactTokens` of the worktree's config; throws when it is not a positive whole number. */
-function compactTokensOf(worktree) {
-  const value = load(worktree).codex.compactTokens;
-  if (!Number.isInteger(value) || value < 1) throw new Error(`codex.compactTokens in qc.config.json must be a positive whole number, got ${JSON.stringify(value)}`);
-  return value;
+/** Fragment: reads and validates the worktree's Codex settings. */
+function codexSettingsOf(worktree) {
+  const codex = load(worktree).codex;
+  if (!codex || typeof codex !== "object" || Array.isArray(codex)) throw new Error("codex in qc.config.json must be an object");
+  for (const key of ["compactTokens", "briefMaxLines", "briefMaxSteps", "maxRuns"]) {
+    const value = codex[key];
+    if (!Number.isInteger(value) || value < 1) throw new Error(`codex.${key} in qc.config.json must be a positive whole number, got ${JSON.stringify(value)}`);
+  }
+  if (typeof codex.preamble !== "string") throw new Error("codex.preamble in qc.config.json must be a string");
+  if (!Array.isArray(codex.disablePlugins) || !codex.disablePlugins.every((name) => typeof name === "string" && name.trim())) {
+    throw new Error("codex.disablePlugins in qc.config.json must be an array of non-empty strings");
+  }
+  return codex;
+}
+
+/** Branch: refuses briefs that exceed the session limits. */
+function validateBrief(brief, codex) {
+  const lines = brief.split(/\r?\n/);
+  const nonBlank = lines.filter((line) => line.trim()).length;
+  if (nonBlank > codex.briefMaxLines) throw new Error(`codex.briefMaxLines limit is ${codex.briefMaxLines} non-blank lines; got ${nonBlank}`);
+  if (!lines.some((line) => /^## Product decisions\s*$/.test(line))) throw new Error("## Product decisions is required: at least 1 heading");
+  if (!lines.some((line) => /^Paths:[ \t]*\S/.test(line))) throw new Error("Paths: is required: at least 1 line naming owned files or folders");
+  let tasks = 0;
+  let steps = 0;
+  let inTask = false;
+  for (const line of lines) {
+    const heading = /^## (.+?)\s*$/.exec(line);
+    if (heading) {
+      inTask = !FIXED_HEADINGS.has(heading[1]);
+      if (inTask) tasks += 1;
+    } else if (inTask && /^\s*\d+[.)]\s+/.test(line)) {
+      steps += 1;
+    }
+  }
+  if (tasks > 1) throw new Error(`task heading limit is 1 besides the fixed template headings; got ${tasks}`);
+  if (steps > codex.briefMaxSteps) throw new Error(`codex.briefMaxSteps limit is ${codex.briefMaxSteps} numbered steps under the task; got ${steps}`);
 }
 
 /** The brief is read again for each run, so an edit reaches the next session. */
-const promptFor = (settings) => readFileSync(settings.brief, "utf8") + continuationNote(settings.progress);
+const promptFor = (settings, codex) => {
+  const brief = readFileSync(settings.brief, "utf8");
+  validateBrief(brief, codex);
+  const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
+  return `${preamble}\n\n${brief}${continuationNote(settings.progress)}`;
+};
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
 function spawnRun({ command, args, input, env, log }, codexCommand) {
@@ -177,9 +214,10 @@ async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, 
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
     return 1;
   }
-  let compactTokens;
+  let codex;
   try {
-    compactTokens = compactTokensOf(settings.worktree);
+    codex = codexSettingsOf(settings.worktree);
+    if (settings.maxRuns > codex.maxRuns) throw new Error(`--max-runs exceeds codex.maxRuns limit of ${codex.maxRuns}; got ${settings.maxRuns}`);
   } catch (error) {
     return finish(say, error.message, 1);
   }
@@ -188,13 +226,13 @@ async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, 
     if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
     let prompt;
     try {
-      prompt = promptFor(settings);
+      prompt = promptFor(settings, codex);
     } catch (error) {
-      return finish(say, `cannot read the brief: ${error.message}`, 1);
+      return finish(say, `cannot prepare the brief: ${error.message}`, 1);
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
-    const limits = ["-c", `model_auto_compact_token_limit=${compactTokens}`, "-c", `tool_output_token_limit=${TOOL_OUTPUT_TOKENS}`];
-    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env), ...limits, "-"];
+    const limits = ["-c", `model_auto_compact_token_limit=${codex.compactTokens}`, "-c", `tool_output_token_limit=${TOOL_OUTPUT_TOKENS}`];
+    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, "-"];
     let result;
     try {
       result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...env, QC_ROLE: "implementer" }, log: settings.log });
