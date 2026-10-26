@@ -153,7 +153,7 @@ const COST_KEYS = ["input", "output", "cacheRead", "cacheCreation", "toolCalls"]
 const emptyTotal = () => ({ agents: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, toolCalls: 0 });
 
 /** The cost records, one per agent: a resumed agent stops again with its whole transcript, so its newest record replaces the older. */
-function latestCosts(records) {
+export function latestCosts(records) {
   const latest = new Map();
   for (const record of records) if (record.type === "cost") latest.set(`${record.session}/${record.agentId}`, record);
   return [...latest.values()];

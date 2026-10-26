@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { appendRecord, readLedger } from "./ledger.mjs";
-import { branchOf, decide, verdictOf } from "./report-stop.mjs";
+import { branchOf, decide, reportProblems, verdictOf } from "./report-stop.mjs";
 import { judgeTask } from "./task-gate.mjs";
 import { BRIEF } from "./test-brief.mjs";
 import { rememberSession } from "./workflow-settings.mjs";
@@ -106,6 +106,28 @@ test("a reviewer hand-back without its verdict line, or with a sha the repositor
     /deadbee names no commit/,
   );
 });
+
+test("a partial review requires CHANGES_REQUIRED for every reviewer role", () => {
+  for (const role of ["task", "branch", "architecture", "security"]) {
+    const report = "VERDICT: APPROVED abc1234\nRED-CHECKED: the test failed\n  UNREVIEWED: x.mjs\n";
+    assert.match(reportProblems(role, report, verdictOf(report), null, false).join(" "), /CHANGES_REQUIRED.*UNREVIEWED/);
+    const partial = report.replace("APPROVED", "CHANGES_REQUIRED");
+    assert.deepEqual(reportProblems(role, partial, verdictOf(partial), null, false), []);
+    const complete = report.replace("x.mjs", " \t");
+    assert.deepEqual(reportProblems(role, complete, verdictOf(complete), null, false), []);
+  }
+});
+
+for (const value of ["none", "NONE", "NoNe"]) {
+  test(`UNREVIEWED: ${value} is an empty list for every reviewer role`, () => {
+    for (const role of ["task", "branch", "architecture", "security"]) {
+      const report = `VERDICT: APPROVED abc1234\nRED-CHECKED: the test failed\n  UNREVIEWED: ${value} \t\n`;
+      assert.deepEqual(reportProblems(role, report, verdictOf(report), null, false), []);
+      const partial = `${report}UNREVIEWED: x.mjs\n`;
+      assert.match(reportProblems(role, partial, verdictOf(partial), null, false).join(" "), /CHANGES_REQUIRED.*UNREVIEWED/);
+    }
+  });
+}
 
 test("a task APPROVED needs a RED-CHECKED line, and CHANGES_REQUIRED does not", (t) => {
   const ws = workspace(t);

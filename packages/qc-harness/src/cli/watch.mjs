@@ -1,15 +1,14 @@
 // `qc watch`: block until the first event among the pull requests, Codex jobs and workflow runs it watches.
 // The wait is a shell command, so it costs no model tokens, and its exit is the event.
 
-import { spawnSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
+import { runGhResult } from "./gh-run.mjs";
 
 const DEFAULT_MAX_MINUTES = 55;
 const DEFAULT_INTERVAL_SECONDS = 60;
 const QUEUED_LIMIT_MS = 15 * 60_000;
 const CODEX_TAIL_BYTES = 2048;
-const GH_TIMEOUT_MS = 20_000;
 const SHA_SUFFIX = /^(.+)@([0-9a-f]{7,40})$/i;
 const FAILED_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
 const FAILED_STATES = new Set(["FAILURE", "ERROR"]);
@@ -155,7 +154,7 @@ function runWatcher({ workflow, branch, sha }, { repo, gh }) {
 
 /** @returns gh's stdout on exit 0; throws an Error with gh's message when gh fails, times out, or is missing. */
 function readGh(args) {
-  const result = spawnSync("gh", args, { encoding: "utf8", windowsHide: true, timeout: GH_TIMEOUT_MS });
+  const result = runGhResult(args);
   if (result.status === 0) return result.stdout ?? "";
   const reason = (result.stderr ?? "").split(/\r?\n/).find((line) => line.trim()) ?? result.error?.message ?? `gh exited ${result.status}`;
   throw new Error(reason.trim());

@@ -38,19 +38,33 @@ function commandWords(command) {
   return words;
 }
 
-function changedFiles(root, base) {
+export function changedFiles(root, base, sincePush, command = "qc e2e") {
   const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  let ref = base;
+  if (sincePush) {
+    ref = null;
+    for (const candidate of ["@{push}", "@{upstream}"]) {
+      try {
+        ref = git("rev-parse", "--verify", "-q", candidate).trim();
+        break;
+      } catch {}
+    }
+    if (ref === null) {
+      console.log(`WARN  no upstream for the branch; running with the merge base with ${base}`);
+      ref = base;
+    }
+  }
   let mergeBase;
   try {
-    mergeBase = git("merge-base", "--", "HEAD", base).trim();
+    mergeBase = git("merge-base", "--", "HEAD", ref).trim();
   } catch {
-    console.log(`WARN  merge base with ${base} is unavailable; running related tests without file arguments`);
+    console.log(`WARN  merge base with ${ref} is unavailable; running ${command} without file arguments`);
     return null;
   }
   return git("diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=d", mergeBase, "--").split("\0").filter(Boolean);
 }
 
-async function runCommand(root, command, files = []) {
+export async function runCommand(root, command, files = []) {
   console.log(`RUN  ${command.replace(/[\r\n]+/g, " ")}`);
   try {
     const [bin, ...args] = commandWords(command);
@@ -65,10 +79,11 @@ async function runCommand(root, command, files = []) {
   }
 }
 
-export async function runCheckCommands(config) {
-  const { related, commands, base } = config.check;
+export async function runCheckCommands(config, { sincePush = false } = {}) {
+  const { commands, base } = config.check;
+  const related = sincePush ? config.check.sincePush ?? config.check.related : config.check.related;
   if (related !== null) {
-    const files = changedFiles(config.root, base);
+    const files = changedFiles(config.root, base, sincePush, "related tests");
     if (files === null || files.length > 0) {
       const code = await runCommand(config.root, related, files ?? []);
       if (code !== 0) return code;

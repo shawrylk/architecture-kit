@@ -10,14 +10,17 @@ import { checkFiles } from "./check-input.mjs";
 
 const USAGE = `qc — architecture gates
 
-  qc check [file...] [--files-from <path|->]
+  qc check [file...] [--files-from <path|->] [--since-push]
                            every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
+  qc e2e                   the repository's e2e command with the changed files
   qc lint [--staged] [--base <ref>] [file...]
                            ESLint on the changed lines only: a problem on an untouched line never fails
   qc typecheck             the typecheck script, else tsc; writes no build output
   qc init [--full]         scaffold the config, hooks and workflow; --full adds the reference architecture
   qc user-config apply|check|capture [--dry-run]
                            synchronize the shared Claude and Codex user settings
+  qc setup [--dry-run] [--config <file>] [--model <id>]...
+                           set up user compaction, the Claude core rules, and personal skills
   qc feature <name>        scaffold a feature of the reference architecture; needs qc init --full
   qc run [name]            drive one feature command headless; no name lists them
   qc install-hooks         point git at the kit's pre-commit hook
@@ -30,18 +33,24 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
-  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
+  qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
+  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
+                           --wait-reset polls every 15 minutes without a model, then resumes the same brief; --max-hours defaults to 6
+  qc codex-wait-reset --since <iso> [--max-hours <n>]
+                           wait for a later Codex reset without a model; exit 0 on a reset, 1 at the bound; default 6 hours
+  qc codex status         print whether Codex is free or limited, with the expiry time and its source
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
-  qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
-                           block until the first event among the items, print one EVENT line; exit 0 done, 4 bound (default 55 minutes), 5 failed, 6 queued past 15 minutes
+  qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
+                           block until the first event among the items, print one EVENT line; exit 0 done, 1 bad input, 4 bound (default 55 minutes), 5 failed, 6 queued past 15 minutes
   qc screens --map <json> --targets <left,right> --out <dir> [--only <names>] [--changed <target>]
                            capture authenticated screen pairs, compare pixels, and write a static gallery
   qc stack up|down|status [names...] [--timeout <milliseconds>]
                            run repository plugins from ~/.qc/stacks.json
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
+  qc review promotion <pr>  write the scoped promotion brief for the configured integration and release branches
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
   qc throwaway-db [--port <n>|auto] -- <command...>
@@ -56,6 +65,8 @@ const USAGE = `qc — architecture gates
                            refuse a dirty tree; delete it, then its branch once merged, pushed, or a merged PR head
   qc migrations renumber --onto <ref> [--branch <ref>]
                            move this branch's migrations after the last one of <ref>, and rewrite references
+  qc branch sync <worktree> [--base <ref>] [--no-push]
+                           merge the base, renumber migrations, regenerate, and push through a machine gate slot
   qc integrate --issue <n> [--type <t>] [--slug <s>] [--from <ref>] <branch>...
                            one <t>/<n>-<s> branch for a batch: merge, renumber, regenerate; stop on a conflict
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
@@ -69,6 +80,10 @@ async function main() {
   if (command === "user-config") {
     const { runUserConfig } = await import("./user-config.mjs");
     process.exit(await runUserConfig(rest));
+  }
+  if (command === "setup") {
+    const { runSetup } = await import("./setup.mjs");
+    process.exit(await runSetup(rest));
   }
   if (command === "stack") {
     const { runStack } = await import("./stack.mjs");
@@ -94,7 +109,22 @@ async function main() {
   // The runner reads no configuration, so it runs from any folder.
   if (command === "codex-implement") {
     const { runCodexImplement } = await import("./codex-implement.mjs");
-    process.exit(await runCodexImplement(rest));
+    process.exitCode = await runCodexImplement(rest);
+    return;
+  }
+  if (command === "codex-wait-reset") {
+    const { runCodexWaitReset } = await import("./codex-reset.mjs");
+    process.exitCode = await runCodexWaitReset(rest);
+    return;
+  }
+  if (command === "codex") {
+    if (rest[0] === "status") {
+      const { runCodexStatus } = await import("./codex-limit.mjs");
+      process.exitCode = runCodexStatus(rest.slice(1));
+      return;
+    }
+    console.log(USAGE);
+    process.exit(1);
   }
   // The slots are machine-wide, so the runner reads no configuration.
   if (command === "gate-slot") {
@@ -106,11 +136,25 @@ async function main() {
     const { runWatch } = await import("./watch.mjs");
     process.exit(await runWatch(rest));
   }
-  const config = load(process.cwd());
+  let config;
+  try {
+    config = load(process.cwd());
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    console.error(`qc: invalid qc.config.json: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
 
   switch (command) {
+    case "e2e": {
+      const { runE2e } = await import("./e2e-affected.mjs");
+      process.exitCode = await runE2e(config);
+      return;
+    }
     case "check": {
-      const { files, listed } = await checkFiles(rest);
+      const sincePush = rest.includes("--since-push");
+      const { files, listed } = await checkFiles(rest.filter((arg) => arg !== "--since-push"));
       // An empty list means nothing staged to check, not the full check.
       const { problems, lines } = listed && files.length === 0
         ? { problems: [], lines: [] }
@@ -125,7 +169,7 @@ async function main() {
       }
       for (const line of lines) console.log(line);
       const { runCheckCommands } = await import("./check-commands.mjs");
-      process.exitCode = await runCheckCommands(config);
+      process.exitCode = await runCheckCommands(config, { sincePush });
       return;
     }
     case "lint": {
@@ -175,9 +219,17 @@ async function main() {
       const { runLedger } = await import("./ledger.mjs");
       process.exit(runLedger(config, rest));
     }
+    case "budget": {
+      const { runBudget } = await import("./budget-report.mjs");
+      process.exit(runBudget(config, rest));
+    }
     case "plan-check": {
       const { runPlanCheck } = await import("./plan-check.mjs");
       process.exit(runPlanCheck(config, rest));
+    }
+    case "review": {
+      const { runReview } = await import("./review-promotion.mjs");
+      process.exit(runReview(config, rest));
     }
     case "tokens": {
       const { runTokens } = await import("./tokens.mjs");
@@ -203,6 +255,10 @@ async function main() {
     case "migrations": {
       const { runMigrations } = await import("./migrations.mjs");
       process.exit(runMigrations(config, rest));
+    }
+    case "branch": {
+      const { runBranch } = await import("./branch-sync.mjs");
+      process.exit(await runBranch(config, rest));
     }
     case "integrate": {
       const { runIntegrate } = await import("./integrate.mjs");

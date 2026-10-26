@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const GUARD = fileURLToPath(new URL("./budget-guard.mjs", import.meta.url));
 
 /** An adopted checkout with a budget, a linked worktree of it, a checkout with no config, and a temp folder for the counters. */
-function workspace(t, swarm = { toolCallBudget: 3 }) {
+function workspace(t, swarm = { toolCallBudget: 3 }, config = {}) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-budget-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
   const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe" });
@@ -19,7 +19,7 @@ function workspace(t, swarm = { toolCallBudget: 3 }) {
   const tmp = path.join(base, "tmp");
   for (const dir of [primary, plain, tmp]) mkdirSync(dir);
   git(primary, "init", "-q", "-b", "main");
-  writeFileSync(path.join(primary, "qc.config.json"), JSON.stringify({ swarm }));
+  writeFileSync(path.join(primary, "qc.config.json"), JSON.stringify({ swarm, ...config }));
   git(primary, "add", ".");
   git(primary, "-c", "user.name=qc", "-c", "user.email=qc@example.com", "commit", "-q", "-m", "init");
   git(primary, "worktree", "add", "-q", linked, "-b", "feat/work-order");
@@ -120,6 +120,173 @@ const signalCall = (ws, main, agentType = "architecture:sdd-implementer", tool_n
   transcript_path: main,
 });
 const noteOf = (output) => output?.hookSpecificOutput?.additionalContext ?? null;
+
+function mainCall(ws, tokens = 213_000) {
+  const transcript = path.join(ws.tmp, "main.jsonl");
+  const lines = [10_000, tokens].map((input_tokens) => ({
+    type: "assistant", message: { usage: { input_tokens } },
+  }));
+  writeFileSync(transcript, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+  return { ...callOf(ws.linked, null), transcript_path: transcript };
+}
+
+test("the orchestrator gets the compaction note on its 5th call and not on the 4th", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws);
+  for (let count = 1; count <= 4; count++) assert.equal(runGuard(ws, call), null);
+  const output = runGuard(ws, call).hookSpecificOutput;
+  assert.match(output.additionalContext, /Context budget: this session sends about 213K tokens per call, past budgets\.orchestrator\.compactAt \(200000\)\. Run \/compact/);
+  assert.equal(output.permissionDecision, undefined);
+  assert.equal(countOf(ws, "orchestrator"), 5);
+  assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 5);
+});
+
+test("the note repeats only after 20 more calls", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws);
+  for (let count = 1; count < 5; count++) runGuard(ws, call);
+  const first = runGuard(ws, call);
+  assert.match(noteOf(first), /Run \/compact/);
+  for (let count = 6; count < 25; count++) assert.equal(runGuard(ws, call), null);
+  assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 5);
+  assert.deepEqual(runGuard(ws, call), first);
+  assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 25);
+});
+
+test("a main session below compactAt gets nothing", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws, 199_999);
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, call), null);
+  assert.equal(countOf(ws, "orchestrator"), 5);
+});
+
+test("budgets.orchestrator null gets nothing", (t) => {
+  const ws = workspace(t, { dispatch: {} }, { budgets: { orchestrator: null } });
+  const call = mainCall(ws);
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, call), null);
+  assert.equal(existsSync(ws.counters), false);
+});
+
+test("with swarm.dispatch off the main session is not counted", (t) => {
+  const ws = workspace(t);
+  const call = mainCall(ws);
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, call), null);
+  assert.equal(existsSync(ws.counters), false);
+});
+
+test("a main call with no transcript_path gets nothing and throws nothing", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, callOf(ws.linked, null)), null);
+});
+
+test("main-session config and transcript errors leave the call alone", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws);
+  call.transcript_path = path.join(ws.tmp, "missing.jsonl");
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, call), null);
+  writeFileSync(path.join(ws.linked, "qc.config.json"), "{");
+  assert.equal(runGuard(ws, call), null);
+});
+
+test("an implementer at the remind line gets one note", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = signalCall(ws, transcripts(ws, "a1", [10_000, 110_000]));
+  assert.match(noteOf(runGuard(ws, call)), /Context budget: .*finish the current item/i);
+  assert.equal(runGuard(ws, call), null);
+  assert.equal(stateOf(ws, "a1").budgetReminded, true);
+  assert.equal(existsSync(ws.counters), false);
+});
+
+test("at handoffAt a non-hand-off call is denied and the hand-off still runs", (t) => {
+  const ws = workspace(t, { dispatch: {}, toolCallBudget: 100, context: { every: 1 } });
+  const main = transcripts(ws, "a1", [10_000, 160_000]);
+  const output = runGuard(ws, signalCall(ws, main)).hookSpecificOutput;
+  assert.equal(output.permissionDecision, "deny");
+  assert.match(output.permissionDecisionReason, /HANDOFF: <note path>/);
+  assert.equal(stateOf(ws, "a1").first, 10_000);
+  assert.equal(stateOf(ws, "a1").budgetClosed, true);
+  assert.equal(runGuard(ws, signalCall(ws, main, undefined, "Bash", { command: "git push" })), null);
+  const handback = runGuard(ws, signalCall(ws, main, undefined, "SubagentHandback", { message: "HANDOFF: note" }));
+  assert.match(handback.hookSpecificOutput.updatedInput.message, /CONTEXT:/);
+  assert.equal(noteOf(handback), null);
+  const lost = signalCall(ws, path.join(ws.tmp, "missing.jsonl"));
+  assert.equal(runGuard(ws, lost).hookSpecificOutput.permissionDecision, "deny");
+});
+
+test("a reviewer at its handoffAt is denied with the report text", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const main = transcripts(ws, "a1", [10_000, 120_000]);
+  const output = runGuard(ws, signalCall(ws, main, "architecture:sdd-reviewer")).hookSpecificOutput;
+  assert.equal(output.permissionDecision, "deny");
+  assert.match(output.permissionDecisionReason, /VERDICT:.*UNREVIEWED:/);
+  assert.doesNotMatch(output.permissionDecisionReason, /HANDOFF:/);
+});
+
+test("budgets.implementer null fires nothing", (t) => {
+  const ws = workspace(t, { dispatch: {} }, { budgets: { implementer: null } });
+  assert.equal(runGuard(ws, signalCall(ws, transcripts(ws, "a1", [10_000, 160_000]))), null);
+  assert.equal(existsSync(ws.counters), false);
+});
+
+test("with swarm.dispatch off no role budget fires", (t) => {
+  const ws = workspace(t, {});
+  assert.equal(runGuard(ws, signalCall(ws, transcripts(ws, "a1", [10_000, 160_000]))), null);
+});
+
+test("unused invalid budgets stay silent with dispatch off or an unrelated agent", (t) => {
+  for (const swarm of [{}, { dispatch: {} }]) {
+    const ws = workspace(t, swarm, { budgets: false });
+    const call = signalCall(ws, transcripts(ws, "a1", [10_000, 160_000]));
+    if (swarm.dispatch) call.agent_type = "general-purpose";
+    assert.equal(runGuard(ws, call), null);
+    assert.equal(existsSync(ws.counters), false);
+  }
+});
+
+test("swarm.toolCallBudget still denies when the context is small", (t) => {
+  const ws = workspace(t, { dispatch: {}, toolCallBudget: 2 });
+  const call = signalCall(ws, transcripts(ws, "a1", [10_000, 12_000]));
+  runGuard(ws, call);
+  assert.match(runGuard(ws, call).hookSpecificOutput.permissionDecisionReason, /call 2 of 2/);
+  assert.equal(countOf(ws, "a1"), 2);
+});
+
+test("an agent with no transcript gets no deny", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  assert.equal(runGuard(ws, signalCall(ws, path.join(ws.tmp, "missing.jsonl"))), null);
+  assert.equal(existsSync(ws.counters), false);
+});
+
+test("a bad budgets value gives one note and the tool-call budget still counts", (t) => {
+  const ws = workspace(t, { dispatch: {}, toolCallBudget: 3 }, { budgets: { implementer: { remindAt: 0 } } });
+  const call = signalCall(ws, transcripts(ws, "a1", [10_000, 160_000]));
+  assert.match(noteOf(runGuard(ws, call)), /^Context budget is off: budgets\.implementer\.remindAt/);
+  assert.equal(runGuard(ws, call), null);
+  assert.match(runGuard(ws, call).hookSpecificOutput.permissionDecisionReason, /call 3 of 3/);
+  assert.equal(countOf(ws, "a1"), 3);
+});
+
+test("the context signal and both budget reminders keep their notes and state", (t) => {
+  const ws = workspace(t, { dispatch: {}, toolCallBudget: 1, context: { every: 1 } });
+  const call = signalCall(ws, transcripts(ws, "a1", [10_000, 110_000]));
+  assert.equal(runGuard(ws, call).hookSpecificOutput.permissionDecision, "deny");
+  const combined = workspace(t, { dispatch: {}, toolCallBudget: 10, context: { every: 7 } });
+  const combinedCall = signalCall(combined, transcripts(combined, "a1", [10_000, 12_000]));
+  for (let index = 0; index < 6; index += 1) assert.equal(runGuard(combined, combinedCall), null);
+  transcripts(combined, "a1", [10_000, 110_000]);
+  const note = noteOf(runGuard(combined, combinedCall));
+  assert.match(note, /Tool-call budget: this is call 7 of 10/);
+  assert.match(note, /Context signal/);
+  assert.match(note, /\nContext budget:/);
+  assert.equal(stateOf(combined, "a1").first, 10_000);
+  assert.equal(stateOf(combined, "a1").budgetReminded, true);
+});
+
+test("a role reminder on a hand-back adds no note", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const main = transcripts(ws, "a1", [10_000, 110_000]);
+  assert.equal(runGuard(ws, signalCall(ws, main, undefined, "SubagentHandback", { message: "DONE" })), null);
+});
 
 test("a large implementer context gets the hand-off note once, and never a deny", (t) => {
   const ws = workspace(t, { toolCallBudget: 100, context: { every: 1 } });

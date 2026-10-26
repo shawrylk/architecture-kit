@@ -15,8 +15,10 @@ beside the check that enforces it — and every check ships a case that must fai
 | Package `architecture-harness` | `pnpm add -D` | gates, lint rules, the `qc` CLI, doc templates |
 
 The plugin's hooks call the package's CLI. Either half works alone: the package is an ordinary dev
-dependency. In a repository without a `qc.config.json`, the plugin's hooks do nothing, and each skill
-tells the agent that its rules do not apply.
+dependency. The plugin's hooks and kit skills apply only in repositories with a `qc.config.json`.
+The six global skills apply in every repository: `applying-engineering-standards`, `navigating-source-code`,
+`registering-work`, `reviewing-before-merge`, `writing-decision-final-specs`, and `writing-plain-english`.
+The `claude/CLAUDE.core.md` template names these global rules; `qc setup` copies it into your Claude rules.
 
 ## Install
 
@@ -99,7 +101,11 @@ to `featureRoots` when the root is missing there.
 npx qc check                 # every structural gate
 npx qc check <file>...       # the fast per-file path a post-edit hook takes
 npx qc check --files-from -  # the same path, with NUL-separated files on stdin; no length limit
+npx qc check --since-push
 ```
+
+`--since-push` runs `check.sincePush` (else `check.related`) with the files changed since the last push plus the staged files.
+It falls back to the merge base with `check.base` and prints a warning when the branch has no upstream.
 
 With files given, the check reads only the features that hold them, once each, and reports every
 problem before it exits 1. It also runs the per-file English rules on exactly those files.
@@ -119,6 +125,33 @@ An empty list checks nothing.
 Every gate reads one file list: `git ls-files --cached --others --exclude-standard`, minus
 `ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
 `qc decisions`. Outside a git work tree, the check walks the tree instead.
+
+### Run the affected e2e specs before a push
+
+Set `check.e2e` in `qc.config.json` to your repository's command for the affected end-to-end (e2e) specs:
+
+```json
+{
+  "check": {
+    "e2e": "node script/e2e-affected.mjs --project=chromium --project=firefox"
+  }
+}
+```
+
+`qc e2e` appends the committed and staged files changed against the merge base with `check.base` as arguments.
+Your repository's command picks the specs and names the browsers, for example both `--project=chromium` and `--project=firefox`.
+The kit ships no Playwright logic.
+
+Run the command on a throwaway database before a push:
+
+```bash
+npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e
+```
+
+The wrapper creates a database on a free port and removes it when the command exits.
+`qc e2e` runs only when asked; `qc check` and the pre-push hook never run it.
+The default `check.e2e: null` skips the command, and an empty file list also skips it.
+When the merge base is unavailable, the command runs without file arguments.
 
 ### Shared user configuration
 
@@ -165,6 +198,53 @@ The defaults use `os.homedir()`, `CLAUDE_CONFIG_DIR`, and `CODEX_HOME` on Window
 Use `--kit-dir`, `--claude-dir`, or `--codex-dir` to select another folder.
 The command reads only the settings files and the status line.
 It refuses `.claude.json`, `.credentials.json`, and `auth.json`, including symbolic links to those filenames.
+
+### Set up a new machine
+
+Run `npx qc setup` to prepare your user files.
+The command writes only user files and preserves unrelated settings.
+Run `qc user-config apply` separately to merge the shared settings and copy the status line.
+
+| Step | Change |
+| --- | --- |
+| Claude settings | Set `autoCompactEnabled` to `true` in `~/.claude/settings.json`. |
+| Claude budget | Set `modelSettings.<id>.autoCompactWindow` from `budgets.orchestrator.compactAt` for each selected model. |
+| Codex budget | Set `model_auto_compact_token_limit` in `~/.codex/config.toml` from `budgets.codex.compactAt`. |
+| Claude rules | Copy `claude/CLAUDE.core.md` from the kit's user configuration into the core markers in `~/.claude/CLAUDE.md`. |
+| Personal skills | Check only the six `GLOBAL_SKILLS`. Remove a folder only when its enabled plugin supplies identical text and the folder holds only `SKILL.md`. |
+
+The command preserves text outside the core markers.
+It uses `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when you set them.
+Each changed existing file gets a `<file>.bak-<yyyymmdd-hhmmss>` backup.
+The command sets mode `0600` after each write, including existing files, where the operating system supports file permissions.
+A rerun preserves matching files, keeps their modification times, and creates no backups.
+
+| Flag | Behavior |
+| --- | --- |
+| `--dry-run` | Print `Would change` lines and leave every file and skill folder untouched. |
+| `--config <file>` | Read budgets from this file. Warn on stderr and skip budgets when the file is absent. |
+| `--model <id>` | Select a Claude model for its compaction window. Repeat the flag to select more models. |
+
+```bash
+npx qc setup --dry-run
+npx qc setup --config ./qc.config.json --model claude-opus-5-5
+```
+
+The command validates budgets, settings, and core markers before it writes files.
+An absent default `./qc.config.json` skips budgets without a warning.
+Other personal skill folders stay outside the setup checks.
+Changed personal copies stay in place and appear as steps for you.
+Each `Change <file>: <key>` line names a change.
+The command prints `Setup matches.` when every file and skill folder matches.
+
+The log ends with `Steps for a person:` and one `  - <step>` line for each required action.
+These actions cover missing tools, GitHub authentication, Codex login, AWS SSO configuration, and personal skills that need attention.
+An orchestrator budget without `--model` adds a step to select the Claude model.
+The command checks Node, pnpm, the GitHub CLI, and Codex.
+It leaves authentication and tool installation to you.
+
+The command exits with `0` on success, including a dry run or pending steps for a person.
+It exits with `2` on a configuration or usage error.
 
 ### 5. Lint
 
@@ -362,9 +442,9 @@ The plugin ships four subagent types for `superpowers:subagent-driven-developmen
 | `architecture:sdd-implementer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
 | `architecture:sdd-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
 | `architecture:sdd-branch-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
-| `architecture:codex` | `haiku` | none | `Bash` | starts one `qc codex-implement` job in the background and waits on it in bounded steps, so the job shows in the agent panel |
+| `architecture:codex` | `haiku` | none | `Bash` | requires the description prefix `Codex <model> · `; starts one `qc codex-implement` job and waits in bounded steps |
 
-The watcher is not a role: it writes no code and reads no source. Dispatch it with `model: haiku` (or `sonnet`); the guard accepts both for `architecture:codex`. Its wait step polls the wrapper file with `until grep -q`, because `tail -f | grep -m1` holds the pipe open and makes every step last the full timeout.
+The watcher is not a role: it writes no code and reads no source. Dispatch it with `model: haiku` (or `sonnet`); the guard accepts both for `architecture:codex`. Its description starts with `Codex <model> · `, where `<model>` names the Codex model. Its wait step polls the wrapper file with `until grep -q`, because `tail -f | grep -m1` holds the pipe open and makes every step last the full timeout.
 
 Every role says `model: inherit` and `effort: high`, so a subagent runs on the model family of
 the session that dispatches it. The dispatch guard picks each role's models from the runtime:
@@ -497,46 +577,180 @@ names each variable the command reads, such as `{ "DATABASE_URL": "{url}" }`.
 files once when a run fails under load. It reads the Jest or Vitest JSON report the run wrote, and
 reruns nothing when the failure is no test failure or more than five files failed.
 
-#### Run an implementer on Codex
-
-`qc codex-implement` runs one brief through `codex exec` as an implementer. Claude stays the one
-controller, and the controller workflow does not change for it.
+#### Sync a branch with its base
 
 ```bash
-npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
+npx qc branch sync <worktree> [--base <ref>] [--no-push]
 ```
 
-The runner runs `codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> "<prompt>"`
-with `QC_ROLE=implementer` in the environment and stdin closed, and appends the output to the log
-(`<progress>.log` by default). It reads the brief file again before each run, so an edit reaches the
-next session. The prompt is the brief, a note to read `git log -n 5 --oneline`, `git status --short`, and the
-progress file and to continue from the first unfinished task, and the lean rules: a progress file of at
-most 40 lines, no re-verifying, only the needed line ranges, no skill or plugin file, read caps, no helper agents, no broad audit or full
-gate, one item per session, and a report under 15 lines. A lean rule never drops a security, tenant,
-data, or correctness check that the brief asks for. It spawns `codex` with no shell, so the binary must be
-a real executable on `PATH`. After each run it restarts a fresh session until the progress file holds
-`ALL TASKS DONE`. It never calls Claude.
+The command resolves the worktree path against the repository root and follows five steps:
+
+1. It checks for a clean tree, an attached and unprotected branch, and a completed merge.
+2. It fetches `origin` and merges the base, leaving source conflicts for you to resolve.
+3. It renumbers the branch's migrations after the base's last migration and rewrites references.
+4. It commits the merge, runs `generated.command`, and commits generated changes, with a gate slot for each heavy command.
+5. It pushes the branch through a gate slot with a Git argument vector; the branch name never enters a shell.
+
+`--base <ref>` overrides `worktree.base`, which defaults to `origin/main`.
+`--no-push` completes the sync and skips the push.
+A branch with no local commits ahead of its upstream skips generation and the push when it already contains the base.
+When the base is merged, a branch ahead of its upstream, or without one, runs the generator and pushes on a rerun.
+A source conflict leaves the merge in progress and skips the push.
+Resolve the conflict, renumber the migrations, commit, and rerun `qc branch sync` to finish generation and the push.
+The command resolves generated conflicts only when `generated.command` exists; otherwise, it stops and lists the files for you.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | The sync succeeds, or the branch already contains the base. |
+| `1` | The command refuses the sync, finds a source conflict, or encounters a failure. |
+| `2` | The arguments are invalid; the command prints its usage. |
+
+The command returns the gate slot's exit code when the push fails.
+
+#### Context budgets
+
+Three limits apply together. Each measures a different part of an agent's work.
+
+| Setting | Measure | Action |
+|---|---|---|
+| `swarm.toolCallBudget` | tool calls per subagent | reminds at 70%, then permits only the handoff at the limit; off by default |
+| `swarm.context` | latest request context divided by first request context | gives ratio reminders and handoff advice when enough calls remain |
+| `budgets` | context tokens per request, by role | reminds, compacts, or restricts work at the role's token limits |
+
+`budgets` in `qc.config.json` sets token limits for each role.
+`compactAt` triggers compaction, `remindAt` triggers a reminder, and `handoffAt` triggers a handoff.
+`toolOutputTokens` caps one Codex tool output.
+
+| Role | Default budget |
+|---|---|
+| `orchestrator` | `{ "compactAt": 200000 }` |
+| `implementer` | `{ "remindAt": 110000, "handoffAt": 150000 }` |
+| `reviewer` | `{ "remindAt": 80000, "handoffAt": 120000 }` |
+| `codex` | `{ "compactAt": null, "toolOutputTokens": 4000 }` |
+
+With `swarm.dispatch` on, the budget guard applies the orchestrator, implementer, and reviewer budgets.
+`qc codex-implement` reads `budgets.codex` for its launch overrides.
+Set a role to `null` to turn its budget off.
+Each number must be a positive whole number, and `remindAt` must be smaller than `handoffAt`.
+An unknown key inside a role is an error that names the key.
+A null `budgets.codex.compactAt` uses `codex.compactTokens`, whose default is `300000`.
+
+At `budgets.orchestrator.compactAt`, the orchestrator gets a note to run `/compact` at the next green step.
+The note asks it to keep the plan path, open pull request numbers, branches, heads, and ledger path in the summary.
+
+The implementer and both reviewer types get one reminder at their role's `remindAt`.
+At `handoffAt`, only calls that finish the handoff can run.
+The implementer writes a handoff note and reports its path on a `HANDOFF:` line.
+The reviewer puts the full review in its final report.
+If files remain, it opens with `VERDICT: CHANGES_REQUIRED <sha>` and adds an `UNREVIEWED:` line that lists them.
+The report gate refuses `APPROVED` when `UNREVIEWED:` lists files.
+The controller sends a fresh reviewer with `Scope:` for those files.
+The partial reviewer's scope needs a new `APPROVED` review on the head before merge.
+
+`qc budget report` reads the agent ledger and reports the median and 90th percentile of context at the end of each task.
+It also reports the share of tasks whose `peakContext` reaches `handoffAt`.
+Context counts input tokens, cache reads, and cache creation; it excludes output tokens.
+The report lists the implementer before the reviewer and omits roles whose budgets are `null`.
+The cost roles `reviewer` and `branch-reviewer` both count as `reviewer`.
+The latest cost record replaces older records from a resumed agent.
+The report skips and counts cost records without `endContext`.
+An invalid budget prints one error line and exits with code `1`.
+The orchestrator and Codex leave no cost record, so the report says so in one line.
+
+| Report result | Advice |
+|---|---|
+| More than 10% of tasks reach `handoffAt` | raise `handoffAt` |
+| Otherwise, the 90th percentile ends under half of `handoffAt` | lower `handoffAt` |
+| Neither condition holds | keep `handoffAt` |
+
+#### Run an implementer on Codex
+
+`qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.
+
+```bash
+npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]
+```
+
+The runner passes the prompt on stdin to this command, with `QC_ROLE=implementer` in the environment:
+
+```bash
+codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> -
+```
+
+The output appends to `--log`, which defaults to `<progress>.log`. The runner reads the brief again before each run.
+The prompt starts with a fixed preamble, then `codex.preamble` (default empty), the brief, a continuation note, and the lean rules.
+The note names `git log --oneline`, `git status --short`, and the progress file, and tells the session to continue its first unfinished task.
+The lean rules cap the progress file at 40 lines and the report at 14 lines.
+They require ranged reads, forbid helper agents and broad audits, and preserve every security, tenant, data, and correctness check in the brief.
+They permit `npx qc e2e` when `check.e2e` is set.
+The exit step runs `npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e` beside the database tests.
+The runner starts a fresh session after each unfinished run, within the run allowance. It never calls Claude.
+Completion means the last non-empty progress line equals `ALL TASKS DONE` after trimming whitespace.
+
+The runner validates the worktree's brief and Codex settings before launch:
+
+| Setting or requirement | Default or rule |
+|---|---|
+| `--max-runs` | `1`; a positive whole number, capped by `codex.maxRuns` (default `2`) |
+| `codex.briefMaxLines` | `40` non-blank lines in the brief |
+| `codex.briefMaxSteps` | `6` numbered steps under the task heading |
+| Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
+| Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, and `Exit criteria` |
 
 The overrides apply to the runner's `codex exec` call only, so your interactive Codex sessions keep their plugins and skills:
 
-- `-c plugins."<name>".enabled=false` for every plugin that `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) enables, read at launch, and for `superpowers@claude-plugins-official` by name. The lean rules tell the run to load no skill.
-- `-c model_auto_compact_token_limit=<n>` with `n` from `codex.compactTokens` in the worktree's `qc.config.json` (default `300000`). It is a backstop for a runaway item: each item runs in a fresh session and should finish under 200K.
-- `-c tool_output_token_limit=4000`, so one command output never carries more than 4,000 tokens.
+| Override | Source |
+|---|---|
+| `-c plugins."<name>".enabled=false` | enabled plugins in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), plus `codex.disablePlugins` (default `["superpowers@claude-plugins-official"]`) |
+| `-c model_auto_compact_token_limit=<n>` | `budgets.codex.compactAt`; null uses `codex.compactTokens` (default `300000`) |
+| `-c tool_output_token_limit=<n>` | `budgets.codex.toolOutputTokens` (default `4000`) |
+
+The lean rules tell the run to load no skill. A null `budgets.codex` omits both limit overrides.
+The runner validates only `budgets.codex`; a bad budget for another role leaves its launch unchanged.
+
+An unfinished run counts as limited only when its output contains a limit line that the prompt did not echo.
+A bare status `2` counts as a failed run and consumes the run allowance. The restart loop continues while runs remain.
+On a limit line, the runner writes `<os.tmpdir()>/architecture-kit/codex-<uid>/codex-limit.json`, including during `--wait-reset`.
+On POSIX, `<uid>` is the user ID; Windows uses the login name. The private folder has mode `0o700` on POSIX.
+Set a non-empty `QC_CODEX_LIMIT_FILE` to use another path.
+The JSON stores `until`, `source`, and `recordedAt`, with both times as ISO strings.
+The `codex` source parses relative days, hours, minutes, seconds, and milliseconds after the last `try again in`, regardless of case.
+It accepts `1.898s`, `500ms`, `6m0s`, and `1h2m3s`, and excludes numbers within identifiers or decimal fragments.
+It rounds a fractional duration up to the next whole second.
+The `default` source uses 60 minutes after the limit when the line gives no valid reset time.
+With `--wait-reset`, the runner refreshes the state at each poll.
+It uses the later of the reset estimate and the next poll plus 60 seconds.
+When the poll margin wins, the source is `wait`, and status prints `(reset wait bound)`.
+The state means Codex is limited now. The runner deletes it after a reset and after every run without a limit line.
+If deletion fails, the runner writes a note to stderr and keeps the run's exit code.
+`qc codex status` prints `Codex: free` for missing, invalid, or expired state.
+For an active limit, it prints the ISO expiry time and its source. The status command reads no configuration.
+
+Without `--wait-reset`, a limit ends the runner with exit `2`.
+With `--wait-reset`, it polls `https://codex-resets.com/api/v1/status` every 15 minutes without a model call.
+An announced reset after the limit clears the state before the same brief resumes. A limit retry keeps its run allowance.
+`--max-hours` defaults to `6`, accepts positive finite hours, and bounds all reset waits in the job together.
+At the bound, the runner keeps the later of the estimate and 60 minutes after that moment, then exits `2`.
+It keeps the estimate's source when the estimate wins; otherwise, it uses `default`.
+
+The standalone command waits for a reset without starting a model or changing the limit state:
+
+```bash
+npx qc codex-wait-reset --since <iso> [--max-hours <n>]
+```
+
+It uses the same polling interval and default bound. It exits `0` after a reset, or `1` at the bound or on invalid input.
 
 | Exit | Meaning |
 |---|---|
 | `0` | the progress file says `ALL TASKS DONE` |
-| `1` | a bad argument, a bad `codex.compactTokens`, or `codex` did not start |
-| `2` | the tail of a run matches `usage limit`, `spend cap`, `rate limit`, or `hit your limit`: dispatch the same brief to an `architecture:sdd-implementer` (sonnet) |
-| `3` | `--max-runs` (default 12) runs ended and the progress file is not done |
+| `1` | invalid arguments, Codex settings, `budgets.codex`, or brief; a file error; or `codex` did not start |
+| `2` | an output line reports `usage limit`, `spend cap`, `rate limit`, or `hit your limit`; the runner stops immediately or reaches its reset-wait bound |
+| `3` | `--max-runs` (default `1`) runs ended and the progress file is unfinished |
 
-With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the
-controller note: work inline, never use subagent-driven development, helper agents, task reviews, or
-fix-review rounds, and per task write the failing test, run only that test file, run typecheck and
-lint on what you touched, and commit at once. It runs no full local gate and no e2e, since CI runs
-them. When every task is pushed, it appends `ALL TASKS DONE` to the progress file. A session whose
-context gets large writes notes and ends its turn, and the runner starts a fresh one. Without
-`QC_ROLE=implementer`, every hook behaves as before.
+With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the controller note.
+The runner's prompt requires tests first, the touched tests, one local check, and the brief's commit and push rules.
+The session writes the done marker only after the exit criteria hold. A session that needs more context writes notes and ends its turn.
 
 #### Wait on CI with bounds
 
@@ -553,6 +767,14 @@ Its exit code says which:
 | 6 | A check stayed queued for 15 minutes, as on a runner that is offline |
 
 A new head starts the queued timers over. Run it as one background command for each head.
+
+With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
+The context watch speaks only to the main session, in every repository where `swarm.dispatch` is off.
+It starts at `budgets.orchestrator.compactAt` (default `200000`) and notes each threshold once, in steps of 50K tokens.
+Compaction below `compactAt` resets the thresholds.
+A null orchestrator budget turns the context watch off.
+The watch shows the user a line from 300K tokens when it reaches a threshold.
+With `swarm.dispatch` on, the budget guard owns the compaction reminder, and the context watch stays silent.
 
 A `TaskStop` frees the implementer slot of the agent it stopped, since that agent sends no
 `SubagentStop`. A session `startup` or `resume` frees every slot of the session. A subagent may not
@@ -631,6 +853,8 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 
 | Check | Hook | What it refuses |
 |---|---|---|
+| Runtime tag | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | a description without the expected `Codex <model> · ` or `Claude <model> · ` prefix; leading whitespace is allowed |
+| Codex route | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | a Codex dispatch while limited, or a Claude implementer while Codex is free without `Runtime: claude <reason>`; case is ignored, and whitespace after the colon is optional |
 | Review record | `PreToolUse` on `SubagentHandback`, and `SubagentStop` | a reviewer report whose first line is not `VERDICT: <APPROVED\|CHANGES_REQUIRED> <sha>`, a sha that git reports as unknown in the repository of the named worktree, and a task review APPROVED with no `RED-CHECKED:` line. The stop records the verdict, the full sha, and the branch at that sha. A git failure or a timeout passes with a note, and the stop records the sha as written, with no branch. A sha with no named worktree that the working directory's repository lacks passes with a note, and the stop records no verdict. When the hook finds no transcript for the agent, it judges against the repository of the working directory and adds a line that says so |
 | Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:`. A report with a `HANDOFF: <path>` line needs neither; it needs a note at that path with `Brief:`, `Worktree:`, `Branch:`, and `Head:` lines and non-empty `## Done`, `## Left`, and `## Next step` sections. The stop records the note's path |
 | Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review. An implementer whose prompt has the `HANDOFF: <path>` line of the newest implementer stop on the branch continues that task and passes; the next implementer after it needs a review, and a review of the later head covers both stops. A stop head whose check runs on GitHub include a failed, cancelled, timed-out, or action-required run, or a run that has not completed, needs no review first: the next implementer continues the task and passes, and the ledger records the sha and the reason in the dispatch record. A head with all runs green, with no runs, or with no readable answer from `gh` keeps the refusal, which says the review runs once CI on the head is green |
@@ -641,7 +865,7 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
 | One branch review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an `sdd-branch-reviewer` dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch, or one whose sha no branch verdict on that branch names. Write the last head a branch review named, so the review reads only the increment. Key `oneBranchReview` |
 | Code-review skill | `PreToolUse` on `Skill`, `skill-guard.mjs` | a model call to a skill that `codeReviewSkills` names, bare or after a `plugin:` prefix. Dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review`, which never reaches this hook |
-| Green head | `PreToolUse` on `Agent` | a reviewer dispatch, task or branch kind, while CI on the head is red or running. A head with no check runs passes with a note, and so does a `gh` failure. Wait for green, or fix the head. Key `requireGreen` |
+| Green head | `PreToolUse` on `Agent` | a reviewer dispatch, task or branch kind, while CI on the head is red or running, by default. With `requireGreen: "not-red"`, unfinished checks pass with a note that names the check. A head with no check runs passes with a note, and so does a `gh` failure. Key `requireGreen` |
 | Current head | the same | a reviewer dispatch when the head lacks the tip of `worktree.base`. Merge the base into the branch first: Step 0 of a fix round. Key `requireBase` |
 | Product decisions | the same | an implementer dispatch with no `Brief: <path>` line, or one whose file is missing or unreadable, and a brief whose `## Product decisions` heading is absent or has no text under it. Ask the user in one question, then write the rulings, or the word `none`. Key `productDecisions` |
 | Round size | the same | nothing: it warns on an implementer brief with more numbered findings (lines that start `1. `) than `roundFindings`, or more distinct file paths than `roundFiles`. Split the round in parallel on disjoint paths, with sub-branches in separate worktrees. `0` turns a limit off |
@@ -654,12 +878,14 @@ The `swarm.review` keys that these rows name:
 |---|---|---|
 | `oneBranchReview` | `true` | refuse a branch review with no `Reviewed: <sha>` line once a branch verdict exists |
 | `codeReviewSkills` | `["code-review"]` | skill names the model may not call; `[]` turns the check off |
-| `requireGreen` | `true` | refuse a reviewer dispatch while CI on the head is red or running |
+| `requireGreen` | `true` | `true` waits for green CI on the head. `false` skips the CI check. `"not-red"` refuses red CI and allows unfinished checks. |
 | `requireBase` | `true` | refuse a reviewer dispatch when the head lacks the tip of `worktree.base` |
 | `productDecisions` | `true` | refuse an implementer brief with no `## Product decisions` heading |
 | `roundFindings` | `8` | warn on a brief with more numbered findings; `0` turns it off |
 | `roundFiles` | `10` | warn on a brief that names more distinct file paths; `0` turns it off |
 
+With `requireGreen: "not-red"`, a failed, cancelled, timed-out, or action-required check refuses the review.
+A queued or running check allows the review with a note that names the check.
 
 The hooks read these markers:
 
@@ -696,13 +922,60 @@ The keys go under `swarm.review`. A list replaces its default, and `reviewerType
 
 #### A fix on a red head, and reviews in parallel
 
-A CI fix or a review fix may start on a red or unreviewed head. Its implementer prompt carries a
-line `Fix: ci` or `Fix: review`, and the ledger records the purpose. A `Fix: ci` on a head whose CI
-is green is refused, since that head waits for a review.
+An implementer prompt marks its purpose with `Fix: ci` or `Fix: review`, and the ledger records it.
+A CI fix requires known-red CI. A review fix requires a review of every implementer stop.
+The newest stop needs no review if the prompt continues its `HANDOFF:`.
 
-Several branch reviewers may review one head at once, each with its own prompt line
-`Scope: <name>`. The one-review rule then counts each scope on its own, and the merge guard waits
-until the newest review of every scope on the head approves.
+Several branch reviewers can review one head at once, each with its own prompt line `Scope: <name>`.
+The one-review rule counts each scope on its own.
+With `swarm.review.merge: "branch"`, the merge guard requires the newest review of every scope on the head to approve.
+
+#### The promotion review
+
+`qc review promotion <pr>` writes a scoped brief for a PR from the integration branch to the release branch.
+The PR head and base must belong to the same repository; fork PRs follow the usual review policy.
+Enable `swarm.dispatch`, then set `swarm.review.promotion` in `qc.config.json`:
+
+```json
+{
+  "swarm": {
+    "dispatch": {},
+    "review": {
+      "promotion": { "integration": "dev", "release": "main" }
+    }
+  }
+}
+```
+
+The key defaults to `null`, which turns the promotion policy off.
+The optional `surfaces` list replaces the default globs: `infra/**`, `**/migrations/**`, and `.github/workflows/**`.
+The command selects changed files that match those globs and writes `<git common dir>/qc/promotion/pr-<n>.md`.
+The brief shows up to 200 paths and counts the remaining paths.
+The first review lists files with `gh api --paginate repos/{owner}/{repo}/pulls/<pr>/files --jq '.[].filename'`.
+The paginated request has a timeout of 120 seconds.
+The command compares the returned count with the PR's `changedFiles` count.
+If the counts differ or the list reaches 3,000 files, the command prints both counts and exits 1.
+It writes no brief.
+For a repeated promotion, the command finds the newest branch verdict with `Scope: promotion` on the integration branch.
+It adds `Reviewed: <sha>` to the brief and the dispatch, and lists files changed since that commit.
+The brief states the previous verdict.
+After `CHANGES_REQUIRED`, the dispatch tells the controller to add `Previous review: <path>` to the reviewer prompt, naming the earlier review file.
+The brief tells the reviewer to check each finding in that file and confirm its resolution, not only the increment.
+Keep that line in the reviewer prompt so the gate accepts the review round.
+The increment uses `git diff --name-only <reviewed>..<head> --`; fetch both commits into the checkout before you run the command.
+Its four checks cover infrastructure, migrations, workflows, and secrets in logs.
+
+The output gives the controller a dispatch for `architecture:sdd-branch-reviewer` with model `opus`.
+Use its `Brief:`, `Scope: promotion`, and `Worktree:` prompt lines.
+Replace the worktree placeholder with a checkout on the integration branch at the PR head.
+The review remains a branch review with `Scope: promotion`.
+The report starts with `VERDICT: APPROVED <sha>` or `VERDICT: CHANGES_REQUIRED <sha>`.
+
+With `swarm.review.merge: "branch"`, the merge guard accepts the scoped APPROVED verdict for the configured integration-to-release PR at that head.
+With `swarm.review.merge: "task"`, the guard ignores the promotion approval and requires an APPROVED task verdict on the integration head.
+The promotion PR stays outside the direct lane in both modes.
+Merge with `gh pr merge <pr> --match-head-commit <sha>` after approval.
+A PR outside the configured branch pair follows the usual review policy.
 
 #### The direct lane for a small fix
 
@@ -773,7 +1046,7 @@ Known limits:
 |---|---|
 | Error | `no-cross-feature-internals`, `storage-only-in-resource`, `external-service-only-in-adapter`, `scoped-repository`, `tenant-scoped-table`, `no-raw-fetch`, `no-orchestration-in-trigger`, `no-sql-raw`, `registry-literal`, `durable-idempotency-key` |
 | Warning | `no-comment-paragraph`, `no-number-in-comment`, `no-supersession-trail`: each judges the style of a comment |
-| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `name-the-pattern` |
+| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `one-component-per-file`, `raw-element-in-primitive`, `no-arbitrary-class-value`, `no-literal-color`, `no-static-inline-style`, `name-the-pattern` |
 
 An `eslint-disable` comment silences its rule, and a disable comment that silences nothing is an
 error. `qc lint` judges only the changed lines, so a new disable comment is part of the change a
@@ -956,6 +1229,64 @@ With `ime.guards` set, only a call to one of them counts, and an inline `isCompo
 `keyCode === 229` check is reported as a second mechanism. With no guard set, either inline check
 counts.
 
+### Keep components separate and raw controls in primitives
+
+`qc/one-component-per-file` permits at most one React component declaration in each `.tsx` file.
+It counts capitalized functions and arrows that return JSX, plus components declared with `forwardRef` or `memo`.
+Wrapping a component from the same file with `forwardRef` or `memo` keeps one component.
+When a file holds multiple components, the rule reports each declaration so changed lines include each new component.
+Each finding names both components, including declarations inside another component.
+
+`qc/raw-element-in-primitive` permits raw `form`, `dialog`, `input`, `select`, `textarea`, and `button` elements only under `ui.layers.primitive`.
+Use primitive components elsewhere. The `elements` rule option replaces the element list.
+The preset passes `ui.layers.primitive` as the `primitive` rule option, which accepts one folder or an array of folders.
+
+`qc/no-arbitrary-class-value` refuses Tailwind arbitrary values, including `text-[11px]` and `md:hover:bg-[#123456]`.
+`qc/no-literal-color` refuses hex, `rgb()`, `rgba()`, `hsl()`, and `hsla()` literals in JSX presentation attributes, class strings, and style objects.
+Presentation attributes include `color`, `fill`, `stroke`, and `stopColor`.
+Text attributes such as `label`, `title`, and `value` pass. Theme token objects pass outside a JSX `style` object or its constant bindings.
+Both read class strings through the shared UI parser, including `className`, `class`, `ui.classCallees`, and `cva` variants.
+The preset passes `ui.classCallees` as the `classCallees` rule option. Use theme tokens and CSS variables for presentation values.
+
+`qc/no-static-inline-style` rejects a JSX `style` object whose values are all literals, such as `style={{ display: "flex", width: 12 }}`.
+Move those values to classes or theme tokens.
+A runtime value, such as `style={{ width: size }}`, permits the object, including mixed literal and runtime values.
+Spreads and runtime property names also pass. Empty objects pass because they hold no presentation values.
+
+These rules ship off. Enable them under `rules` in `qc.config.json`; the preset applies them to `clientFiles`.
+
+```json
+{ "rules": { "one-component-per-file": true, "raw-element-in-primitive": true, "no-arbitrary-class-value": true, "no-literal-color": true, "no-static-inline-style": true } }
+```
+
+### Adopt the UI rules with a baseline that only shrinks
+
+The five UI rules share ESLint's bulk suppressions mechanism:
+
+- `qc/one-component-per-file`
+- `qc/raw-element-in-primitive`
+- `qc/no-arbitrary-class-value`
+- `qc/no-literal-color`
+- `qc/no-static-inline-style`
+
+Use ESLint 9.24 or later; the kit uses ESLint 9.39.
+For an existing frontend, `eslint --suppress-rule <rule>` writes `eslint-suppressions.json` for the selected rule.
+Create the initial baseline for all five rules, then commit the file:
+
+```sh
+npx eslint frontend/src --suppress-rule qc/one-component-per-file --suppress-rule qc/raw-element-in-primitive --suppress-rule qc/no-arbitrary-class-value --suppress-rule qc/no-literal-color --suppress-rule qc/no-static-inline-style
+```
+
+After adoption, run `npx qc lint`. It reads `eslint-suppressions.json` and applies each count per file and rule before filtering changed lines.
+Findings beyond the recorded count remain subject to the changed-line check.
+With no named files, an entry with fewer findings than its count fails as stale, including untouched or deleted lintable files.
+Named-file runs skip the stale check. The gate skips baseline entries for unsupported or ignored files.
+With `--staged`, the gate reads source files and the baseline from the index.
+You can also run `npx eslint frontend/src` without suppression-generation flags to check the whole frontend.
+Run `npx eslint frontend/src --prune-suppressions` to remove stale entries, then commit the smaller file.
+Keep the default unused-suppression check enabled. Accept only baseline changes that remove entries or reduce counts.
+Use `eslint-suppressions.json` as the baseline for existing findings, beside the filter for changed lines; it may only shrink after adoption.
+
 ### Show the pending state on a write control
 
 `qc/mutation-control-pending` reads `onClick`, `onSelect`, and `onConfirm`. A handler that calls
@@ -1071,10 +1402,50 @@ migrations that this branch added to follow the last migration of `<ref>`, in or
 each reference to an old name. A second run changes nothing.
 
 `qc integrate --issue <n> <branch>...` builds one branch, `feat/<n>-integration`, for a batch of
-related branches. It merges each branch in order, renumbers its migrations, and commits. A conflict
-in files that `generated.globs` matches is settled by `generated.command`. Any other conflict stops
-the run with the file list; resolve it, commit, and run the same command again. The batch then runs
-one CI and merges once.
+related branches. It merges each branch in order and renumbers its migrations. It regenerates files
+before each push, pushes after every three merges by default, and pushes any remainder at the end.
+Add `--pr` to open one draft pull request after the first push; an existing pull request stays open.
+The pull request base strips the remote prefix from a branch ref, such as `origin/main` or `upstream/main`.
+With `--from <sha>`, it uses `integrate.base`, or `main` when that setting is absent.
+The base must name a branch; an invalid base stops the command before any GitHub call.
+Use `--type` and `--slug` to change the integration branch name.
+A custom slug outside `integrate.branchPattern` skips the integration lane and needs the usual head review.
+
+Each branch must belong to the developer whose email matches the effective Git author email.
+Git reports this email through `git var GIT_AUTHOR_IDENT`, which honors `GIT_AUTHOR_EMAIL`.
+The command checks every author email in `<base>..<branch>` before it merges that branch.
+It refuses a branch with other authors and lists their emails and the branch name.
+It keeps branches that it merged before that refusal.
+
+| Key | Default | Behavior |
+|---|---|---|
+| `integrate.ciEvery` | `3` | Push after this many merges, then push any remainder. |
+| `integrate.push` | `true` | Push to `origin` when that remote exists; `false` keeps the batch local. |
+| `integrate.branchPattern` | `^[a-z]+/[0-9]+-integration$` | Select the branches that use the integration lane. |
+| `integrate.review` | `true` | Enable the integration lane for the merge guard. |
+| `integrate.base` | Unset; `main` | Set the PR base branch for `--pr --from <sha>`; use a non-empty string. |
+
+The CI template runs on pull requests and pushes to `main` or `master`.
+Edit the trunk list for another base branch. A task branch push with no pull request runs no CI.
+Each push to an open integration pull request starts CI and cancels its stale run.
+
+The integration lane accepts per-feature `Scope:` reviews on the integration head.
+Each reviewer needs green CI on the head.
+Every scope dispatched on the head branch needs an `APPROVED` verdict of the merge guard's review kind.
+The newest verdict for each scope in the integration history decides; a missing verdict or a newer `CHANGES_REQUIRED` blocks the lane.
+Short verdict SHAs match their full commit SHAs.
+Every commit needs coverage from an approved review, except regenerate commits that touch only generated files and clean merges.
+A regenerate commit needs the exact title `chore: regenerate the generated files`.
+Every file it changes must match `generated.globs` from the base configuration.
+A hand-resolved merge needs a review after that merge; give its conflict resolution a separate scope.
+A conflict in files that `generated.globs` matches uses `generated.command`.
+Any other conflict stops the run with the file list.
+Resolve it, commit, and run the same command again.
+
+The batch reduces CI runs and repeated reviews after the base changes.
+One failure blocks the batch, and tracing it to one task takes more work.
+One large pull request also takes more effort to read.
+Per-feature reviews keep each review small; frequent CI limits the work between checks.
 
 ### Mirror the tests of more than one root
 
@@ -1135,6 +1506,49 @@ a pattern of `productPackages` counts anywhere. A test that imports none fails a
 
 ```json
 { "gates": { "integration-imports": true }, "integrationImports": { "productPackages": ["^@app/(?:domain|contracts)(?:/|$)"] } }
+```
+
+### Keep an unwired control behind a feature switch
+
+Use one `features/<feature>/feature-switches.ts` file per feature. Export one object whose keys hold boolean values:
+
+```ts
+export const featureSwitches = {
+  SHOW_DELETE: false,
+  EXPORT_WIRED: false,
+};
+```
+
+Keep an unwired control in JSX behind its key, so the control keeps an importer and the dead-code gate stays green:
+
+```tsx
+import { featureSwitches } from "./feature-switches";
+import { DeleteButton } from "./delete-button";
+
+export function View() {
+  return <>{featureSwitches.SHOW_DELETE && <DeleteButton />}</>;
+}
+```
+
+The `feature-switches` gate ships off. Set `gates["feature-switches"]` to `true` to check source files in each folder under `featureRoots`.
+The gate skips `*.test.*` and `*.spec.*` files, dependencies, and build output.
+A matching `const`, `let`, or `var` declaration outside the feature's root switch file fails as `unwire-constant-outside-switch-file`.
+Nested files with the switch filename receive the same check as other source files.
+The gate prints one summary across all feature folders.
+
+`featureSwitches.file` sets the switch filename. `featureSwitches.patterns` lists regular expressions for declaration names.
+`load()` requires a filename without folders and an array of valid regular expressions.
+For any config validation error, `qc` prints `qc: invalid qc.config.json: <message>` and exits 1.
+The defaults match names containing `UNWIRED`, starting with `SHOW_`, or ending with `_WIRED`.
+
+```json
+{
+  "gates": { "feature-switches": true },
+  "featureSwitches": {
+    "file": "feature-switches.ts",
+    "patterns": ["UNWIRED", "^SHOW_", "_WIRED$"]
+  }
+}
 ```
 
 ### Give every key of a closed set a writer

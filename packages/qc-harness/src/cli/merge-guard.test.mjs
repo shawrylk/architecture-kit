@@ -31,7 +31,8 @@ function workspace(t) {
   execFileSync("git", ["remote", "add", "origin", "git@github.com-personal:o/r.git"], { cwd: on, stdio: "pipe" });
   const task = make("task", { swarm: { dispatch: {}, review: { merge: "task" } } });
   const off = make("off", { swarm: {} });
-  return { on, task, off, ledgerOf: (dir) => path.join(dir, ".git", "qc", "ledger.jsonl") };
+  const promo = make("promo", { swarm: { dispatch: {}, review: { promotion: { integration: "dev", release: "main" } } } });
+  return { on, task, off, promo, ledgerOf: (dir) => path.join(dir, ".git", "qc", "ledger.jsonl") };
 }
 
 const shell = (cwd, command, hook_event_name = "PreToolUse", tool_name = "Bash") => ({
@@ -139,7 +140,7 @@ test("an API merge reads the endpoint PR's base and settings before enforcing di
   const { gh, calls } = fakeGh(prView(base));
   const command = "GH_CONFIG_DIR=account gh api --hostname ghe.example.com -X PUT repos/other/project/pulls/23/merge";
   assert.equal(decide(shell(dir, command), { gh }), null);
-  assert.deepEqual(calls[0].args, ["pr", "view", "23", "-R", "other/project", "--json", "baseRefName,baseRefOid"]);
+  assert.deepEqual(calls[0].args, ["pr", "view", "23", "-R", "other/project", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"]);
   assert.deepEqual(calls[0].options.env, { GH_CONFIG_DIR: "account", GH_HOST: "ghe.example.com" });
 });
 
@@ -159,7 +160,7 @@ test("a placeholder REST merge reads its PR base with the inline or current repo
   for (const [prefix, repo] of [["", null], ["GH_REPO=other/project ", "other/project"]]) {
     const { gh, calls } = fakeGh(prView(base));
     assert.equal(decide(shell(dir, `${prefix}gh api -X PUT repos/{owner}/{repo}/pulls/5/merge`), { gh }), null);
-    assert.deepEqual(calls[0].args, ["pr", "view", "5", ...(repo ? ["-R", repo] : []), "--json", "baseRefName,baseRefOid"]);
+    assert.deepEqual(calls[0].args, ["pr", "view", "5", ...(repo ? ["-R", repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"]);
     assert.deepEqual(calls[0].options.env, {});
   }
   gitIn(dir, "add", ".");
@@ -232,7 +233,7 @@ test("a REST endpoint with a fragment reads the PR base policy", (t) => {
     const { gh, calls } = fakeGh(prView(base));
     assert.equal(decide(shell(dir, "gh api 'repos/o/r/pulls/1/merge#x' -X PUT", "PreToolUse", tool), { gh }), null);
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].args, ["pr", "view", "1", "-R", "o/r", "--json", "baseRefName,baseRefOid"]);
+    assert.deepEqual(calls[0].args, ["pr", "view", "1", "-R", "o/r", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"]);
   }
 });
 
@@ -545,14 +546,175 @@ function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true } = 
 }
 
 /** What `gh pr view --json baseRefName,baseRefOid` answers for a PR into `main` whose base commit is `oid`. */
-const prView = (oid, name = "main") => JSON.stringify({ baseRefName: name, baseRefOid: oid });
+const prView = (oid, name = "main", head) => JSON.stringify({ baseRefName: name, baseRefOid: oid, headRefName: head, isCrossRepository: false });
+
+test("a promotion PR needs its scoped promotion approval", (t) => {
+  const ws = workspace(t);
+  const command = shell(ws.promo, `gh pr merge 7 --match-head-commit ${SHA}`);
+  const { gh, calls } = fakeGh(prView(bases.get(ws.promo), "main", "dev"));
+  assert.match(denied(decide(command, { gh })) ?? "", /qc review promotion 7/);
+  assert.equal(calls[0].args.at(-1), "baseRefName,baseRefOid,headRefName,number,isCrossRepository");
+  appendRecord(ws.ledgerOf(ws.promo), { ...verdict("branch", "APPROVED"), scope: "ui" });
+  assert.match(denied(decide(command, { gh })) ?? "", /qc review promotion 7/);
+  appendRecord(ws.ledgerOf(ws.promo), { ...verdict("branch", "APPROVED"), scope: "promotion" });
+  assert.equal(decide(command, { gh }), null);
+});
+
+test("the promotion refusal names the resolved PR number for a branch, URL, or current PR", (t) => {
+  const ws = workspace(t);
+  const { gh } = fakeGh(JSON.stringify({ baseRefName: "main", baseRefOid: bases.get(ws.promo), headRefName: "dev", number: 7, isCrossRepository: false }));
+  for (const selector of ["dev", "https://github.com/o/r/pull/7", ""]) {
+    const reason = denied(decide(shell(ws.promo, `gh pr merge ${selector} --match-head-commit ${SHA}`), { gh })) ?? "";
+    assert.match(reason, /qc review promotion 7`/);
+  }
+});
+
+test("a promotion refusal uses a placeholder for an unresolved nonnumeric selector", () => {
+  for (const selector of ["dev", "https://github.com/o/r/pull/7"]) {
+    assert.match(mergeVerdict([{ sha: SHA, selector }], [], "branch", null, "promotion").refusal ?? "", /qc review promotion <pr>/);
+  }
+});
+
+test("a fork or unconfirmed head repository keeps the usual review policy", (t) => {
+  const ws = workspace(t);
+  appendRecord(ws.ledgerOf(ws.promo), { ...verdict("branch", "APPROVED"), scope: "ui" });
+  for (const isCrossRepository of [true, undefined, null]) {
+    const { gh } = fakeGh(JSON.stringify({ number: 7, baseRefName: "main", baseRefOid: bases.get(ws.promo), headRefName: "dev", isCrossRepository }));
+    assert.equal(decide(shell(ws.promo, `gh pr merge 7 --match-head-commit ${SHA}`), { gh }), null);
+  }
+});
+
+for (const [checkout, head] of [["promo", "feat/x"], ["on", "dev"], ["promo", undefined]]) {
+  test(`the ${checkout} checkout keeps the old review rules with head ${head}`, (t) => {
+    const ws = workspace(t);
+    const cwd = ws[checkout];
+    const { gh } = fakeGh(prView(bases.get(cwd), "main", head));
+    const command = shell(cwd, `gh pr merge 7 --match-head-commit ${SHA}`);
+    assert.match(denied(decide(command, { gh })) ?? "", /no APPROVED branch review/);
+    appendRecord(ws.ledgerOf(cwd), { ...verdict("branch", "APPROVED"), scope: "ui" });
+    assert.equal(decide(command, { gh }), null);
+  });
+}
+
+test("promotion PR matching removes origin prefixes", (t) => {
+  const ws = workspace(t);
+  const { gh } = fakeGh(prView(bases.get(ws.promo), "origin/main", "origin/dev"));
+  appendRecord(ws.ledgerOf(ws.promo), { ...verdict("branch", "APPROVED"), scope: "ui" });
+  assert.match(denied(decide(shell(ws.promo, `gh pr merge 7 --match-head-commit ${SHA}`), { gh })) ?? "", /qc review promotion 7/);
+});
+
+test("a promotion merge refuses an approval of another scope", () => {
+  const records = [{ ...verdict("branch", "APPROVED"), scope: "ui" }];
+  const reason = mergeVerdict([{ sha: SHA, selector: "7" }], records, "branch", null, "promotion").refusal;
+  assert.match(reason ?? "", /scope "promotion"/);
+  assert.match(reason ?? "", /qc review promotion 7/);
+});
+
+test("a promotion approval keeps another scope's request for changes", () => {
+  const records = [
+    { ...verdict("branch", "CHANGES_REQUIRED"), scope: "ui" },
+    { ...verdict("branch", "APPROVED"), scope: "promotion" },
+  ];
+  assert.match(mergeVerdict([{ sha: SHA, selector: "7" }], records, "branch", null, "promotion").refusal ?? "", /CHANGES_REQUIRED/);
+});
+
+test("a promotion approval permits its merge", () => {
+  const records = [{ ...verdict("branch", "APPROVED"), scope: "promotion" }];
+  assert.equal(mergeVerdict([{ sha: SHA, selector: "7" }], records, "branch", null, "promotion").refusal, null);
+});
+
+test("a merge without a promotion requirement accepts another scope's approval", () => {
+  const records = [{ ...verdict("branch", "APPROVED"), scope: "ui" }];
+  assert.equal(mergeVerdict([{ sha: SHA, selector: "7" }], records, "branch", null, null).refusal, null);
+});
+
+test("a promotion merge skips the direct lane and names a missing PR selector", () => {
+  const lane = () => assert.fail("a promotion merge must skip the direct lane");
+  assert.match(mergeVerdict([{ sha: SHA }], [], "branch", lane, "promotion").refusal ?? "", /qc review promotion <pr>/);
+});
+
+test("a promotion approval cannot bypass a dispatched scope", () => {
+  const records = [
+    { type: "dispatch", task: false, agentType: "sdd-branch-reviewer", branch: "feat/62-x", head: SHA, scope: "ui" },
+    { ...verdict("branch", "APPROVED"), scope: "promotion" },
+  ];
+  assert.match(mergeVerdict([{ sha: SHA }], records, "branch", null, "promotion").refusal ?? "", /scope "ui"/);
+});
+
+const prViewWithHead = (oid, head) => JSON.stringify({ ...JSON.parse(prView(oid)), headRefName: head });
+
+function integrationMergeRepo(t, { integrate, kind = "branch", unreviewed = false } = {}) {
+  const repo = laneRepo(t, { swarm: { dispatch: {}, direct: false }, ...(integrate ? { integrate } : {}) });
+  const { dir, base, ledger } = repo;
+  const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
+  git("branch", "-m", "task/7-a");
+  git("switch", "-q", "-c", "feat/7-integration", base);
+  git("merge", "--no-ff", "-m", "merge a", "task/7-a");
+  appendRecord(ledger, { ...verdict(kind, "APPROVED", repo.head), scope: "a" });
+  git("switch", "-q", "-c", "task/7-b", base);
+  writeFileSync(path.join(dir, "b.ts"), "feature b\n");
+  git("add", "b.ts");
+  git("commit", "-q", "-m", "add b");
+  const taskHead = git("rev-parse", "HEAD");
+  if (!unreviewed) appendRecord(ledger, { ...verdict(kind, "APPROVED", taskHead), scope: "b" });
+  git("switch", "-q", "feat/7-integration");
+  git("merge", "--no-ff", "-m", "merge b", "task/7-b");
+  return { ...repo, head: git("rev-parse", "HEAD") };
+}
+
+test("the integration lane accepts scoped branch reviews of both task heads with the direct lane off", (t) => {
+  const { dir, head, base } = integrationMergeRepo(t);
+  const gh = fakeGh(prViewWithHead(base, "feat/7-integration")).gh;
+  const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh });
+  assert.equal(denied(output), null);
+  assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /integration lane of feat\/7-integration, with 2 reviewed heads/);
+});
+
+test("the integration lane refuses a task commit without an APPROVED review", (t) => {
+  const { dir, head, base } = integrationMergeRepo(t, { unreviewed: true });
+  const gh = fakeGh(prViewWithHead(base, "feat/7-integration")).gh;
+  const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh })) ?? "";
+  assert.match(reason, /integration lane .*does not apply: .*hold no APPROVED review/);
+});
+
+test("the integration lane ignores a PR head outside the integration branch pattern", (t) => {
+  const { dir, head, base } = integrationMergeRepo(t);
+  const gh = fakeGh(prViewWithHead(base, "feat/8-other")).gh;
+  const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh })) ?? "";
+  assert.match(reason, /no APPROVED branch review/);
+  assert.doesNotMatch(reason, /integration lane/);
+});
+
+test("the integration lane stays off when the base disables integrate.review", (t) => {
+  const { dir, head, base } = integrationMergeRepo(t, { integrate: { review: false } });
+  const gh = fakeGh(prViewWithHead(base, "feat/7-integration")).gh;
+  const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh })) ?? "";
+  assert.match(reason, /no APPROVED branch review/);
+  assert.doesNotMatch(reason, /integration lane/);
+});
+
+test("the integration lane needs the PR head from gh", (t) => {
+  const { dir, head, base } = integrationMergeRepo(t);
+  const gh = fakeGh(prView(base)).gh;
+  const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh })) ?? "";
+  assert.match(reason, /no APPROVED branch review/);
+  assert.doesNotMatch(reason, /integration lane/);
+});
+
+test("the integration lane counts only the merge guard's review kind", (t) => {
+  const { dir, head, base } = integrationMergeRepo(t, { kind: "task" });
+  const gh = fakeGh(prViewWithHead(base, "feat/7-integration")).gh;
+  const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh })) ?? "";
+  assert.match(reason, /no APPROVED branch review/);
+  assert.match(reason, /integration lane .*does not apply/);
+});
 
 test("a small head with no review merges through the direct lane, with a note", (t) => {
   const { dir, head, base } = laneRepo(t);
-  const { gh, calls } = fakeGh(prView(base));
+  const { gh, calls } = fakeGh(prViewWithHead(base, "feat/7-integration"));
   const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh });
   assert.equal(denied(output), null);
-  assert.deepEqual(calls[0].args, ["pr", "view", "7", "--json", "baseRefName,baseRefOid"]);
+  assert.deepEqual(calls[0].args, ["pr", "view", "7", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"]);
   assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /merges through the direct lane, with 2 of 20 lines in 1 of 2 files and no review/);
   assert.match(denied(decide(shell(dir, "gh pr merge 7 --squash"))) ?? "", /--match-head-commit <sha>/);
 });
@@ -753,4 +915,17 @@ test("a merge needs an APPROVED review of every scope dispatched on the branch",
   assert.match(mergeVerdict([{ sha }], records, "branch").refusal ?? "", /scope "b"/);
   records.push({ type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "f", scope: "b" });
   assert.equal(mergeVerdict([{ sha }], records, "branch").refusal, null);
+});
+
+test("task merge reviews pass despite a scoped branch dispatch", (t) => {
+  const ws = workspace(t);
+  const command = `gh pr merge 60 --match-head-commit ${SHA}`;
+  appendRecord(ws.ledgerOf(ws.task), {
+    type: "dispatch", task: false, agentType: "sdd-branch-reviewer", branch: "feat/62-x", head: SHA, scope: "security",
+  });
+  assert.match(denied(decide(shell(ws.task, command))) ?? "", /no APPROVED task review/);
+  appendRecord(ws.ledgerOf(ws.task), verdict("task", "APPROVED"));
+  assert.equal(decide(shell(ws.task, command)), null);
+  appendRecord(ws.ledgerOf(ws.task), verdict("task", "CHANGES_REQUIRED"));
+  assert.match(denied(decide(shell(ws.task, command))) ?? "", /CHANGES_REQUIRED/);
 });

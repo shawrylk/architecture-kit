@@ -76,7 +76,7 @@ export function pendingLines(toolName, input = {}) {
 }
 
 /** A `gitOut` that shares one deadline, so the whole lane ends inside the hook's timeout. `late()` says it ran out. */
-function gitBy(budgetMs) {
+export function gitBy(budgetMs) {
   const deadline = Date.now() + budgetMs;
   const read = (cwd, ...args) => {
     const left = deadline - Date.now();
@@ -86,7 +86,7 @@ function gitBy(budgetMs) {
   return read;
 }
 
-const gitFailed = (git, what) => (git.late?.() ? `git ran past the ${LANE_BUDGET_MS} ms budget of the lane` : what);
+export const gitFailed = (git, what) => (git.late?.() ? `git ran past the ${LANE_BUDGET_MS} ms budget of the lane` : what);
 
 /** The config resource at `base`, read through `git`; returns `{ config }`, with null for an absent file, or `{ problem }`. */
 export function configAtBase(root, base, git, label = base) {

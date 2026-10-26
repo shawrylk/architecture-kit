@@ -17,7 +17,27 @@ export const defaults = {
 
   // `qc codex-implement`. `compactTokens` is the backstop that compacts a runaway session; one item
   // runs in a fresh session and should finish under 200K.
-  codex: { compactTokens: 300000 },
+  codex: {
+    compactTokens: 300000,
+    disablePlugins: ["superpowers@claude-plugins-official"],
+    preamble: "",
+    briefMaxLines: 40,
+    briefMaxSteps: 6,
+    maxRuns: 2,
+  },
+
+  throwawayDb: {
+    schemaCommand: null,
+  },
+
+  // Token limits keep each role within its context: compactAt compacts, remindAt warns, and handoffAt hands off.
+  // toolOutputTokens caps one Codex tool output; null compactAt preserves codex.compactTokens.
+  budgets: {
+    orchestrator: { compactAt: 200000 },
+    implementer: { remindAt: 110000, handoffAt: 150000 },
+    reviewer: { remindAt: 80000, handoffAt: 120000 },
+    codex: { compactAt: null, toolOutputTokens: 4000 },
+  },
 
   docs: {
     root: "docs",
@@ -284,9 +304,15 @@ export const defaults = {
     required: { "pre-commit": ["qc work-order-check"], "commit-msg": ["qc commit-msg"], "pre-push": ["qc check"] },
   },
 
+  // Push settled output in merge batches so each push triggers CI.
+  integrate: { ciEvery: 3, push: true, branchPattern: "^[a-z]+/[0-9]+-integration$", review: true },
+
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
     related: null,
+    // --since-push appends paths changed after the push; null uses related.
+    sincePush: null,
+    e2e: null,
     // Commands receive no extra arguments; for example, ["node script/check-comments.mjs --base origin/dev"].
     commands: [],
     // The merge base with this ref selects committed and staged changes.
@@ -338,6 +364,9 @@ export const defaults = {
     productRoots: ["backend", "bff", "frontend", "workers"],
     productPackages: [],
   },
+
+  // Keep unwired controls in JSX while their feature switch controls their visibility.
+  featureSwitches: { file: "feature-switches.ts", patterns: ["UNWIRED", "^SHOW_", "_WIRED$"] },
 
   // Each set: `source` declares the keys, `key` and `writer` are patterns whose first group is a key,
   // `roots` hold the writers, and `declaredAhead` maps a key with no writer yet to its reason.
@@ -411,6 +440,7 @@ export const defaults = {
     // sets, its claims. Shipped on, each would also red a consumer's enforcement map on upgrade.
     parity: false,
     "integration-imports": false,
+    "feature-switches": false,
     "closed-set-writers": false,
     "doc-claims": false,
     "tenant-isolation-test": false,
@@ -448,6 +478,11 @@ export const defaults = {
     "no-raw-fetch": true,
     "no-sql-raw": true,
     "ime-safe-key": false,
+    "one-component-per-file": false,
+    "raw-element-in-primitive": false,
+    "no-arbitrary-class-value": false,
+    "no-literal-color": false,
+    "no-static-inline-style": false,
     // A policy rule: a repository turns it on once its controls carry the pending prop.
     "mutation-control-pending": false,
     "registry-literal": true,
@@ -579,9 +614,14 @@ export const contextDefaults = {
   handoffTypes: ["sdd-implementer", "architecture:sdd-implementer", "general-purpose"],
 };
 
+export const PROMOTION_SCOPE = "promotion";
+export const promotionDefaults = { surfaces: ["infra/**", "**/migrations/**", ".github/workflows/**"] };
+
 // What each key of `swarm.review` means when a repository omits it. The workflow checks run only while
 // `swarm.dispatch` is on, so this section alone turns nothing on.
 export const reviewDefaults = {
+  // Require a promotion review only when the repository chooses its branch pair.
+  promotion: null,
   // The review kind whose APPROVED verdict lets `gh pr merge` run: "branch" or "task".
   merge: "branch",
   // The largest tool-call estimate one plan task may carry.
@@ -642,10 +682,41 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.featureSwitches)) throw new TypeError("featureSwitches must be an object");
+  const switches = config.featureSwitches;
+  if (typeof switches.file !== "string" || !switches.file.trim() || /[\\/]/.test(switches.file) || [".", ".."].includes(switches.file)) {
+    throw new TypeError("featureSwitches.file must be a non-empty filename at the feature root");
+  }
+  if (!Array.isArray(switches.patterns) || !switches.patterns.every((pattern) => typeof pattern === "string")) {
+    throw new TypeError("featureSwitches.patterns must be an array of strings");
+  }
+  for (const pattern of switches.patterns) {
+    try {
+      new RegExp(pattern);
+    } catch {
+      throw new TypeError(`featureSwitches.patterns contains an invalid regular expression: ${JSON.stringify(pattern)}`);
+    }
+  }
+  if (!isPlainObject(config.integrate)) throw new TypeError("integrate must be an object");
+  if (config.integrate.base !== undefined && (typeof config.integrate.base !== "string" || !config.integrate.base.trim())) {
+    throw new TypeError("integrate.base must be a non-empty string");
+  }
+  const { ciEvery, push, branchPattern, review } = config.integrate;
+  if (!Number.isInteger(ciEvery) || ciEvery < 1) throw new TypeError("integrate.ciEvery must be a positive integer");
+  if (typeof push !== "boolean") throw new TypeError("integrate.push must be a boolean");
+  if (typeof branchPattern !== "string") throw new TypeError("integrate.branchPattern must be a regular expression string");
+  try {
+    new RegExp(branchPattern);
+  } catch {
+    throw new TypeError("integrate.branchPattern must be a valid regular expression");
+  }
+  if (typeof review !== "boolean") throw new TypeError("integrate.review must be a boolean");
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
-  const { related, commands, base } = config.check;
+  const { related, sincePush, e2e, commands, base } = config.check;
   const command = (value) => typeof value === "string" && value.trim().length > 0;
   if (related !== null && !command(related)) throw new TypeError("check.related must be a non-empty string or null");
+  if (sincePush !== null && !command(sincePush)) throw new TypeError("check.sincePush must be a non-empty string or null");
+  if (e2e !== null && !command(e2e)) throw new TypeError("check.e2e must be a non-empty string or null");
   if (!Array.isArray(commands) || !commands.every(command)) throw new TypeError("check.commands must be an array of non-empty strings");
   if (!command(base)) throw new TypeError("check.base must be a non-empty string");
   config.root = root;

@@ -15,7 +15,7 @@ stop reading: none of its rules apply.
 - The one exception is a fix inside the `swarm.direct` limits, where that lane is on. The main session makes that edit.
 - The main session also edits the controller paths that the guard allows, such as `*.md` and `docs/**`. A clean `git merge` and a `git push` by hand are fine.
 - Reviews stay on Claude, with `architecture:sdd-branch-reviewer` (opus). The merge guard counts only a branch review by default.
-- On exit 2, a Codex limit, send the same brief to an `architecture:sdd-implementer` (sonnet).
+- On exit 2, a Codex limit, send the same brief to an `architecture:sdd-implementer` (sonnet). The guard refuses a codex dispatch while `qc codex status` shows a limit. While Codex is free, an implementer dispatch needs a prompt line `Runtime: claude <reason>`. Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other.
 
 ## Write the brief
 
@@ -23,14 +23,33 @@ Write the brief as a markdown file in your scratchpad. It holds these parts:
 
 | Part | Content |
 |---|---|
-| Header | The worktree path, the branch, the issue, and the report file |
+| Header | The worktree path, the branch, the issue, the report file, the progress file, and a `Paths:` line naming owned files or folders |
 | `## Product decisions` | The user's answers. Codex never asks the user. |
 | Task | The exact change, the files, and the cause of a failure |
-| Constraints | What Codex must leave alone, such as a shared database or another session's worktree. Codex never bypasses a git hook and never stops to ask: it writes a question in the report and continues. |
+| Run shape | The checks, shared resources, and run rules. Codex writes questions in the report and continues. |
 | Commit | The message shape and the issue reference |
 | Exit criteria | Typecheck, the named test files, and the push; the runner supplies the done marker |
 
 Copy `brief-template.md` beside this skill. It holds the run shape, the gate slots, the live tests, and the commit rule.
+
+Keep one task heading, with at most six numbered steps under it, and at most 40 non-blank lines in the whole brief.
+Keep `## Product decisions` and `Paths:` in every brief.
+The fixed headings `## Product decisions`, `## Run shape`, `## Commit`, and `## Exit criteria` use no task budget.
+The numbered steps under `## Run shape` use no task-step budget.
+The template passes the default limits unchanged.
+
+Repositories can change these settings under `codex` in `qc.config.json`:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `briefMaxLines` | `40` | Caps non-blank lines in the brief |
+| `briefMaxSteps` | `6` | Caps numbered steps under the task |
+| `maxRuns` | `2` | Caps the requested run count; the command defaults to one run |
+| `disablePlugins` | `["superpowers@claude-plugins-official"]` | Adds plugins to the enabled user plugins that the runner turns off |
+| `preamble` | `""` | Adds text after the fixed preamble and before the brief |
+
+The fixed preamble says the brief carries every rule, forbids skill loads, and forbids a `Grammar:` line.
+Each refusal names the rule and its limit before Codex starts.
 
 A brief carries a read budget: at most 15 files before the first code edit. Research that needs more belongs to a planner, and the brief names the planner's output.
 
@@ -60,18 +79,18 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 Run this in the background from the main checkout. The form is for PowerShell:
 
 ```powershell
-npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 *> <wrapper.log>
+npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> *> <wrapper.log>
 ```
 
 - In a POSIX shell, use this form:
 
   ```bash
-  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --max-runs 12 > <wrapper.log> 2>&1
+  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> > <wrapper.log> 2>&1
   ```
 - The runner writes `exit <code>` as its last stdout line on every exit path, so the wrapper log carries it and the forms need no `echo`. `qc watch --codex` reads that line. It decodes the UTF-16LE file that PowerShell 5.1 writes for `*>`.
-- Never call `codex exec` directly. Each run of the runner is a fresh `codex exec` in the worktree, with full access. Its prompt is the brief plus a note that points at the progress file.
+- Never call `codex exec` directly. Each run starts a fresh session with full access. The runner sends the prompt on stdin, then closes stdin.
 - Start Codex only inside a worktree from `qc worktree add`. Never start it in the main checkout, the scratchpad, or the home folder. A run outside a repository can make a code indexer read the whole home folder.
-- Use `--max-runs` from 10 to 20. Each run continues from the progress file.
+- The command defaults to one run. Use `--max-runs 2` for a second session, or raise `codex.maxRuns` for more sessions.
 - Codex runs count as implementers. Run one at a time, as the swarm rules say. Run more only up to `swarm.dispatch.implementerSlots`, on disjoint paths, and with more than 4 GB of free memory for each extra run.
 
 ## Read the result
@@ -89,8 +108,13 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 ## Run a batch on one branch
 
-- For a batch of related issues, give each issue its own branch and brief, then merge them on one integration branch: `npx qc integrate --issue <n> <branch>...`. The batch then runs one CI and merges once.
-- `qc integrate` names the branch `<type>/<n>-<slug>`, so a fix commit always names an issue. It renumbers migrations after each merge and regenerates the generated files. On a conflict it stops and lists the files; a fix brief resolves them.
+- Use a batch by default for three or more related tasks.
+- Give each task its own branch and brief. Each brief pushes the branch and opens no pull request.
+- The controller opens one draft pull request with `npx qc integrate --issue <n> --pr <branch>...`.
+- `qc integrate` names the branch `<type>/<n>-integration`. It renumbers migrations after each merge and regenerates files before each push.
+- The default `integrate.ciEvery: 3` pushes after every three merges and at the end. Each push starts CI on the draft pull request.
+- Give each feature a `Scope: <name>` review on the integration head. Several scopes can share one head. Each reviewer needs green CI on that head.
+- Give each conflict resolution its own scope and a review after the merge. A fix brief resolves conflicts that need hand edits.
 - At the start of a long run, schedule a heartbeat: a recurring check every 20 to 30 minutes that reads the open agents and the CI state. A watcher that stops then never halts the run.
 
 ## Keep the context lean
@@ -124,7 +148,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 - Review a head only when CI on it is green and it contains the tip of the base branch.
 - Every dispatch carries a `Brief: <path>` line, a `Worktree: <path>` line, and a named model.
-- A pull request gets one branch review for each scope. Review a large head in parallel: one `architecture:sdd-branch-reviewer` for each feature, and one for the conflict resolutions, each with its own prompt line `Scope: <name>`. The merge waits until the newest review of every scope approves.
+- A pull request gets one branch review for each scope. Review a large head in parallel: one `architecture:sdd-branch-reviewer` for each feature, and one for the conflict resolutions, each with its own prompt line `Scope: <name>`. A merge that requires branch reviews waits until the newest review of every dispatched scope approves.
 - Each fix round gets one review of its increment, with a `Reviewed: <sha>` line that names the last reviewed head of the same scope.
 
 ## CI failures
@@ -132,7 +156,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - Read the failed step and the assertion before you act. Fetch the log of a job with `gh api repos/<owner>/<repo>/actions/jobs/<job id>/logs`.
 - Rerun a known flake once with `gh run rerun <run id> --failed`.
 - A runner or Docker failure that comes back, or a runner that stays offline, needs the user. Never change the CI routing, and never skip CI.
-- A real failure is a Codex brief. A Claude implementer for a CI fix carries the prompt line `Fix: ci`, and one for a review fix carries `Fix: review`; either may start on a red or unreviewed head.
+- A real failure is a Codex brief. A Claude implementer for a CI fix carries the prompt line `Fix: ci`, which needs known-red CI on the current head. A review fix carries `Fix: review`, which needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop. The newest stop needs no review if the prompt continues its `HANDOFF:`.
 - Give each fix round to a fresh agent. Split a large round by file ownership: one worktree and sub-branch for each owner, merged into the branch by the controller.
 - `qc retry-failed` reruns the failed files of a local run once; a flake in CI gets one `gh run rerun <run id> --failed`.
 

@@ -19,11 +19,13 @@ export const REMINDER =
   "Review a head only once CI on it is green, with the base merged in: fix a CI failure first, and merge `origin/<base>` at Step 0 of a fix round. " +
   "A PR gets one branch review. After it, review each fix round once, by its increment: add `Reviewed: <sha>`, the last head a branch review named.";
 
-/** Two sentences name Codex first, its controller skill, and the Claude fallback on a Codex limit. */
+/** The reminder names Codex first, its controller skill, and the runtime routing rules. */
 export const CODEX_LINE =
   " Implementer work runs on Codex first through `qc codex-implement --brief <file> --worktree <path> --progress <file>`; " +
   "load the `architecture:codex` skill before the first dispatch. " +
-  "On exit 2 (a Codex limit), dispatch the same brief to an architecture:sdd-implementer (sonnet).";
+  "On exit 2 (a Codex limit), dispatch the same brief to an architecture:sdd-implementer (sonnet). " +
+  "Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other; " +
+  "the guard refuses a codex dispatch while `qc codex status` shows a limit and requires `Runtime: claude <reason>` for an implementer dispatch while Codex is free.";
 
 /** The note a Codex implementer gets in place of the controller note, with `QC_ROLE=implementer`. */
 export const WORKER_NOTE =

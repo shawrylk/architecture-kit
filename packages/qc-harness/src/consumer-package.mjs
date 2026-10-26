@@ -24,7 +24,7 @@ export async function importConsumerPackage(name, root = process.cwd()) {
   try {
     resolved = createRequire(path.join(root, "package.json")).resolve(name);
   } catch (cause) {
-    if (cause.code !== "MODULE_NOT_FOUND") throw cause;
+    if (cause.code !== "MODULE_NOT_FOUND" || cause.message.split("\n")[0] !== `Cannot find module '${name}'`) throw cause;
     throw Object.assign(new Error(`Cannot find package '${name}'`, { cause }), { code: "ERR_MODULE_NOT_FOUND" });
   }
   return import(pathToFileURL(resolved).href);

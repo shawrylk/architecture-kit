@@ -87,6 +87,68 @@ test("an empty dispatch section takes every review default", () => {
   assert.deepEqual(reviewSettings({ dispatch: {} }), { ...reviewDefaults, implementerTypes: dispatchDefaults.implementerTypes });
 });
 
+test("requireGreen accepts booleans and not-red", () => {
+  for (const requireGreen of [true, false, "not-red"]) {
+    assert.equal(reviewSettings({ dispatch: {}, review: { requireGreen } }).requireGreen, requireGreen);
+  }
+});
+
+test("requireGreen rejects other strings and names every allowed value", () => {
+  for (const requireGreen of ["", "true", "false", "green", "not_red"]) {
+    assert.throws(
+      () => reviewSettings({ dispatch: {}, review: { requireGreen } }),
+      /swarm\.review\.requireGreen.*true, false, or "not-red"/,
+    );
+  }
+});
+
+test("promotion review is off by default", () => {
+  assert.equal(reviewSettings({ dispatch: {} }).promotion, null);
+});
+
+test("promotion review fills the default surfaces", () => {
+  const promotion = { integration: "dev", release: "main" };
+  assert.deepEqual(reviewSettings({ dispatch: {}, review: { promotion } }).promotion, {
+    ...promotion,
+    surfaces: ["infra/**", "**/migrations/**", ".github/workflows/**"],
+  });
+});
+
+test("promotion review accepts custom surfaces", () => {
+  const promotion = { integration: "dev", release: "main", surfaces: ["deploy/**"] };
+  assert.deepEqual(reviewSettings({ dispatch: {}, review: { promotion } }).promotion, promotion);
+});
+
+for (const [name, promotion, key] of [
+  ["a string", "on", "promotion"],
+  ["an array", [], "promotion"],
+  ["a boolean", false, "promotion"],
+  ["a number", 1, "promotion"],
+  ["missing integration", { release: "main" }, "promotion.integration"],
+  ["empty integration", { integration: "", release: "main" }, "promotion.integration"],
+  ["blank integration", { integration: "  ", release: "main" }, "promotion.integration"],
+  ["missing release", { integration: "dev" }, "promotion.release"],
+  ["empty release", { integration: "dev", release: "" }, "promotion.release"],
+  ["blank release", { integration: "dev", release: "  " }, "promotion.release"],
+  ["equal branches", { integration: "dev", release: "dev" }, "promotion.release"],
+  ["equal normalized integration", { integration: "origin/main", release: "main" }, "promotion.release"],
+  ["equal normalized release", { integration: "main", release: "origin/main" }, "promotion.release"],
+  ["a string for surfaces", { integration: "dev", release: "main", surfaces: "infra/**" }, "promotion.surfaces"],
+  ["empty surfaces", { integration: "dev", release: "main", surfaces: [] }, "promotion.surfaces"],
+  ["an empty glob", { integration: "dev", release: "main", surfaces: [""] }, "promotion.surfaces"],
+  ["a blank glob", { integration: "dev", release: "main", surfaces: ["  "] }, "promotion.surfaces"],
+  ["a non-string glob", { integration: "dev", release: "main", surfaces: [1] }, "promotion.surfaces"],
+  ["an unknown key", { integration: "dev", release: "main", typo: true }, "promotion.typo"],
+]) {
+  test(`promotion review rejects ${name} and names its key`, () => {
+    assert.throws(() => reviewSettings({ dispatch: {}, review: { promotion } }), (error) => {
+      assert.ok(error.message.startsWith(`swarm.review.${key} in qc.config.json must be `), error.message);
+      assert.match(error.message, /, got /);
+      return true;
+    });
+  });
+}
+
 test("a repository overrides one reviewer kind and keeps the other", () => {
   const settings = reviewSettings({ dispatch: {}, review: { merge: "task", reviewerTypes: { task: ["my-reviewer"] } } });
   assert.equal(settings.merge, "task");

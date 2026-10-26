@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { decide as dispatchDecide } from "./dispatch-guard.mjs";
+import { runtimeTagOf } from "./dispatch-route.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { gitOut } from "./git-read.mjs";
 import { BRIEF } from "./test-brief.mjs";
@@ -52,7 +53,7 @@ const dispatch = (cwd, prompt, subagent_type = "architecture:sdd-implementer", e
   hook_event_name: "PreToolUse",
   tool_name: "Agent",
   tool_use_id: "toolu_1",
-  tool_input: { subagent_type, description: "Task", prompt },
+  tool_input: { subagent_type, description: runtimeTagOf({ subagent_type }, { codexModel: null }) + "Task", prompt },
   ...extra,
 });
 const taskPrompt = (worktree, more = "") => `Read the brief.\nBrief: ${BRIEF}\nWorktree: ${worktree}\n${more}`;
@@ -70,6 +71,22 @@ const implementerStop = (ws, head, branch = "feat/1-x", handoff = null) =>
 const verdict = (ws, sha, value = "APPROVED", kind = "task") =>
   appendRecord(ws.ledger, { type: "verdict", kind, verdict: value, sha, branch: "feat/1-x" });
 const refusalOf = (ws, more = "") => judgeTask(dispatch(ws.main, taskPrompt(ws.linked, more)), ws.tmp).refusal;
+
+test("CI on the branch head lets an implementer continue after a controller commit", (t) => {
+  const ws = workspace(t);
+  const stopped = commitIn(ws.linked, "implementer.txt");
+  implementerStop(ws, stopped);
+  const head = commitIn(ws.linked, "controller.txt");
+  for (const state of ["build ended failure", "build is in_progress"]) {
+    const ci = (sha) => sha === head ? `CI on ${sha.slice(0, 7)}: ${state}` : null;
+    const task = judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci });
+    assert.equal(task.refusal, null);
+    assert.deepEqual(task.record.ciPass, { sha: head, reason: ci(head) });
+    const refusal = judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci: () => null }).refusal;
+    assert.ok(refusal.includes(`when CI on ${head.slice(0, 7)}`));
+    assert.match(refusal, /A prompt with no `Fix:` line passes when/);
+  }
+});
 
 test("the prompt lines are read exactly", () => {
   assert.equal(worktreeNamed("x\n  Worktree:  C:/a b/wt  \ny"), "C:/a b/wt");
@@ -272,7 +289,7 @@ test("an implementer the task gate refuses holds no implementer slot", (t) => {
   const ws = workspace(t);
   recordDispatch(judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp));
   implementerStop(ws, commitIn(ws.linked, "b.txt"));
-  const output = dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked), "architecture:sdd-implementer", { tool_use_id: "toolu_2" }), ws.tmp);
+  const output = dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked, "Runtime: claude test"), "architecture:sdd-implementer", { tool_use_id: "toolu_2" }), ws.tmp);
   assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /^Task gate:/);
   const slots = path.join(ws.tmp, "architecture-kit", "dispatch");
   const claims = existsSync(slots) ? readdirSync(slots, { recursive: true }).filter((name) => String(name).endsWith(".claim")) : [];
@@ -281,7 +298,7 @@ test("an implementer the task gate refuses holds no implementer slot", (t) => {
 
 test("the guard records an accepted task dispatch", (t) => {
   const ws = workspace(t);
-  assert.equal(dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp), null);
+  assert.equal(dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked, "Runtime: claude test")), ws.tmp), null);
   assert.deepEqual(readLedger(ws.ledger).map((record) => [record.type, record.task, record.branch]), [["dispatch", true, "feat/1-x"]]);
 });
 
@@ -479,6 +496,18 @@ test("after CHANGES_REQUIRED, a continuation of the fix round's hand-off needs n
   assert.equal(refusalOf(ws, `HANDOFF: ${note}`), null);
 });
 
+test("Fix: review continues only the matching hand-off of the newest stop", (t) => {
+  const ws = workspace(t);
+  const reviewed = commitIn(ws.linked, "reviewed.txt");
+  implementerStop(ws, reviewed);
+  verdict(ws, reviewed, "CHANGES_REQUIRED");
+  const note = path.join(ws.tmp, "handoffs", "fix-review.md");
+  implementerStop(ws, commitIn(ws.linked, "partial.txt"), "feat/1-x", note);
+  assert.match(refusalOf(ws, "Fix: review") ?? "", /no review/);
+  assert.match(refusalOf(ws, `Fix: review\nHANDOFF: ${note}.other`) ?? "", /no review/);
+  assert.equal(refusalOf(ws, `Fix: review\nHANDOFF: ${note}`), null);
+});
+
 test("a stop that a later CHANGES_REQUIRED reviewed is no longer continued by its HANDOFF line", (t) => {
   const ws = workspace(t);
   const note = path.join(ws.tmp, "handoffs", "t1-1.md");
@@ -582,13 +611,18 @@ test("a Fix: ci line passes an unreviewed implementer commit while CI on the hea
   assert.match(refusalOf(ws) ?? "", /Fix: ci/);
 });
 
-test("a Fix: review line passes a fresh implementer after CHANGES_REQUIRED and over an unreviewed fix commit", (t) => {
+test("a Fix: review line needs CHANGES_REQUIRED and refuses an unreviewed fix stop", (t) => {
   const ws = workspace(t);
   const moved = commitIn(ws.linked, "b.txt");
   implementerStop(ws, moved);
   verdict(ws, moved, "CHANGES_REQUIRED", "branch");
-  implementerStop(ws, commitIn(ws.linked, "c.txt"));
+  assert.equal(refusalOf(ws, "Fix: review"), null);
+  const fixed = commitIn(ws.linked, "c.txt");
+  implementerStop(ws, fixed);
   assert.notEqual(refusalOf(ws), null);
+  assert.match(refusalOf(ws, "Fix: review") ?? "", /no review in the ledger/);
+  assert.match(judgeTask(dispatch(ws.main, taskPrompt(ws.linked, "Fix: review")), ws.tmp, { ci: () => "red" }).refusal ?? "", /no review in the ledger/);
+  verdict(ws, fixed, "CHANGES_REQUIRED");
   assert.equal(refusalOf(ws, "Fix: review"), null);
 });
 

@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
+import { defaults } from "../config.mjs";
 import { dockerRunArgs, fillEnv, freePort, runThrowawayDb, throwawayDefaults } from "./throwaway-db.mjs";
 
 test("a free port skips each port to avoid", async () => {
@@ -40,11 +41,13 @@ function fakeDocker(calls, { readyAfter = 1, runCode = 0 } = {}) {
 test("the command runs on its own database on a free port, and the container is removed after it", async () => {
   const calls = [];
   let seen = null;
+  let runs = 0;
   const code = await runThrowawayDb({ throwawayDb: { env: { LIVE_DB: "1" } } }, ["--", "pnpm", "vitest", "run", "a.test.ts"], {
     docker: fakeDocker(calls),
     open: async () => 55002,
     sleep: async () => {},
     run: async (command, env) => {
+      runs += 1;
       seen = { command, env };
       return 5;
     },
@@ -54,10 +57,61 @@ test("the command runs on its own database on a free port, and the container is 
     password: generated,
   });
   assert.equal(code, 5);
+  assert.equal(runs, 1);
   assert.equal(seen.command, "pnpm vitest run a.test.ts");
   assert.equal(seen.env.DATABASE_URL, `postgres://postgres:${encodeURIComponent(generated)}@127.0.0.1:55002/app`);
   assert.equal(seen.env.LIVE_DB, "1");
   assert.deepEqual(calls, ["run --detach", "exec qc-throwaway-test", "exec qc-throwaway-test", "rm --force"]);
+});
+
+test("the schema command defaults to none", () => {
+  assert.equal(defaults.throwawayDb.schemaCommand, null);
+});
+
+test("the schema command finishes on the ready database before the test command", async () => {
+  const calls = [];
+  const environments = [];
+  const schemaCommand = "pnpm exec drizzle-kit push --force";
+  const code = await runThrowawayDb({ throwawayDb: { schemaCommand, env: { LIVE_DB: "1" } } }, ["--", "pnpm", "vitest", "run", "a.test.ts"], {
+    docker: fakeDocker(calls),
+    open: async () => 55002,
+    sleep: async () => {},
+    run: async (command, env) => {
+      calls.push(command);
+      environments.push(env);
+      await Promise.resolve();
+      calls.push(`finished ${command}`);
+      return command === schemaCommand ? 0 : 5;
+    },
+    env: { INHERITED: "yes", DATABASE_URL: "local-stack" },
+    say: () => {},
+    name: "qc-throwaway-test",
+    password: generated,
+  });
+  assert.equal(code, 5);
+  assert.deepEqual(calls, [
+    "run --detach", "exec qc-throwaway-test", "exec qc-throwaway-test",
+    schemaCommand, `finished ${schemaCommand}`,
+    "pnpm vitest run a.test.ts", "finished pnpm vitest run a.test.ts", "rm --force",
+  ]);
+  assert.equal(environments[0].DATABASE_URL, `postgres://postgres:${encodeURIComponent(generated)}@127.0.0.1:55002/app`);
+  assert.equal(environments[0].LIVE_DB, "1");
+  assert.equal(environments[0].INHERITED, "yes");
+  assert.deepEqual(environments[1], environments[0]);
+});
+
+test("a failed schema command skips the test command and removes the container", async () => {
+  const calls = [];
+  const code = await runThrowawayDb({ throwawayDb: { schemaCommand: "project-schema" } }, ["--", "project-tests"], {
+    docker: fakeDocker(calls, { readyAfter: 0 }),
+    open: async () => 55002,
+    run: async (command) => { calls.push(command); return 7; },
+    env: {},
+    say: () => {},
+    name: "qc-throwaway-test",
+  });
+  assert.equal(code, 7);
+  assert.deepEqual(calls, ["run --detach", "exec qc-throwaway-test", "project-schema", "rm --force"]);
 });
 
 test("an explicit port to avoid is refused, and a docker that cannot start removes nothing", async () => {

@@ -4,7 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gitOut, gitStatusWithin } from "./git-read.mjs";
@@ -114,10 +114,55 @@ function parseArgs(args) {
   return options;
 }
 
-/** @returns the exit code: 1 when an error sits on a changed line, else 0. Warnings print and pass. */
+function lintBaseline(root, staged) {
+  const file = "eslint-suppressions.json";
+  const text = staged ? stagedText(root, file) : existsSync(path.join(root, file)) ? readFileSync(path.join(root, file), "utf8") : null;
+  const baseline = text === null ? {} : JSON.parse(text);
+  if (!baseline || typeof baseline !== "object" || Array.isArray(baseline)) throw new Error(`${file} must hold an object`);
+  for (const [rel, rules] of Object.entries(baseline)) {
+    const resolved = path.relative(root, path.resolve(root, rel));
+    if (!rel || path.isAbsolute(rel) || resolved.startsWith("..") || !rules || typeof rules !== "object" || Array.isArray(rules)) {
+      throw new Error(`invalid file entry in ${file}: ${rel}`);
+    }
+    for (const [rule, entry] of Object.entries(rules)) {
+      if (!entry || !Number.isSafeInteger(entry.count) || entry.count < 0) throw new Error(`invalid count in ${file}: ${rel} (${rule})`);
+    }
+  }
+  return baseline;
+}
+
+function applyBaseline(results, baseline, root, checkStale) {
+  const byFile = new Map(results.map((result) => [path.relative(root, result.filePath).split(path.sep).join("/"), result]));
+  let stale = false;
+  for (const [file, rules] of baseline) {
+    const result = byFile.get(file);
+    const counts = new Map();
+    for (const message of result?.messages ?? []) {
+      if (message.severity === 2 && message.ruleId) counts.set(message.ruleId, (counts.get(message.ruleId) ?? 0) + 1);
+    }
+    for (const [rule, { count }] of Object.entries(rules)) {
+      const actual = counts.get(rule) ?? 0;
+      if (checkStale && actual < count) {
+        console.error(`${file}: ${count - actual} suppressions left that do not occur anymore (${rule}); prune eslint-suppressions.json`);
+        stale = true;
+      }
+      if (result && actual > 0 && actual <= count) result.messages = result.messages.filter((message) => message.ruleId !== rule);
+    }
+  }
+  return stale;
+}
+
+/** Warnings pass; changed-line errors and invalid or stale baselines return failure codes. */
 export async function runLintChanged(config, args) {
   const root = config.root;
   const options = parseArgs(args);
+  let baseline;
+  try {
+    baseline = lintBaseline(root, options.staged);
+  } catch (error) {
+    console.error(`lint baseline error: ${error.message}`);
+    return 2;
+  }
   const ESLint = await loadEslint(root);
   if (ESLint === null) {
     console.log("lint skipped: eslint is not installed in this repository");
@@ -125,24 +170,28 @@ export async function runLintChanged(config, args) {
   }
   const base = options.staged ? null : baseOf(root, options.base ?? config.check.base);
   const changed = changedLines(root, { staged: options.staged, base });
-  const wanted = options.files.map((file) => path.relative(root, path.resolve(file)).split(path.sep).join("/"));
+  const wanted = new Set(options.files.map((file) => path.relative(root, path.resolve(file)).split(path.sep).join("/")));
   const eslint = new ESLint({ cwd: root });
   const files = [];
-  for (const file of changed.keys()) {
-    if (!LINTABLE.test(file) || (wanted.length > 0 && !wanted.includes(file))) continue;
-    if (!existsSync(path.join(root, file)) || (await eslint.isPathIgnored(path.join(root, file)))) continue;
+  const applicableBaseline = new Map();
+  for (const file of new Set([...changed.keys(), ...Object.keys(baseline)])) {
+    if (!LINTABLE.test(file) || (wanted.size > 0 && !wanted.has(file))) continue;
+    if (await eslint.isPathIgnored(path.join(root, file))) continue;
+    if (Object.hasOwn(baseline, file)) applicableBaseline.set(file, baseline[file]);
+    if (!options.staged && !existsSync(path.join(root, file))) continue;
     files.push(file);
   }
-  if (files.length === 0) return 0;
-
   const results = [];
   for (const file of files) {
     const filePath = path.join(root, file);
     // A staged commit is judged as it will be stored, not as the working tree holds it now.
     const staged = options.staged ? stagedText(root, file) : null;
+    if (options.staged && staged === null) continue;
     results.push(...(staged === null ? await eslint.lintFiles([filePath]) : await eslint.lintText(staged, { filePath })));
   }
-  const { kept, skipped } = onChangedLines(results, changed, root);
+  const stale = applyBaseline(results, applicableBaseline, root, wanted.size === 0);
+  const selected = wanted.size > 0 ? new Map([...changed].filter(([file]) => wanted.has(file))) : changed;
+  const { kept, skipped } = onChangedLines(results.filter((result) => selected.has(path.relative(root, result.filePath).split(path.sep).join("/"))), selected, root);
   const errors = kept.filter(({ message }) => message.fatal || message.severity === 2);
   for (const { file, message } of kept) {
     const kind = message.fatal || message.severity === 2 ? "error" : "warning";
@@ -153,5 +202,5 @@ export async function runLintChanged(config, args) {
   }
   // Said once, so a reader knows the gate saw them and chose not to count them.
   if (skipped > 0) console.error(`${skipped} older problem(s) on lines this change leaves alone are not counted. Leave them alone.`);
-  return errors.length > 0 ? 1 : 0;
+  return stale ? 2 : errors.length > 0 ? 1 : 0;
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The PreToolUse trigger for the tool-call budget of swarm.md. It runs on every call of every agent,
-// so it spawns no process and touches one small file. The main session has no agent id and is exempt.
+// The PreToolUse trigger for tool-call and context budgets. It spawns no process.
+// The main session gets only the orchestrator's compaction reminder while dispatch is on.
 
 import { existsSync } from "node:fs";
 import os from "node:os";
@@ -10,7 +10,10 @@ import { CONFIG_FILE, contextDefaults, load } from "../config.mjs";
 import { budgetOf, budgetVerdict } from "./budget.mjs";
 import { bumpCount, counterFileOf, readState, stateFileOf, writeState } from "./budget-counter.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { budgetsOf } from "./context-budgets.mjs";
 import { contextSettings, contextVerdict, estimateOf, handbackStamp } from "./context-signal.mjs";
+import { dispatchSettings } from "./dispatch.mjs";
+import { budgetRoleOf, orchestratorVerdict, roleBudgetVerdict } from "./role-budget.mjs";
 import { agentTranscriptOf, contextOf, firstPromptOf, firstUsage, lastUsage } from "./transcript-usage.mjs";
 
 const HANDBACK = "SubagentHandback";
@@ -20,14 +23,51 @@ const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", 
 /** The verdict on one tool call. @returns the hook output, or null to let the call run with no message. */
 export function decide(call, tmp = os.tmpdir()) {
   const agentId = call.agent_id;
-  if (typeof agentId !== "string" || agentId === "") return null;
+  if (typeof agentId !== "string" || agentId === "") return orchestratorOutput(call, tmp);
   const root = checkoutRootOf(call.cwd ?? process.cwd());
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
 
   let swarm;
-  let budget;
   try {
     swarm = load(root).swarm;
+  } catch (error) {
+    return context(`Tool-call budget is off: ${error.message}`);
+  }
+  const output = toolCallOutput(call, root, swarm, tmp);
+  const roleOutput = roleBudgetOutput(call, root, swarm, tmp);
+  if (output?.hookSpecificOutput?.permissionDecision === "deny") return output;
+  if (roleOutput?.hookSpecificOutput?.permissionDecision === "deny") return roleOutput;
+  if (!roleOutput || call.tool_name === HANDBACK) return output;
+  const existing = output?.hookSpecificOutput?.additionalContext;
+  const note = roleOutput.hookSpecificOutput.additionalContext;
+  return context(existing ? `${existing}\n${note}` : note);
+}
+
+function orchestratorOutput(call, tmp) {
+  try {
+    const root = checkoutRootOf(call.cwd ?? process.cwd());
+    if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
+    const config = load(root);
+    if (!dispatchSettings(config.swarm)) return null;
+    const budget = budgetsOf(config).orchestrator;
+    if (!budget) return null;
+    const session = call.session_id ?? "session";
+    const count = bumpCount(counterFileOf(session, "orchestrator", tmp));
+    if (count % contextDefaults.every !== 0) return null;
+    const tokens = contextOf(lastUsage(call.transcript_path));
+    const file = stateFileOf(session, "orchestrator", tmp);
+    const state = readState(file);
+    const note = orchestratorVerdict({ tokens, compactAt: budget.compactAt, count, state });
+    writeState(file, state);
+    return note ? context(note) : null;
+  } catch {
+    return null;
+  }
+}
+
+function toolCallOutput(call, root, swarm, tmp) {
+  let budget;
+  try {
     budget = budgetOf(swarm);
   } catch (error) {
     // A config typo must not stop every agent; the agent sees the error and reports it.
@@ -36,7 +76,7 @@ export function decide(call, tmp = os.tmpdir()) {
   if (budget === null) return null;
   let count;
   try {
-    count = bumpCount(counterFileOf(call.session_id ?? "session", agentId, tmp));
+    count = bumpCount(counterFileOf(call.session_id ?? "session", call.agent_id, tmp));
   } catch {
     // A busy or read-only temp folder is the hook's own problem, never a reason to stop the agent.
     return null;
@@ -44,6 +84,34 @@ export function decide(call, tmp = os.tmpdir()) {
   const verdict = budgetVerdict({ count, budget, call });
   if (verdict?.hookSpecificOutput?.permissionDecision === "deny") return verdict;
   return withSignal(verdict, contextSignal(call, { swarm, count, budget, tmp }), call);
+}
+
+// Read after the context signal so its keys survive this write.
+function roleBudgetOutput(call, root, swarm, tmp) {
+  try {
+    const file = stateFileOf(call.session_id ?? "session", call.agent_id, tmp);
+    const state = readState(file);
+    let budgets;
+    let role;
+    try {
+      role = budgetRoleOf(call.agent_type, swarm);
+      if (!role) return null;
+      budgets = budgetsOf(load(root));
+    } catch (error) {
+      if (state.budgetError === error.message) return null;
+      writeState(file, { ...state, budgetError: error.message });
+      return context(`Context budget is off: ${error.message}`);
+    }
+    if (!role || !budgets[role]) return null;
+    const tokens = state.budgetClosed ? undefined : contextOf(lastUsage(agentTranscriptOf(call)));
+    const next = { ...state };
+    const verdict = roleBudgetVerdict({ role, tokens, budget: budgets[role], call, state: next });
+    if (next.budgetReminded !== state.budgetReminded || next.budgetClosed !== state.budgetClosed) writeState(file, next);
+    return verdict;
+  } catch {
+    // A missing transcript or an unwritable state file leaves the role budget off.
+    return null;
+  }
 }
 
 /** The one note for an agent whose hook input names no transcript, and the state that keeps later calls quiet. */

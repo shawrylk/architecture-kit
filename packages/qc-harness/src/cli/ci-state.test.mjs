@@ -113,3 +113,22 @@ test("ciState separates a head that is not green, a green head, and a head it ca
   assert.match(ciState("", "/c", { gh: () => null, origin }).unknown, /no commit/);
   for (const answer of [state(() => null), state(() => reply())]) assert.equal(answer.reason, null);
 });
+
+test("ciState marks unfinished checks so a review policy can allow them", () => {
+  for (const status of ["queued", "in_progress", "waiting", "pending"]) {
+    const state = ciState(SHA, "/c", { gh: () => reply(run("build", status)), origin: () => "o/r" });
+    assert.equal(state.pending, true);
+    assert.equal(state.reason, `CI on aaaaaaa: build is ${status}`);
+  }
+});
+
+test("ciState gives a failure priority over an unfinished check", () => {
+  for (const conclusion of ["failure", "cancelled", "timed_out", "action_required"]) {
+    const state = ciState(SHA, "/c", {
+      gh: () => reply(run("lint", "in_progress"), run("build", "completed", conclusion)),
+      origin: () => "o/r",
+    });
+    assert.equal(state.pending, undefined);
+    assert.equal(state.reason, `CI on aaaaaaa: build ended ${conclusion}`);
+  }
+});

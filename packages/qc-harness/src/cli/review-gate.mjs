@@ -1,5 +1,5 @@
 // The checks of `swarm.review` that read a dispatch prompt and its branch: one branch review, a head that
-// is green and holds the base tip, and a brief with product decisions. The task gate calls them.
+// meets the CI policy and holds the base tip, and a brief with product decisions. The task gate calls them.
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -121,8 +121,8 @@ export function baseCheck({ root, base, head, reads = defaultReads }) {
 }
 
 /**
- * The reviewer checks, in cheap-first order: one branch review, the base tip, green CI.
- * `ciState(sha)` is `{ reason, unknown }`; `reads` answers the base check.
+ * The reviewer checks, in cheap-first order: one branch review, the base tip, the CI policy.
+ * `ciState(sha)` is `{ reason, unknown, pending? }`; `reads` answers the base check.
  * @returns `{ refusal, note }`
  */
 export function reviewerCheck({ type, prompt, review, base, records, root, branch, head, ciState, reads = defaultReads }) {
@@ -140,11 +140,12 @@ export function reviewerCheck({ type, prompt, review, base, records, root, branc
   }
   if (review.requireGreen) {
     const state = ciState(head);
-    if (state.reason) {
+    if (state.reason && !(review.requireGreen === "not-red" && state.pending)) {
       return refuse(
         `Task gate: ${state.reason}. A review waits for green CI on the head, since a red head changes before it is reviewed. Wait for the run, or fix the failure, then dispatch the review.`,
       );
     }
+    if (state.reason && state.pending) notes.push(`Task gate: ${state.reason}. The review proceeds while CI runs.`);
     if (state.unknown) notes.push(`Task gate: CI on ${short(head)} is unknown: ${state.unknown}. The review proceeds.`);
   }
   return pass(notes.length > 0 ? notes.join(" ") : null);

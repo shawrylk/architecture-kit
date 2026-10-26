@@ -10,8 +10,123 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("featureSwitches validates its object, filename, patterns, and regular expressions", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-switch-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const value of [null, [], false, "switches"]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches: value }));
+    assert.throws(() => load(root), /featureSwitches must be an object/);
+  }
+  for (const [key, values] of Object.entries({
+    file: [null, false, 3, [], {}, "", "  ", ".", "..", "nested/switches.ts", "nested\\switches.ts"],
+    patterns: [null, false, "SHOW_", {}, [3], [null], ["["], ["("]],
+  })) {
+    for (const value of values) {
+      writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches: { [key]: value } }));
+      assert.throws(() => load(root), new RegExp(`featureSwitches\\.${key}`));
+    }
+  }
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches: { file: "switches.ts", patterns: ["^CUSTOM_"] } }));
+  assert.deepEqual(load(root).featureSwitches, { file: "switches.ts", patterns: ["^CUSTOM_"] });
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches: { patterns: [] } }));
+  assert.deepEqual(load(root).featureSwitches.patterns, []);
+});
+
+test("featureSwitches validation throws plain TypeErrors with their stacks", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-switch-errors-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const featureSwitches of [null, { file: "" }, { patterns: "SHOW_" }, { patterns: ["["] }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches }));
+    assert.throws(() => load(root), (error) => {
+      assert.equal(error.constructor, TypeError);
+      assert.equal(error.name, "TypeError");
+      assert.match(error.message, /^featureSwitches/);
+      assert.match(error.stack, /at load \(/);
+      return true;
+    });
+  }
+});
+
+test("codex defaults bound a short session and disable the skill plugin", () => {
+  assert.deepEqual(load(here).codex, {
+    compactTokens: 300000,
+    disablePlugins: ["superpowers@claude-plugins-official"],
+    preamble: "",
+    briefMaxLines: 40,
+    briefMaxSteps: 6,
+    maxRuns: 2,
+  });
+});
+
+test("codex configuration raises limits and preserves omitted defaults", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-codex-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const codex = { briefMaxLines: 80, briefMaxSteps: 10, maxRuns: 4, disablePlugins: ["custom@plugins"], preamble: "Use the local rules." };
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ codex }));
+  assert.deepEqual(load(root).codex, { ...defaults.codex, ...codex });
+});
+
+test("integrate defaults push every three merges", () => {
+  const config = load(here);
+  assert.equal(config.integrate.ciEvery, 3);
+  assert.equal(config.integrate.push, true);
+  assert.equal(config.integrate.branchPattern, "^[a-z]+/[0-9]+-integration$");
+  assert.equal(config.integrate.review, true);
+});
+
+test("integrate configuration preserves omitted defaults", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-integrate-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { ciEvery: 2 } }));
+  assert.equal(load(root).integrate.ciEvery, 2);
+  assert.equal(load(root).integrate.push, true);
+  assert.equal(load(root).integrate.branchPattern, "^[a-z]+/[0-9]+-integration$");
+  assert.equal(load(root).integrate.review, true);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { push: false } }));
+  assert.equal(load(root).integrate.ciEvery, 3);
+  assert.equal(load(root).integrate.push, false);
+  assert.equal(load(root).integrate.branchPattern, "^[a-z]+/[0-9]+-integration$");
+  assert.equal(load(root).integrate.review, true);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { branchPattern: "^release/", review: false } }));
+  assert.equal(load(root).integrate.branchPattern, "^release/");
+  assert.equal(load(root).integrate.review, false);
+  assert.equal(load(root).integrate.ciEvery, 3);
+  assert.equal(load(root).integrate.push, true);
+});
+
+test("integrate configuration rejects invalid types and cadences", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-integrate-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const integrate of [null, [], false, "command"]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate }));
+    assert.throws(() => load(root), { name: "TypeError", message: /integrate must be an object/ });
+  }
+  for (const [key, values] of Object.entries({
+    ciEvery: [0, 1.5, "3"],
+    push: ["yes"],
+    branchPattern: [null, false, 1, [], {}, "["],
+    review: [null, "true", 1, [], {}],
+    base: [null, false, 5, [], {}, "", "  "],
+  })) {
+    for (const value of values) {
+      writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { [key]: value } }));
+      assert.throws(() => load(root), { name: "TypeError", message: new RegExp(`integrate\\.${key}`) });
+    }
+  }
+});
+
+test("integrate.base accepts a non-empty branch string and stays unset by default", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-integrate-base-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(load(root).integrate.base, undefined);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { base: "origin/release" } }));
+  assert.equal(load(root).integrate.base, "origin/release");
+});
+
 test("check defaults leave repository commands off", () => {
-  assert.deepEqual(load(here).check, { related: null, commands: [], base: "origin/main" });
+  assert.equal(defaults.check.sincePush, null);
+  assert.equal(defaults.check.e2e, null);
+  assert.deepEqual(load(here).check, { related: null, sincePush: null, e2e: null, commands: [], base: "origin/main" });
 });
 
 test("check configuration accepts commands and preserves omitted defaults", (t) => {
@@ -19,7 +134,7 @@ test("check configuration accepts commands and preserves omitted defaults", (t) 
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const check = { related: "pnpm exec vitest related --run", commands: ["node script/check-comments.mjs --base origin/dev"] };
   writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ check }));
-  assert.deepEqual(load(root).check, { ...check, base: "origin/main" });
+  assert.deepEqual(load(root).check, { ...check, sincePush: null, e2e: null, base: "origin/main" });
 });
 
 test("check configuration rejects invalid types and empty commands or refs", (t) => {
@@ -31,6 +146,8 @@ test("check configuration rejects invalid types and empty commands or refs", (t)
   }
   for (const [key, values] of Object.entries({
     related: [false, 1, [], {}, "", "  "],
+    sincePush: [false, 1, [], {}, "", "  "],
+    e2e: [false, 1, [], {}, "", "  "],
     commands: [null, false, "node", [1], [null], [""], ["  "]],
     base: [null, false, 1, [], "", "  "],
   })) {
