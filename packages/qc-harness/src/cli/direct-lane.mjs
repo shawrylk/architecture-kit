@@ -88,7 +88,7 @@ function gitBy(budgetMs) {
 
 const gitFailed = (git, what) => (git.late?.() ? `git ran past the ${LANE_BUDGET_MS} ms budget of the lane` : what);
 
-/** The config resource at `base`, read through `git`; the PR base must name a local commit. Returns `{ config }` or `{ problem }`. */
+/** The config resource at `base`, read through `git`; returns `{ config }`, with null for an absent file, or `{ problem }`. */
 export function configAtBase(root, base, git, label = base) {
   if (label === PR_BASE) {
     if (typeof base !== "string" || !OBJECT_ID.test(base)) return { problem: "gh returned no base commit for the PR, so the lane cannot tell what the PR merges into" };
@@ -96,8 +96,11 @@ export function configAtBase(root, base, git, label = base) {
       return { problem: gitFailed(git, `the PR base commit ${base.slice(0, 12)} is not in this repository, so run \`git fetch\``) };
     }
   }
+  const entry = git(root, "ls-tree", base, "--", CONFIG_FILE);
+  if (entry === null || git.late?.()) return { problem: gitFailed(git, `git cannot read ${CONFIG_FILE} at ${label}`) };
+  if (entry === "") return { config: null };
   const text = git(root, "show", `${base}:${CONFIG_FILE}`);
-  if (text === null) return { problem: gitFailed(git, `git cannot read ${CONFIG_FILE} at ${label}`) };
+  if (text === null || git.late?.()) return { problem: gitFailed(git, `git cannot read ${CONFIG_FILE} at ${label}`) };
   try {
     const config = JSON.parse(text);
     if (config === null || typeof config !== "object" || Array.isArray(config)) return { problem: `${CONFIG_FILE} at ${label} is not a JSON object` };
@@ -114,6 +117,7 @@ export function configAtBase(root, base, git, label = base) {
 function directAtBase(root, base, git, label = base) {
   const settings = configAtBase(root, base, git, label);
   if (settings.problem) return settings;
+  if (settings.config === null) return { problem: `${CONFIG_FILE} is absent at ${label}` };
   try {
     const direct = directSettings(settings.config.swarm);
     return direct ? { direct } : { problem: `${KEY} is false at ${label}` };

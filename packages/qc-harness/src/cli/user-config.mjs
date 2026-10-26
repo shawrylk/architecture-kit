@@ -24,7 +24,7 @@ const USAGE = "qc user-config apply|check|capture [--dry-run] [--kit-dir <path>]
 
 export function assertSafePath(file) {
   const name = file.replaceAll("\\", "/").split("/").at(-1).toLowerCase();
-  if ([".claude.json", ".credentials.json", "auth.json"].includes(name) || /(?:^|[^a-z0-9])(?:token|secret|credentials?|auth|oauth)(?:$|[^a-z0-9])/i.test(name)) {
+  if ([".claude.json", ".credentials.json", "auth.json"].includes(name) || /token|secret|credential|auth(?!or(?:$|[^a-z0-9]))/i.test(name)) {
     throw new Error(`Refusing credential file: ${file}`);
   }
 }

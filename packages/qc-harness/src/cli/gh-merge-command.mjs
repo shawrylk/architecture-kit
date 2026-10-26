@@ -208,11 +208,17 @@ function apiEndpoint(args) {
  */
 export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
   return ghCalls(command, parse)
-    .map(({ words }) => ghCommand(words))
+    .map(({ words, env }) => ({ ...ghCommand(words), env }))
     .filter(({ group }) => group === "api")
-    .flatMap(({ rest: args }) => {
+    .flatMap(({ rest: args, env }) => {
+      const settings = { ...env };
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--hostname") settings.GH_HOST = args[++i];
+        else if (args[i].startsWith("--hostname=")) settings.GH_HOST = args[i].slice("--hostname=".length);
+      }
+      const withSettings = (calls) => calls.map((call) => ({ ...call, env: settings }));
       const found = args.filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
-      if (isRestPath(apiEndpoint(args) ?? "")) return found;
+      if (isRestPath(apiEndpoint(args) ?? "")) return withSettings(found);
       const graphql = args.find((word) => GRAPHQL_ENDPOINT.test(word));
       let mutation = args.some((word) => MERGE_MUTATION.test(word));
       let unreadable;
@@ -223,6 +229,6 @@ export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
       }
       if (mutation) found.push({ endpoint: graphql ?? "graphql" });
       else if (graphql !== undefined && unreadable !== undefined) found.push({ endpoint: graphql, unreadable });
-      return found;
+      return withSettings(found);
     });
 }

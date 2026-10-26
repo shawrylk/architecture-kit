@@ -58,6 +58,7 @@ export function workflowAt(cwd, { baseOid, git } = {}) {
   if (git) {
     const settings = configAtBase(root, baseOid, git, "the PR base");
     if (settings.problem) throw new Error(settings.problem);
+    if (settings.config === null) return null;
     config = merge(defaults, settings.config);
   } else {
     if (!existsSync(path.join(root, CONFIG_FILE))) return null;
