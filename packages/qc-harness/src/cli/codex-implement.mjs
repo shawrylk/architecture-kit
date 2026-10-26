@@ -38,7 +38,9 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
   return Object.fromEntries(Object.entries(env).filter(([name, value]) => {
     const key = normalize(name);
     return value !== undefined && (SYSTEM_ENV_NAMES.has(key) || /^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/i.test(key)
-      || /^(CODEX_|GIT_|QC_|DOCKER_)/.test(key) || key.startsWith(normalize("npm_config_")) || extra.has(key));
+      || /^(CODEX_|GIT_|QC_)/.test(key)
+      || ((key.startsWith("DOCKER_") || /^npm_config_/i.test(key)) && !/TOKEN|PASSWORD|SECRET|AUTH/i.test(key))
+      || extra.has(key));
   }));
 }
 

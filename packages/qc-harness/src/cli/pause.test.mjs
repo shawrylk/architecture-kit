@@ -29,6 +29,7 @@ test("pause and resume share the common git folder across worktrees and nested f
   const say = (line) => lines.push(line);
   assert.equal(pauseState(nested), null);
   assert.equal(runPause(root, ["--reason", "operator investigation"], { say }), 0);
+  assert.equal(lines.at(-1), "The kit is paused. Run `qc resume` to lift the pause.");
   assert.equal(readFileSync(path.join(root, ".git", "qc", "pause"), "utf8").trim(), "operator investigation");
   assert.equal(pauseState(nested), "operator investigation");
   assert.match(pauseRefusal(nested), /operator investigation.*qc resume/);
@@ -46,7 +47,9 @@ test("the CLI pauses and resumes even when the repository config is invalid", (t
   const { root } = repository(t);
   writeFileSync(path.join(root, "qc.config.json"), "invalid JSON");
   const call = (...args) => spawnSync(process.execPath, [QC, ...args], { cwd: root, encoding: "utf8" });
-  assert.equal(call("pause").status, 0);
+  const paused = call("pause");
+  assert.equal(paused.status, 0);
+  assert.equal(paused.stdout.trim(), "The kit is paused. Run `qc resume` to lift the pause.");
   assert.match(call("pause", "--status").stdout, /paused.*operator pause/);
   assert.equal(call("resume").status, 0);
   assert.match(call("pause", "--status").stdout, /running/);

@@ -31,11 +31,51 @@ test("a pause refuses sync before branch changes or a push", async (t) => {
   const lines = [];
   assert.equal(await runBranch(config(dir), ["sync", "."], {
     say: quiet(lines), runSlot: () => assert.fail("a paused branch must never push"),
-  }), 1);
+  }), 5);
   assert.deepEqual(lines, [`qc branch: ${refusal}`]);
   assert.equal(git(dir, "rev-parse", "HEAD"), head);
   assert.equal(git(dir, "status", "--porcelain"), "");
 });
+
+test("an unreadable pause refuses sync before branch changes or a push", async (t) => {
+  const dir = batch(t);
+  const head = git(dir, "rev-parse", "HEAD");
+  mkdirSync(path.join(dir, ".git", "qc", "pause"), { recursive: true });
+  await assert.rejects(() => syncBranch(config(dir), dir), /cannot read the operator pause .*Wait for the operator to run `qc resume`\./);
+  const lines = [];
+  assert.equal(await runBranch(config(dir), ["sync", "."], {
+    say: quiet(lines), runSlot: () => assert.fail("an unreadable pause must never push"),
+  }), 5);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^qc branch: cannot read the operator pause .*Wait for the operator to run `qc resume`\.$/);
+  assert.equal(git(dir, "rev-parse", "HEAD"), head);
+  assert.equal(git(dir, "status", "--porcelain"), "");
+});
+
+for (const unreadable of [false, true]) {
+  test(`branch sync checks ${unreadable ? "an unreadable" : "a new"} pause again before pushing`, async (t) => {
+    const dir = batch(t);
+    const lines = [];
+    let generated = 0;
+    assert.equal(await runBranch(config(dir), ["sync", "."], {
+      say: quiet(lines),
+      runSlot: () => assert.fail("a pause set during sync must prevent the push"),
+      run: (command, cwd) => {
+        generated += 1;
+        const code = run(command, cwd);
+        const file = path.join(dir, ".git", "qc", "pause");
+        mkdirSync(path.dirname(file), { recursive: true });
+        if (unreadable) mkdirSync(file);
+        else writeFileSync(file, "operator investigation\n");
+        return code;
+      },
+    }), 5);
+    assert.equal(generated, 1);
+    assert.match(lines.at(-1), /Wait for the operator to run `qc resume`\.$/);
+    if (unreadable) assert.match(lines.at(-1), /cannot read the operator pause/);
+    else assert.match(lines.at(-1), /An operator paused the kit: operator investigation/);
+  });
+}
 
 test("each branch-sync test uses a private gate-slot folder", () => {
   const directory = process.env.QC_GATE_SLOT_DIR;

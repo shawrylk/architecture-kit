@@ -450,6 +450,9 @@ missing or failing `gh` proves nothing. `remove` looks in `.worktree/<name>` fir
 characters on Windows does not stop it. Run it from the main checkout, because Windows cannot
 delete the current folder of a shell. Both commands are idempotent.
 
+`remove` exits `5` when the operator pause exists or cannot be read.
+The pause blocks the whole removal, including the local worktree and branch cleanup.
+
 Two hooks hold an agent to the folder. Each is on wherever `qc.config.json` is:
 
 | Hook | What it refuses |
@@ -713,13 +716,16 @@ The orchestrator and Codex leave no cost record, so the report says so in one li
 
 Run `qc pause --reason "inspect the batch"` to set an operator pause.
 The reason defaults to `operator pause` when you omit `--reason`.
+The command confirms: "The kit is paused. Run `qc resume` to lift the pause."
 The command writes `qc/pause` in the Git common folder, so every linked worktree shares the pause.
 Run `qc pause --status` to print the state and reason. Run `qc resume` to remove the pause.
 Both commands work even when `qc.config.json` contains invalid configuration.
 
 The pause blocks `qc codex-implement`, `qc integrate`, `qc branch sync`, `qc worktree remove`, and merges through the merge guard.
-Every refusal names the reason and tells the agent to wait for the operator to run `qc resume`.
+Every refusal tells the agent to wait for the operator to run `qc resume`.
+When the pause can be read, the refusal also names its reason.
 `qc integrate` returns exit `5` when the pause blocks integration.
+`qc branch sync` exits `5` before changes or a push when the pause exists or cannot be read.
 The Codex runner checks before each run and exits `5`, "paused", before another session starts.
 An active session finishes its current run. The pause also leaves the existing GitHub auto-merge setting unchanged.
 
@@ -761,7 +767,10 @@ The child receives this environment allowlist, plus names in `codex.envAllow`:
 | Prefixes | `CODEX_`, `GIT_`, `QC_`, `DOCKER_`, `npm_config_` |
 | OpenAI API | `OPENAI_API_KEY` |
 
-The four proxy names match in any case on every platform. Other names and prefixes require exact case except on Windows.
+The four proxy names and the `npm_config_` prefix match in any case on every platform.
+Other names and prefixes require exact case except on Windows.
+Names allowed only by `DOCKER_` or `npm_config_` stay out if they contain `TOKEN`, `PASSWORD`, `SECRET`, or `AUTH`, in any case.
+An entry in `codex.envAllow` can pass such a name in full.
 Tokens such as `GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN`, and `NODE_AUTH_TOKEN` pass only when `codex.envAllow` names them.
 A brief that needs `gh` reads its own token through `gh auth token`.
 

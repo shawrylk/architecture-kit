@@ -103,7 +103,10 @@ The runner passes this environment allowlist, plus names in `codex.envAllow` (de
 | Prefixes | `CODEX_`, `GIT_`, `QC_`, `DOCKER_`, `npm_config_` |
 | OpenAI API | `OPENAI_API_KEY` |
 
-The four proxy names match in any case on every platform. Other names and prefixes require exact case except on Windows.
+The four proxy names and the `npm_config_` prefix match in any case on every platform.
+Other names and prefixes require exact case except on Windows.
+Names allowed only by `DOCKER_` or `npm_config_` stay out if they contain `TOKEN`, `PASSWORD`, `SECRET`, or `AUTH`, in any case.
+An entry in `codex.envAllow` can pass such a name in full.
 Tokens such as `GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN`, and `NODE_AUTH_TOKEN` require an entry in `codex.envAllow`.
 Each `codex.envAllow` entry must be non-empty and have no leading or trailing whitespace.
 A brief that needs `gh` reads its token through `gh auth token`.

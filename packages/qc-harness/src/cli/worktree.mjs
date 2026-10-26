@@ -15,7 +15,9 @@ export const USAGE = `qc worktree — a linked worktree under .worktree/ in the 
 
   --from  the ref a new branch starts at, and the ref remove checks a merge against.
           The default is worktree.base in qc.config.json. The install is worktree.install.
-          The folder is worktree.dir. remove also finds a worktree at ../<name>, beside the main checkout.`;
+          The folder is worktree.dir. remove also finds a worktree at ../<name>, beside the main checkout.
+
+  exit 5  remove refused because the operator pause exists or cannot be read.`;
 
 /** The install of the package manager whose lockfile `root` holds, or null for a folder with no package.json. */
 export function installCommand(root) {

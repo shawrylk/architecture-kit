@@ -280,11 +280,29 @@ for (const [group, names] of [
   });
 }
 
-test("added system names and prefixes preserve platform case rules", async () => {
+test("npm configuration ignores case while other names preserve platform case rules", async () => {
   const { codexEnvironment } = await import("./codex-implement.mjs");
   const source = { ssh_auth_sock: "ssh", gh_config_dir: "gh", docker_host: "docker", NPM_CONFIG_CACHE: "npm", Npm_Config_Custom: "custom", NODE_EXTRA_CA_CERTS_SUFFIX: "secret", DOCKERISH_TOKEN: "secret", npm_configuration: "secret", HTTPS_PROXY_TOKEN: "secret" };
-  assert.deepEqual(codexEnvironment(source, [], "linux"), {});
+  assert.deepEqual(codexEnvironment(source, [], "linux"), { NPM_CONFIG_CACHE: "npm", Npm_Config_Custom: "custom" });
   assert.deepEqual(codexEnvironment(source, [], "win32"), { ssh_auth_sock: "ssh", gh_config_dir: "gh", docker_host: "docker", NPM_CONFIG_CACHE: "npm", Npm_Config_Custom: "custom" });
+});
+
+test("Docker and npm prefixes withhold credential names unless explicitly allowed", async () => {
+  const { codexEnvironment } = await import("./codex-implement.mjs");
+  const names = [
+    "DOCKER_TOKEN", "DOCKER_password", "DOCKER_sEcReT_FILE", "DOCKER_AUTH_CONFIG",
+    "DOCKER_CUSTOM_TOKEN_SUFFIX", "docker_password", "Docker_Custom_Token", "npm_config__authToken", "npm_config_//registry.npmjs.org/:_authToken",
+    "npm_config_password", "NPM_CONFIG_SECRET", "Npm_Config_Auth", "npm_config_custom_token_suffix",
+  ];
+  const credentials = Object.fromEntries(names.map((name) => [name, `value-${name}`]));
+  const allowed = { DOCKER_HOST: "docker", npm_config_registry: "registry", NPM_CONFIG_CACHE: "cache", Npm_Config_Custom: "custom", CODEX_AUTH: "codex", GIT_AUTH: "git", QC_SECRET: "qc" };
+  const source = { ...allowed, ...credentials };
+  for (const platform of ["linux", "win32"]) {
+    assert.deepEqual(codexEnvironment(source, [], platform), allowed);
+    assert.deepEqual(codexEnvironment(source, names, platform), source);
+    assert.deepEqual(codexEnvironment(credentials, ["DOCKER_TOKEN"], platform), { DOCKER_TOKEN: credentials.DOCKER_TOKEN });
+  }
+  assert.deepEqual(source, { ...allowed, ...credentials });
 });
 
 test("environment names match without case only on Windows", async () => {

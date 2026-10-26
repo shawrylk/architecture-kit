@@ -12,6 +12,17 @@ export const USAGE = "qc branch sync <worktree> [--base <ref>] [--no-push]";
 /** A fragment: hold a machine slot while an action runs in its worktree. */
 const inGateSlot = (words, _cwd, action) => runGateSlot(["--", ...words], { run: action });
 
+/** A branch: refuse changes when the operator pause exists or cannot be read. */
+function assertRunning(worktree) {
+  let refusal;
+  try {
+    refusal = pauseRefusal(worktree);
+  } catch (error) {
+    refusal = `cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`;
+  }
+  if (refusal) throw Object.assign(new Error(refusal), { exitCode: 5 });
+}
+
 /** A branch: dispatch a sync and push its changes through a machine gate slot. */
 export async function runBranch(config, argv, deps = {}) {
   const {
@@ -40,20 +51,18 @@ export async function runBranch(config, argv, deps = {}) {
     const worktree = path.resolve(config.root, positionals[0]);
     const result = await syncBranch(config, worktree, { base: values.base, say, run, withSlot });
     if (result.code !== 0 || !result.changed || values["no-push"]) return result.code;
-    const refusal = pauseRefusal(worktree);
-    if (refusal) throw new Error(refusal);
+    assertRunning(worktree);
     say(`push  ${result.branch}`);
     return await runSlot(["git", "push", "-u", "origin", result.branch], worktree);
   } catch (error) {
     say(`qc branch: ${error.message}`);
-    return 1;
+    return error.exitCode === 5 ? 5 : 1;
   }
 }
 
 /** A pipeline: merge the base, renumber the branch's migrations, and commit generated files. */
 export async function syncBranch(config, worktree, options = {}) {
-  const refusal = pauseRefusal(worktree);
-  if (refusal) throw new Error(refusal);
+  assertRunning(worktree);
   const { say = (line) => console.log(line), run = runShell, withSlot = inGateSlot } = options;
   const base = options.base ?? config.worktree?.base ?? "origin/main";
   if (tryGit(worktree, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).ok) throw new Error("a merge is in progress: resolve it and commit it first");

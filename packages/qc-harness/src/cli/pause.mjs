@@ -42,7 +42,7 @@ export function runPause(root, argv, { say = console.log } = {}) {
     const reason = argv[1]?.trim() || "operator pause";
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, `${reason}\n`);
-    say(`paused: ${reason}. Wait for the operator to run \`qc resume\`.`);
+    say("The kit is paused. Run `qc resume` to lift the pause.");
     return 0;
   } catch (error) {
     say(`qc pause: ${error.message}`);

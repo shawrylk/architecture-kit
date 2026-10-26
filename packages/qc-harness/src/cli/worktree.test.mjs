@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { load } from "../config.mjs";
-import { installCommand, runWorktree } from "./worktree.mjs";
+import { installCommand, runWorktree, USAGE } from "./worktree.mjs";
+
+test("worktree usage lists exit 5 for an operator pause", () => {
+  assert.match(USAGE, /exit 5.*pause/);
+});
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
