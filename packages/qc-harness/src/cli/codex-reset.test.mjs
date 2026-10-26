@@ -43,6 +43,18 @@ test("the bound stops polling and clips the final sleep", async () => {
   assert.deepEqual(timer.sleeps, [INTERVAL, 6 * 60 * 1000]);
 });
 
+test("a long bound pauses for the poll interval and clips the final pause", async () => {
+  const timer = clock();
+  let calls = 0;
+  const fetch = async () => { calls += 1; return response(SINCE); };
+  assert.equal(await waitForCodexReset({
+    since: SINCE, maxHours: 1200, pollMinutes: 35791, fetch, ...timer, say: quiet,
+  }), false);
+  assert.equal(calls, 3);
+  assert.deepEqual(timer.sleeps, [2147460000, 2147460000, 25080000]);
+  assert.equal(timer.now() - Date.parse(SINCE), 1200 * 60 * 60 * 1000);
+});
+
 test("a fetch error keeps polling", async () => {
   const timer = clock();
   let calls = 0;
@@ -98,7 +110,32 @@ test("an invalid poll interval fails before fetching with usage", async () => {
     assert.equal(await runCodexWaitReset(argv, {
       fetch: async () => assert.fail("no fetch"), say: (line) => messages.push(line),
     }), 1);
-    assert.match(messages.join("\n"), /--poll-minutes (must be a positive finite number|needs a value)/);
+    assert.match(messages.join("\n"), /--poll-minutes (must be a positive finite number up to 35791 minutes|needs a value)/);
+    assert.match(messages.join("\n"), /usage: qc codex-wait-reset/);
+  }
+});
+
+test("the maximum poll interval is accepted with a long wait bound", async () => {
+  const timer = clock();
+  let calls = 0;
+  assert.equal(await runCodexWaitReset(["--since", SINCE, "--poll-minutes", "35791", "--max-hours", "1200"], {
+    ...timer, say: quiet,
+    fetch: async () => response(++calls === 1 ? SINCE : "2026-01-01T00:00:01.000Z"),
+  }), 0);
+  assert.equal(calls, 2);
+  assert.deepEqual(timer.sleeps, [35791 * 60_000]);
+});
+
+test("a poll interval above 35791 minutes fails before fetching", async () => {
+  for (const minutes of ["35791.000001", String(2147483647 / 60_000), "35792", "36000"]) {
+    const messages = [];
+    let calls = 0;
+    assert.equal(await runCodexWaitReset(["--since", SINCE, "--poll-minutes", minutes], {
+      ...clock(), say: (line) => messages.push(line),
+      fetch: async () => { calls += 1; return response("2026-01-01T00:00:01.000Z"); },
+    }), 1);
+    assert.equal(calls, 0);
+    assert.match(messages.join("\n"), /--poll-minutes must be a positive finite number up to 35791 minutes/);
     assert.match(messages.join("\n"), /usage: qc codex-wait-reset/);
   }
 });
