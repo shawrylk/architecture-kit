@@ -23,6 +23,7 @@ Progress: `<absolute progress file>`
 5. Wrap each heavy command in `npx qc gate-slot --`: the local check, a test run of more than one file, a browser test, a live database test, a commit, and a push.
 6. When you touch server code, run its live database tests before the push: `npx qc gate-slot -- npx qc throwaway-db -- <test command>`. Never use port 5432 or another port the local stack owns.
 7. Never skip a git hook. Never stop to ask: write the question in the report and continue.
+8. In a batch, push the branch and open no pull request; otherwise, open every pull request as a draft.
 
 ## Commit
 

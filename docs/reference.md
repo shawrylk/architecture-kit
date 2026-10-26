@@ -1071,10 +1071,32 @@ migrations that this branch added to follow the last migration of `<ref>`, in or
 each reference to an old name. A second run changes nothing.
 
 `qc integrate --issue <n> <branch>...` builds one branch, `feat/<n>-integration`, for a batch of
-related branches. It merges each branch in order, renumbers its migrations, and commits. A conflict
-in files that `generated.globs` matches is settled by `generated.command`. Any other conflict stops
-the run with the file list; resolve it, commit, and run the same command again. The batch then runs
-one CI and merges once.
+related branches. It merges each branch in order and renumbers its migrations. It regenerates files
+before each push, pushes after every three merges by default, and pushes any remainder at the end.
+Add `--pr` to open one draft pull request after the first push; an existing pull request stays open.
+
+| Key | Default | Behavior |
+|---|---|---|
+| `integrate.ciEvery` | `3` | Push after this many merges, then push any remainder. |
+| `integrate.push` | `true` | Push to `origin` when that remote exists; `false` keeps the batch local. |
+| `integrate.branchPattern` | `^[a-z]+/[0-9]+-integration` | Select the branches that use the integration lane. |
+| `integrate.review` | `true` | Enable the integration lane for the merge guard. |
+
+The CI template runs on pull requests and pushes to `main` or `master`.
+Edit the trunk list for another base branch. A task branch push with no pull request runs no CI.
+Each push to an open integration pull request starts CI and cancels its stale run.
+
+The integration lane accepts per-feature `Scope:` reviews on the integration head.
+Every commit must fall under an approved review, except regenerate commits and clean merges.
+A hand-resolved merge needs a review after that merge; give its conflict resolution a separate scope.
+A conflict in files that `generated.globs` matches uses `generated.command`.
+Any other conflict stops the run with the file list.
+Resolve it, commit, and run the same command again.
+
+The batch reduces CI runs and repeated reviews after the base changes.
+One failure blocks the batch, and tracing it to one task takes more work.
+One large pull request also takes more effort to read.
+Per-feature reviews keep each review small; frequent CI limits the work between checks.
 
 ### Mirror the tests of more than one root
 
