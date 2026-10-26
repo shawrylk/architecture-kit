@@ -6,6 +6,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } fr
 import os from "node:os";
 import path from "node:path";
 import { load } from "../config.mjs";
+import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, waitForCodexReset } from "./codex-reset.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
@@ -250,7 +251,15 @@ async function runJob(argv, {
     }
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
-    if (result.status === 2 || reportsLimit(result.tail ?? "", prompt)) {
+    const line = limitLineOf(result.tail ?? "", prompt);
+    if (result.status === 2 || line) {
+      const recordedAt = now();
+      const reset = line ? resetTimeOf(line, recordedAt) : null;
+      try {
+        writeLimit(limitFileOf(env), { until: reset ?? recordedAt + 3_600_000, source: reset === null ? "default" : "codex" }, recordedAt);
+      } catch (error) {
+        say(`qc codex-implement: cannot write the limit state: ${error.message}`);
+      }
       if (!settings.waitReset) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
       const hit = now();
       resetDeadline ??= hit + settings.maxHours * 60 * 60 * 1000;
@@ -266,9 +275,9 @@ async function runJob(argv, {
 }
 
 /** A limit line counts only when Codex wrote it, not when the log echoes a line of the prompt. */
-function reportsLimit(tail, prompt) {
+function limitLineOf(tail, prompt) {
   const echoed = new Set(prompt.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
-  return tail.split(/\r?\n/).some((line) => LIMIT.test(line) && !echoed.has(line.trim()));
+  return tail.split(/\r?\n/).find((line) => LIMIT.test(line) && !echoed.has(line.trim())) ?? null;
 }
 
 function finish(say, message, code) {

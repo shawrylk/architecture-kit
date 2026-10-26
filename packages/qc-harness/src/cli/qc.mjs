@@ -36,6 +36,7 @@ const USAGE = `qc — architecture gates
                            --wait-reset polls every 15 minutes without a model, then resumes the same brief; --max-hours defaults to 6
   qc codex-wait-reset --since <iso> [--max-hours <n>]
                            wait for a later Codex reset without a model; exit 0 on a reset, 1 at the bound; default 6 hours
+  qc codex status         print whether Codex is free or limited, with the reset time and its source
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
   qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
@@ -106,6 +107,15 @@ async function main() {
     const { runCodexWaitReset } = await import("./codex-reset.mjs");
     process.exitCode = await runCodexWaitReset(rest);
     return;
+  }
+  if (command === "codex") {
+    if (rest[0] === "status") {
+      const { runCodexStatus } = await import("./codex-limit.mjs");
+      process.exitCode = runCodexStatus(rest.slice(1));
+      return;
+    }
+    console.log(USAGE);
+    process.exit(1);
   }
   // The slots are machine-wide, so the runner reads no configuration.
   if (command === "gate-slot") {

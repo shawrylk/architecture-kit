@@ -38,6 +38,7 @@ The prompt gives these lines:
 ## Reply (under 10 lines)
 
 - `EXIT: <code>`: 0 done, 2 a Codex usage limit, 3 out of runs, 1 bad input.
+- On `EXIT: 2`, dispatch the same brief to `architecture:sdd-implementer` (sonnet). The guard refuses a codex dispatch while `qc codex status` shows a limit. While Codex is free, an implementer dispatch needs a prompt line `Runtime: claude <reason>`. Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other.
 - The last 6 lines of the progress file.
 - The worktree head: `git -C <Worktree> log -1 --format='%H %s'`.
 - The PR URL, if the progress file names one.

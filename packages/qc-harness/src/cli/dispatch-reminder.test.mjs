@@ -13,6 +13,12 @@ process.env.QC_RUNTIME = "codex";
 delete process.env.QC_ROLE;
 const BASE = `${REMINDER}${modelsLine({ models: runtimeModels.codex, runtime: "codex" })}${CODEX_LINE}`;
 
+test("CODEX_LINE names the runtime tags, Runtime line, and qc codex status", () => {
+  for (const text of ["Codex <model> · ", "Claude <model> · ", "Runtime: claude <reason>", "qc codex status"]) {
+    assert.ok(CODEX_LINE.includes(text), text);
+  }
+});
+
 const NOTE = fileURLToPath(new URL("./dispatch-reminder.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
 
