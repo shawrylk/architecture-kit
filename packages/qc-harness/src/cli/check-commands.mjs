@@ -1,7 +1,7 @@
 // A pipeline that runs repository commands after the architecture checks pass.
 
 import { execFileSync } from "node:child_process";
-import spawn from "cross-spawn";
+import { spawnCommand as spawn } from "./spawn-command.mjs";
 
 // Quotes group arguments; shell expansion stays off, and Windows path separators stay literal.
 function commandWords(command) {

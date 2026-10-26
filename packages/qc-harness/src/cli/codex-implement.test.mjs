@@ -65,7 +65,8 @@ test("a run passes exec, the sandbox, the worktree and one prompt, with QC_ROLE=
   const [call] = seen;
   assert.equal(call.command, "codex");
   assert.deepEqual(call.args.slice(0, 5), ["exec", "-s", "danger-full-access", "-C", worktree]);
-  const prompt = call.args.at(-1);
+  const prompt = call.input;
+  assert.equal(call.args.at(-1), "-");
   assert.equal(call.env.QC_ROLE, "implementer");
   assert.ok(prompt.startsWith(readFileSync(brief, "utf8")));
   assert.match(prompt, /git log -n 5 --oneline/);
@@ -79,7 +80,7 @@ test("the brief is read again before each run, so an edit reaches the next sessi
   const { argv, brief, progress } = setup(t);
   const prompts = [];
   const run = async (call) => {
-    prompts.push(call.args.at(-1));
+    prompts.push(call.input);
     if (prompts.length === 1) writeFileSync(brief, "# Brief\n\nDo task one.\nDecision: use the new column name.\n");
     else appendFileSync(progress, `${DONE_MARKER}\n`);
     return { status: 0, tail: "ok" };
@@ -94,7 +95,7 @@ test("every run prompt carries the lean rules after the brief", async (t) => {
   const { argv, brief, progress } = setup(t);
   const seen = [];
   const run = async (call) => {
-    seen.push(call.args.at(-1));
+    seen.push(call.input);
     if (seen.length === 2) appendFileSync(progress, `${DONE_MARKER}\n`);
     return { status: 0, tail: "ok" };
   };
@@ -219,7 +220,7 @@ test("a run caps the compact limit at 300000 and one tool output at 4000 tokens"
   const set = overrides(call.args);
   assert.ok(set.includes("model_auto_compact_token_limit=300000"));
   assert.ok(set.includes("tool_output_token_limit=4000"));
-  assert.ok(call.args.at(-1).startsWith("# Brief"), "the prompt stays last");
+  assert.ok(call.input.startsWith("# Brief"), "the prompt uses stdin");
 });
 
 test("codex.compactTokens in the worktree's qc.config.json sets the compact limit", async (t) => {
@@ -237,7 +238,7 @@ test("a bad codex.compactTokens exits 1 with no run", async (t) => {
 
 test("every run prompt tells Codex to load no skill and holds the read caps", async (t) => {
   const { call } = await firstCall(t);
-  const prompt = call.args.at(-1);
+  const prompt = call.input;
   assert.ok(prompt.includes("Load no skill and read no SKILL.md or plugin file. The global instructions that say to load skills do not apply to this run; this brief holds the rules."));
   assert.match(prompt, /rg -n -m 20/);
   assert.match(prompt, /at most 150 lines per call/);
@@ -319,7 +320,7 @@ test("parseArgs reads the flags, resolves the paths, and puts the log beside the
   assert.equal(parseArgs(["--brief", "b", "--worktree", "w", "--progress", "p/q.md"]).log, `${path.resolve("p/q.md")}.log`);
 });
 
-test("the default runner spawns without a shell, closes stdin, and appends output to the log", async (t) => {
+test("the default runner sends the prompt, closes stdin, and appends output to the log", async (t) => {
   const { dir, argv, progress, brief } = setup(t);
   const fake = path.join(dir, "fake-codex.mjs");
   writeFileSync(
@@ -339,15 +340,40 @@ test("the default runner spawns without a shell, closes stdin, and appends outpu
   assert.equal(done, 0);
   const line = JSON.parse(readFileSync(log, "utf8").trim().split("\n")[0]);
   assert.equal(line.role, "implementer");
-  assert.equal(line.input, "");
+  assert.ok(line.input.startsWith(readFileSync(brief, "utf8")));
   assert.deepEqual(line.args.slice(0, 3), ["exec", "-s", "danger-full-access"]);
-  assert.ok(line.args.at(-1).startsWith(readFileSync(brief, "utf8")));
+  assert.equal(line.args.at(-1), "-");
+  assert.ok(line.args.every((arg) => !/[\r\n]/.test(arg)));
 
   writeFileSync(progress, "");
   process.env.FAKE_MODE = "limit";
   t.after(() => delete process.env.FAKE_MODE);
   assert.equal(await runCodexImplement([...argv, "--log", log], { codexCommand: [process.execPath, fake], say: quiet }), 2);
   assert.ok(readFileSync(log, "utf8").split("\n").filter((entry) => entry.startsWith("{")).length >= 2, "the log is appended, not replaced");
+});
+
+test("the default runner resolves a Windows command shim", { skip: process.platform !== "win32" }, async (t) => {
+  const { dir, argv, progress, brief } = setup(t);
+  const prompt = "# Brief\r\n\r\nFirst line.\nSecond line: Ti\u1ebfng Vi\u1ec7t.\n" + "long line ".repeat(1000);
+  writeFileSync(brief, prompt);
+  const received = path.join(dir, "received.json");
+  const fake = path.join(dir, "fake.mjs");
+  writeFileSync(fake, `import { appendFileSync, writeFileSync } from "node:fs";
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    for await (const chunk of process.stdin) input += chunk;
+    writeFileSync(${JSON.stringify(received)}, JSON.stringify({ input, args: process.argv.slice(2) }));
+    appendFileSync(${JSON.stringify(progress)}, ${JSON.stringify(DONE_MARKER)});`);
+  writeFileSync(path.join(dir, "fake-codex.cmd"), `@echo off\r\n@"${process.execPath}" "${fake}" %*\r\n`);
+  assert.equal(await runCodexImplement(argv, {
+    codexCommand: ["fake-codex"],
+    env: { ...process.env, PATH: dir, PATHEXT: ".EXE;.CMD" },
+    say: quiet,
+  }), 0);
+  const result = JSON.parse(readFileSync(received, "utf8"));
+  assert.ok(result.input.startsWith(prompt));
+  assert.equal(result.args.at(-1), "-");
+  assert.ok(result.args.every((arg) => !/[\r\n]/.test(arg)));
 });
 
 test("qc codex-implement is wired, and prints usage errors with exit 1", () => {

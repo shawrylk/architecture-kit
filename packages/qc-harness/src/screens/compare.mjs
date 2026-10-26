@@ -1,5 +1,6 @@
-import pixelmatch from "pixelmatch";
-import { PNG } from "pngjs";
+import { importConsumerPackage } from "../consumer-package.mjs";
+const { default: pixelmatch } = await importConsumerPackage("pixelmatch");
+const { PNG } = await importConsumerPackage("pngjs");
 
 /** Pipeline: normalize dimensions and paint changed pixels over the right image. */
 export function compareImages(left, right) {
