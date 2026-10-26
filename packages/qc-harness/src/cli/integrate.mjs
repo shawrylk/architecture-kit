@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { globMatcher } from "../glob.mjs";
 import { runGh } from "./gh-run.mjs";
+import { postBody, redactOutput } from "./output-redaction.mjs";
+import { pauseRefusal } from "./pause.mjs";
 import { posixDir, renumber } from "./migrations.mjs";
 
 export const USAGE = `qc integrate — one integration branch for a batch of branches
@@ -17,7 +19,8 @@ export const USAGE = `qc integrate — one integration branch for a batch of bra
       manual pushes. An absent origin skips pushes. A conflict stops the run and lists the files.
       Resolve it, commit, and run the same command again: a branch already merged is skipped.
       --pr opens a draft pull request after the first push; it requires pushes and an origin remote.
-      It refuses each branch with an author email other than the effective Git author email.`;
+      It refuses each branch with an author email other than the effective Git author email.
+      It returns exit 5 when an operator pause blocks integration.`;
 
 export function tryGit(cwd, args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -98,6 +101,11 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
   }
   const root = config.root;
   try {
+    const refusal = pauseRefusal(root);
+    if (refusal) {
+      say(`qc integrate: ${refusal}`);
+      return 5;
+    }
     const name = integrationBranch(options);
     const pattern = config.branches?.pattern;
     if (pattern && !new RegExp(pattern).test(name)) throw new Error(`${name} does not match branches.pattern ${pattern}`);
@@ -131,7 +139,8 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
       } else {
         const result = gh([
           "pr", "create", "--draft", "--head", name, "--base", prBase,
-          "--title", `${options.type ?? "feat"}: integrate the batch for #${options.issue}`, "--body", `Refs #${options.issue}`,
+          "--title", redactOutput(`${options.type ?? "feat"}: integrate the batch for #${options.issue}`),
+          "--body", postBody(`Refs #${options.issue}`, config),
         ], { cwd: root });
         if (result === null) throw new Error("gh pr create failed");
         say(`pr     ${result.trim()}`);

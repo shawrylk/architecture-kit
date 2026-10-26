@@ -10,6 +10,89 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("post.aiLabel defaults on and accepts an explicit boolean", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-post-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(defaults.post, { aiLabel: true });
+  assert.equal(load(root).post.aiLabel, true);
+  for (const post of [{}, { aiLabel: false }, { aiLabel: true }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ post }));
+    assert.equal(load(root).post.aiLabel, post.aiLabel ?? true);
+  }
+});
+
+test("post.aiLabel rejects malformed configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-post-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const post of [null, [], false, "post", { aiLabel: null }, { aiLabel: "false" }, { aiLabel: 0 }, { aiLabel: [] }, { aiLabel: {} }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ post }));
+    assert.throws(() => load(root), /post/);
+  }
+});
+
+test("merge.holdLabel defaults to hold and accepts a repository label", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-hold-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(defaults.merge?.holdLabel, "hold");
+  assert.equal(load(root).merge.holdLabel, "hold");
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ merge: { holdLabel: "operator-hold" } }));
+  assert.equal(load(root).merge.holdLabel, "operator-hold");
+});
+
+test("merge rejects a non-object configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-merge-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const value of [null, [], false, 5, "merge"]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ merge: value }));
+    assert.throws(() => load(root), { name: "TypeError", message: "merge must be an object" });
+  }
+});
+
+test("merge.holdLabel rejects invalid labels and surrounding whitespace", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-hold-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const holdLabel of [null, false, 5, [], {}, "", " ", " hold", "hold "]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ merge: { holdLabel } }));
+    assert.throws(() => load(root), { name: "TypeError", message: "merge.holdLabel must be a non-empty string without surrounding whitespace" });
+  }
+});
+
+test("guard defaults protect automation and configuration, and custom paths replace the defaults", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-guard-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(load(root).guard.protectedPaths, [".github/workflows/**", ".husky/**", ".githooks/**", "qc.config.json", ".claude/settings*.json"]);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ guard: { protectedPaths: ["ci/**"] } }));
+  assert.deepEqual(load(root).guard.protectedPaths, ["ci/**"]);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ guard: { protectedPaths: [] } }));
+  assert.deepEqual(load(root).guard.protectedPaths, []);
+});
+
+test("guard.protectedPaths rejects malformed configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-guard-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const guard of [null, [], false, "guard", { protectedPaths: null }, { protectedPaths: "ci/**" }, { protectedPaths: [""] }, { protectedPaths: [" "] }, { protectedPaths: [1] }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ guard }));
+    assert.throws(() => load(root), /guard/);
+  }
+});
+
+test("ci.requiredChecks defaults to an empty list and accepts check names", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-ci-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(load(root).ci, { requiredChecks: [] });
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ ci: { requiredChecks: ["build", "test"] } }));
+  assert.deepEqual(load(root).ci.requiredChecks, ["build", "test"]);
+});
+
+test("ci.requiredChecks rejects malformed configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-ci-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const ci of [null, [], false, "CI", { requiredChecks: null }, { requiredChecks: "build" }, { requiredChecks: [""] }, { requiredChecks: [" "] }, { requiredChecks: [1] }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ ci }));
+    assert.throws(() => load(root), /ci/);
+  }
+});
+
 test("featureSwitches validates its object, filename, patterns, and regular expressions", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-switch-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -51,6 +134,7 @@ test("codex defaults bound a short session and disable the skill plugin", () => 
   assert.deepEqual(load(here).codex, {
     compactTokens: 300000,
     disablePlugins: ["superpowers@claude-plugins-official"],
+    envAllow: [],
     preamble: "",
     briefMaxLines: 40,
     briefMaxSteps: 6,
@@ -61,9 +145,18 @@ test("codex defaults bound a short session and disable the skill plugin", () => 
 test("codex configuration raises limits and preserves omitted defaults", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-codex-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const codex = { briefMaxLines: 80, briefMaxSteps: 10, maxRuns: 4, disablePlugins: ["custom@plugins"], preamble: "Use the local rules." };
+  const codex = { briefMaxLines: 80, briefMaxSteps: 10, maxRuns: 4, disablePlugins: ["custom@plugins"], envAllow: ["GITHUB_TOKEN", "PROJECT_KEY"], preamble: "Use the local rules." };
   writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ codex }));
   assert.deepEqual(load(root).codex, { ...defaults.codex, ...codex });
+});
+
+test("codex.envAllow rejects invalid lists and names with surrounding whitespace", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-codex-env-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const envAllow of [null, "GH_TOKEN", {}, [1], [""], [" "], [" GH_TOKEN"], ["GH_TOKEN "], ["\tNPM_TOKEN"], ["NPM_TOKEN\n"]]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ codex: { envAllow } }));
+    assert.throws(() => load(root), { name: "TypeError", message: /codex\.envAllow.*array of non-empty strings/ }, JSON.stringify(envAllow));
+  }
 });
 
 test("integrate defaults push every three merges", () => {

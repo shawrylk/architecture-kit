@@ -2,7 +2,13 @@ import { strict as assert } from "node:assert";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { expandHome, runGh, runGhResult } from "./gh-run.mjs";
+import { expandHome, parseApiList, runGh, runGhResult } from "./gh-run.mjs";
+
+test("parseApiList combines every page and rejects incomplete or malformed pages", () => {
+  assert.deepEqual(parseApiList('[{"check_runs":[1]},{"check_runs":[2]}]', "check_runs"), [1, 2]);
+  assert.deepEqual(parseApiList('{"workflow_runs":[]}', "workflow_runs"), []);
+  for (const text of [null, "not JSON", "{}", '[{"check_runs":[]},{}]']) assert.equal(parseApiList(text, "check_runs"), null);
+});
 
 test("expandHome expands a leading ~ the way the shell would, and leaves every other value", () => {
   assert.deepEqual(expandHome({ GH_CONFIG_DIR: "~/.config/gh-personal", GH_HOST: "ghe.example.com" }), {

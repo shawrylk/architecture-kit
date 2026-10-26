@@ -3,6 +3,7 @@
 
 import os from "node:os";
 import path from "node:path";
+import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { ciNotGreen, ciState as readCiState } from "./ci-state.mjs";
 import { typeOf } from "./dispatch.mjs";
@@ -109,7 +110,7 @@ function fixVerdict({ records, branch, head, fix, ciStatus, cwd, git, handoff })
  * Only implementer commits need a review, so a controller commit after a reviewed head passes. `cwd` is any
  * checkout; `git` reads it, and `ci` answers why CI on a sha is not green, or null.
  */
-export function gateVerdict({ records, branch, head, reason, type, cwd, git = gitRead, handoff = null, ci = (sha) => ciNotGreen(sha, cwd), fix = null, ciStatus = (sha) => readCiState(sha, cwd) }) {
+export function gateVerdict({ records, branch, head, reason, type, cwd, git = gitRead, handoff = null, requiredChecks = [], ci = (sha) => ciNotGreen(sha, cwd, { requiredChecks }), fix = null, ciStatus = (sha) => readCiState(sha, cwd, { requiredChecks }) }) {
   if (fix !== null) return fixVerdict({ records, branch, head, fix, ciStatus, cwd, git, handoff });
   // A continuation of the newest stop's hand-off is the same task, so it is neither a fix round nor a new task.
   const continued = continuedStop(records, branch, handoff);
@@ -191,6 +192,14 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
     briefNote = brief.note;
   }
   if (!taskTypeIn(type, workflow.review)) return pass(workflow, base, briefNote);
+  const state = (sha, checkout) => {
+    if (ci && !ciState) return { reason: ci(sha), unknown: null };
+    try {
+      return (ciState ?? readCiState)(sha, checkout, { requiredChecks: load(workflow.root).ci.requiredChecks });
+    } catch (error) {
+      return { reason: null, unknown: `cannot read repository CI configuration: ${error.message}` };
+    }
+  };
   if (!workflow.review.implementerTypes.includes(type)) {
     // A reviewer waits for its checks. Its worktree tells the stop which branch the verdict belongs to,
     // and a checkout the gate cannot read would skip every check, so that refuses.
@@ -198,7 +207,6 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
     if (!root) return refuse(unreadableRefusal(type, `no git checkout exists at "${named}"`));
     const branch = branchOfCheckout(root);
     const head = headOf(root);
-    const state = ciState ?? (ci ? (sha) => ({ reason: ci(sha), unknown: null }) : (sha) => readCiState(sha, root));
     let records = [];
     let ledgerNote = null;
     try {
@@ -206,7 +214,7 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
     } catch (error) {
       ledgerNote = `Task gate could not read the ledger (${error.message}), so the one-review check did not run.`;
     }
-    const checked = reviewerCheck({ type, prompt, review: workflow.review, base: workflow.base, records, root, branch, head, ciState: state, reads });
+    const checked = reviewerCheck({ type, prompt, review: workflow.review, base: workflow.base, records, root, branch, head, ciState: (sha) => state(sha, root), reads });
     if (checked.refusal) return refuse(checked.refusal);
     const scope = scopeOf(prompt);
     const scoped = scope && workflow.review.reviewerTypes.branch.includes(type) ? { scope } : {};
@@ -231,8 +239,8 @@ export function judgeTask(call, tmp = os.tmpdir(), { ci, ciState, reads = defaul
   const fix = fixOf(prompt);
   const { refusal, ciPass, note: fixNote } = gateVerdict({
     records, branch: worktree.branch, head: worktree.head, reason, type, cwd: workflow.root, handoff, fix,
-    ...(ci ? { ci } : {}),
-    ...(ciState ? { ciStatus: ciState } : {}),
+    ci: ci ?? ((sha) => state(sha, workflow.root).reason),
+    ciStatus: (sha) => state(sha, workflow.root),
   });
   if (refusal) return refuse(refusal);
   const continues = handoff ? { handoff } : {};

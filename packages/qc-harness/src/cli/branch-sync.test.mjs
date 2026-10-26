@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, test } from "node:test";
-import { runBranch, syncBranch } from "./branch-sync.mjs";
+import { runBranch, syncBranch, USAGE } from "./branch-sync.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 const quiet = (lines) => (line) => lines.push(line);
@@ -20,6 +20,126 @@ beforeEach((t) => {
     rmSync(directory, { recursive: true, force: true });
   });
 });
+
+test("branch usage lists the pause refusal exit", () => {
+  assert.match(USAGE, /exit 5.*paus/i);
+});
+
+for (const target of ["does-not-exist", "outside-git"]) test(`a ${target} target reports an input error rather than a pause`, async (t) => {
+  const root = batch(t);
+  const worktree = path.join(os.tmpdir(), `${path.basename(root)}-${target}`);
+  if (target === "outside-git") {
+    mkdirSync(worktree);
+    t.after(() => rmSync(worktree, { recursive: true, force: true }));
+  }
+  const lines = [];
+  assert.equal(await runBranch(config(root), ["sync", worktree], {
+    say: quiet(lines), runSlot: () => assert.fail("an invalid worktree must never push"),
+  }), 1);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], target === "does-not-exist" ? /git branch --show-current: failed/ : /not a git repository/i);
+  assert.doesNotMatch(lines[0], /pause|qc resume/);
+  assert.equal(git(root, "status", "--porcelain"), "");
+});
+
+for (const paused of [false, true]) test(`a target from another repository is refused when its repository is ${paused ? "paused" : "running"}`, async (t) => {
+  const root = batch(t);
+  const foreign = batch(t);
+  const worktree = path.join(foreign, ".worktree", "run");
+  git(foreign, "worktree", "add", "-qb", "foreign-run", worktree);
+  if (paused) {
+    mkdirSync(path.join(foreign, ".git", "qc"), { recursive: true });
+    writeFileSync(path.join(foreign, ".git", "qc", "pause"), "operator investigation\n");
+  }
+  const head = git(worktree, "rev-parse", "HEAD");
+  const lines = [];
+  let generated = 0;
+  let pushed = 0;
+  assert.equal(await runBranch(config(root), ["sync", worktree], {
+    say: quiet(lines),
+    run: () => { generated += 1; return 0; },
+    runSlot: () => { pushed += 1; return 0; },
+  }), 1);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /target.*another repository/i);
+  assert.equal(generated, 0);
+  assert.equal(pushed, 0);
+  assert.equal(git(worktree, "rev-parse", "HEAD"), head);
+  assert.equal(git(worktree, "status", "--porcelain"), "");
+});
+
+for (const spelling of ["lowercase drive", "lowercase path", "linked root"]) test(`branch sync accepts the same repository with a ${spelling}`, {
+  skip: spelling !== "linked root" && process.platform !== "win32",
+}, async (t) => {
+  const root = batch(t);
+  const worktree = path.join(root, ".worktree", "run");
+  git(root, "worktree", "add", "-qb", "linked-run", worktree);
+  const configuredRoot = spelling === "lowercase drive" ? root[0].toLowerCase() + root.slice(1)
+    : spelling === "lowercase path" ? root.toLowerCase() : worktree;
+  const lines = [];
+  assert.equal(await runBranch(config(configuredRoot), ["sync", spelling === "linked root" ? "." : worktree, "--no-push"], {
+    say: quiet(lines), run, withSlot: (_words, _cwd, action) => action(),
+    runSlot: () => assert.fail("--no-push must never push"),
+  }), 0, lines.join("\n"));
+  git(worktree, "merge-base", "--is-ancestor", "main", "HEAD");
+  assert.equal(git(worktree, "status", "--porcelain"), "");
+});
+
+test("a pause refuses sync before branch changes or a push", async (t) => {
+  const dir = batch(t);
+  const head = git(dir, "rev-parse", "HEAD");
+  mkdirSync(path.join(dir, ".git", "qc"), { recursive: true });
+  writeFileSync(path.join(dir, ".git", "qc", "pause"), "operator investigation\n");
+  const refusal = "An operator paused the kit: operator investigation. Wait for the operator to run `qc resume`.";
+  await assert.rejects(() => syncBranch(config(dir), dir), { message: refusal });
+  const lines = [];
+  assert.equal(await runBranch(config(dir), ["sync", "."], {
+    say: quiet(lines), runSlot: () => assert.fail("a paused branch must never push"),
+  }), 5);
+  assert.deepEqual(lines, [`qc branch: ${refusal}`]);
+  assert.equal(git(dir, "rev-parse", "HEAD"), head);
+  assert.equal(git(dir, "status", "--porcelain"), "");
+});
+
+test("an unreadable pause refuses sync before branch changes or a push", async (t) => {
+  const dir = batch(t);
+  const head = git(dir, "rev-parse", "HEAD");
+  mkdirSync(path.join(dir, ".git", "qc", "pause"), { recursive: true });
+  await assert.rejects(() => syncBranch(config(dir), dir), /cannot read the operator pause .*Wait for the operator to run `qc resume`\./);
+  const lines = [];
+  assert.equal(await runBranch(config(dir), ["sync", "."], {
+    say: quiet(lines), runSlot: () => assert.fail("an unreadable pause must never push"),
+  }), 5);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^qc branch: cannot read the operator pause .*Wait for the operator to run `qc resume`\.$/);
+  assert.equal(git(dir, "rev-parse", "HEAD"), head);
+  assert.equal(git(dir, "status", "--porcelain"), "");
+});
+
+for (const unreadable of [false, true]) {
+  test(`branch sync checks ${unreadable ? "an unreadable" : "a new"} pause again before pushing`, async (t) => {
+    const dir = batch(t);
+    const lines = [];
+    let generated = 0;
+    assert.equal(await runBranch(config(dir), ["sync", "."], {
+      say: quiet(lines),
+      runSlot: () => assert.fail("a pause set during sync must prevent the push"),
+      run: (command, cwd) => {
+        generated += 1;
+        const code = run(command, cwd);
+        const file = path.join(dir, ".git", "qc", "pause");
+        mkdirSync(path.dirname(file), { recursive: true });
+        if (unreadable) mkdirSync(file);
+        else writeFileSync(file, "operator investigation\n");
+        return code;
+      },
+    }), 5);
+    assert.equal(generated, 1);
+    assert.match(lines.at(-1), /Wait for the operator to run `qc resume`\.$/);
+    if (unreadable) assert.match(lines.at(-1), /cannot read the operator pause/);
+    else assert.match(lines.at(-1), /An operator paused the kit: operator investigation/);
+  });
+}
 
 test("each branch-sync test uses a private gate-slot folder", () => {
   const directory = process.env.QC_GATE_SLOT_DIR;
@@ -285,11 +405,14 @@ for (const argv of [["sync"], ["sync", ".", "extra"], ["merge", "."], [], ["sync
 }
 
 test("branch sync resolves its worktree against config.root and accepts --base", async (t) => {
-  const dir = batch(t);
-  const cfg = { ...config(dir), root: path.dirname(dir), worktree: { base: "missing-base" } };
+  const root = batch(t);
+  git(root, "checkout", "-q", "main");
+  const dir = path.join(root, ".worktree", "run");
+  git(root, "worktree", "add", "-q", dir, "feat/5-mine");
+  const cfg = { ...config(dir), root, worktree: { base: "missing-base" } };
   const calls = [];
   const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
-  assert.equal(await runBranch(cfg, ["sync", path.basename(dir), "--base", "main"], { say: quiet([]), run, runSlot }), 0);
+  assert.equal(await runBranch(cfg, ["sync", path.relative(root, dir), "--base", "main"], { say: quiet([]), run, runSlot }), 0);
   assert.deepEqual(calls, [{ words: ["git", "push", "-u", "origin", "feat/5-mine"], cwd: dir }]);
 });
 

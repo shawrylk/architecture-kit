@@ -1,10 +1,117 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { ciNotGreen, ciState, notGreenReason } from "./ci-state.mjs";
 
 const SHA = "a".repeat(40);
 const run = (name, status, conclusion = null) => ({ name, status, conclusion });
-const reply = (...runs) => JSON.stringify({ total_count: runs.length, check_runs: runs });
+const reply = (...runs) => JSON.stringify({ total_count: runs.length, check_runs: runs, workflow_runs: [] });
+
+const ciGh = (checks, workflows) => (args) => args[1].includes("/actions/runs") ? JSON.stringify(workflows) : reply(...checks);
+
+test("unfinished workflows on the head are pending before checks exist and after checks pass", () => {
+  for (const status of ["queued", "in_progress", "waiting", "pending", "requested"]) {
+    for (const checks of [[], [run("lint", "completed", "success")]]) {
+      const calls = [];
+      const read = ciGh(checks, [{ workflow_runs: [] }, { workflow_runs: [{ name: "CI", head_sha: SHA, status }] }]);
+      const gh = (args, options) => (calls.push({ args, options }), read(args));
+      const state = ciState(SHA, "/c", { gh, origin: () => "o/r" });
+      assert.equal(state.pending, true);
+      assert.equal(state.unknown, null);
+      assert.equal(state.reason, `CI on aaaaaaa: CI is ${status}`);
+      assert.ok(calls[1].args.includes("--paginate"));
+      assert.ok(calls[1].args.includes("--slurp"));
+      assert.equal(calls[1].args[1], `repos/o/r/actions/runs?head_sha=${SHA}&per_page=100`);
+      assert.ok(calls[0].options.timeoutMs + calls[1].options.timeoutMs + 1000 < 10000);
+    }
+  }
+});
+
+test("completed workflows and workflows on other heads add no pending state", () => {
+  const gh = ciGh([run("lint", "completed", "success")], [{ workflow_runs: [
+    { name: "CI", head_sha: "b".repeat(40), status: "queued" },
+    { name: "CI", head_sha: SHA, status: "completed" },
+  ] }]);
+  assert.deepEqual(ciState(SHA, "/c", { gh, origin: () => "o/r" }), { reason: null, unknown: null });
+});
+
+test("a failed check wins over queued workflows and missing required checks", () => {
+  const gh = ciGh([run("build", "completed", "failure")], [{ workflow_runs: [{ name: "CI", head_sha: SHA, status: "queued" }] }]);
+  const state = ciState(SHA, "/c", { gh, origin: () => "o/r", requiredChecks: ["lint"] });
+  assert.equal(state.reason, "CI on aaaaaaa: build ended failure");
+  assert.equal(state.pending, undefined);
+});
+
+test("unreadable workflow lists keep a green-looking head unknown", () => {
+  for (const answer of [null, "not JSON", "{}", '[{"workflow_runs":[]},{}]']) {
+    const gh = (args) => args[1].includes("/actions/runs") ? answer : reply(run("lint", "completed", "success"));
+    assert.match(ciState(SHA, "/c", { gh, origin: () => "o/r" }).unknown ?? "", /gh/);
+  }
+});
+
+test("unreadable workflows preserve pending and failed checks", () => {
+  for (const answer of [null, "not JSON", "{}", '[{"workflow_runs":[]},{}]']) {
+    for (const [status, conclusion] of [["in_progress", null], ["completed", "failure"]]) {
+      const gh = (args) => args[1].includes("/actions/runs") ? answer : reply(run("build", status, conclusion));
+      assert.deepEqual(ciState(SHA, "/c", { gh, origin: () => "o/r" }), {
+        reason: `CI on aaaaaaa: build ${status === "completed" ? "ended failure" : "is in_progress"}`,
+        unknown: null,
+        ...(status === "completed" ? {} : { pending: true }),
+      });
+    }
+  }
+});
+
+test("workflow paths let a newer suite supersede a cancelled suite", () => {
+  const checks = [
+    { ...run("build", "completed", "cancelled"), check_suite: { id: 1 }, id: 1 },
+    { ...run("build", "completed", "success"), check_suite: { id: 2 }, id: 2 },
+  ];
+  const workflows = checks.map((check) => ({ check_suite_id: check.check_suite.id, path: ".github/workflows/ci.yml", head_sha: SHA, status: "completed" }));
+  assert.deepEqual(ciState(SHA, "/c", { gh: ciGh(checks, { workflow_runs: workflows }), origin: () => "o/r" }), { reason: null, unknown: null });
+});
+
+test("ciState uses caller-required checks and ignores invalid checkout configuration", (t) => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-ci-required-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ ci: null }));
+  for (const checks of [[], [run("lint", "completed", "success")]]) {
+    const state = ciState(SHA, cwd, { gh: ciGh(checks, [{ workflow_runs: [] }]), origin: () => "o/r", requiredChecks: ["build"] });
+    assert.equal(state.pending, true);
+    assert.equal(state.reason, "CI on aaaaaaa: build is missing");
+  }
+  assert.deepEqual(ciState(SHA, cwd, { gh: ciGh([run("build", "completed", "success")], [{ workflow_runs: [] }]), origin: () => "o/r" }), { reason: null, unknown: null });
+  assert.deepEqual(ciState(SHA, cwd, { gh: ciGh([run("lint", "completed", "success")], [{ workflow_runs: [] }]), origin: () => "o/r" }), { reason: null, unknown: null });
+});
+
+test("checks with the same name in different suites remain separate", () => {
+  const failed = { ...run("build", "completed", "failure"), check_suite: { id: 1 }, started_at: "2026-01-01", id: 1 };
+  const passed = { ...run("build", "completed", "success"), check_suite: { id: 2 }, started_at: "2026-01-02", id: 2 };
+  for (const runs of [[failed, passed], [passed, failed]]) assert.equal(notGreenReason(runs), "build ended failure");
+});
+
+test("ciState reads every check-run page", () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(args);
+    return JSON.stringify([
+      { check_runs: [run("lint", "completed", "success")] },
+      { check_runs: [run("build", "completed", "failure")] },
+    ]);
+  };
+  assert.equal(ciState(SHA, "/c", { gh, origin: () => "o/r" }).reason, "CI on aaaaaaa: build ended failure");
+  assert.ok(calls[0].includes("--paginate"));
+  assert.ok(calls[0].includes("--slurp"));
+  assert.match(calls[0][1], /[?&]filter=all(?:&|$)/);
+});
+
+test("a queued rerun without a start time supersedes an older completed check", () => {
+  const older = { ...run("build", "completed", "success"), check_suite: { id: 1 }, started_at: "2026-01-01", id: 1 };
+  const newer = { ...run("build", "queued"), check_suite: { id: 1 }, started_at: null, id: 2 };
+  for (const runs of [[older, newer], [newer, older]]) assert.equal(notGreenReason(runs), "build is queued");
+});
 
 test("a head whose check runs all completed green is green", () => {
   assert.equal(notGreenReason([run("lint", "completed", "success"), run("docs", "completed", "skipped"), run("x", "completed", "neutral")]), null);
@@ -55,6 +162,12 @@ test("each failing conclusion makes the head not green, and the reason names the
   }
 });
 
+test("every completed conclusion outside the green allowlist fails", () => {
+  for (const conclusion of ["stale", "startup_failure", "future_conclusion", "", null, undefined]) {
+    assert.equal(notGreenReason([{ name: "build", status: "completed", conclusion }]), `build ended ${conclusion}`);
+  }
+});
+
 test("a run that has not completed makes the head not green", () => {
   for (const status of ["queued", "in_progress", "waiting", "pending"]) {
     assert.match(notGreenReason([run("build", status)]) ?? "", new RegExp(`build.*${status}`));
@@ -73,7 +186,8 @@ test("ciNotGreen reads the check runs of the sha from the repository of origin",
   };
   const reason = ciNotGreen(SHA, "/checkout", { gh, origin: () => "o/r" });
   assert.match(reason ?? "", /^CI on aaaaaaa:.*build.*failure/);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].args[1], /actions\/runs\?head_sha=/);
   assert.equal(calls[0].args[0], "api");
   assert.ok(calls[0].args[1].startsWith(`repos/o/r/commits/${SHA}/check-runs`));
   assert.equal(calls[0].options.cwd, "/checkout");

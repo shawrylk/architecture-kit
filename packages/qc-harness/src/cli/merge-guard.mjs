@@ -9,16 +9,17 @@
 // This applies in every checkout, with `swarm.dispatch` on or off.
 
 import { fileURLToPath } from "node:url";
-import { PROMOTION_SCOPE } from "../config.mjs";
+import { defaults, PROMOTION_SCOPE } from "../config.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
-import { LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
+import { configAtBase, LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
 import { integrationLane } from "./integration-lane.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
 import { promotionBranchName } from "./promotion-branch.mjs";
+import { pauseRefusal } from "./pause.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
 
@@ -86,20 +87,25 @@ export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict
 /** The PR base selects its review policy; its head identifies a promotion. Missing base details keep the guard closed. */
 function prBaseOf(merge, cwd, gh, timeoutMs) {
   const args = merge.nodeId
-    ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner}}}}", "-f", `id=${merge.nodeId}`]
-    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"];
+    ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner} labels(first:100){nodes{name} pageInfo{hasNextPage}}}}}", "-f", `id=${merge.nodeId}`]
+    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"];
   try {
     const answer = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
     const pr = merge.nodeId ? answer?.data?.node : answer;
     if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
       typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
     return typeof pr?.baseRefName === "string"
-      ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null, number: Number.isInteger(pr.number) && pr.number > 0 ? pr.number : null, sameRepository: pr.isCrossRepository === false }
+      ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null, number: Number.isInteger(pr.number) && pr.number > 0 ? pr.number : null, sameRepository: pr.isCrossRepository === false,
+        labels: merge.nodeId ? pr.labels?.nodes : pr.labels,
+        moreLabels: merge.nodeId ? pr.labels?.pageInfo?.hasNextPage !== false : pr.labels?.length >= 100 }
       : null;
   } catch {
     return null;
   }
 }
+
+/** Record: a hold refusal that waits for the operator. */
+class HoldRefusal extends Error {}
 
 /** The fragment that reads one merge's PR base and workflow within the shared deadline. */
 function policyOf(merge, root, cwd, gh, deadline) {
@@ -111,6 +117,22 @@ function policyOf(merge, root, cwd, gh, deadline) {
     return remaining > 0 ? gitOutWithin(remaining, dir, ...args) : null;
   };
   git.late = () => Date.now() >= deadline;
+  const settings = configAtBase(root, pr.oid, git, "the PR base");
+  if (settings.problem) throw new Error(settings.problem);
+  const mergeConfig = settings.config?.merge;
+  if (mergeConfig !== undefined && (mergeConfig === null || typeof mergeConfig !== "object" || Array.isArray(mergeConfig))) {
+    throw new Error("merge in qc.config.json must be an object");
+  }
+  const holdLabel = mergeConfig?.holdLabel === undefined ? defaults.merge.holdLabel : mergeConfig.holdLabel;
+  if (typeof holdLabel !== "string" || !holdLabel.trim() || holdLabel !== holdLabel.trim()) {
+    throw new Error("merge.holdLabel must be a non-empty string without surrounding whitespace");
+  }
+  if (pr.moreLabels || !Array.isArray(pr.labels) || pr.labels.some((label) => typeof label?.name !== "string")) {
+    throw new Error("gh cannot read every PR label");
+  }
+  if (pr.labels.some((label) => label.name.toLowerCase() === holdLabel.trim().toLowerCase())) {
+    throw new HoldRefusal(`PR label "${holdLabel}" holds this merge. Wait for the operator to remove the label.`);
+  }
   return { pr, workflow: workflowAt(root, { baseOid: pr.oid, git }) };
 }
 
@@ -235,6 +257,16 @@ export function decide(call, { gh = runGh } = {}) {
   const cwd = call.cwd ?? process.cwd();
   const root = checkoutRootOf(cwd);
   if (!root) return null;
+  const merges = ghMerges(command, parse);
+  const apiMerges = event === "PreToolUse" ? ghApiMerges(command, parse, { cwd }) : [];
+  if (event === "PreToolUse" && (merges.length > 0 || apiMerges.length > 0)) {
+    try {
+      const refusal = pauseRefusal(root);
+      if (refusal) return deny(`Merge guard: ${refusal}`);
+    } catch (error) {
+      return deny(`Merge guard: cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`);
+    }
+  }
   let workflow;
   if (event !== "PreToolUse") {
     try {
@@ -246,7 +278,7 @@ export function decide(call, { gh = runGh } = {}) {
     if (!workflow) return null;
   }
   if (event === "PreToolUse") {
-    for (const found of ghApiMerges(command, parse, { cwd })) {
+    for (const found of apiMerges) {
       const use = "Run `gh pr merge <n> --match-head-commit <sha>` with the head an APPROVED review named.";
       if (found.inputField !== undefined) {
         return deny(`Merge guard: \`gh api ${found.endpoint}\` mixes \`--input\` with \`${found.inputField}\`. Fields enter the URL query string, so the guard cannot pin the body to one PR. ${use}`);
@@ -256,6 +288,7 @@ export function decide(call, { gh = runGh } = {}) {
         try {
           if (!policyOf(merge, root, cwd, gh, deadline).workflow) continue;
         } catch (error) {
+          if (error instanceof HoldRefusal) return deny(`Merge guard: ${error.message}`);
           return deny(`Merge guard: the base policy cannot be read (${error.message}). ${use}`);
         }
       }
@@ -266,7 +299,6 @@ export function decide(call, { gh = runGh } = {}) {
       );
     }
   }
-  const merges = ghMerges(command, parse);
   if (merges.length === 0) return null;
   const { origin, own, other } = partition(merges, root, deadline);
   if (event === "PreToolUse") {
@@ -285,6 +317,7 @@ export function decide(call, { gh = runGh } = {}) {
         if (result.refusal) return deny(result.refusal);
         notes.push(...result.direct);
       } catch (error) {
+        if (error instanceof HoldRefusal) return deny(`Merge guard: ${error.message}`);
         return deny(`Merge guard: the base policy or ledger cannot be read (${error.message}), so no review can be checked.`);
       }
     }

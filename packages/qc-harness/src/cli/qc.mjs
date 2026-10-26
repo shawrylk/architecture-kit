@@ -25,6 +25,7 @@ const USAGE = `qc — architecture gates
   qc run [name]            drive one feature command headless; no name lists them
   qc install-hooks         point git at the kit's pre-commit hook
   qc work-order-check      refuse to commit on the wrong branch, per .claude/work-order.local.json
+  qc commit-guard          refuse staged protected paths, secrets, and conflict markers
   qc lease status [path]   who holds this worktree's lease, since when, and when it lapses
   qc lease release [path]  remove it: --session <id> for your own, --force for another's
   qc pr-check              in CI: the pull request names an issue that exists and predates it
@@ -37,7 +38,7 @@ const USAGE = `qc — architecture gates
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
-                           --effort overrides the Codex config for every run; omitting it keeps the config value
+                           --effort overrides the Codex config for every run; omitting it keeps the config value; exit 5 when paused
                            --wait-reset polls every 30 minutes without a model, then resumes the same brief; --poll-minutes sets the interval; --max-hours defaults to 6
   qc codex-wait-reset --since <iso> [--max-hours <n>] [--poll-minutes <n>]
                            wait for a later Codex reset without a model; exit 0 on a reset, 1 at the bound; default 6 hours and 30 minutes between polls
@@ -71,6 +72,9 @@ const USAGE = `qc — architecture gates
   qc integrate --issue <n> [--type <t>] [--slug <s>] [--from <ref>] <branch>...
                            one <t>/<n>-<s> branch for a batch: merge, renumber, regenerate; stop on a conflict
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
+  qc pause [--reason <text>] | qc pause --status
+                           pause branch changes and merges across all worktrees, or print the pause state
+  qc resume                clear the operator pause
   qc doctor                the hooks and the lockfile must run the same harness
   qc config                print the resolved configuration
 
@@ -102,6 +106,11 @@ async function main() {
       process.exit(2);
     }
   }
+  if (command === "pause" || command === "resume") {
+    const { runPause, runResume } = await import("./pause.mjs");
+    process.exitCode = (command === "pause" ? runPause : runResume)(process.cwd(), rest);
+    return;
+  }
   // A broken qc.config.json must not keep a lease in place, so the lease runs before the load.
   if (command === "lease") {
     const { runLease } = await import("./lease.mjs");
@@ -132,7 +141,7 @@ async function main() {
     const { runGateSlot } = await import("./gate-slot.mjs");
     process.exit(await runGateSlot(rest));
   }
-  // The watcher reads no configuration either.
+  // The watcher handles unreadable configuration so the wait can continue.
   if (command === "watch") {
     const { runWatch } = await import("./watch.mjs");
     process.exit(await runWatch(rest));
@@ -203,6 +212,10 @@ async function main() {
     case "work-order-check": {
       const { runWorkOrderCheck } = await import("./work-order-guard.mjs");
       process.exit(await runWorkOrderCheck(config.root));
+    }
+    case "commit-guard": {
+      const { runCommitGuard } = await import("./commit-guard.mjs");
+      process.exit(runCommitGuard(config));
     }
     case "pr-check": {
       const { runPrCheck } = await import("./pr-check.mjs");

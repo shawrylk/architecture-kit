@@ -9,6 +9,9 @@ import path from "node:path";
 export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
+  post: { aiLabel: true },
+  ci: { requiredChecks: [] },
+  guard: { protectedPaths: [".github/workflows/**", ".husky/**", ".githooks/**", "qc.config.json", ".claude/settings*.json"] },
   // Where features live. Every structural gate walks these.
   featureRoots: ["backend/src/features", "frontend/src/features"],
   // The path segment that marks a feature, and the one file that crosses its boundary.
@@ -20,6 +23,7 @@ export const defaults = {
   codex: {
     compactTokens: 300000,
     disablePlugins: ["superpowers@claude-plugins-official"],
+    envAllow: [],
     preamble: "",
     briefMaxLines: 40,
     briefMaxSteps: 6,
@@ -280,6 +284,8 @@ export const defaults = {
 
   // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`, when set.
   generated: { globs: ["**/*.generated.*"], command: null },
+
+  merge: { holdLabel: "hold" },
 
   // `qc worktree`. `install` runs in each new worktree; null picks it from the lockfile. `base` is the default `--from`: the ref a
   // branch starts at, and the ref `remove` checks a merge against.
@@ -682,6 +688,24 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.merge)) throw new TypeError("merge must be an object");
+  if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
+    throw new TypeError("merge.holdLabel must be a non-empty string without surrounding whitespace");
+  }
+  if (isPlainObject(config.codex) && (!Array.isArray(config.codex.envAllow)
+    || !config.codex.envAllow.every((name) => typeof name === "string" && name.length > 0 && name === name.trim()))) {
+    throw new TypeError("codex.envAllow must be an array of non-empty strings without surrounding whitespace");
+  }
+  if (Object.hasOwn(user, "post") && !isPlainObject(user.post)) throw new TypeError("post must be an object");
+  if (typeof config.post.aiLabel !== "boolean") throw new TypeError("post.aiLabel must be a boolean");
+  if (Object.hasOwn(user, "guard") && !isPlainObject(user.guard)) throw new TypeError("guard must be an object");
+  if (!Array.isArray(config.guard.protectedPaths) || !config.guard.protectedPaths.every((glob) => typeof glob === "string" && glob.trim())) {
+    throw new TypeError("guard.protectedPaths must be an array of non-empty strings");
+  }
+  if (!isPlainObject(config.ci)) throw new TypeError("ci must be an object");
+  if (!Array.isArray(config.ci.requiredChecks) || !config.ci.requiredChecks.every((name) => typeof name === "string" && name.trim())) {
+    throw new TypeError("ci.requiredChecks must be an array of non-empty strings");
+  }
   if (!isPlainObject(config.featureSwitches)) throw new TypeError("featureSwitches must be an object");
   const switches = config.featureSwitches;
   if (typeof switches.file !== "string" || !switches.file.trim() || /[\\/]/.test(switches.file) || [".", ".."].includes(switches.file)) {

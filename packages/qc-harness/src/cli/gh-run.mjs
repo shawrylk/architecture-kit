@@ -7,6 +7,18 @@ import path from "node:path";
 
 const GH_TIMEOUT_MS = 20_000;
 
+/** A branch that flattens API pages from `gh api --paginate --slurp`, or returns null for an unreadable list. */
+export function parseApiList(text, key) {
+  try {
+    const parsed = JSON.parse(text);
+    const pages = Array.isArray(parsed) ? parsed : [parsed];
+    if (!pages.every((page) => Array.isArray(page?.[key]))) return null;
+    return pages.flatMap((page) => page[key]);
+  } catch {
+    return null;
+  }
+}
+
 /** Expands a leading `~`, `~/`, or `~\` in each value, as a shell does for an assignment. */
 export function expandHome(env) {
   return Object.fromEntries(
