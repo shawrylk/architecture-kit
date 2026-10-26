@@ -156,6 +156,52 @@ test("prior findings are outside the run boundary, and current clean commits pas
   }), 0);
 });
 
+test("the runner scans new remote and side refs after HEAD resets", async (t) => {
+  for (const ref of ["refs/remotes/origin/pushed", "refs/heads/side"]) {
+    const fixture = setup(t);
+    const before = commitFile(fixture, "existing.md", "safe\n");
+    const git = (...args) => {
+      const result = spawnSync("git", ["-C", fixture.worktree, ...args], { env: fixture.gitEnv, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    };
+    const messages = [];
+    assert.equal(await runCodexImplement(fixture.argv, {
+      say: (line) => messages.push(line), out: quiet,
+      run: async () => {
+        const bad = commitFile(fixture, "secret.md", `ghp_${"a".repeat(36)}\n`);
+        git("update-ref", ref, bad);
+        git("reset", "--hard", before);
+        appendFileSync(fixture.progress, `${DONE_MARKER}\n`);
+        return { status: 0 };
+      },
+    }), 4);
+    assert.ok(messages.some((line) => line.includes("github-token")), messages.join("\n"));
+  }
+});
+
+test("the runner records existing remote refs and excludes its configured base", async (t) => {
+  const fixture = setup(t);
+  const before = commitFile(fixture, "qc.config.json", JSON.stringify({ worktree: { base: "origin/release" } }));
+  const git = (...args) => {
+    const result = spawnSync("git", ["-C", fixture.worktree, ...args], { env: fixture.gitEnv, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const existing = commitFile(fixture, "existing.md", `ghp_${"b".repeat(36)}\n`);
+  git("update-ref", "refs/remotes/origin/existing", existing);
+  git("reset", "--hard", before);
+  assert.equal(await runCodexImplement(fixture.argv, {
+    say: quiet, out: quiet,
+    run: async () => {
+      const base = commitFile(fixture, ".github/workflows/base.yml", "safe\n");
+      git("update-ref", "refs/remotes/origin/release", base);
+      git("reset", "--hard", before);
+      git("merge", "--ff-only", "origin/release");
+      appendFileSync(fixture.progress, `${DONE_MARKER}\n`);
+      return { status: 0 };
+    },
+  }), 0);
+});
+
 test("the child environment preserves system names and approved prefixes only", async () => {
   const { codexEnvironment } = await import("./codex-implement.mjs");
   const names = [

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -143,7 +143,7 @@ test("a root commit receives the same content checks", (t) => {
   assert.equal(findings[0].rule, "conflict-marker");
 });
 
-test("a merge and its intermediate branch commits receive content checks", (t) => {
+test("a merge excludes commits reached by the base branch", (t) => {
   const r = repo(t);
   r.put("base.md", "safe\n");
   r.commit();
@@ -158,7 +158,52 @@ test("a merge and its intermediate branch commits receive content checks", (t) =
   r.put("main.md", "safe\n");
   r.commit();
   r.git("merge", "--no-ff", "-qm", "test: merge fixture", "side");
-  assert.ok(checkRunCommits(r.root, before, {}).some((finding) => finding.commit === bad && finding.rule === "conflict-marker"));
+  r.git("update-ref", "refs/remotes/origin/main", r.git("rev-parse", "side").trim());
+  const findings = checkRunCommits(r.root, before, { base: "main" });
+  assert.ok(!findings.some((finding) => finding.commit === bad && finding.rule === "conflict-marker"));
+  assert.deepEqual(findings, []);
+});
+
+test("a base merge adds no protected paths to the run or staged guard", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  const before = guardHead(r.root);
+  r.git("checkout", "-qb", "base");
+  r.put(".github/workflows/ci.yml", "safe\n");
+  r.commit();
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  r.git("checkout", "-qb", "feature", before);
+  r.put("feature.md", "safe\n");
+  r.commit();
+  r.git("merge", "--no-ff", "--no-commit", "base");
+  const options = { role: "implementer", protectedPaths: defaults.guard.protectedPaths, base: "main" };
+  assert.equal(runCommitGuard({ ...defaults, root: r.root }, { env: { QC_ROLE: "implementer" }, say: () => {} }), 0);
+  r.git("commit", "-qm", "test: merge base");
+  assert.deepEqual(checkRunCommits(r.root, before, options), []);
+});
+
+test("a merge scans its own secret resolution", (t) => {
+  const r = repo(t);
+  r.put("a.md", "base\n");
+  r.commit();
+  const before = guardHead(r.root);
+  r.git("checkout", "-qb", "base");
+  r.put("a.md", "base changed\n");
+  r.commit();
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  r.git("checkout", "-qb", "feature", before);
+  r.put("a.md", "feature changed\n");
+  r.commit();
+  assert.throws(() => r.git("merge", "--no-commit", "base"));
+  r.put("a.md", `ghp_${"a".repeat(36)}\n`);
+  r.git("add", "a.md");
+  assert.equal(runCommitGuard({ ...defaults, root: r.root }, { env: {}, say: () => {} }), 4);
+  r.git("commit", "-qm", "test: resolve merge");
+  const findings = checkRunCommits(r.root, before, { base: "main" });
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].rule, "github-token");
+  assert.equal(findings[0].commit, guardHead(r.root));
 });
 
 test("a replaced commit boundary fails closed", (t) => {
@@ -170,4 +215,95 @@ test("a replaced commit boundary fails closed", (t) => {
   r.git("add", "--all");
   r.git("commit", "--amend", "-qm", "test: replacement");
   assert.throws(() => checkRunCommits(r.root, before, {}));
+});
+
+test("the push guard scans intermediate pushed commits with the staged role rules", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  const before = guardHead(r.root);
+  r.put(".github/workflows/ci.yml", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  r.put(".github/workflows/ci.yml", "safe\n");
+  r.commit();
+  const head = guardHead(r.root);
+  r.git("reset", "--hard", before);
+  const lines = [];
+  const argv = ["--push", head, before];
+  const config = { ...defaults, root: r.root };
+  assert.equal(runCommitGuard(config, { argv, env: { QC_ROLE: "implementer" }, say: (line) => lines.push(line) }), 4);
+  assert.ok(lines.some((line) => line.includes("github-token")));
+  assert.ok(lines.some((line) => line.includes("protected-path")));
+  assert.equal(runCommitGuard(config, { argv, env: {}, say: () => {} }), 4);
+  assert.equal(runCommitGuard(config, { argv: ["--push", head, head], env: {}, say: () => {} }), 0);
+  assert.equal(runCommitGuard(config, { argv: ["--push", before, "0".repeat(40)], env: {}, say: () => {} }), 0);
+  assert.equal(runCommitGuard(config, { argv: ["--push", "invalid", before], say: () => {} }), 4);
+  const cli = spawnSync(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "commit-guard", ...argv], { cwd: r.root, encoding: "utf8" });
+  assert.equal(cli.status, 4, cli.stderr);
+});
+
+test("a clean protected push binds implementers and accepts explicit exceptions", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  const before = guardHead(r.root);
+  r.put(".husky/config", "safe\n");
+  r.commit();
+  const argv = ["--push", guardHead(r.root), before];
+  const config = { ...defaults, root: r.root };
+  assert.equal(runCommitGuard(config, { argv, env: { QC_ROLE: "implementer" }, say: () => {} }), 4);
+  assert.equal(runCommitGuard(config, { argv, env: {}, say: () => {} }), 0);
+  assert.equal(runCommitGuard(config, { argv, env: { QC_ROLE: "reviewer" }, say: () => {} }), 0);
+  assert.equal(runCommitGuard(config, { argv, env: { QC_ROLE: "implementer", QC_PROTECTED_ALLOW: ".husky/**" }, say: () => {} }), 0);
+});
+
+test("the pre-push template guards each nondeleted range before the full check", (t) => {
+  const r = repo(t);
+  const hook = readFileSync(new URL("../../templates/githooks/pre-push", import.meta.url), "utf8");
+  const shell = process.platform === "win32" ? path.join(process.env.ProgramFiles, "Git", "bin", "bash.exe") : "bash";
+  r.put("pre-push", hook);
+  r.put("bin/npx", '#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$PUSH_LOG"\nif [ "$2" = commit-guard ]; then exit "${PUSH_GUARD_EXIT:-0}"; fi\n');
+  chmodSync(path.join(r.root, "bin/npx"), 0o755);
+  const zero = "0".repeat(40);
+  const local = "a".repeat(40);
+  const remote = "b".repeat(40);
+  const log = path.join(r.root, "push-log");
+  const invoke = (input, status = "0") => {
+    writeFileSync(log, "");
+    return spawnSync(shell, ["pre-push"], { cwd: r.root, input, encoding: "utf8", env: { ...process.env, PATH: `${path.join(r.root, "bin")}${path.delimiter}${process.env.PATH}`, PUSH_LOG: log, PUSH_GUARD_EXIT: status } });
+  };
+  let result = invoke(`refs/heads/a ${local} refs/heads/a ${remote}\nrefs/heads/b ${remote} refs/heads/b ${zero}\n(delete) ${zero} refs/heads/c ${remote}\n`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [`qc commit-guard --push ${local} ${remote}`, `qc commit-guard --push ${remote} ${zero}`, "qc check"]);
+  result = invoke(`refs/heads/a ${local} refs/heads/a ${remote}\n`, "4");
+  assert.equal(result.status, 4, result.stderr);
+  assert.ok(!readFileSync(log, "utf8").includes("qc check"));
+  result = invoke(`(delete) ${zero} refs/heads/a ${remote}\n`);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readFileSync(log, "utf8"), "");
+});
+
+test("all guard diffs use fixed prefixes and bypass external drivers", (t) => {
+  const r = repo(t);
+  r.git("config", "diff.noprefix", "true");
+  r.git("config", "diff.mnemonicPrefix", "true");
+  r.git("config", "diff.external", "guard-must-not-run-this-driver");
+  r.put("ab/qc.config.json", "safe\n");
+  r.git("add", "--all");
+  const config = { ...defaults, root: r.root };
+  assert.equal(runCommitGuard(config, { env: { QC_ROLE: "implementer" }, say: () => {} }), 0);
+  r.commit();
+  const before = guardHead(r.root);
+  r.put("ab/notes.md", `ghp_${"a".repeat(36)}\n`);
+  r.git("add", "--all");
+  const lines = [];
+  assert.equal(runCommitGuard(config, { env: {}, say: (line) => lines.push(line) }), 4);
+  assert.ok(lines.some((line) => line.includes("ab/notes.md:1: github-token")), lines.join("\n"));
+  r.commit();
+  const findings = checkRunCommits(r.root, before, {});
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0].path, "ab/notes.md");
+  lines.length = 0;
+  assert.equal(runCommitGuard(config, { argv: ["--push", guardHead(r.root), before], env: {}, say: (line) => lines.push(line) }), 4);
+  assert.ok(lines.some((line) => line.includes("ab/notes.md:1: github-token")), lines.join("\n"));
 });

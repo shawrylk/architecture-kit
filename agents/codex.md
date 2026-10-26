@@ -49,7 +49,7 @@ Keep the pull request body check for "no merge is authorized".
 
 - `EXIT: <code>`: 0 done, 1 bad input, 2 a Codex usage limit, 3 out of runs, 4 guard refused, 5 paused.
 - On `EXIT: 5`, report the pause reason and stop until the operator runs `qc resume`.
-- On `EXIT: 4`, report each finding and stop for a corrected brief or change.
+- On `EXIT: 4`, report each finding and stop. Drop or rewrite the refused commits; rotate any secret that reached a remote.
 - On `EXIT: 2`, dispatch the same brief to `architecture:sdd-implementer` (sonnet). The guard refuses a codex dispatch while `qc codex status` shows a limit. While Codex is free, an implementer dispatch needs a prompt line `Runtime: claude <reason>`. Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other.
 - The last 6 lines of the progress file.
 - The worktree head: `git -C <Worktree> log -1 --format='%H %s'`.

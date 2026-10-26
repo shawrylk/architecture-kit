@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { pathMatcher } from "../glob.mjs";
 import { findSecrets } from "./secret-patterns.mjs";
 
@@ -72,15 +74,32 @@ export function guardHead(root) {
   catch (error) { if (error.status === 128) return null; throw error; }
 }
 
+/** Resource: records every ref tip, including remote-tracking refs, before the child runs. */
+export function guardRefs(root) {
+  return { head: guardHead(root), refs: git(root, ["for-each-ref", "--format=%(objectname)"]).trim().split("\n").filter(Boolean) };
+}
+
+/** Fragment: excludes commits reached by the configured remote base. */
+function baseExclusion(root, base = "origin/main") {
+  const ref = base.startsWith("origin/") ? base : `origin/${base}`;
+  return git(root, ["for-each-ref", "--format=%(refname)", `refs/remotes/${ref}`]).trim() ? [ref] : [];
+}
+
 /** Branch: scans every commit added during one run, including intermediate commits. */
 export function checkRunCommits(root, before, options) {
-  if (before) git(root, ["merge-base", "--is-ancestor", before, "HEAD"]);
-  const head = guardHead(root);
-  if (!head) return [];
-  const commits = git(root, ["rev-list", "--reverse", head, ...(before ? [`^${before}`] : [])]).trim().split("\n").filter(Boolean);
+  const head = typeof before === "object" && before !== null ? before.head : before;
+  if (head) git(root, ["merge-base", "--is-ancestor", head, "HEAD"]);
+  const refs = typeof before === "object" && before !== null ? before.refs : [];
+  return scanCommits(root, ["--all", ...(guardHead(root) ? ["HEAD"] : [])], [...refs, ...(head ? [head] : [])], options);
+}
+
+/** Pipeline: scans the selected commits with one shared content and path policy. */
+function scanCommits(root, revisions, excluded, options) {
+  const boundary = [...excluded, ...baseExclusion(root, options.base)];
+  const commits = git(root, ["rev-list", "--reverse", ...revisions, ...(boundary.length ? ["--not", ...boundary] : [])]).trim().split("\n").filter(Boolean);
   const findings = [];
   for (const commit of commits) {
-    const args = ["show", "--format=", "--root", "--first-parent", "--diff-merges=first-parent", "--no-ext-diff", "--no-textconv", "--no-renames"];
+    const args = ["show", "--format=", "--root", "--diff-merges=remerge", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv", "--no-renames"];
     const paths = git(root, [...args, "--name-only", "-z", commit, "--"]).split("\0").filter(Boolean);
     const diff = git(root, [...args, "--unified=0", "--no-color", commit, "--"]);
     findings.push(...checkDiff(diff, { ...options, paths }).map((finding) => ({ ...finding, commit })));
@@ -92,16 +111,32 @@ export function checkRunCommits(root, before, options) {
 export const findingName = ({ path, line, rule, commit }) => `${commit ? `${commit} ` : ""}${path}${line ? `:${line}` : ""}: ${rule}`;
 
 /** Trigger: refuses staged findings before the commit can leave the index. */
-export function runCommitGuard(config, { env = process.env, say = (line) => console.error(line) } = {}) {
+export function runCommitGuard(config, { env = process.env, say = (line) => console.error(line), argv = process.argv.slice(3) } = {}) {
   try {
-    const args = ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames"];
-    const paths = git(config.root, [...args, "--name-only", "-z", "--"]).split("\0").filter(Boolean);
-    const diff = git(config.root, [...args, "--unified=0", "--no-color", "--"]);
-    const findings = checkDiff(diff, { protectedPaths: config.guard.protectedPaths, role: env.QC_ROLE, allow: protectedAllow(`Protected: ${env.QC_PROTECTED_ALLOW ?? ""}`), paths });
+    const options = { protectedPaths: config.guard.protectedPaths, role: env.QC_ROLE, allow: protectedAllow(`Protected: ${env.QC_PROTECTED_ALLOW ?? ""}`), base: config.worktree?.base };
+    if (argv.length) {
+      const [mode, local, remote] = argv;
+      if (mode !== "--push" || argv.length !== 3 || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(local) || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(remote)) throw new Error("expected --push <local oid> <remote oid>");
+      const findings = scanCommits(config.root, [local], /^0+$/.test(remote) ? [] : [remote], options);
+      for (const finding of findings) say(`qc commit-guard: guard refused: ${findingName(finding)}`);
+      return findings.length ? 4 : 0;
+    }
+    const mergeFile = path.resolve(config.root, git(config.root, ["rev-parse", "--git-path", "MERGE_HEAD"]).trim());
+    const parents = existsSync(mergeFile) ? ["HEAD", ...readFileSync(mergeFile, "utf8").trim().split(/\s+/)] : [null];
+    let findings;
+    for (const parent of parents) {
+      const args = ["diff", "--cached", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv", "--no-renames"];
+      const revision = parent ? [parent] : [];
+      const paths = git(config.root, [...args, "--name-only", "-z", ...revision, "--"]).split("\0").filter(Boolean);
+      const diff = git(config.root, [...args, "--unified=0", "--no-color", ...revision, "--"]);
+      const current = checkDiff(diff, { ...options, paths });
+      const keys = new Set(current.map(findingName));
+      findings = findings === undefined ? current : findings.filter((finding) => keys.has(findingName(finding)));
+    }
     for (const finding of findings) say(`qc commit-guard: guard refused: ${findingName(finding)}`);
     return findings.length ? 4 : 0;
   } catch (error) {
-    say(`qc commit-guard: cannot check staged changes: ${error.message}`);
+    say(`qc commit-guard: cannot check changes: ${error.message}`);
     return 4;
   }
 }

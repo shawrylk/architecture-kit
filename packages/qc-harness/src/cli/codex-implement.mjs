@@ -10,7 +10,7 @@ import { load } from "../config.mjs";
 import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, parsePollMinutes, waitForCodexReset } from "./codex-reset.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
-import { checkRunCommits, findingName, guardHead, protectedAllow } from "./commit-guard.mjs";
+import { checkRunCommits, findingName, guardRefs, protectedAllow } from "./commit-guard.mjs";
 import { pauseRefusal } from "./pause.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
@@ -266,10 +266,13 @@ async function runJob(argv, {
   let codex;
   let codexLimits;
   let protectedPaths;
+  let guardBase;
   try {
     codex = codexSettingsOf(settings.worktree);
     codexLimits = codexLimitsOf(settings.worktree);
-    protectedPaths = load(settings.worktree).guard.protectedPaths;
+    const guardConfig = load(settings.worktree);
+    protectedPaths = guardConfig.guard.protectedPaths;
+    guardBase = guardConfig.worktree.base;
     if (settings.maxRuns > codex.maxRuns) throw new Error(`--max-runs exceeds codex.maxRuns limit of ${codex.maxRuns}; got ${settings.maxRuns}`);
   } catch (error) {
     return finish(say, error.message, 1);
@@ -294,7 +297,7 @@ async function runJob(argv, {
     const childEnv = Object.fromEntries(Object.entries(codexEnvironment(env, codex.envAllow)).filter(([name]) => name.toUpperCase() !== "QC_PROTECTED_ALLOW"));
     let before;
     try {
-      before = guardHead(settings.worktree);
+      before = guardRefs(settings.worktree);
     } catch (error) {
       return finish(say, `guard refused: cannot capture the commit boundary: ${error.message}`, 4);
     }
@@ -306,7 +309,7 @@ async function runJob(argv, {
       runError = error;
     }
     try {
-      const findings = checkRunCommits(settings.worktree, before, { protectedPaths, role: "implementer", allow });
+      const findings = checkRunCommits(settings.worktree, before, { protectedPaths, role: "implementer", allow, base: guardBase });
       if (findings.length) {
         for (const finding of findings) say(`qc codex-implement: guard refused: ${findingName(finding)}`);
         return 4;
