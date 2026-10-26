@@ -76,7 +76,10 @@ test("state changes use an atomic replacement", (t) => {
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  assert.ok(f.at(400_000));
+  const result = f.at(400_000);
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.ok(result);
   assert.equal(writes, 1);
   assert.equal(JSON.parse(readFileSync(f.state, "utf8")).step >= 0, true);
   assert.deepEqual(readdirSync(path.dirname(f.state)), [path.basename(f.state)]);
@@ -99,7 +102,10 @@ test("overlapping hooks note the same threshold once", (t) => {
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  assert.ok(f.at(400_000));
+  const result = f.at(400_000);
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.ok(result);
   assert.equal(entered, true);
   assert.equal(nested, null);
 });
@@ -130,7 +136,10 @@ test("a lock released before stat stays silent", (t) => {
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  assert.equal(f.at(210_000), null);
+  const result = f.at(210_000);
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.equal(result, null);
   assert.equal(fs.existsSync(f.state), false);
 });
 
@@ -151,7 +160,10 @@ test("stale lock removal preserves another hook's replacement lock", (t) => {
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  assert.equal(f.at(210_000), null);
+  const result = f.at(210_000);
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.equal(result, null);
   assert.ok(removed);
   assert.equal(fs.existsSync(removed), false);
   assert.equal(fs.existsSync(lock), true);
@@ -176,7 +188,10 @@ test("a competing stale lock claim stays silent", (t) => {
   });
   syncBuiltinESMExports();
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
-  assert.equal(f.at(210_000), null);
+  const result = f.at(210_000);
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.equal(result, null);
   assert.equal(claimed, true);
   assert.equal(fs.existsSync(f.state), false);
 });
