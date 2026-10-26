@@ -15,7 +15,7 @@ function peerMissing(error) {
   return wrapped;
 }
 
-const loadYaml = () => import("yaml");
+const loadYaml = async (root) => (await import("../consumer-package.mjs")).importConsumerPackage("yaml", root);
 
 async function parser(load) {
   try {
@@ -91,12 +91,12 @@ function paramNames(document, ...lists) {
 
 /**
  * @param {string} text the API description, YAML or JSON
- * @param {{load?: () => Promise<{parse: (text: string) => unknown}>}} [options] how the parser is loaded
+ * @param {{root?: string, load?: () => Promise<{parse: (text: string) => unknown}>}} [options] where and how the parser loads
  * @returns {Promise<{method: string, path: string, id: string, params: string[], bodyProps: string[]}[]>}
  *   a path item that is a local `$ref` yields its target's operations, and a method key matches in any case;
  *   method is lower-case; id is the operationId, or `METHOD /path` when the operation has none
  */
-export async function contractOperations(text, { load = loadYaml } = {}) {
+export async function contractOperations(text, { root = process.cwd(), load = () => loadYaml(root) } = {}) {
   const { parse } = await parser(load);
   const document = parse(text) ?? {};
   const operations = [];

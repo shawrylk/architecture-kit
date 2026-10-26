@@ -119,6 +119,27 @@ command, hook, gate, and key.
 `evals/agents/` runs Claude Code or Codex on a small fixture, with and without the kit, and grades
 each run with tests the agent never sees. The [eval guide](evals/agents/README.md) has the commands.
 
+## Run tests on a throwaway database
+
+`npx qc throwaway-db -- <test command>` creates a fresh database and removes it after the command exits.
+Set `throwawayDb.schemaCommand` in `qc.config.json` to prepare its schema before the tests:
+
+```json
+{
+  "throwawayDb": {
+    "schemaCommand": "pnpm exec drizzle-kit push --force"
+  }
+}
+```
+
+The schema command and the test command use the same database environment.
+The setting defaults to none.
+If the schema command fails, the runner skips the tests, returns its exit code, and removes the database.
+Wrap live database tests in `npx qc gate-slot -- npx qc throwaway-db -- <test command>`.
+A hook timeout on a fresh database means the schema step is missing.
+Never raise a timeout.
+Never use port 5432 or another port the local stack owns.
+
 ## Tests
 
 ```bash

@@ -17,7 +17,18 @@ export const defaults = {
 
   // `qc codex-implement`. `compactTokens` is the backstop that compacts a runaway session; one item
   // runs in a fresh session and should finish under 200K.
-  codex: { compactTokens: 300000 },
+  codex: {
+    compactTokens: 300000,
+    disablePlugins: ["superpowers@claude-plugins-official"],
+    preamble: "",
+    briefMaxLines: 40,
+    briefMaxSteps: 6,
+    maxRuns: 2,
+  },
+
+  throwawayDb: {
+    schemaCommand: null,
+  },
 
   docs: {
     root: "docs",

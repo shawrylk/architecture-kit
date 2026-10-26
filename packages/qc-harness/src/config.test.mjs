@@ -10,6 +10,25 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("codex defaults bound a short session and disable the skill plugin", () => {
+  assert.deepEqual(load(here).codex, {
+    compactTokens: 300000,
+    disablePlugins: ["superpowers@claude-plugins-official"],
+    preamble: "",
+    briefMaxLines: 40,
+    briefMaxSteps: 6,
+    maxRuns: 2,
+  });
+});
+
+test("codex configuration raises limits and preserves omitted defaults", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-codex-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const codex = { briefMaxLines: 80, briefMaxSteps: 10, maxRuns: 4, disablePlugins: ["custom@plugins"], preamble: "Use the local rules." };
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ codex }));
+  assert.deepEqual(load(root).codex, { ...defaults.codex, ...codex });
+});
+
 test("check defaults leave repository commands off", () => {
   assert.deepEqual(load(here).check, { related: null, commands: [], base: "origin/main" });
 });

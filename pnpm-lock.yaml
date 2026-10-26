@@ -9,10 +9,6 @@ importers:
   .: {}
 
   packages/qc-harness:
-    dependencies:
-      cross-spawn:
-        specifier: 7.0.6
-        version: 7.0.6
     devDependencies:
       '@commitlint/config-conventional':
         specifier: ^21.2.3

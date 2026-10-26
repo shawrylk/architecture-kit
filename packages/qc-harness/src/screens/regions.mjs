@@ -1,5 +1,6 @@
-import pixelmatch from "pixelmatch";
-import { PNG } from "pngjs";
+import { importConsumerPackage } from "../consumer-package.mjs";
+const { default: pixelmatch } = await importConsumerPackage("pixelmatch");
+const { PNG } = await importConsumerPackage("pngjs");
 
 function difference(a, b) {
   if (a.width !== b.width || a.height !== b.height) throw new Error("Capture dimensions differ");
