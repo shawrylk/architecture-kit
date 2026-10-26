@@ -48,7 +48,7 @@ Use classes and theme tokens for static presentation. Inline styles with runtime
 An object with only literal values, such as `style={{ width: 12 }}`, fails `qc/no-static-inline-style`.
 
 For an existing frontend, use ESLint 9.24 or later; the kit uses ESLint 9.39.
-`eslint --suppress-rule <rule>` writes `eslint-suppressions.json` as the sole lint baseline.
+`eslint --suppress-rule <rule>` writes `eslint-suppressions.json` as the baseline for existing findings, beside the filter for changed lines.
 Create the initial baseline, then commit it:
 
 ```sh
@@ -57,7 +57,8 @@ npx eslint frontend/src --suppress-rule qc/one-component-per-file --suppress-rul
 
 After adoption, run `npx qc lint`. It applies each baseline count per file and rule before checking changed lines.
 Findings above a recorded count remain subject to the changed-line check.
-Fewer findings than a recorded count fail as stale, including entries for untouched or deleted files.
+With no named files, fewer findings than a recorded count fail as stale, including entries for untouched or deleted lintable files.
+Named-file runs skip the stale check. The gate skips baseline entries for unsupported or ignored files.
 With `--staged`, the gate reads source files and the baseline from the index.
 Run `npx eslint frontend/src` without suppression-generation flags to check the whole frontend with the same baseline.
 After you fix findings, run `npx eslint frontend/src --prune-suppressions` and commit the smaller file.

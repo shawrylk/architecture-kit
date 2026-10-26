@@ -940,7 +940,7 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   if (enabled(config.gates, "feature-switches")) {
     let fileCount = 0;
     const switchProblems = [];
-    for (const root of config.featureRoots) {
+    for (const root of config.featureRoots.map(posix)) {
       for (const folder of tree.foldersIn(root)) {
         const featureRoot = join(root, folder);
         const rels = tree.under(featureRoot).filter((file) => SOURCE_EXTENSION.test(file) && !SKIP.test(`/${file}`) && !/\.spec\.[cm]?[jt]sx?$/.test(file));

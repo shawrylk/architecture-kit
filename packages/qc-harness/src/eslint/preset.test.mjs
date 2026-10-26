@@ -212,59 +212,70 @@ test("the UI rules reach only clientFiles and use the configured primitive folde
   assert.equal(messages('<div style={{ width: 12 }} />;', "elsewhere/view.tsx", names[4]).length, 0);
 });
 
-test("qc lint applies the UI baseline and fails on a stale entry", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "qc-ui-suppressions-"));
-  const require = createRequire(import.meta.url);
-  const cli = fileURLToPath(new URL("../cli/qc.mjs", import.meta.url));
-  const parser = pathToFileURL(require.resolve("@typescript-eslint/parser")).href;
-  const presetUrl = new URL("./preset.mjs", import.meta.url).href;
-  const configUrl = new URL("../config.mjs", import.meta.url).href;
-  const switches = Object.fromEntries(Object.keys(allRules).map((name) => [name, name === "no-static-inline-style"]));
-  const run = (...args) => {
-    const result = spawnSync(process.execPath, [cli, "lint", ...args], { cwd: root, encoding: "utf8", timeout: 30_000 });
-    assert.ifError(result.error);
-    return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
-  };
-  try {
-    const init = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
-    assert.equal(init.status, 0, init.stderr);
-    mkdirSync(path.join(root, "node_modules"));
-    symlinkSync(path.dirname(require.resolve("eslint/package.json")), path.join(root, "node_modules", "eslint"), "junction");
-    writeFileSync(path.join(root, ".gitignore"), "node_modules/\n");
-    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureRoots: [] }));
-    writeFileSync(path.join(root, "eslint.config.mjs"), `
-      import parser from ${JSON.stringify(parser)};
-      import { preset } from ${JSON.stringify(presetUrl)};
-      import { defaults, merge } from ${JSON.stringify(configUrl)};
-      export default preset({
-        config: { ...merge(defaults, ${JSON.stringify({ clientFiles: ["**/*.tsx"], rules: switches })}), root: process.cwd() },
-        languageOptions: { parser },
-      });
-    `);
-    const fixture = path.join(root, "view.tsx");
-    writeFileSync(fixture, '<div style={{ width: 12 }} />;\n');
-    const unsuppressed = run();
-    assert.equal(unsuppressed.status, 1, unsuppressed.output);
-    assert.match(unsuppressed.output, /qc\/no-static-inline-style/);
-    writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({ "view.tsx": { "qc/no-static-inline-style": { count: 1 } } }));
-    const generated = run();
-    assert.equal(generated.status, 0, generated.output);
-    const baseline = JSON.parse(readFileSync(path.join(root, "eslint-suppressions.json"), "utf8"));
-    assert.equal(baseline["view.tsx"]["qc/no-static-inline-style"].count, 1);
-    const existing = run();
-    assert.equal(existing.status, 0, existing.output);
-    writeFileSync(fixture, '<><div style={{ width: 12 }} /><div style={{ height: 8 }} /></>;\n');
-    const increased = run();
-    assert.equal(increased.status, 1, increased.output);
-    assert.match(increased.output, /qc\/no-static-inline-style/);
-    writeFileSync(fixture, '<div style={{ width: size }} />;\n');
-    const stale = run();
-    assert.equal(stale.status, 2, stale.output);
-    assert.match(stale.output, /suppressions left that do not occur anymore/i);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+for (const source of ["hand-written", "ESLint-generated"]) {
+  test(`qc lint applies the ${source} UI baseline and fails on a stale entry`, () => {
+    const root = mkdtempSync(path.join(tmpdir(), "qc-ui-suppressions-"));
+    const require = createRequire(import.meta.url);
+    const cli = fileURLToPath(new URL("../cli/qc.mjs", import.meta.url));
+    const parser = pathToFileURL(require.resolve("@typescript-eslint/parser")).href;
+    const presetUrl = new URL("./preset.mjs", import.meta.url).href;
+    const configUrl = new URL("../config.mjs", import.meta.url).href;
+    const switches = Object.fromEntries(Object.keys(allRules).map((name) => [name, name === "no-static-inline-style"]));
+    const run = (...args) => {
+      const result = spawnSync(process.execPath, [cli, "lint", ...args], { cwd: root, encoding: "utf8", timeout: 30_000 });
+      assert.ifError(result.error);
+      return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
+    };
+    try {
+      const init = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
+      assert.equal(init.status, 0, init.stderr);
+      mkdirSync(path.join(root, "node_modules"));
+      symlinkSync(path.dirname(require.resolve("eslint/package.json")), path.join(root, "node_modules", "eslint"), "junction");
+      writeFileSync(path.join(root, ".gitignore"), "node_modules/\n");
+      writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureRoots: [] }));
+      writeFileSync(path.join(root, "eslint.config.mjs"), `
+        import parser from ${JSON.stringify(parser)};
+        import { preset } from ${JSON.stringify(presetUrl)};
+        import { defaults, merge } from ${JSON.stringify(configUrl)};
+        export default preset({
+          config: { ...merge(defaults, ${JSON.stringify({ clientFiles: ["**/*.tsx"], rules: switches })}), root: process.cwd() },
+          languageOptions: { parser },
+        });
+      `);
+      const relativeFixture = source === "ESLint-generated" ? "src/view.tsx" : "view.tsx";
+      const fixture = path.join(root, relativeFixture);
+      mkdirSync(path.dirname(fixture), { recursive: true });
+      writeFileSync(fixture, '<div style={{ width: 12 }} />;\n');
+      const unsuppressed = run();
+      assert.equal(unsuppressed.status, 1, unsuppressed.output);
+      assert.match(unsuppressed.output, /qc\/no-static-inline-style/);
+      if (source === "ESLint-generated") {
+        const eslint = path.join(path.dirname(require.resolve("eslint/package.json")), "bin", "eslint.js");
+        const result = spawnSync(process.execPath, [eslint, relativeFixture, "--suppress-rule", "qc/no-static-inline-style"], { cwd: root, encoding: "utf8", timeout: 30_000 });
+        assert.ifError(result.error);
+        assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      } else {
+        writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({ "view.tsx": { "qc/no-static-inline-style": { count: 1 } } }));
+      }
+      const generated = run();
+      assert.equal(generated.status, 0, generated.output);
+      const baseline = JSON.parse(readFileSync(path.join(root, "eslint-suppressions.json"), "utf8"));
+      assert.equal(baseline[relativeFixture]["qc/no-static-inline-style"].count, 1);
+      const existing = run();
+      assert.equal(existing.status, 0, existing.output);
+      writeFileSync(fixture, '<><div style={{ width: 12 }} /><div style={{ height: 8 }} /></>;\n');
+      const increased = run();
+      assert.equal(increased.status, 1, increased.output);
+      assert.match(increased.output, /qc\/no-static-inline-style/);
+      writeFileSync(fixture, '<div style={{ width: size }} />;\n');
+      const stale = run();
+      assert.equal(stale.status, 2, stale.output);
+      assert.match(stale.output, /suppressions left that do not occur anymore/i);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("the preset reports an unused disable comment in every file", () => {
   const block = preset({ config: config() }).find((b) => b.linterOptions);

@@ -677,26 +677,19 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
-  const invalidSwitches = (detail) => {
-    class ConfigError extends TypeError {}
-    const error = new ConfigError(`featureSwitches${detail}`);
-    error.name = "ConfigError";
-    error.stack = error.toString();
-    throw error;
-  };
-  if (!isPlainObject(config.featureSwitches)) invalidSwitches(" must be an object");
+  if (!isPlainObject(config.featureSwitches)) throw new TypeError("featureSwitches must be an object");
   const switches = config.featureSwitches;
   if (typeof switches.file !== "string" || !switches.file.trim() || /[\\/]/.test(switches.file) || [".", ".."].includes(switches.file)) {
-    invalidSwitches(".file must be a non-empty filename at the feature root");
+    throw new TypeError("featureSwitches.file must be a non-empty filename at the feature root");
   }
   if (!Array.isArray(switches.patterns) || !switches.patterns.every((pattern) => typeof pattern === "string")) {
-    invalidSwitches(".patterns must be an array of strings");
+    throw new TypeError("featureSwitches.patterns must be an array of strings");
   }
   for (const pattern of switches.patterns) {
     try {
       new RegExp(pattern);
     } catch {
-      invalidSwitches(`.patterns contains an invalid regular expression: ${JSON.stringify(pattern)}`);
+      throw new TypeError(`featureSwitches.patterns contains an invalid regular expression: ${JSON.stringify(pattern)}`);
     }
   }
   if (!isPlainObject(config.integrate)) throw new TypeError("integrate must be an object");
