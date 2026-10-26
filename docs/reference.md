@@ -306,6 +306,35 @@ prints the install command. A
 repository upgrading from an earlier kit copies `templates/githooks/commit-msg` into its hooks
 folder, or sets `conventional` to `false`.
 
+### Commit guard
+
+`qc commit-guard` checks the staged diff before the pre-commit hook filters source files.
+It refuses added secret-shaped lines and added lines that start with `<<<<<<< ` or `>>>>>>> `.
+Removed lines and unchanged context pass. A line containing `qc-allow-secret` exempts that line from secret detection.
+The exemption leaves the conflict marker rule in force.
+
+The secret patterns match pr-autopilot's `commitguard.py` at commit `d937f83`.
+They cover AWS access keys and secret key names, GitHub tokens and personal access tokens, private key headers,
+Anthropic keys, Slack tokens, and npm tokens. Findings name the file, added line number, and rule without printing the secret.
+
+With `QC_ROLE=implementer`, the guard also refuses changes to `guard.protectedPaths`.
+The defaults are `.github/workflows/**`, `.husky/**`, `.githooks/**`, `qc.config.json`, and `.claude/settings*.json`.
+This path rule covers additions, edits, deletions, renames, and binary files. Other roles still receive secret and conflict checks.
+Set `guard.protectedPaths` in `qc.config.json` to replace the default globs.
+
+A brief can permit specific protected paths:
+
+```text
+Protected: .github/workflows/**, .husky/pre-commit
+```
+
+`qc codex-implement` passes these comma-separated globs to the hook through `QC_PROTECTED_ALLOW`.
+These exceptions permit path changes; added secrets and conflict markers still fail.
+After each child run, the runner checks every new commit against the policy captured before the child starts.
+An intermediate commit fails even if a later commit removes the finding.
+The hook and runner return exit `4`, "guard refused", and name each finding.
+The runner checks commits before accepting a completion marker or handling a usage limit.
+
 ### 8. Hold a swarm to its own scope
 
 When one work order runs several agents against the same working directory, declare its exclusive

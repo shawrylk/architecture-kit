@@ -10,6 +10,7 @@ import { load } from "../config.mjs";
 import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, parsePollMinutes, waitForCodexReset } from "./codex-reset.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
+import { checkRunCommits, findingName, guardHead, protectedAllow } from "./commit-guard.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -38,7 +39,7 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
 
 const USAGE =
   "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
-  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs";
+  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs, 4 guard refused";
 
 const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
 
@@ -236,7 +237,7 @@ const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${lin
  * the end of the job for `qc watch --codex`, in any shell.
  * @param run `({ command, args, input, env, log }) => Promise<{ status, tail }>`; the default spawns `codexCommand`.
  * @param out `(line) => Promise|void` writes the `exit` line; the default writes to stdout.
- * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs.
+ * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs, 4 guard refused.
  */
 export async function runCodexImplement(argv, { out = writeLine, ...options } = {}) {
   let code;
@@ -262,9 +263,11 @@ async function runJob(argv, {
   }
   let codex;
   let codexLimits;
+  let protectedPaths;
   try {
     codex = codexSettingsOf(settings.worktree);
     codexLimits = codexLimitsOf(settings.worktree);
+    protectedPaths = load(settings.worktree).guard.protectedPaths;
     if (settings.maxRuns > codex.maxRuns) throw new Error(`--max-runs exceeds codex.maxRuns limit of ${codex.maxRuns}; got ${settings.maxRuns}`);
   } catch (error) {
     return finish(say, error.message, 1);
@@ -283,12 +286,31 @@ async function runJob(argv, {
     const limits = codexLimits === null ? [] : ["-c", `model_auto_compact_token_limit=${codexLimits.compactAt}`, "-c", `tool_output_token_limit=${codexLimits.toolOutputTokens}`];
     const effort = settings.effort === undefined ? [] : ["-c", `model_reasoning_effort=${settings.effort}`];
     const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, ...effort, "-"];
-    let result;
+    const allow = protectedAllow(readFileSync(settings.brief, "utf8"));
+    const childEnv = Object.fromEntries(Object.entries(codexEnvironment(env, codex.envAllow)).filter(([name]) => name.toUpperCase() !== "QC_PROTECTED_ALLOW"));
+    let before;
     try {
-      result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...codexEnvironment(env, codex.envAllow), QC_ROLE: "implementer" }, log: settings.log });
+      before = guardHead(settings.worktree);
     } catch (error) {
-      return finish(say, `codex did not run: ${error.message}`, 1);
+      return finish(say, `guard refused: cannot capture the commit boundary: ${error.message}`, 4);
     }
+    let result;
+    let runError;
+    try {
+      result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...childEnv, QC_ROLE: "implementer", QC_PROTECTED_ALLOW: allow.join(",") }, log: settings.log });
+    } catch (error) {
+      runError = error;
+    }
+    try {
+      const findings = checkRunCommits(settings.worktree, before, { protectedPaths, role: "implementer", allow });
+      if (findings.length) {
+        for (const finding of findings) say(`qc codex-implement: guard refused: ${findingName(finding)}`);
+        return 4;
+      }
+    } catch (error) {
+      return finish(say, `guard refused: cannot check run commits: ${error.message}`, 4);
+    }
+    if (runError) return finish(say, `codex did not run: ${runError.message}`, 1);
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     const line = limitLineOf(result.tail ?? "", prompt);
     if (!line) clearLimit(limitFileOf(env), say);

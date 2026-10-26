@@ -28,11 +28,102 @@ function setup(t, { progress = "" } = {}) {
   const files = { dir, brief: path.join(dir, "brief.md"), progress: path.join(dir, "progress.md"), worktree: path.join(dir, "wt") };
   writeFileSync(files.brief, VALID_BRIEF);
   writeFileSync(files.progress, progress);
+  mkdirSync(files.worktree);
+  const globalConfig = path.join(dir, "fixture-global-config");
+  writeFileSync(globalConfig, "");
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: globalConfig, GIT_CONFIG_NOSYSTEM: "1" };
+  const initialized = spawnSync("git", ["init", "-q", files.worktree], { env: gitEnv, encoding: "utf8" });
+  assert.equal(initialized.status, 0, initialized.stderr);
   const argv = ["--brief", files.brief, "--worktree", files.worktree, "--progress", files.progress];
-  return { ...files, argv };
+  return { ...files, argv, gitEnv };
 }
 
 const quiet = () => {};
+
+function commitFile(fixture, file, content) {
+  const target = path.join(fixture.worktree, file);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, content);
+  const git = (...args) => {
+    const result = spawnSync("git", ["-C", fixture.worktree, "-c", "user.name=Guard Test", "-c", "user.email=guard@example.test", ...args], { env: fixture.gitEnv, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git("add", "--", file);
+  git("commit", "-qm", "test: fixture");
+  return git("rev-parse", "HEAD");
+}
+
+test("the runner refuses every finding before accepting done or a limit", async (t) => {
+  const fixture = setup(t);
+  commitFile(fixture, "existing.md", "safe\n");
+  const messages = [];
+  const lines = [];
+  const secret = `ghp_${"a".repeat(36)}`;
+  let bad;
+  assert.equal(await runCodexImplement(fixture.argv, {
+    out: (line) => lines.push(line), say: (line) => messages.push(line),
+    run: async () => {
+      bad = commitFile(fixture, ".github/workflows/new.yml", `${secret}\n<<<<<<< HEAD\n>>>>>>> branch\n`);
+      commitFile(fixture, ".github/workflows/new.yml", "safe\n");
+      appendFileSync(fixture.progress, `${DONE_MARKER}\n`);
+      return { status: 2, tail: "usage limit" };
+    },
+  }), 4);
+  assert.deepEqual(lines, ["exit 4"]);
+  for (const rule of ["github-token", "conflict-marker", "protected-path"]) assert.ok(messages.some((line) => line.includes(rule)), messages.join("\n"));
+  assert.ok(messages.some((line) => line.includes(bad)));
+  assert.ok(!messages.join("\n").includes(secret));
+});
+
+test("Protected exceptions reach each child and the runner replaces inherited exceptions", async (t) => {
+  const fixture = setup(t);
+  writeFileSync(fixture.brief, `${VALID_BRIEF}\nProtected: .github/workflows/**, .husky/**\n`);
+  let count = 0;
+  assert.equal(await runCodexImplement([...fixture.argv, "--max-runs", "2"], {
+    env: { ...process.env, QC_PROTECTED_ALLOW: "**" }, say: quiet, out: quiet,
+    run: async (call) => {
+      assert.equal(call.env.QC_PROTECTED_ALLOW, ".github/workflows/**,.husky/**");
+      count += 1;
+      commitFile(fixture, ".github/workflows/allowed.yml", `value: ${count}\n`);
+      if (count === 2) appendFileSync(fixture.progress, `${DONE_MARKER}\n`);
+      return { status: 0, tail: "ok" };
+    },
+  }), 0);
+  assert.equal(count, 2);
+  writeFileSync(fixture.progress, "");
+  assert.equal(await runCodexImplement(fixture.argv, {
+    env: { ...process.env, QC_PROTECTED_ALLOW: "**" }, say: quiet, out: quiet,
+    run: async () => { commitFile(fixture, "qc.config.json", "{}\n"); return { status: 0 }; },
+  }), 4);
+});
+
+test("the runner keeps the initial policy if the child weakens the configuration", async (t) => {
+  const fixture = setup(t);
+  commitFile(fixture, "qc.config.json", JSON.stringify({ guard: { protectedPaths: ["private/**"] } }));
+  writeFileSync(fixture.brief, `${VALID_BRIEF}\nProtected: qc.config.json\n`);
+  assert.equal(await runCodexImplement(fixture.argv, {
+    say: quiet, out: quiet,
+    run: async () => {
+      commitFile(fixture, "qc.config.json", JSON.stringify({ guard: { protectedPaths: [] } }));
+      commitFile(fixture, "private/new.md", "safe\n");
+      return { status: 0 };
+    },
+  }), 4);
+});
+
+test("prior findings are outside the run boundary, and current clean commits pass", async (t) => {
+  const fixture = setup(t);
+  commitFile(fixture, ".github/workflows/existing.yml", "<<<<<<< HEAD\n");
+  assert.equal(await runCodexImplement(fixture.argv, {
+    say: quiet, out: quiet,
+    run: async () => {
+      commitFile(fixture, "safe.md", "safe\n");
+      appendFileSync(fixture.progress, `${DONE_MARKER}\n`);
+      return { status: 0 };
+    },
+  }), 0);
+});
 
 test("the child environment preserves system names and approved prefixes only", async () => {
   const { codexEnvironment } = await import("./codex-implement.mjs");
@@ -62,10 +153,10 @@ test("environment names match without case only on Windows", async () => {
 for (const envAllow of [[], ["GH_TOKEN"], ["GITHUB_TOKEN", "PROJECT_KEY"]]) {
   test(`each run receives the allowlist with configured names ${JSON.stringify(envAllow)}`, async (t) => {
     const { argv, worktree, progress } = setup(t);
-    mkdirSync(worktree);
+    mkdirSync(worktree, { recursive: true });
     writeFileSync(path.join(worktree, "qc.config.json"), JSON.stringify({ codex: { envAllow } }));
     const env = { PATH: "bin", CODEX_CUSTOM: "codex", GIT_CUSTOM: "git", QC_ROLE: "other", OPENAI_API_KEY: "api", GH_TOKEN: "gh", GITHUB_TOKEN: "github", PROJECT_KEY: "project", DATABASE_URL: "secret", QC_CODEX_LIMIT_FILE: path.join(worktree, "limit.json") };
-    const expected = { PATH: "bin", CODEX_CUSTOM: "codex", GIT_CUSTOM: "git", QC_ROLE: "implementer", OPENAI_API_KEY: "api", QC_CODEX_LIMIT_FILE: env.QC_CODEX_LIMIT_FILE };
+    const expected = { PATH: "bin", CODEX_CUSTOM: "codex", GIT_CUSTOM: "git", QC_ROLE: "implementer", QC_PROTECTED_ALLOW: "", OPENAI_API_KEY: "api", QC_CODEX_LIMIT_FILE: env.QC_CODEX_LIMIT_FILE };
     for (const name of envAllow) expected[name] = env[name];
     let runs = 0;
     assert.equal(await runCodexImplement([...argv, "--max-runs", "2"], {
@@ -86,7 +177,7 @@ for (const envAllow of [[], ["GH_TOKEN"], ["GITHUB_TOKEN", "PROJECT_KEY"]]) {
 for (const envAllow of [null, "GH_TOKEN", {}, [1], [""], [" "]]) {
   test(`invalid codex.envAllow ${JSON.stringify(envAllow)} fails before spawning`, async (t) => {
     const { argv, worktree } = setup(t);
-    mkdirSync(worktree);
+    mkdirSync(worktree, { recursive: true });
     writeFileSync(path.join(worktree, "qc.config.json"), JSON.stringify({ codex: { envAllow } }));
     const messages = [];
     assert.equal(await runCodexImplement(argv, {
@@ -505,7 +596,7 @@ test("the Windows CLI resumes after fetch and returns without a forced exit", { 
     process.argv = [process.execPath, ${JSON.stringify(QC)}, 'codex-implement', ...${JSON.stringify(argv)}, '--wait-reset'];
     await import(${JSON.stringify(cli)});`;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", source], {
-    encoding: "utf8", timeout: 10000, env: { ...process.env, PATH: dir, PATHEXT: ".EXE;.CMD" },
+    encoding: "utf8", timeout: 10000, env: { ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}`, PATHEXT: ".EXE;.CMD" },
   });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /fake reset fetch/);
@@ -783,7 +874,7 @@ test("the unchanged brief template passes the default limits", async (t) => {
 
 test("repository settings raise each brief and run limit", async (t) => {
   const { argv, brief, worktree } = setup(t);
-  mkdirSync(worktree);
+  mkdirSync(worktree, { recursive: true });
   writeFileSync(path.join(worktree, "qc.config.json"), JSON.stringify({ codex: { briefMaxLines: 60, briefMaxSteps: 7, maxRuns: 3 } }));
   writeFileSync(brief, VALID_BRIEF + Array.from({ length: 6 }, (_, i) => `${i + 2}. More work.\n`).join("") + "Detail.\n".repeat(35));
   let calls = 0;

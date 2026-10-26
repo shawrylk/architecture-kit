@@ -10,6 +10,25 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("guard defaults protect automation and configuration, and custom paths replace the defaults", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-guard-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(load(root).guard.protectedPaths, [".github/workflows/**", ".husky/**", ".githooks/**", "qc.config.json", ".claude/settings*.json"]);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ guard: { protectedPaths: ["ci/**"] } }));
+  assert.deepEqual(load(root).guard.protectedPaths, ["ci/**"]);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ guard: { protectedPaths: [] } }));
+  assert.deepEqual(load(root).guard.protectedPaths, []);
+});
+
+test("guard.protectedPaths rejects malformed configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-guard-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const guard of [null, [], false, "guard", { protectedPaths: null }, { protectedPaths: "ci/**" }, { protectedPaths: [""] }, { protectedPaths: [" "] }, { protectedPaths: [1] }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ guard }));
+    assert.throws(() => load(root), /guard/);
+  }
+});
+
 test("ci.requiredChecks defaults to an empty list and accepts check names", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-ci-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -25,6 +25,7 @@ const USAGE = `qc — architecture gates
   qc run [name]            drive one feature command headless; no name lists them
   qc install-hooks         point git at the kit's pre-commit hook
   qc work-order-check      refuse to commit on the wrong branch, per .claude/work-order.local.json
+  qc commit-guard          refuse staged protected paths, secrets, and conflict markers
   qc lease status [path]   who holds this worktree's lease, since when, and when it lapses
   qc lease release [path]  remove it: --session <id> for your own, --force for another's
   qc pr-check              in CI: the pull request names an issue that exists and predates it
@@ -203,6 +204,10 @@ async function main() {
     case "work-order-check": {
       const { runWorkOrderCheck } = await import("./work-order-guard.mjs");
       process.exit(await runWorkOrderCheck(config.root));
+    }
+    case "commit-guard": {
+      const { runCommitGuard } = await import("./commit-guard.mjs");
+      process.exit(runCommitGuard(config));
     }
     case "pr-check": {
       const { runPrCheck } = await import("./pr-check.mjs");

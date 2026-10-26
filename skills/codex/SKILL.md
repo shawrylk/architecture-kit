@@ -111,6 +111,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 | 1 | Bad input, or no `codex` on the `PATH` | Fix the command |
 | 2 | A Codex usage or spend limit | Send the same brief to `architecture:sdd-implementer` (sonnet) |
 | 3 | Out of runs | Read the progress tail for unfinished work or a marker outside the last non-empty line. |
+| 4 | Guard refused | Read each finding; correct the change or add explicit protected path exceptions to the brief |
 
 - Read only the tails: `tail -c 600 <progress.md>` and the end of the report.
 - Never read the Codex log or a JSONL transcript. They fill the context.
