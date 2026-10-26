@@ -284,6 +284,8 @@ export const defaults = {
   // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`, when set.
   generated: { globs: ["**/*.generated.*"], command: null },
 
+  merge: { holdLabel: "hold" },
+
   // `qc worktree`. `install` runs in each new worktree; null picks it from the lockfile. `base` is the default `--from`: the ref a
   // branch starts at, and the ref `remove` checks a merge against.
   // `dir` holds each worktree, inside the main checkout. `enforce: false` turns off the QC-015 hooks.

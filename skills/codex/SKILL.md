@@ -112,6 +112,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 | 2 | A Codex usage or spend limit | Send the same brief to `architecture:sdd-implementer` (sonnet) |
 | 3 | Out of runs | Read the progress tail for unfinished work or a marker outside the last non-empty line. |
 | 4 | Guard refused | Read each finding; correct the change or add explicit protected path exceptions to the brief |
+| 5 | Paused | Report the reason; wait for the operator to run `qc resume` |
 
 - Read only the tails: `tail -c 600 <progress.md>` and the end of the report.
 - Never read the Codex log or a JSONL transcript. They fill the context.
@@ -174,8 +175,10 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 ## Merge
 
 1. Grep the pull request body for "no merge is authorized". If it matches, stop.
-2. Merge with `gh pr merge <n> --merge --match-head-commit <the 40-character sha>`. Where the repository turns off merge commits, use the method it allows, still with `--match-head-commit`.
-3. Never use `--admin` or a force-push.
-4. Confirm that the pull request shows `MERGED` and that its head is in the base. After a squash, confirm that the base holds the change.
-5. Close each issue that the pull request names with `Refs`.
-6. Remove the worktree with `npx qc worktree remove <name>` from the main checkout.
+2. Check `qc pause --status`. Stop while paused; report the reason and wait for the operator to run `qc resume`.
+3. Check the PR labels. Stop when `merge.holdLabel` applies; its default is `hold`.
+4. Merge with `gh pr merge <n> --merge --match-head-commit <the 40-character sha>`. Where the repository turns off merge commits, use the method it allows, still with `--match-head-commit`.
+5. Never use `--admin` or a force-push.
+6. Confirm that the pull request shows `MERGED` and that its head is in the base. After a squash, confirm that the base holds the change.
+7. Close each issue that the pull request names with `Refs`.
+8. Remove the worktree with `npx qc worktree remove <name>` from the main checkout.

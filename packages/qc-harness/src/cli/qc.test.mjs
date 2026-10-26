@@ -8,6 +8,14 @@ import { fileURLToPath } from "node:url";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test("help describes the operator pause commands and exit 5", () => {
+  const run = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /qc pause \[--reason <text>\]/);
+  assert.match(run.stdout, /qc resume/);
+  assert.match(run.stdout, /exit 5.*paused/);
+});
+
 test("help describes the Codex limit expiry time", () => {
   const run = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
   assert.equal(run.status, 0);

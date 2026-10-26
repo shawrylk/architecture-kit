@@ -692,6 +692,24 @@ The orchestrator and Codex leave no cost record, so the report says so in one li
 | Otherwise, the 90th percentile ends under half of `handoffAt` | lower `handoffAt` |
 | Neither condition holds | keep `handoffAt` |
 
+#### Pause branch changes and merges
+
+Run `qc pause --reason "inspect the batch"` to set an operator pause.
+The reason defaults to `operator pause` when you omit `--reason`.
+The command writes `qc/pause` in the Git common folder, so every linked worktree shares the pause.
+Run `qc pause --status` to print the state and reason. Run `qc resume` to remove the pause.
+Both commands work even when `qc.config.json` contains invalid configuration.
+
+The pause blocks `qc codex-implement`, `qc integrate`, and merges through the merge guard, including manual merges.
+Every refusal names the reason and `qc resume`.
+The Codex runner checks before each run and exits `5`, "paused", before another session starts.
+An active session finishes its current run. The pause also leaves the existing GitHub auto-merge setting unchanged.
+
+Set `merge.holdLabel` in `qc.config.json` to choose the PR label that holds a merge; the default is `hold`.
+The merge guard reads the setting from the PR base and refuses a labeled PR, even with workflow dispatch off.
+The refusal names the label. Remove that label when the operator authorizes the merge.
+Keep the pull request body check for "no merge is authorized"; the label adds a separate hold.
+
 #### Run an implementer on Codex
 
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.

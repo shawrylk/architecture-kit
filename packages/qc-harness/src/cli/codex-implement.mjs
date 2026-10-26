@@ -11,6 +11,7 @@ import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, parsePollMinutes, waitForCodexReset } from "./codex-reset.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { checkRunCommits, findingName, guardHead, protectedAllow } from "./commit-guard.mjs";
+import { pauseRefusal } from "./pause.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -39,7 +40,7 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
 
 const USAGE =
   "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
-  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs, 4 guard refused";
+  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs, 4 guard refused, 5 paused";
 
 const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
 
@@ -237,7 +238,7 @@ const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${lin
  * the end of the job for `qc watch --codex`, in any shell.
  * @param run `({ command, args, input, env, log }) => Promise<{ status, tail }>`; the default spawns `codexCommand`.
  * @param out `(line) => Promise|void` writes the `exit` line; the default writes to stdout.
- * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs, 4 guard refused.
+ * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs, 4 guard refused, 5 paused.
  */
 export async function runCodexImplement(argv, { out = writeLine, ...options } = {}) {
   let code;
@@ -275,6 +276,8 @@ async function runJob(argv, {
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
   let resetDeadline;
   for (let count = 1; count <= settings.maxRuns; count += 1) {
+    const refusal = pauseRefusal(settings.worktree);
+    if (refusal) return finish(say, refusal, 5);
     if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
     let prompt;
     try {

@@ -40,6 +40,37 @@ function setup(t, { progress = "" } = {}) {
 
 const quiet = () => {};
 
+test("an operator pause stops the first run with exit 5", async (t) => {
+  const fixture = setup(t);
+  mkdirSync(path.join(fixture.worktree, ".git", "qc"));
+  writeFileSync(path.join(fixture.worktree, ".git", "qc", "pause"), "operator investigation\n");
+  const lines = [];
+  const messages = [];
+  let runs = 0;
+  assert.equal(await runCodexImplement(fixture.argv, {
+    say: (line) => messages.push(line), out: (line) => lines.push(line),
+    run: async () => { runs += 1; return { status: 0 }; },
+  }), 5);
+  assert.equal(runs, 0);
+  assert.deepEqual(lines, ["exit 5"]);
+  assert.match(messages.join("\n"), /operator investigation.*qc resume/);
+});
+
+test("an operator pause between runs prevents another Codex session", async (t) => {
+  const fixture = setup(t);
+  let runs = 0;
+  assert.equal(await runCodexImplement([...fixture.argv, "--max-runs", "2"], {
+    say: quiet, out: quiet,
+    run: async () => {
+      runs += 1;
+      mkdirSync(path.join(fixture.worktree, ".git", "qc"), { recursive: true });
+      writeFileSync(path.join(fixture.worktree, ".git", "qc", "pause"), "check results\n");
+      return { status: 0 };
+    },
+  }), 5);
+  assert.equal(runs, 1);
+});
+
 function commitFile(fixture, file, content) {
   const target = path.join(fixture.worktree, file);
   mkdirSync(path.dirname(target), { recursive: true });

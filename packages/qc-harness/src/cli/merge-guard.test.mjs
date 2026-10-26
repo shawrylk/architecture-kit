@@ -45,6 +45,26 @@ const shell = (cwd, command, hook_event_name = "PreToolUse", tool_name = "Bash")
 const denied = (output) => output?.hookSpecificOutput?.permissionDecisionReason ?? null;
 const verdict = (kind, value, sha = SHA) => ({ type: "verdict", kind, verdict: value, sha, branch: "feat/62-x" });
 
+test("an operator pause refuses manual and reviewed merges with dispatch on or off", (t) => {
+  const ws = workspace(t);
+  for (const dir of [ws.on, ws.off]) {
+    mkdirSync(path.join(dir, ".git", "qc"), { recursive: true });
+    writeFileSync(path.join(dir, ".git", "qc", "pause"), "operator investigation\n");
+    appendRecord(ws.ledgerOf(dir), verdict("branch", "APPROVED"));
+    for (const tool of ["Bash", "PowerShell"]) {
+      for (const command of [
+        `gh pr merge 60 --match-head-commit ${SHA}`,
+        "gh pr merge 60 --auto --squash",
+        "gh api -X PUT repos/o/r/pulls/60/merge",
+        'gh api graphql -f query="mutation { mergePullRequest(input: {pullRequestId: \\"PR_1\\"}) { clientMutationId } }"',
+      ]) {
+        assert.match(denied(decide(shell(dir, command, "PreToolUse", tool))) ?? "", /operator investigation.*qc resume/, command);
+      }
+      assert.equal(decide(shell(dir, "gh pr view 60", "PreToolUse", tool)), null);
+    }
+  }
+});
+
 /** A gh stand-in that logs each call and answers with `answer`. */
 function fakeGh(answer) {
   const calls = [];
@@ -140,7 +160,7 @@ test("an API merge reads the endpoint PR's base and settings before enforcing di
   const { gh, calls } = fakeGh(prView(base));
   const command = "GH_CONFIG_DIR=account gh api --hostname ghe.example.com -X PUT repos/other/project/pulls/23/merge";
   assert.equal(decide(shell(dir, command), { gh }), null);
-  assert.deepEqual(calls[0].args, ["pr", "view", "23", "-R", "other/project", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"]);
+  assert.deepEqual(calls[0].args, ["pr", "view", "23", "-R", "other/project", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"]);
   assert.deepEqual(calls[0].options.env, { GH_CONFIG_DIR: "account", GH_HOST: "ghe.example.com" });
 });
 
@@ -160,7 +180,7 @@ test("a placeholder REST merge reads its PR base with the inline or current repo
   for (const [prefix, repo] of [["", null], ["GH_REPO=other/project ", "other/project"]]) {
     const { gh, calls } = fakeGh(prView(base));
     assert.equal(decide(shell(dir, `${prefix}gh api -X PUT repos/{owner}/{repo}/pulls/5/merge`), { gh }), null);
-    assert.deepEqual(calls[0].args, ["pr", "view", "5", ...(repo ? ["-R", repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"]);
+    assert.deepEqual(calls[0].args, ["pr", "view", "5", ...(repo ? ["-R", repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"]);
     assert.deepEqual(calls[0].options.env, {});
   }
   gitIn(dir, "add", ".");
@@ -233,7 +253,7 @@ test("a REST endpoint with a fragment reads the PR base policy", (t) => {
     const { gh, calls } = fakeGh(prView(base));
     assert.equal(decide(shell(dir, "gh api 'repos/o/r/pulls/1/merge#x' -X PUT", "PreToolUse", tool), { gh }), null);
     assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].args, ["pr", "view", "1", "-R", "o/r", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"]);
+    assert.deepEqual(calls[0].args, ["pr", "view", "1", "-R", "o/r", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"]);
   }
 });
 
@@ -548,12 +568,40 @@ function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true } = 
 /** What `gh pr view --json baseRefName,baseRefOid` answers for a PR into `main` whose base commit is `oid`. */
 const prView = (oid, name = "main", head) => JSON.stringify({ baseRefName: name, baseRefOid: oid, headRefName: head, isCrossRepository: false });
 
+test("a hold label refuses manual and approved merges with dispatch on or off", (t) => {
+  const ws = workspace(t);
+  for (const dir of [ws.on, ws.off]) {
+    appendRecord(ws.ledgerOf(dir), verdict("branch", "APPROVED"));
+    const pr = { ...JSON.parse(prView(bases.get(dir))), labels: [{ name: "hold" }] };
+    const { gh } = fakeGh(JSON.stringify(pr));
+    for (const command of [`gh pr merge 60 --match-head-commit ${SHA}`, "gh pr merge 60 --auto --squash", "gh api -X PUT repos/o/r/pulls/60/merge"]) {
+      assert.match(denied(decide(shell(dir, command), { gh })) ?? "", /label.*hold/, command);
+    }
+  }
+});
+
+test("the PR base config selects the hold label even when the head changes it", (t) => {
+  const { dir, base, head } = laneRepo(t, { swarm: {}, merge: { holdLabel: "operator-hold" } });
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: {}, merge: { holdLabel: "bypass" } }));
+  const pr = { ...JSON.parse(prView(base)), labels: [{ name: "operator-hold" }] };
+  assert.match(denied(decide(shell(dir, `gh pr merge 1 --match-head-commit ${head}`), { gh: fakeGh(JSON.stringify(pr)).gh })) ?? "", /label.*operator-hold/);
+  pr.labels = [{ name: "hold" }];
+  assert.equal(decide(shell(dir, `gh pr merge 1 --match-head-commit ${head}`), { gh: fakeGh(JSON.stringify(pr)).gh }), null);
+});
+
+test("a GraphQL API merge also checks the hold label with dispatch off", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const pr = { number: 1, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" }, labels: { nodes: [{ name: "hold" }], pageInfo: { hasNextPage: false } } };
+  const command = 'gh api graphql -f query="mutation { mergePullRequest(input: {pullRequestId: \\"PR_1\\"}) { clientMutationId } }"';
+  assert.match(denied(decide(shell(dir, command), { gh: fakeGh(JSON.stringify({ data: { node: pr } })).gh })) ?? "", /label.*hold/);
+});
+
 test("a promotion PR needs its scoped promotion approval", (t) => {
   const ws = workspace(t);
   const command = shell(ws.promo, `gh pr merge 7 --match-head-commit ${SHA}`);
   const { gh, calls } = fakeGh(prView(bases.get(ws.promo), "main", "dev"));
   assert.match(denied(decide(command, { gh })) ?? "", /qc review promotion 7/);
-  assert.equal(calls[0].args.at(-1), "baseRefName,baseRefOid,headRefName,number,isCrossRepository");
+  assert.equal(calls[0].args.at(-1), "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels");
   appendRecord(ws.ledgerOf(ws.promo), { ...verdict("branch", "APPROVED"), scope: "ui" });
   assert.match(denied(decide(command, { gh })) ?? "", /qc review promotion 7/);
   appendRecord(ws.ledgerOf(ws.promo), { ...verdict("branch", "APPROVED"), scope: "promotion" });
@@ -714,7 +762,7 @@ test("a small head with no review merges through the direct lane, with a note", 
   const { gh, calls } = fakeGh(prViewWithHead(base, "feat/7-integration"));
   const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh });
   assert.equal(denied(output), null);
-  assert.deepEqual(calls[0].args, ["pr", "view", "7", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"]);
+  assert.deepEqual(calls[0].args, ["pr", "view", "7", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"]);
   assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /merges through the direct lane, with 2 of 20 lines in 1 of 2 files and no review/);
   assert.match(denied(decide(shell(dir, "gh pr merge 7 --squash"))) ?? "", /--match-head-commit <sha>/);
 });

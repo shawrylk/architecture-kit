@@ -10,6 +10,15 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("merge.holdLabel defaults to hold and accepts a repository label", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-hold-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(defaults.merge?.holdLabel, "hold");
+  assert.equal(load(root).merge.holdLabel, "hold");
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ merge: { holdLabel: "operator-hold" } }));
+  assert.equal(load(root).merge.holdLabel, "operator-hold");
+});
+
 test("guard defaults protect automation and configuration, and custom paths replace the defaults", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-guard-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

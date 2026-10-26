@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 import { globMatcher } from "../glob.mjs";
 import { runGh } from "./gh-run.mjs";
+import { pauseRefusal } from "./pause.mjs";
 import { posixDir, renumber } from "./migrations.mjs";
 
 export const USAGE = `qc integrate — one integration branch for a batch of branches
@@ -98,6 +99,11 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
   }
   const root = config.root;
   try {
+    const refusal = pauseRefusal(root);
+    if (refusal) {
+      say(`qc integrate: ${refusal}`);
+      return 5;
+    }
     const name = integrationBranch(options);
     const pattern = config.branches?.pattern;
     if (pattern && !new RegExp(pattern).test(name)) throw new Error(`${name} does not match branches.pattern ${pattern}`);

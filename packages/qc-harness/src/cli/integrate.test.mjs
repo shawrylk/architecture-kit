@@ -73,6 +73,23 @@ const pullRequestCalls = [
   ["pr", "create", "--draft", "--head", "feat/7-integration", "--base", "main", "--title", "feat: integrate the batch for #7", "--body", "Refs #7"],
 ];
 
+test("an operator pause refuses integration before any branch changes", async (t) => {
+  const dir = batch(t);
+  const before = git(dir, "rev-parse", "HEAD");
+  mkdirSync(path.join(dir, ".git", "qc"));
+  writeFileSync(path.join(dir, ".git", "qc", "pause"), "inspect the batch\n");
+  const lines = [];
+  assert.equal(await runIntegrate(config(dir), ["--issue", "7", "feat/1-a"], {
+    say: quiet(lines),
+    run: () => assert.fail("the generator must stay idle"),
+    gh: () => assert.fail("GitHub must stay idle"),
+  }), 5);
+  assert.match(lines.join("\n"), /inspect the batch.*qc resume/);
+  assert.equal(git(dir, "branch", "--show-current"), "main");
+  assert.equal(git(dir, "rev-parse", "HEAD"), before);
+  assert.equal(git(dir, "branch", "--list", "feat/7-integration"), "");
+});
+
 test("integrate usage states the effective author rule", () => {
   assert.match(USAGE, /refuses.*branch.*author email.*effective Git author email/i);
 });

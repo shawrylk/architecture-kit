@@ -41,9 +41,14 @@ The prompt gives these lines:
    Write each step's Bash description as "Codex: " plus the first unfinished item in the progress tail, in at most eight words.
 3. When the `exit` line appears, print the result and stop.
 
+Before a merge, check `qc pause --status` and the PR labels.
+Stop while the operator pause or `merge.holdLabel` label applies; the default label is `hold`.
+Keep the pull request body check for "no merge is authorized".
+
 ## Reply (under 10 lines)
 
-- `EXIT: <code>`: 0 done, 1 bad input, 2 a Codex usage limit, 3 out of runs, 4 guard refused.
+- `EXIT: <code>`: 0 done, 1 bad input, 2 a Codex usage limit, 3 out of runs, 4 guard refused, 5 paused.
+- On `EXIT: 5`, report the pause reason and stop until the operator runs `qc resume`.
 - On `EXIT: 4`, report each finding and stop for a corrected brief or change.
 - On `EXIT: 2`, dispatch the same brief to `architecture:sdd-implementer` (sonnet). The guard refuses a codex dispatch while `qc codex status` shows a limit. While Codex is free, an implementer dispatch needs a prompt line `Runtime: claude <reason>`. Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other.
 - The last 6 lines of the progress file.
