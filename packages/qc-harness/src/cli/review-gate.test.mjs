@@ -143,7 +143,9 @@ const checkRuns = (runs, requireGreen = "not-red") => check({
   ciState: (sha) => {
     assert.equal(sha, SHA);
     return readCiState(sha, "/w", {
-      gh: () => JSON.stringify({ check_runs: runs }),
+      gh: (args) => args[1].includes("/actions/runs")
+        ? JSON.stringify({ workflow_runs: [] })
+        : JSON.stringify({ check_runs: runs }),
       origin: () => "owner/repo",
     });
   },
