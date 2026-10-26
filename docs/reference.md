@@ -166,6 +166,50 @@ Use `--kit-dir`, `--claude-dir`, or `--codex-dir` to select another folder.
 The command reads only the settings files and the status line.
 It refuses `.claude.json`, `.credentials.json`, and `auth.json`, including symbolic links to those filenames.
 
+### Set up a new machine
+
+Run `npx qc setup` to prepare your user files.
+The command writes only user files and preserves unrelated settings.
+Run `qc user-config apply` separately to merge the shared settings and copy the status line.
+
+| Step | Change |
+| --- | --- |
+| Claude settings | Set `autoCompactEnabled` to `true` in `~/.claude/settings.json`. |
+| Claude budget | Set `modelSettings.<id>.autoCompactWindow` from `budgets.orchestrator.compactAt` for each selected model. |
+| Codex budget | Set `model_auto_compact_token_limit` in `~/.codex/config.toml` from `budgets.codex.compactAt`. |
+| Claude rules | Copy `claude/CLAUDE.core.md` from the kit's user configuration into the core markers in `~/.claude/CLAUDE.md`. |
+| Personal skills | Remove a personal folder only when its enabled architecture plugin supplies an identical `SKILL.md` and the folder holds no other files. |
+
+The command preserves text outside the core markers.
+It uses `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when you set them.
+Each changed existing file gets a `<file>.bak-<yyyymmdd-hhmmss>` backup.
+The command writes settings with mode `0600` where the operating system supports file permissions.
+A rerun preserves matching files, keeps their modification times, and creates no backups.
+
+| Flag | Behavior |
+| --- | --- |
+| `--dry-run` | Print `Would change` lines and leave every file and skill folder untouched. |
+| `--config <file>` | Read optional budgets from this file instead of `./qc.config.json`. Skip budgets when the file is absent. |
+| `--model <id>` | Select a Claude model for its compaction window. Repeat the flag to select more models. |
+
+```bash
+npx qc setup --dry-run
+npx qc setup --config ./qc.config.json --model claude-opus-5-5
+```
+
+The command validates budgets, settings, and core markers before it writes files.
+Each `Change <file>: <key>` line names a change.
+The command prints `Setup matches.` when every file and skill folder matches.
+
+The log ends with `Steps for a person:` and one `  - <step>` line for each required action.
+These actions cover missing tools, GitHub authentication, Codex login, AWS SSO configuration, and personal skills that need attention.
+An orchestrator budget without `--model` adds a step to select the Claude model.
+The command checks Node, pnpm, the GitHub CLI, and Codex.
+It leaves authentication and tool installation to you.
+
+The command exits with `0` on success, including a dry run or pending steps for a person.
+It exits with `2` on a configuration or usage error.
+
 ### 5. Lint
 
 Replace your eslint config with the preset, so rules and thresholds are imported, never restated:

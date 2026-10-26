@@ -104,7 +104,7 @@ function stamp(now) {
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
-function backupFile(file, now) {
+export function backupFile(file, now) {
   mkdirSync(path.dirname(file), { recursive: true });
   if (existsSync(file)) copyFileSync(file, `${file}.bak-${stamp(now)}`, constants.COPYFILE_EXCL);
 }
