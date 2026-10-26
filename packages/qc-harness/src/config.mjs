@@ -450,6 +450,8 @@ export const defaults = {
     "ime-safe-key": false,
     "one-component-per-file": false,
     "raw-element-in-primitive": false,
+    "no-arbitrary-class-value": false,
+    "no-literal-color": false,
     // A policy rule: a repository turns it on once its controls carry the pending prop.
     "mutation-control-pending": false,
     "registry-literal": true,

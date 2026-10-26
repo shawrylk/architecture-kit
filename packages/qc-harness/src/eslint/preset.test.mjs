@@ -175,11 +175,11 @@ test("the mutationControl config reaches qc/mutation-control-pending", () => {
   assert.deepEqual(setting[1], { button: "Action", prop: "busy", handlers: ["onClick", "onSelect", "onConfirm"] });
 });
 
-test("the component and primitive rules reach only clientFiles and use the configured primitive folders", () => {
-  const names = ["one-component-per-file", "raw-element-in-primitive"];
+test("the UI rules reach only clientFiles and use the configured primitive folders and class callees", () => {
+  const names = ["one-component-per-file", "raw-element-in-primitive", "no-arbitrary-class-value", "no-literal-color"];
   const clientFiles = ["app/**/*.tsx"];
   const blocks = preset({
-    config: config({ clientFiles, rules: Object.fromEntries(names.map((name) => [name, true])), ui: { layers: { primitive: ["app/primitives", "app/controls"] } } }),
+    config: config({ clientFiles, rules: Object.fromEntries(names.map((name) => [name, true])), ui: { layers: { primitive: ["app/primitives", "app/controls"] }, classCallees: ["classes", "cva"] } }),
     languageOptions: { parser: tsparser },
   });
   const client = blocks.find((block) => block.files === clientFiles);
@@ -189,6 +189,7 @@ test("the component and primitive rules reach only clientFiles and use the confi
     assert.equal(emitted(blocks.filter((block) => block !== client)).has(`qc/${name}`), false);
   }
   assert.deepEqual(client.rules["qc/raw-element-in-primitive"][1], { primitive: ["app/primitives", "app/controls"] });
+  for (const name of names.slice(2)) assert.deepEqual(client.rules[`qc/${name}`][1], { classCallees: ["classes", "cva"] });
   const linter = new Linter({ configType: "flat" });
   const messages = (code, filename, name) => byRule(linter.verify(code, blocks, filename), `qc/${name}`);
   const pair = "const First = () => <div />; const Second = () => <span />;";
@@ -196,6 +197,13 @@ test("the component and primitive rules reach only clientFiles and use the confi
   assert.equal(messages(pair, "elsewhere/view.tsx", names[0]).length, 0);
   assert.equal(messages("<input />;", "app/view.tsx", names[1]).length, 1);
   assert.equal(messages("<input />;", "app/controls/input.tsx", names[1]).length, 0);
+  assert.equal(messages('classes("text-[11px]");', "app/view.tsx", names[2]).length, 1);
+  assert.equal(messages('classes("bg-[#abc]");', "app/view.tsx", names[3]).length, 1);
+  for (const name of names.slice(2)) {
+    assert.equal(messages('cn("bg-[#abc]");', "app/view.tsx", name).length, 0);
+    assert.equal(messages('classes("bg-[#abc]");', "elsewhere/view.tsx", name).length, 0);
+    assert.equal(messages('cva("p-2", { variants: { tone: { custom: "bg-[#abc]" } } });', "app/view.tsx", name).length, 1);
+  }
 });
 
 test("the preset reports an unused disable comment in every file", () => {

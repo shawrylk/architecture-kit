@@ -773,7 +773,7 @@ Known limits:
 |---|---|
 | Error | `no-cross-feature-internals`, `storage-only-in-resource`, `external-service-only-in-adapter`, `scoped-repository`, `tenant-scoped-table`, `no-raw-fetch`, `no-orchestration-in-trigger`, `no-sql-raw`, `registry-literal`, `durable-idempotency-key` |
 | Warning | `no-comment-paragraph`, `no-number-in-comment`, `no-supersession-trail`: each judges the style of a comment |
-| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `one-component-per-file`, `raw-element-in-primitive`, `name-the-pattern` |
+| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `one-component-per-file`, `raw-element-in-primitive`, `no-arbitrary-class-value`, `no-literal-color`, `name-the-pattern` |
 
 An `eslint-disable` comment silences its rule, and a disable comment that silences nothing is an
 error. `qc lint` judges only the changed lines, so a new disable comment is part of the change a
@@ -966,10 +966,15 @@ Each finding names both components, including declarations inside another compon
 Use primitive components elsewhere. The `elements` rule option replaces the element list.
 The preset passes `ui.layers.primitive` as the `primitive` rule option, which accepts one folder or an array of folders.
 
-Both rules ship off. Enable them under `rules` in `qc.config.json`; the preset applies them to `clientFiles`.
+`qc/no-arbitrary-class-value` refuses Tailwind arbitrary values, including `text-[11px]` and `md:hover:bg-[#123456]`.
+`qc/no-literal-color` refuses hex, `rgb()`, `rgba()`, `hsl()`, and `hsla()` literals in JSX presentation attributes, class strings, and style objects.
+Both read class strings through the shared UI parser, including `className`, `class`, `ui.classCallees`, and `cva` variants.
+The preset passes `ui.classCallees` as the `classCallees` rule option. Use theme tokens and CSS variables for presentation values.
+
+These rules ship off. Enable them under `rules` in `qc.config.json`; the preset applies them to `clientFiles`.
 
 ```json
-{ "rules": { "one-component-per-file": true, "raw-element-in-primitive": true } }
+{ "rules": { "one-component-per-file": true, "raw-element-in-primitive": true, "no-arbitrary-class-value": true, "no-literal-color": true } }
 ```
 
 Use ESLint's `eslint-suppressions.json` as the baseline with ESLint 9.24 or later.

@@ -888,6 +888,72 @@ tsx.run("raw-element-in-primitive", rules["raw-element-in-primitive"], {
 
 const pending = { messageId: "pending" };
 
+console.log("→", "no-arbitrary-class-value");
+jsx.run("no-arbitrary-class-value", rules["no-arbitrary-class-value"], {
+  valid: [
+    { code: '<div className="text-sm md:hover:bg-primary" />;' },
+    { code: '<div title="text-[11px]" />; const label = "p-[3px]";' },
+    { code: 'cn("p-2", { "text-sm": active });' },
+    { code: 'cva("p-2", { variants: { size: { small: "text-sm" } }, defaultVariants: { size: "text-[11px]" } });' },
+    { code: '<div className="data-[state=open]:text-sm [&>span]:p-2" />;' },
+    { code: '<div className="supports-[display:grid]:grid hover:[&>span]:p-2" />;' },
+    { code: 'other("text-[11px]");' },
+    { code: 'cn("text-[11px]");', options: [{ classCallees: [] }] },
+  ],
+  invalid: [
+    ...['<div className="text-[11px]" />;', '<div class="md:hover:bg-[#123456]" />;',
+      '<div className={active ? "w-[3rem]" : "w-4"} />;',
+      'cn("p-2", { "md:hover:text-[11px]": active });',
+      'cva("p-2", { variants: { size: { small: "text-[11px]" } } });',
+      'cva("p-2", { compoundVariants: [{ size: "small", className: "p-[3px]" }] });',
+      'classes("text-[11px]");',
+      'cn("!text-[11px]");', 'cn("-mt-[2px]!");', 'cn("bg-primary/[.35]");',
+      '<div className="[color:var(--foreground)]" />;',
+      'const variants = { size: { small: "text-[11px]" } }; cva("p-2", { variants });',
+    ].map((code) => ({ code, ...(code.startsWith("classes") ? { options: [{ classCallees: ["classes"] }] } : {}), errors: [{ messageId: "arbitrary" }] })),
+    { code: '<div className={`p-2 ${active ? "text-[11px]" : "text-sm"}`} />;', errors: [{ messageId: "arbitrary" }] },
+    { code: 'cn("p-[3px] text-[11px]");', errors: [{ messageId: "arbitrary" }, { messageId: "arbitrary" }] },
+    { code: '<div className={"text-[11px]" as string} />;', languageOptions: { parser: tsparser }, errors: [{ messageId: "arbitrary" }] },
+    { code: 'const variants = { size: { small: "text-[11px]" } }; cva("p-2", { variants });', filename: "/repo/view.jsx", errors: [{ messageId: "arbitrary" }] },
+  ],
+});
+
+console.log("→", "no-literal-color");
+jsx.run("no-literal-color", rules["no-literal-color"], {
+  valid: [
+    { code: '<div className="text-primary" style={{ color: "var(--foreground)" }} />;' },
+    { code: '<Icon fill="currentColor" />; <a href="#abc">Link</a>;' },
+    { code: 'const message = "#123456"; const data = { id: "#abc" };' },
+    { code: 'cn("text-primary"); cva("bg-primary", { variants: { tone: { primary: "text-primary" } } });' },
+    { code: 'cva("p-2", { variants: { tone: { "#abc": "text-primary" } }, defaultVariants: { tone: "#abc" } });' },
+    { code: '<div style={{ color: theme.foreground, opacity: 0.5 }} />;' },
+    { code: '<div style={{ color: "var(--rgb)" }} />;' },
+    { code: 'const styles = { color: "rgb(var(--foreground))" }; <div style={styles} />;' },
+    { code: '<div data-testid="#abc" id="#abc" />;' },
+    { code: '<div title="#12345 #123456789" />;' },
+    { code: 'other("bg-[#abc]");' },
+    { code: 'cn("bg-[#abc]");', options: [{ classCallees: [] }] },
+  ],
+  invalid: [
+    ...['<Icon fill="#abc" />;', '<Icon stroke={"#12345678"} />;',
+      '<div color={active ? "rgb(1, 2, 3)" : color} />;',
+      '<div style={{ color: "rgba(1, 2, 3, 0.5)" }} />;',
+      '<div style={{ background: "linear-gradient(#abc, var(--background))" }} />;',
+      '<div className="md:hover:bg-[#123456]" />;',
+      'cn("text-[hsl(120,50%,50%)]");',
+      'cva("p-2", { variants: { tone: { custom: "bg-[hsla(120,50%,50%,0.5)]" } } });',
+      'const styles = { color: "#AbCd" }; <div style={styles} />;',
+      '<div style={{ boxShadow: `0 0 ${size}px #abc` }} />;',
+      'classes("bg-[#abc]");',
+      'const styles = { borderColor: "#abc" };',
+      'cn("shadow-[0_0_rgba(0,0,0,0.5)]");',
+      '<div color={"#abc" || fallback} />;',
+      'const variants = { tone: { custom: "bg-[#abc]" } }; cva("p-2", { variants });',
+    ].map((code) => ({ code, ...(code.startsWith("classes") ? { options: [{ classCallees: ["classes"] }] } : {}), errors: [{ messageId: "color" }] })),
+    { code: 'const variants = { tone: { custom: "bg-[#abc]" } }; cva("p-2", { variants });', filename: "/repo/view.jsx", errors: [{ messageId: "color" }] },
+  ],
+});
+
 console.log("→", "mutation-control-pending");
 jsx.run("mutation-control-pending", rules["mutation-control-pending"], {
   valid: [

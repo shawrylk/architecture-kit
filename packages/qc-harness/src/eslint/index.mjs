@@ -3,6 +3,8 @@ import externalServiceOnlyInAdapter from "./rules/external-service-only-in-adapt
 import imeSafeKey from "./rules/ime-safe-key.mjs";
 import oneComponentPerFile from "./rules/one-component-per-file.mjs";
 import rawElementInPrimitive from "./rules/raw-element-in-primitive.mjs";
+import noArbitraryClassValue from "./rules/no-arbitrary-class-value.mjs";
+import noLiteralColor from "./rules/no-literal-color.mjs";
 import mutationControlPending from "./rules/mutation-control-pending.mjs";
 import noCrossFeatureInternals from "./rules/no-cross-feature-internals.mjs";
 import registryLiteral from "./rules/registry-literal.mjs";
@@ -27,6 +29,8 @@ export const rules = {
   "ime-safe-key": imeSafeKey,
   "one-component-per-file": oneComponentPerFile,
   "raw-element-in-primitive": rawElementInPrimitive,
+  "no-arbitrary-class-value": noArbitraryClassValue,
+  "no-literal-color": noLiteralColor,
   "mutation-control-pending": mutationControlPending,
   "no-cross-feature-internals": noCrossFeatureInternals,
   "registry-literal": registryLiteral,
