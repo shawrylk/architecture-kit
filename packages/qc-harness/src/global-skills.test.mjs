@@ -27,6 +27,18 @@ test("global skill files contain no paths tied to a user's machine", () => {
   }
 });
 
+test("shipped global skills use neutral text and optional source navigation tools", () => {
+  const registration = readFileSync(`${PLUGIN}skills/registering-work/SKILL.md`, "utf8");
+  assert.doesNotMatch(registration, /performance review|employer|roleflow\//i);
+  assert.match(registration, /merged pull request with no issue behind it leaves the work untracked/i);
+  const review = readFileSync(`${PLUGIN}skills/reviewing-before-merge/SKILL.md`, "utf8");
+  assert.doesNotMatch(review, /Keep this bar local|Do not add it to a shared rules file/);
+  assert.match(review, /Status: suspended/);
+  const navigation = readFileSync(`${PLUGIN}skills/navigating-source-code/SKILL.md`, "utf8");
+  assert.match(navigation, /gitnexus.*optional/i);
+  assert.match(navigation, /unavailable.*`rg`/i);
+});
+
 test("the plugin contains exactly the global skills and the kit skills", () => {
   assert.deepEqual(readdirSync(`${PLUGIN}skills`).sort(), [
     ...GLOBAL_SKILLS,

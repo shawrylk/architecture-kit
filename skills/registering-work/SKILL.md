@@ -9,11 +9,8 @@ description: "Use when starting any task in a repository that has an issue track
 tracker.** A small fix counts. A review follow-up counts. A request the user types straight into the
 chat counts. If the user names no issue, file one, then work.
 
-**Why.** The user's performance review counts registered work. A merged pull request with no issue
-behind it is invisible to that accounting, so real effort reads as nothing delivered. The rule
-protects the user's standing at their employer, so it outranks the instinct to skip ceremony on a
-small change. Filing an issue costs a minute. Missing one cannot be repaired later, because a
-backfilled issue carries a timestamp after its own pull request.
+**Why.** A merged pull request with no issue behind it leaves the work untracked.
+Register the work before the first edit so the issue records its scope and outcome.
 
 **How to apply:**
 
@@ -21,7 +18,7 @@ backfilled issue carries a timestamp after its own pull request.
   a body that carries the request in the user's own words.
 - Reference the issue from the pull request body. Use `Refs #<n>` where a workflow owns closing, and
   `Fixes #<n>` only where merging is meant to close the issue.
-- Name the issue in the branch when the repository expects it, such as `roleflow/<issue>`.
+- Name the issue in the branch when the repository expects it.
 - When the user asks for work mid-conversation and names no issue, say you are filing one and file
   it. Do not ask whether it is worth it.
 - When work has already merged with no issue, offer the backfill once, then take the answer.

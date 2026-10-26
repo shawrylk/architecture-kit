@@ -11,12 +11,15 @@ const installSteps = {
 
 /** Resource: run a tool with a bounded wait and no visible Windows console. */
 export function runTool(tool, args) {
-  const { status, stdout } = spawnSync(tool, args, {
+  const options = {
     encoding: "utf8",
     shell: process.platform === "win32",
     windowsHide: true,
     timeout: 15000,
-  });
+  };
+  const { status, stdout } = process.platform === "win32"
+    ? spawnSync(`${tool} ${args.join(" ")}`, options)
+    : spawnSync(tool, args, options);
   return { status, stdout: stdout ?? "" };
 }
 

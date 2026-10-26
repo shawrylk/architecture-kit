@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EOL } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -62,6 +63,13 @@ test("runs a tool and returns its status and stdout", () => {
     status: 0,
     stdout: `${process.version}${EOL}`,
   });
+});
+
+test("tool checks emit no shell argument deprecation warning", () => {
+  const source = `import { runTool } from ${JSON.stringify(new URL("./setup-checks.mjs", import.meta.url).href)}; process.exitCode = runTool("node", ["--version"]).status;`;
+  const result = spawnSync(process.execPath, ["--throw-deprecation", "--input-type=module", "-e", source], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /DEP0190/);
 });
 
 test("normalizes missing stdout when a tool cannot start", () => {

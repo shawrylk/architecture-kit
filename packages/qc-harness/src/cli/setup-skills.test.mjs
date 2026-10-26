@@ -33,7 +33,7 @@ function fixture(t) {
 
 function assertKept(f, reason, options = f.options) {
   assert.deepEqual(dropPersonalSkills(options), {
-    removed: [], kept: [{ path: f.folder, reason }],
+    removed: [], kept: [{ name, reason }],
   });
   assert.equal(existsSync(f.folder), true);
 }

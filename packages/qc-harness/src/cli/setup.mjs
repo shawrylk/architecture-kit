@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { GLOBAL_SKILLS } from "../global-skills.mjs";
 import { applyBlock } from "./setup-block.mjs";
 import { checkTools, personSteps } from "./setup-checks.mjs";
 import { budgetsOf, compactClaude, compactCodex } from "./setup-compaction.mjs";
@@ -21,13 +22,13 @@ function read(file, fallback) {
   }
 }
 
-/** Resource: list personal skill folders within the resolved skills directory. */
+/** Resource: validate personal copies of the kit's global skills. */
 function skillNames(claudeDir) {
   const root = path.join(claudeDir, "skills");
   if (!existsSync(root)) return [];
   const resolvedRoot = realpathSync(root);
-  return readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => {
-    const folder = path.join(root, entry.name);
+  return GLOBAL_SKILLS.filter((name) => existsSync(path.join(root, name))).map((name) => {
+    const folder = path.join(root, name);
     const relative = path.relative(resolvedRoot, realpathSync(folder));
     if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
       throw new Error(`Skill folder leaves the skills directory: ${folder}`);
@@ -35,7 +36,7 @@ function skillNames(claudeDir) {
     assertSafePath(folder);
     const skill = path.join(folder, "SKILL.md");
     if (existsSync(skill)) read(skill);
-    return entry.name;
+    return name;
   });
 }
 
@@ -53,7 +54,9 @@ export async function runSetup(args, options = {}) {
     const codexDir = path.dirname(paths.codex);
     const cwd = options.cwd ?? process.cwd();
     const config = path.resolve(cwd, values.config ?? "qc.config.json");
-    const budgets = budgetsOf(read(config, null));
+    const configText = read(config, null);
+    if (values.config && configText === null) console.error(`qc setup: config file not found: ${config}; skipping budgets.`);
+    const budgets = budgetsOf(configText);
     const claude = compactClaude(read(paths.claude, "{}"), { models: values.model ?? [], window: budgets.orchestrator });
     const codex = compactCodex(read(paths.codex, ""), budgets.codex);
     const coreFile = path.join(claudeDir, "CLAUDE.md");
@@ -71,7 +74,7 @@ export async function runSetup(args, options = {}) {
     if (budgets.orchestrator !== null && !values.model?.length) {
       steps.push("Run `qc setup --model <id>` to set the Claude compaction window");
     }
-    for (const kept of skills.kept) steps.push(`Check ${kept.path}: ${kept.reason}`);
+    for (const kept of skills.kept) steps.push(`Check ${kept.name}: ${kept.reason}`);
 
     if (!values["dry-run"]) {
       const now = options.now ?? new Date();
@@ -82,6 +85,7 @@ export async function runSetup(args, options = {}) {
       for (const plan of plans) {
         mkdirSync(path.dirname(plan.file), { recursive: true });
         writeFileSync(plan.file, plan.text, { mode: 0o600 });
+        chmodSync(plan.file, 0o600);
       }
       dropPersonalSkills(skillsOptions);
     }

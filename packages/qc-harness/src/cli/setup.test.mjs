@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -159,10 +161,45 @@ test("invalid budgets leave every file untouched", async (t) => {
   }
 });
 
-test("a missing explicit config skips budgets", async (t) => {
+test("a missing explicit config warns on stderr and skips budgets", async (t) => {
   const f = fixture(t);
-  assert.equal(await runSetup(["--config", join(f.cwd, "missing.json")], f.options), 0);
+  const warnings = [];
+  const config = join(f.cwd, "missing.json");
+  const warning = t.mock.method(console, "error", (line) => warnings.push(line));
+  assert.equal(await runSetup(["--config", config], f.options), 0);
+  warning.mock.restore();
   assert.equal(readFileSync(f.codex, "utf8"), 'model = "x"');
+  assert.ok(warnings.some((line) => line.includes(config) && /missing|not found/i.test(line)));
+});
+
+test("setup ignores unrelated personal skills, including a folder containing auth", async (t) => {
+  const f = fixture(t);
+  mkdirSync(join(f.home, ".aws"));
+  writeFileSync(join(f.home, ".aws", "config"), "sso_session = work\n");
+  const folders = ["authoring-docs", "my-own"].map((name) => join(dirname(f.settings), "skills", name));
+  for (const folder of folders) {
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "SKILL.md"), "personal rule\n");
+  }
+  assert.equal(await runSetup([], { ...f.options, exists: () => true }), 0);
+  assert.equal(f.logs.includes("Steps for a person:"), false);
+  for (const folder of folders) assert.equal(readFileSync(join(folder, "SKILL.md"), "utf8"), "personal rule\n");
+});
+
+test("setup sets mode 0600 after writing an existing settings file", async (t) => {
+  const f = fixture(t);
+  const calls = [];
+  const chmod = fs.chmodSync;
+  const mocked = t.mock.method(fs, "chmodSync", (file, mode) => { calls.push({ file, mode }); chmod(file, mode); });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(await runSetup([], f.options), 0);
+    assert.ok(calls.some(({ file, mode }) => file === f.settings && mode === 0o600));
+    if (process.platform !== "win32") assert.equal(statSync(f.settings).mode & 0o777, 0o600);
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test("removes a personal skill that matches its enabled plugin copy", async (t) => {
