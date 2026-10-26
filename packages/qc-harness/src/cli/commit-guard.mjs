@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { pathMatcher } from "../glob.mjs";
 import { findSecrets } from "./secret-patterns.mjs";
@@ -64,16 +65,20 @@ export function checkDiff(diff, { protectedPaths = [], role, allow = [], paths =
 
 let mergeDiffOption;
 
-// A resource: ends the Windows process tree before the synchronous caller's deadline.
+// A resource: ends the Git process tree before the synchronous caller's deadline.
 const remoteReadScript = `
   const { spawn, spawnSync } = require("node:child_process");
   const [deadline, command, ...args] = process.argv.slice(1);
-  const child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"], windowsHide: true });
+  const child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"], windowsHide: true, detached: process.platform !== "win32" });
   child.on("error", () => process.exit(1));
   child.on("close", (code) => process.exit(code ?? 1));
   setTimeout(() => {
-    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 1000 });
-    child.kill();
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 1000 });
+      child.kill();
+    } else {
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+    }
     process.exit(124);
   }, Number(deadline)).unref();
 `;
@@ -93,10 +98,11 @@ function mergeDiff(root) {
 /** Resource: reads Git without external diff drivers, text converters, or rename folding. */
 function git(root, args, input) {
   const remote = args[0] === "ls-remote";
-  const words = ["-c", "core.quotePath=false", "-C", root, ...args];
-  return execFileSync(remote && process.platform === "win32" ? process.execPath : "git",
-    remote && process.platform === "win32" ? ["-e", remoteReadScript, "--", "29000", "git", ...words] : words, {
+  const words = ["-c", "core.quotePath=false", ...(root === null ? [] : ["-C", root]), ...args];
+  return execFileSync(remote ? process.execPath : "git",
+    remote ? ["-e", remoteReadScript, "--", "29000", "git", ...words] : words, {
     encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+    ...(root === null ? { cwd: os.tmpdir() } : {}),
     ...(remote ? { timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" } } : {}),
   });
 }
@@ -125,13 +131,11 @@ function baseExclusion(root, base = "origin/main", recordedRefs = {}, recordedUr
   const branch = base.replace(/^origin\//, "");
   const recorded = recordedRefs[`refs/remotes/origin/${branch}`];
   const fallback = recorded ? [recorded] : [];
-  if (recordedUrl !== undefined) {
-    const currentUrl = originUrl(root);
-    if (recordedUrl === null || currentUrl === null || currentUrl !== recordedUrl) return fallback;
-  }
+  const currentUrl = originUrl(root);
+  if (recordedUrl == null || currentUrl === null || currentUrl !== recordedUrl) return fallback;
   try {
     const refname = `refs/heads/${branch}`;
-    const tip = git(root, ["ls-remote", "origin", refname]).trim().split(/\r?\n/)
+    const tip = git(null, ["ls-remote", recordedUrl, refname]).trim().split(/\r?\n/)
       .map((line) => line.split(/\s+/)).find(([, ref]) => ref === refname)?.[0];
     return tip ? [tip] : [];
   } catch {

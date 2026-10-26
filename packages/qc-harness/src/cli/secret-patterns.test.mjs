@@ -38,7 +38,7 @@ test("ordinary text and short token prefixes pass", () => {
 
 test("AWS operator assignments cover the review probes and compact values", () => {
   const value = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
-  for (const separator of [":=", "?=", "+=", "!=", "-->", "=:="]) {
+  for (const separator of [":=", "?=", "+=", "!=", "-->", "=:=", "<-"]) {
     for (const spacing of ["", " ", "\t"]) {
       const line = `aws_secret_access_key${spacing}${separator}${spacing}${value}`;
       assert.deepEqual(findSecrets(line), ["aws-secret-key"], line);

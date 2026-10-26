@@ -42,6 +42,32 @@ for (const target of ["does-not-exist", "outside-git"]) test(`a ${target} target
   assert.equal(git(root, "status", "--porcelain"), "");
 });
 
+for (const paused of [false, true]) test(`a target from another repository is refused when its repository is ${paused ? "paused" : "running"}`, async (t) => {
+  const root = batch(t);
+  const foreign = batch(t);
+  const worktree = path.join(foreign, ".worktree", "run");
+  git(foreign, "worktree", "add", "-qb", "foreign-run", worktree);
+  if (paused) {
+    mkdirSync(path.join(foreign, ".git", "qc"), { recursive: true });
+    writeFileSync(path.join(foreign, ".git", "qc", "pause"), "operator investigation\n");
+  }
+  const head = git(worktree, "rev-parse", "HEAD");
+  const lines = [];
+  let generated = 0;
+  let pushed = 0;
+  assert.equal(await runBranch(config(root), ["sync", worktree], {
+    say: quiet(lines),
+    run: () => { generated += 1; return 0; },
+    runSlot: () => { pushed += 1; return 0; },
+  }), 1);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /target.*another repository/i);
+  assert.equal(generated, 0);
+  assert.equal(pushed, 0);
+  assert.equal(git(worktree, "rev-parse", "HEAD"), head);
+  assert.equal(git(worktree, "status", "--porcelain"), "");
+});
+
 test("a pause refuses sync before branch changes or a push", async (t) => {
   const dir = batch(t);
   const head = git(dir, "rev-parse", "HEAD");

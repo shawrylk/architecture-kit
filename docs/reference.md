@@ -312,14 +312,17 @@ folder, or sets `conventional` to `false`.
 It refuses added secret-shaped lines and added lines that start with `<<<<<<< ` or `>>>>>>> `.
 Removed lines and unchanged context pass. A line containing `qc-allow-secret` exempts that line from secret detection.
 The exemption leaves the conflict marker rule in force.
+The guard catches secrets that a cooperating child commits by mistake.
+A hostile child with full access can bypass it through global Git configuration or a new branch push with `--no-verify`.
 
 The secret patterns derive from pr-autopilot's `commitguard.py` at commit `d937f83`.
 They cover AWS keys, GitHub tokens and personal access tokens, private key headers, Anthropic keys, Slack tokens, and npm tokens.
 The AWS secret rule requires a literal value of 40 base64 characters; workflow secret references pass.
 It accepts prefixed names such as `TF_VAR_aws_secret_access_key` and `PROD_AWS_SECRET_ACCESS_KEY`.
 Whitespace can separate the name and value, including the `aws configure set` form.
-An operator separator contains one to three characters from `:`, `=`, `?`, `+`, `!`, `>`, and `-`, with optional whitespace.
-This covers `:=`, `?=`, `+=`, and compact assignments such as `aws_secret_access_key:=<value>`; quotes around names and values also pass.
+An operator separator contains one to three characters from `:`, `=`, `?`, `+`, `!`, `<`, `>`, and `-`, with optional whitespace.
+This covers `:=`, `?=`, `+=`, `<-`, and compact assignments such as `aws_secret_access_key:=<value>`.
+Quotes around names and values also match.
 The separator pattern stays linear in time.
 Findings name the file, added line number, and rule without printing the secret.
 Every guard diff uses fixed `a/` and `b/` prefixes and disables external diff drivers.
@@ -341,12 +344,13 @@ After each child run, the runner checks every new commit against the policy capt
 Before each run, it records the run branch, every ref tip, and the effective origin URL from `git ls-remote --get-url origin`.
 After the run, it scans only `HEAD`, `refs/heads/<run branch>`, and `refs/remotes/origin/<run branch>`.
 Other worktrees and fetched branches outside the run stay outside this scan.
-The recorded tips exclude existing history, and `git ls-remote origin refs/heads/<base>` supplies the remote base tip.
+The recorded tips exclude existing history, and `git ls-remote <recorded URL> refs/heads/<base>` supplies the remote base tip.
+The base read runs from the system temp folder without `-C`, so the worktree's repository config never reaches it.
 The guard accepts only the line whose refname equals `refs/heads/<base>` exactly.
 After the run, it compares the effective origin URL with the recorded URL, including any `insteadOf` rewrite.
-If the URL changes, the base exclusion uses only the `origin/<base>` tip recorded before the run.
+If the URL changes or no URL was recorded, the base exclusion uses only the `origin/<base>` tip recorded before the run.
 Every `ls-remote` call has a 30-second timeout and sets `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`.
-A timeout or failure also uses the recorded tip; on Windows, the deadline ends the Git transport process tree.
+A timeout or failure also uses the recorded tip; the deadline ends the Git transport process tree.
 The scan deduplicates revisions and exclusions, then passes them to `git rev-list --stdin`.
 The configured base is `worktree.base`, which defaults to `origin/main`.
 Merge commits use `--diff-merges=remerge` with Git 2.36 or later, and `--cc` with older Git.
@@ -651,6 +655,7 @@ The command resolves the worktree path against the repository root and follows f
 `--no-push` completes the sync and skips the push.
 The pause check reads from the repository root before changes and again before the push.
 A missing worktree or a folder outside Git reports the normal input error with exit `1`.
+A target whose Git common directory differs from the repository root's common directory reports an input error with exit `1`.
 A branch with no local commits ahead of its upstream skips generation and the push when it already contains the base.
 When the base is merged, a branch ahead of its upstream, or without one, runs the generator and pushes on a rerun.
 A source conflict leaves the merge in progress and skips the push.
@@ -2010,7 +2015,7 @@ exempt. `valeConfig` names the repository's Vale config and defaults to `.vale/.
 Every title, body, and comment the kit posts to GitHub passes through `output-redaction.mjs`.
 It imports the guard's credential patterns from `secret-patterns.mjs` and adds one rule for whole PEM blocks.
 It matches credential patterns over the whole text and replaces each match, including its secret value, with `[REDACTED]`.
-AWS redaction covers prefixed names and the guard's operator separators, including `:=`, `?=`, `+=`, and compact assignments.
+AWS redaction covers prefixed names and the guard's operator separators, including `:=`, `?=`, `+=`, `<-`, and compact assignments.
 It removes the whole literal value; workflow references and nonliteral placeholders pass.
 Whitespace can span a newline during redaction, so a name followed by a literal value on the next line also redacts.
 YAML block scalars and PGP private keys stay outside these patterns.

@@ -39,7 +39,7 @@ test("only added start and end conflict markers fail", () => {
 test("AWS operator assignments fail the guard with spaced and compact values", () => {
   const value = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
   for (const name of ["AWS_SECRET_ACCESS_KEY", "aws_secret_access_key"]) {
-    for (const separator of [":=", "?=", "+=", "!=", "-->", "=:="]) {
+    for (const separator of [":=", "?=", "+=", "!=", "-->", "=:=", "<-"]) {
       for (const spacing of ["", " ", "\t"]) {
         const line = `${name}${spacing}${separator}${spacing}${value}`;
         assert.deepEqual(guard(patch("Makefile", `+${line}`)), [{ path: "Makefile", line: 1, rule: "aws-secret-key" }]);
@@ -234,6 +234,46 @@ for (const redirect of ["url", "insteadOf"]) test(`a changed origin ${redirect} 
   assert.deepEqual(checkRunCommits(r.root, before, { base: "main", branch: "run" }).map((finding) => finding.commit), [bad]);
 });
 
+for (const redirect of ["uploadpack", "sshCommand"]) test(`repository ${redirect} cannot redirect the recorded remote base`, (t) => {
+  const upstream = repo(t);
+  upstream.put("base.md", "safe\n");
+  upstream.commit();
+  upstream.git("branch", "-M", "main");
+  const r = repo(t);
+  const url = redirect === "uploadpack" ? upstream.root : "ssh://git@127.0.0.1:1/repo.git";
+  r.git("remote", "add", "origin", url);
+  r.git("fetch", "-q", upstream.root, "main:refs/remotes/origin/main");
+  r.git("checkout", "-qfb", "run", "origin/main");
+  const before = guardRefs(r.root);
+  r.put("secret.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  const bad = guardHead(r.root);
+  r.git("update-ref", "refs/heads/main", bad);
+  const self = r.root.replace(/\\/g, "/");
+  if (redirect === "uploadpack") r.git("config", "remote.origin.uploadpack", `git-upload-pack '${self}' #`);
+  else r.git("config", "core.sshCommand", `sh -c 'git-upload-pack "${self}"' --`);
+  assert.equal(r.git("ls-remote", "--get-url", "origin").trim(), before.originUrl);
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main", branch: "run" }).map((finding) => finding.commit), [bad]);
+});
+
+test("the remote base read uses its recorded URL outside the repository", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  r.git("remote", "add", "origin", r.root);
+  const before = guardRefs(r.root);
+  let remoteRead;
+  interceptGit(t, (command, args, options, execute) => {
+    if (args.includes("ls-remote") && !args.includes("--get-url")) remoteRead = { args, options };
+    return execute(command, args, options);
+  });
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }), []);
+  assert.ok(remoteRead);
+  assert.ok(!remoteRead.args.includes("-C"));
+  assert.deepEqual(remoteRead.args.slice(-3), ["ls-remote", before.originUrl, "refs/heads/main"]);
+  assert.equal(remoteRead.options.cwd, os.tmpdir());
+});
+
 test("the remote base read matches the whole refname", (t) => {
   const r = repo(t);
   r.put("base.md", "safe\n");
@@ -305,7 +345,9 @@ test("failed origin URL reads use only the recorded tip", (t) => {
   assert.equal(remoteReads, 0);
 });
 
-test("a stalled Windows remote loses its transport process at the deadline", { skip: process.platform !== "win32" }, async (t) => {
+for (const platform of ["Windows", "POSIX"]) test(`a stalled ${platform} remote loses its transport process at the deadline`, {
+  skip: platform === "Windows" ? process.platform !== "win32" : process.platform === "win32",
+}, async (t) => {
   const server = spawn(process.execPath, ["--input-type=module", "-e", `
     import http from "node:http";
     const server = http.createServer((request) => request.socket.on("close", () => process.stdout.write("closed\\n")));
@@ -401,19 +443,19 @@ test("a merge excludes commits reached by the base branch", (t) => {
   const r = repo(t);
   r.put("base.md", "safe\n");
   r.commit();
-  const before = guardHead(r.root);
+  r.git("remote", "add", "origin", r.root);
+  const before = guardRefs(r.root);
   r.git("checkout", "-qb", "side");
   r.put("side.md", "<<<<<<< HEAD\n");
   r.commit();
   const bad = guardHead(r.root);
   r.put("side.md", "safe\n");
   r.commit();
-  r.git("checkout", "-qb", "mainline", before);
+  r.git("checkout", "-qb", "mainline", before.head);
   r.put("main.md", "safe\n");
   r.commit();
   r.git("merge", "--no-ff", "-qm", "test: merge fixture", "side");
   r.git("update-ref", "refs/remotes/origin/main", r.git("rev-parse", "side").trim());
-  r.git("remote", "add", "origin", r.root);
   r.git("update-ref", "refs/heads/main", r.git("rev-parse", "side").trim());
   const findings = checkRunCommits(r.root, before, { base: "main" });
   assert.ok(!findings.some((finding) => finding.commit === bad && finding.rule === "conflict-marker"));
@@ -510,13 +552,13 @@ test("a base merge adds no protected paths to the run or staged guard", (t) => {
   const r = repo(t);
   r.put("base.md", "safe\n");
   r.commit();
-  const before = guardHead(r.root);
+  r.git("remote", "add", "origin", r.root);
+  const before = guardRefs(r.root);
   r.git("checkout", "-qb", "base");
   r.put(".github/workflows/ci.yml", "safe\n");
   r.commit();
   r.git("update-ref", "refs/remotes/origin/main", "HEAD");
-  r.git("checkout", "-qb", "feature", before);
-  r.git("remote", "add", "origin", r.root);
+  r.git("checkout", "-qb", "feature", before.head);
   r.git("update-ref", "refs/heads/main", r.git("rev-parse", "base").trim());
   r.put("feature.md", "safe\n");
   r.commit();

@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { globMatcher } from "../glob.mjs";
@@ -70,6 +71,9 @@ export async function syncBranch(config, worktree, options = {}) {
   if (!branch) throw new Error("HEAD is detached: switch to a branch first");
   if ((config.swarm?.isolation?.protectedBranches ?? []).includes(branch)) throw new Error(`cannot sync protected branch ${branch}`);
   if (git(worktree, ["status", "--porcelain"]).trim() !== "") throw new Error("the working tree has changes: commit or stash them first");
+  const targetCommon = realpathSync(path.resolve(worktree, git(worktree, ["rev-parse", "--git-common-dir"]).trim()));
+  const rootCommon = realpathSync(path.resolve(config.root, git(config.root, ["rev-parse", "--git-common-dir"]).trim()));
+  if (targetCommon !== rootCommon) throw new Error("the target belongs to another repository: choose a worktree of the repository root");
   tryGit(worktree, ["fetch", "--quiet", "origin"]);
   if (!tryGit(worktree, ["rev-parse", "-q", "--verify", `${base}^{commit}`]).ok) throw new Error(`unknown base ${base}`);
   const alreadyMerged = tryGit(worktree, ["merge-base", "--is-ancestor", base, "HEAD"]).ok;
