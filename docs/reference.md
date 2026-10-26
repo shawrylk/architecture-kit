@@ -124,6 +124,33 @@ Every gate reads one file list: `git ls-files --cached --others --exclude-standa
 `ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
 `qc decisions`. Outside a git work tree, the check walks the tree instead.
 
+### Run the affected e2e specs before a push
+
+Set `check.e2e` in `qc.config.json` to your repository's command for the affected end-to-end (e2e) specs:
+
+```json
+{
+  "check": {
+    "e2e": "node script/e2e-affected.mjs --project=chromium --project=firefox"
+  }
+}
+```
+
+`qc e2e` appends the committed and staged files changed against the merge base with `check.base` as arguments.
+Your repository's command picks the specs and names the browsers, for example both `--project=chromium` and `--project=firefox`.
+The kit ships no Playwright logic.
+
+Run the command on a throwaway database before a push:
+
+```bash
+npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e
+```
+
+The wrapper creates a database on a free port and removes it when the command exits.
+`qc e2e` runs only when asked; `qc check` and the pre-push hook never run it.
+The default `check.e2e: null` skips the command, and an empty file list also skips it.
+When the merge base is unavailable, the command runs without file arguments.
+
 ### Shared user configuration
 
 The root `user-config/` folder holds the shared Claude status line, Claude settings, and Codex settings.

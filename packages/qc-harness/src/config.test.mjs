@@ -12,7 +12,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 test("check defaults leave repository commands off", () => {
   assert.equal(defaults.check.sincePush, null);
-  assert.deepEqual(load(here).check, { related: null, sincePush: null, commands: [], base: "origin/main" });
+  assert.equal(defaults.check.e2e, null);
+  assert.deepEqual(load(here).check, { related: null, sincePush: null, e2e: null, commands: [], base: "origin/main" });
 });
 
 test("check configuration accepts commands and preserves omitted defaults", (t) => {
@@ -20,7 +21,7 @@ test("check configuration accepts commands and preserves omitted defaults", (t) 
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const check = { related: "pnpm exec vitest related --run", commands: ["node script/check-comments.mjs --base origin/dev"] };
   writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ check }));
-  assert.deepEqual(load(root).check, { ...check, sincePush: null, base: "origin/main" });
+  assert.deepEqual(load(root).check, { ...check, sincePush: null, e2e: null, base: "origin/main" });
 });
 
 test("check configuration rejects invalid types and empty commands or refs", (t) => {
@@ -33,6 +34,7 @@ test("check configuration rejects invalid types and empty commands or refs", (t)
   for (const [key, values] of Object.entries({
     related: [false, 1, [], {}, "", "  "],
     sincePush: [false, 1, [], {}, "", "  "],
+    e2e: [false, 1, [], {}, "", "  "],
     commands: [null, false, "node", [1], [null], [""], ["  "]],
     base: [null, false, 1, [], "", "  "],
   })) {

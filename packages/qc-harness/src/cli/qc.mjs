@@ -12,6 +12,7 @@ const USAGE = `qc — architecture gates
 
   qc check [file...] [--files-from <path|->] [--since-push]
                            every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
+  qc e2e                   the repository's e2e command with the changed files
   qc lint [--staged] [--base <ref>] [file...]
                            ESLint on the changed lines only: a problem on an untouched line never fails
   qc typecheck             the typecheck script, else tsc; writes no build output
@@ -109,6 +110,11 @@ async function main() {
   const config = load(process.cwd());
 
   switch (command) {
+    case "e2e": {
+      const { runE2e } = await import("./e2e-affected.mjs");
+      process.exitCode = await runE2e(config);
+      return;
+    }
     case "check": {
       const sincePush = rest.includes("--since-push");
       const { files, listed } = await checkFiles(rest.filter((arg) => arg !== "--since-push"));

@@ -21,7 +21,7 @@ Progress: `<absolute progress file>`
 3. Write every item first, each test first. Run only the touched test files while you work.
 4. Run `qc check` once before the push: it runs the related tests and the repository's checks. Touched test files alone are not enough. Make one commit, and push once. Work up to about 200K tokens before a hand-off.
 5. Wrap each heavy command in `npx qc gate-slot --`: the local check, a test run of more than one file, a browser test, a live database test, a commit, and a push.
-6. When you touch server code, run its live database tests before the push: `npx qc gate-slot -- npx qc throwaway-db -- <test command>`. Never use port 5432 or another port the local stack owns.
+6. When you touch server code, run its live database tests before the push: `npx qc gate-slot -- npx qc throwaway-db -- <test command>`. Never use port 5432 or another port the local stack owns. When `check.e2e` is set, also run `npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e` before the push.
 7. Never skip a git hook. Never stop to ask: write the question in the report and continue.
 
 ## Commit

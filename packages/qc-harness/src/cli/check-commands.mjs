@@ -38,7 +38,7 @@ function commandWords(command) {
   return words;
 }
 
-function changedFiles(root, base, sincePush) {
+export function changedFiles(root, base, sincePush) {
   const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   let ref = base;
   if (sincePush) {
@@ -64,7 +64,7 @@ function changedFiles(root, base, sincePush) {
   return git("diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=d", mergeBase, "--").split("\0").filter(Boolean);
 }
 
-async function runCommand(root, command, files = []) {
+export async function runCommand(root, command, files = []) {
   console.log(`RUN  ${command.replace(/[\r\n]+/g, " ")}`);
   try {
     const [bin, ...args] = commandWords(command);
