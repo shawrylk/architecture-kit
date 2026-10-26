@@ -83,11 +83,103 @@ test("TOML fills existing plugin sections before appending new tables", () => {
   }
 });
 
-test("TOML refuses inline plugin tables before adding a plugin section", () => {
-  for (const key of ["plugins", '"plugins"', "'plugins'"]) {
-    const local = `${key} = { "A@r" = { enabled = false } }\n`;
-    assert.throws(() => mergeCodexConfig(local, '[plugins."A@r"]\nenabled = true\n'), /inline.*plugins.*table/i);
+const tomlTests = {
+  skip: spawnSync("python", ["-c", "import tomllib"], { stdio: "ignore", timeout: 5_000 }).status === 0 ? false : "Python tomllib is unavailable",
+};
+
+function parseTomlFile(file) {
+  const result = spawnSync("python", ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], 'rb'))))", file], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+for (const [form, local] of [
+  ["top-level inline", 'plugins = { "kit@remote" = { enabled = false, local = 42 } }\n'],
+  ["dotted inline", 'plugins."kit@remote" = { enabled = false, local = 42 }\n'],
+  ["dotted field", 'plugins."kit@remote".enabled = false\nplugins."kit@remote".local = 42\n'],
+  ["plugins table", '[plugins]\n"kit@remote" = { enabled = false, local = 42 }\n'],
+]) {
+  test(`apply merges the ${form} plugin form into valid TOML`, tomlTests, async (t) => {
+    const f = fixture(t);
+    writeFileSync(path.join(f.kitDir, "codex/config.shared.toml"), '[plugins."kit@remote"]\nenabled = true\n');
+    const file = configPaths(f.home, f.env).codex;
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, local);
+    assert.equal(await runUserConfig(["apply"], f), 0, f.lines.join("\n"));
+    assert.deepEqual(parseTomlFile(file).plugins["kit@remote"], { enabled: true, local: 42 });
+    assert.equal(readFileSync(file, "utf8"), local.replace("false", "true"));
+    assert.equal(await runUserConfig(["apply"], f), 0);
+  });
+}
+
+test("plugin forms add missing fields and plugins without duplicate tables", tomlTests, async (t) => {
+  for (const local of [
+    '"plugins" = { "kit@remote" = { local = { x = 42 } } }\n',
+    "'plugins'.'kit@remote' = { local = { x = 42 } }\n",
+    'plugins."kit@remote".local = { x = 42 }\n',
+    '[plugins]\n"kit@remote" = { local = { x = 42 } }\n',
+  ]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.kitDir, "codex/config.shared.toml"), '[plugins."kit@remote"]\nenabled = true\n[plugins."new@remote"]\nenabled = false\n');
+    const file = configPaths(f.home, f.env).codex;
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, local);
+    assert.equal(await runUserConfig(["apply"], f), 0, f.lines.join("\n"));
+    assert.deepEqual(parseTomlFile(file).plugins, {
+      "kit@remote": { local: { x: 42 }, enabled: true }, "new@remote": { enabled: false },
+    });
+    assert.deepEqual(mergeCodexConfig(readFileSync(file, "utf8"), readFileSync(path.join(f.kitDir, "codex/config.shared.toml"), "utf8")).changed, []);
   }
+});
+
+test("incompatible plugin values name the form and line before any write", tomlTests, async (t) => {
+  for (const [form, local] of [
+    ["top-level inline plugins table", '# keep\nplugins = false\n'],
+    ["dotted inline plugin table", '# keep\nplugins."kit@remote" = false\n'],
+    ["[plugins] table", '# keep\n[plugins]\n"kit@remote" = false\n'],
+  ]) {
+    const f = fixture(t);
+    const file = configPaths(f.home, f.env).codex;
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, local);
+    assert.equal(await runUserConfig(["apply"], f), 2);
+    assert.ok(f.lines.at(-1).includes(form), f.lines.join("\n"));
+    assert.match(f.lines.at(-1), /line [23]/);
+    assert.equal(readFileSync(file, "utf8"), local);
+    parseTomlFile(file);
+    assert.equal(readdirSync(path.dirname(file)).length, 1);
+  }
+});
+
+test("an empty inline plugins table accepts several plugins as valid TOML", tomlTests, async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.kitDir, "codex/config.shared.toml"), '[plugins."kit@remote"]\nenabled = true\n[plugins."new@remote"]\nenabled = false\n');
+  const file = configPaths(f.home, f.env).codex;
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, "plugins = {}\n");
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  assert.deepEqual(parseTomlFile(file).plugins, { "kit@remote": { enabled: true }, "new@remote": { enabled: false } });
+});
+
+for (const name of ["secrets.json", "tokens.json", "apitoken.txt", "accesstoken.json", "mycredentials.txt", "authentication.json"]) {
+  test(`credential paths refuse ${name}`, () => {
+    assert.throws(() => assertSafePath(name), /credential/i);
+    assert.throws(() => assertSafePath(`C:\\settings\\${name.toUpperCase()}`), /credential/i);
+  });
+}
+
+test("author remains a safe config name without Python", () => {
+  assert.doesNotThrow(() => assertSafePath("author"));
+  assert.doesNotThrow(() => assertSafePath("author.toml"));
+});
+
+test("credential names allow author", tomlTests, async (t) => {
+  const f = fixture(t);
+  f.env.CODEX_HOME = path.join(f.root, "author");
+  assert.doesNotThrow(() => assertSafePath("author.toml"));
+  assert.throws(() => assertSafePath("auth_token.toml"), /credential/i);
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  assert.equal(parseTomlFile(configPaths(f.home, f.env).codex).model, "shared");
 });
 
 test("malformed shared configuration fails before any target changes", async (t) => {

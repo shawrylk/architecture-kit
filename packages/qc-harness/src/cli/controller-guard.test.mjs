@@ -174,7 +174,7 @@ test("the lane reads its limits from the base, and names a base that holds no co
   const bare = laneWorkspace(t, null);
   writeFileSync(path.join(bare.main, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
   const closed = decide(edit(bare.main, path.join(bare.linked, "src", "a.ts"), "Edit", { tool_input: { file_path: path.join(bare.linked, "src", "a.ts"), ...small } }));
-  assert.match(denied(closed) ?? "", /does not apply: git cannot read qc\.config\.json at origin\/main/);
+  assert.match(denied(closed) ?? "", /does not apply: qc\.config\.json is absent at origin\/main/);
 });
 
 test("a pending edit of qc.config.json leaves the lane when the controller does not own the file", (t) => {

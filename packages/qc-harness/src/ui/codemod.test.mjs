@@ -102,6 +102,58 @@ test("a compoundVariants class is rewritten and its selector is not", () => {
   assert.equal(out.text, `const v = cva("a", { compoundVariants: [{ size: "text-[11px]", className: "text-2xs" }] });`);
 });
 
+test("a clsx identifier key is quoted when its replacement needs quotes", () => {
+  const out = run(`const a = clsx({ shadow: on, rounded: active, flex: ready });`, {
+    shadow: "shadow-sm",
+    rounded: "block",
+  });
+  assert.equal(out.text, `const a = clsx({ "shadow-sm": on, block: active, flex: ready });`);
+  assert.equal(out.count, 2);
+  assert.equal(ts.createSourceFile("a.tsx", out.text, ts.ScriptTarget.Latest).parseDiagnostics.length, 0);
+});
+
+test("a computed clsx key and a shorthand key stay untouched", () => {
+  const text = `const a = clsx({ [shadow]: on, ["shadow"]: active, shadow });`;
+  assert.deepEqual(run(text, { shadow: "shadow-sm" }), { text, count: 0 });
+});
+
+test("cva resolves a const object for shorthand and explicit variant properties", () => {
+  const text = [
+    `const variants = { size: { sm: "text-[11px]", md: "rounded-[4px]" } };`,
+    `const a = cva("a", { variants });`,
+    `const b = cva("b", { variants: variants });`,
+  ].join("\n");
+  const out = run(text);
+  assert.equal(out.text, text.replace("text-[11px]", "text-2xs").replace("rounded-[4px]", "rounded-sm"));
+  assert.equal(out.count, 2);
+});
+
+test("cva skips imported, mutable, nonliteral, and shadowed variants", () => {
+  for (const declaration of [
+    `import { variants } from "./variants";`,
+    `let variants = { size: { sm: "text-[11px]" } };`,
+    `var variants = { size: { sm: "text-[11px]" } };`,
+    `const variants = makeVariants("text-[11px]");`,
+    `const source = { size: { sm: "text-[11px]" } }; const variants = source;`,
+  ]) {
+    const text = `${declaration}\nconst a = cva("a", { variants });`;
+    assert.deepEqual(run(text), { text, count: 0 });
+  }
+  const text = `const variants = { size: { sm: "text-[11px]" } };\nfunction make(variants) { return cva("a", { variants }); }`;
+  assert.deepEqual(run(text), { text, count: 0 });
+});
+
+test("cva resolves the nearest const variants object in a function", () => {
+  const text = [
+    `const variants = { size: { sm: "text-[11px]" } };`,
+    `function make() {`,
+    `  const variants = { size: { sm: "rounded-[4px]" } };`,
+    `  return cva("a", { variants });`,
+    `}`,
+  ].join("\n");
+  assert.deepEqual(run(text), { text: text.replace("rounded-[4px]", "rounded-sm"), count: 1 });
+});
+
 test("the static parts of a template literal are rewritten and a token cut by a substitution is not", () => {
   const out = run("const a = cn(`text-[11px] ${x} rounded-[4px] text-[11px]${y}`);");
   assert.equal(out.text, "const a = cn(`text-2xs ${x} rounded-sm text-[11px]${y}`);");

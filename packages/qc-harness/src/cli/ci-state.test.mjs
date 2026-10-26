@@ -10,6 +10,45 @@ test("a head whose check runs all completed green is green", () => {
   assert.equal(notGreenReason([run("lint", "completed", "success"), run("docs", "completed", "skipped"), run("x", "completed", "neutral")]), null);
 });
 
+test("a newer success supersedes an older failure of the same check", () => {
+  const older = { ...run("build", "completed", "failure"), started_at: "2026-01-01T00:00:00Z", id: 20 };
+  const newer = { ...run("build", "completed", "success"), started_at: "2026-01-02T00:00:00Z", id: 10 };
+  for (const runs of [[older, newer], [newer, older]]) {
+    assert.equal(notGreenReason(runs), null);
+    assert.deepEqual(ciState(SHA, "/c", { gh: () => reply(...runs), origin: () => "o/r" }), { reason: null, unknown: null });
+  }
+});
+
+test("a newer failure supersedes an older success of the same check", () => {
+  const older = { ...run("build", "completed", "success"), started_at: "2026-01-01T00:00:00Z", id: 20 };
+  const newer = { ...run("build", "completed", "failure"), started_at: "2026-01-02T00:00:00Z", id: 10 };
+  for (const runs of [[older, newer], [newer, older]]) assert.equal(notGreenReason(runs), "build ended failure");
+});
+
+test("the higher run id breaks a tie in start times", () => {
+  for (const conclusion of ["success", "failure"]) {
+    const older = { ...run("build", "completed", conclusion === "success" ? "failure" : "success"), started_at: "2026-01-01T00:00:00Z", id: 9 };
+    const newer = { ...run("build", "completed", conclusion), started_at: older.started_at, id: 10 };
+    for (const runs of [[older, newer], [newer, older]]) {
+      assert.equal(notGreenReason(runs), conclusion === "success" ? null : "build ended failure");
+    }
+  }
+});
+
+test("the newest run counts while it is in progress", () => {
+  for (const conclusion of ["success", "failure"]) {
+    const older = { ...run("build", "completed", conclusion), started_at: "2026-01-01T00:00:00Z", id: 20 };
+    const newer = { ...run("build", "in_progress"), started_at: "2026-01-02T00:00:00Z", id: 10 };
+    for (const runs of [[older, newer], [newer, older]]) assert.equal(notGreenReason(runs), "build is in_progress");
+  }
+});
+
+test("a newer success for another check preserves a failure", () => {
+  const failed = { ...run("build", "completed", "failure"), started_at: "2026-01-01T00:00:00Z", id: 9 };
+  const passed = { ...run("lint", "completed", "success"), started_at: "2026-01-02T00:00:00Z", id: 10 };
+  assert.equal(notGreenReason([failed, passed]), "build ended failure");
+});
+
 test("each failing conclusion makes the head not green, and the reason names the run", () => {
   for (const conclusion of ["failure", "cancelled", "timed_out", "action_required"]) {
     assert.match(notGreenReason([run("ok", "completed", "success"), run("build", "completed", conclusion)]) ?? "", new RegExp(`build.*${conclusion}`));

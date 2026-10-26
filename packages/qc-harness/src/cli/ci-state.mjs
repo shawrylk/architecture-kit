@@ -13,13 +13,21 @@ const short = (sha) => sha.slice(0, 7);
 
 /**
  * @param runs the `check_runs` array of the GitHub API
- * @returns why the head is not green, naming the run, or null when every run completed without a failure
+ * @returns why the head is not green, naming the run, or null when the newest run of each check completed without a failure
  * or when there are no runs, because a head with no CI is unknown.
  */
 export function notGreenReason(runs) {
-  const failed = runs.find((entry) => entry.status === "completed" && FAILED.has(entry.conclusion));
+  const newestByName = new Map();
+  for (const entry of runs) {
+    const current = newestByName.get(entry.name);
+    if (!current || entry.started_at > current.started_at || (entry.started_at === current.started_at && entry.id > current.id)) {
+      newestByName.set(entry.name, entry);
+    }
+  }
+  const newest = [...newestByName.values()];
+  const failed = newest.find((entry) => entry.status === "completed" && FAILED.has(entry.conclusion));
   if (failed) return `${failed.name} ended ${failed.conclusion}`;
-  const open = runs.find((entry) => entry.status !== "completed");
+  const open = newest.find((entry) => entry.status !== "completed");
   return open ? `${open.name} is ${open.status}` : null;
 }
 

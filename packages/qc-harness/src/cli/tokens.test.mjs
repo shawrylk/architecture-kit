@@ -196,8 +196,8 @@ function fakeSession(t) {
 }
 
 test("the project key replaces each character outside letters and digits with a dash", () => {
-  if (process.platform === "win32") assert.equal(projectKeyOf("C:\\Users\\x\\qc-mono"), "C--Users-x-qc-mono");
-  else assert.equal(projectKeyOf("/home/u/qc-mono"), "-home-u-qc-mono");
+  if (process.platform === "win32") assert.equal(projectKeyOf("C:\\Users\\x\\example-app"), "C--Users-x-example-app");
+  else assert.equal(projectKeyOf("/home/u/example-app"), "-home-u-example-app");
 });
 
 test("the project key keeps a digit", () => {
