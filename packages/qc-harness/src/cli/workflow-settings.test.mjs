@@ -87,6 +87,21 @@ test("an empty dispatch section takes every review default", () => {
   assert.deepEqual(reviewSettings({ dispatch: {} }), { ...reviewDefaults, implementerTypes: dispatchDefaults.implementerTypes });
 });
 
+test("requireGreen accepts booleans and not-red", () => {
+  for (const requireGreen of [true, false, "not-red"]) {
+    assert.equal(reviewSettings({ dispatch: {}, review: { requireGreen } }).requireGreen, requireGreen);
+  }
+});
+
+test("requireGreen rejects other strings and names every allowed value", () => {
+  for (const requireGreen of ["", "true", "false", "green", "not_red"]) {
+    assert.throws(
+      () => reviewSettings({ dispatch: {}, review: { requireGreen } }),
+      /swarm\.review\.requireGreen.*true, false, or "not-red"/,
+    );
+  }
+});
+
 test("a repository overrides one reviewer kind and keeps the other", () => {
   const settings = reviewSettings({ dispatch: {}, review: { merge: "task", reviewerTypes: { task: ["my-reviewer"] } } });
   assert.equal(settings.merge, "task");

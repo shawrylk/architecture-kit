@@ -1,5 +1,4 @@
-// The CI state of a commit, read from its GitHub check runs. The task gate asks it before a review: a
-// head whose CI is not green changes before it is reviewed, so the review waits.
+// The CI state of a commit, read from its GitHub check runs. The task gate uses this state before a review.
 
 import { runGh } from "./gh-run.mjs";
 import { originOf } from "./git-read.mjs";
@@ -11,12 +10,8 @@ const ORIGIN_TIMEOUT_MS = 1_000;
 const FAILED = new Set(["failure", "cancelled", "timed_out", "action_required"]);
 const short = (sha) => sha.slice(0, 7);
 
-/**
- * @param runs the `check_runs` array of the GitHub API
- * @returns why the head is not green, naming the run, or null when the newest run of each check completed without a failure
- * or when there are no runs, because a head with no CI is unknown.
- */
-export function notGreenReason(runs) {
+/** The branch that selects a failure before an unfinished check, using the newest run of each check. */
+function checkRunsState(runs) {
   const newestByName = new Map();
   for (const entry of runs) {
     const current = newestByName.get(entry.name);
@@ -26,13 +21,17 @@ export function notGreenReason(runs) {
   }
   const newest = [...newestByName.values()];
   const failed = newest.find((entry) => entry.status === "completed" && FAILED.has(entry.conclusion));
-  if (failed) return `${failed.name} ended ${failed.conclusion}`;
+  if (failed) return { reason: `${failed.name} ended ${failed.conclusion}`, pending: false };
   const open = newest.find((entry) => entry.status !== "completed");
-  return open ? `${open.name} is ${open.status}` : null;
+  return { reason: open ? `${open.name} is ${open.status}` : null, pending: Boolean(open) };
 }
+
+/** The reason the newest check runs are not green, or null when they pass or are absent. */
+export const notGreenReason = (runs) => checkRunsState(runs).reason;
 
 /**
  * What CI says about `sha`: `reason` names a run that failed or still runs, as `CI on <short sha>: <why>`.
+ * `pending: true` marks an unfinished check when every completed check passes.
  * `unknown` says why nothing is known: no sha, no `origin`, a gh that fails or times out, a reply that does not parse, or no check runs.
  * `gh` and `origin` replace the real reads, for a test.
  */
@@ -51,8 +50,12 @@ export function ciState(sha, cwd, { gh = runGh, origin = originOf } = {}) {
   }
   if (!Array.isArray(runs)) return unknown("gh answered with no check_runs list");
   if (runs.length === 0) return unknown(`${short(sha)} has no check runs`);
-  const why = notGreenReason(runs);
-  return { reason: why === null ? null : `CI on ${short(sha)}: ${why}`, unknown: null };
+  const state = checkRunsState(runs);
+  return {
+    reason: state.reason === null ? null : `CI on ${short(sha)}: ${state.reason}`,
+    unknown: null,
+    ...(state.pending ? { pending: true } : {}),
+  };
 }
 
 /**

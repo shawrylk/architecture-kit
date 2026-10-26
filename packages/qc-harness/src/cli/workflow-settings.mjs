@@ -41,6 +41,10 @@ export function reviewSettings(swarm = {}) {
   if (!isNameList(plannerTypes)) throw wrong("plannerTypes", plannerTypes, "a list of agent types");
   if (!isNameList(codeReviewSkills)) throw wrong("codeReviewSkills", codeReviewSkills, "a list of skill names");
   for (const key of SWITCH_KEYS) {
+    if (key === "requireGreen") {
+      if (![true, false, "not-red"].includes(merged[key])) throw wrong(key, merged[key], 'true, false, or "not-red"');
+      continue;
+    }
     if (typeof merged[key] !== "boolean") throw wrong(key, merged[key], "true or false");
   }
   for (const key of LIMIT_KEYS) {
