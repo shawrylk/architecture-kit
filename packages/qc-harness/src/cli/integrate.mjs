@@ -99,6 +99,7 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
     const identity = git(root, ["var", "GIT_AUTHOR_IDENT"]).trim();
     const email = /<([^<>]+)> \d+ [+-]\d{4}$/.exec(identity)?.[1];
     if (!email) throw new Error("git var GIT_AUTHOR_IDENT returned no author email");
+    git(root, ["var", "GIT_COMMITTER_IDENT"]);
     tryGit(root, ["fetch", "--quiet", "origin"]);
     const base = options.from ?? config.worktree?.base ?? "origin/main";
     const prBase = options.pr

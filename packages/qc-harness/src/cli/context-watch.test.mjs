@@ -196,7 +196,7 @@ test("a competing stale lock claim stays silent", (t) => {
   assert.equal(fs.existsSync(f.state), false);
 });
 
-test("a lock that turns fresh before the stale rename returns to its owner", (t) => {
+test("a lock that turns fresh after the stale rename is deleted without restoring it", (t) => {
   const f = fixture(t);
   const lock = `${f.state}.lock`;
   mkdirSync(lock, { recursive: true });
@@ -207,9 +207,11 @@ test("a lock that turns fresh before the stale rename returns to its owner", (t)
   let restored = false;
   t.mock.method(fs, "renameSync", (from, to) => {
     if (from === lock) {
-      fs.rmdirSync(lock);
-      mkdirSync(lock);
       moved = to;
+      originalRename(from, to);
+      const fresh = new Date();
+      utimesSync(to, fresh, fresh);
+      return;
     } else if (from === moved) {
       assert.equal(to, lock);
       restored = true;
@@ -222,10 +224,34 @@ test("a lock that turns fresh before the stale rename returns to its owner", (t)
   t.mock.restoreAll();
   syncBuiltinESMExports();
   assert.equal(result, null);
-  assert.equal(restored, true);
-  assert.equal(fs.existsSync(lock), true);
+  assert.equal(restored, false);
+  assert.equal(fs.existsSync(lock), false);
   assert.equal(fs.existsSync(moved), false);
   assert.equal(fs.existsSync(f.state), false);
+});
+
+test("release ignores a lock that is already gone", (t) => {
+  const f = fixture(t);
+  const lock = `${f.state}.lock`;
+  const originalRead = fs.readFileSync;
+  let released = false;
+  t.mock.method(fs, "readFileSync", (file, ...args) => {
+    if (file === f.state) {
+      fs.rmdirSync(lock);
+      released = true;
+    }
+    return originalRead(file, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const result = f.at(210_000);
+  t.mock.restoreAll();
+  syncBuiltinESMExports();
+  assert.ok(result);
+  assert.equal(released, true);
+  assert.equal(fs.existsSync(lock), false);
+  assert.deepEqual(JSON.parse(readFileSync(f.state, "utf8")), { step: 0 });
+  assert.equal(f.at(210_000), null);
 });
 
 test("a lock at most 30 seconds old stays held", (t) => {

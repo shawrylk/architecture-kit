@@ -76,21 +76,28 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 
 ## Launch a run
 
+Choose the effort from the task: `high` for a design or a change across many files, and `medium` for a small fix.
+Use `low` for a task that needs little reasoning. Pass your choice as `--effort <low|medium|high>`.
+If you dispatch the `codex` agent, include `Effort: <value>` in its dispatch.
+Omit the flag to keep the Codex config value.
+
 Run this in the background from the main checkout. The form is for PowerShell:
 
 ```powershell
-npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> *> <wrapper.log>
+npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --effort <value> *> <wrapper.log>
 ```
 
 - In a POSIX shell, use this form:
 
   ```bash
-  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> > <wrapper.log> 2>&1
+  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --effort <value> > <wrapper.log> 2>&1
   ```
 - The runner writes `exit <code>` as its last stdout line on every exit path, so the wrapper log carries it and the forms need no `echo`. `qc watch --codex` reads that line. It decodes the UTF-16LE file that PowerShell 5.1 writes for `*>`.
 - Never call `codex exec` directly. Each run starts a fresh session with full access. The runner sends the prompt on stdin, then closes stdin.
 - Start Codex only inside a worktree from `qc worktree add`. Never start it in the main checkout, the scratchpad, or the home folder. A run outside a repository can make a code indexer read the whole home folder.
 - The command defaults to one run. Use `--max-runs 2` for a second session, or raise `codex.maxRuns` for more sessions.
+- Use `--wait-reset` to resume after a Codex reset. It polls every 30 minutes without a model call.
+- Set `--poll-minutes <n>` to a positive finite interval in minutes. `qc codex-wait-reset` accepts the same flag.
 - Codex runs count as implementers. Run one at a time, as the swarm rules say. Run more only up to `swarm.dispatch.implementerSlots`, on disjoint paths, and with more than 4 GB of free memory for each extra run.
 
 ## Read the result

@@ -34,12 +34,13 @@ const USAGE = `qc — architecture gates
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
   qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
-  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]
+  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
-                           --wait-reset polls every 15 minutes without a model, then resumes the same brief; --max-hours defaults to 6
-  qc codex-wait-reset --since <iso> [--max-hours <n>]
-                           wait for a later Codex reset without a model; exit 0 on a reset, 1 at the bound; default 6 hours
+                           --effort overrides the Codex config for every run; omitting it keeps the config value
+                           --wait-reset polls every 30 minutes without a model, then resumes the same brief; --poll-minutes sets the interval; --max-hours defaults to 6
+  qc codex-wait-reset --since <iso> [--max-hours <n>] [--poll-minutes <n>]
+                           wait for a later Codex reset without a model; exit 0 on a reset, 1 at the bound; default 6 hours and 30 minutes between polls
   qc codex status         print whether Codex is free or limited, with the expiry time and its source
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
