@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Linter } from "eslint";
@@ -196,7 +196,7 @@ test("the UI rules reach only clientFiles and use the configured primitive folde
   const linter = new Linter({ configType: "flat" });
   const messages = (code, filename, name) => byRule(linter.verify(code, blocks, filename), `qc/${name}`);
   const pair = "const First = () => <div />; const Second = () => <span />;";
-  assert.equal(messages(pair, "app/view.tsx", names[0]).length, 1);
+  assert.equal(messages(pair, "app/view.tsx", names[0]).length, 2);
   assert.equal(messages(pair, "elsewhere/view.tsx", names[0]).length, 0);
   assert.equal(messages("<input />;", "app/view.tsx", names[1]).length, 1);
   assert.equal(messages("<input />;", "app/controls/input.tsx", names[1]).length, 0);
@@ -212,20 +212,26 @@ test("the UI rules reach only clientFiles and use the configured primitive folde
   assert.equal(messages('<div style={{ width: 12 }} />;', "elsewhere/view.tsx", names[4]).length, 0);
 });
 
-test("the ESLint baseline suppresses existing UI findings and fails on a stale entry by default", () => {
+test("qc lint applies the UI baseline and fails on a stale entry", () => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-ui-suppressions-"));
   const require = createRequire(import.meta.url);
-  const cli = path.join(path.dirname(require.resolve("eslint/package.json")), "bin/eslint.js");
+  const cli = fileURLToPath(new URL("../cli/qc.mjs", import.meta.url));
   const parser = pathToFileURL(require.resolve("@typescript-eslint/parser")).href;
   const presetUrl = new URL("./preset.mjs", import.meta.url).href;
   const configUrl = new URL("../config.mjs", import.meta.url).href;
   const switches = Object.fromEntries(Object.keys(allRules).map((name) => [name, name === "no-static-inline-style"]));
   const run = (...args) => {
-    const result = spawnSync(process.execPath, [cli, "view.tsx", ...args], { cwd: root, encoding: "utf8", timeout: 30_000 });
+    const result = spawnSync(process.execPath, [cli, "lint", ...args], { cwd: root, encoding: "utf8", timeout: 30_000 });
     assert.ifError(result.error);
     return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
   };
   try {
+    const init = spawnSync("git", ["init", "-q"], { cwd: root, encoding: "utf8" });
+    assert.equal(init.status, 0, init.stderr);
+    mkdirSync(path.join(root, "node_modules"));
+    symlinkSync(path.dirname(require.resolve("eslint/package.json")), path.join(root, "node_modules", "eslint"), "junction");
+    writeFileSync(path.join(root, ".gitignore"), "node_modules/\n");
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureRoots: [] }));
     writeFileSync(path.join(root, "eslint.config.mjs"), `
       import parser from ${JSON.stringify(parser)};
       import { preset } from ${JSON.stringify(presetUrl)};
@@ -240,7 +246,8 @@ test("the ESLint baseline suppresses existing UI findings and fails on a stale e
     const unsuppressed = run();
     assert.equal(unsuppressed.status, 1, unsuppressed.output);
     assert.match(unsuppressed.output, /qc\/no-static-inline-style/);
-    const generated = run("--suppress-rule", "qc/no-static-inline-style");
+    writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({ "view.tsx": { "qc/no-static-inline-style": { count: 1 } } }));
+    const generated = run();
     assert.equal(generated.status, 0, generated.output);
     const baseline = JSON.parse(readFileSync(path.join(root, "eslint-suppressions.json"), "utf8"));
     assert.equal(baseline["view.tsx"]["qc/no-static-inline-style"].count, 1);

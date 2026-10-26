@@ -12,6 +12,29 @@ const node = (source) => `"${process.execPath}" -e '${source}'`;
 const record = node('require("node:fs").writeFileSync("args.json", JSON.stringify(process.argv.slice(1)))');
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe" });
 
+test("the e2e warning names qc e2e when the merge base is unavailable", (t) => {
+  const root = fixture(t, { e2e: record, base: "missing-ref" });
+  const run = spawnSync(process.execPath, [qc, "e2e"], { cwd: root, encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  const warnings = run.stdout.split("\n").filter((line) => /WARN.*merge base/.test(line));
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /running qc e2e without file arguments/);
+  assert.doesNotMatch(warnings[0], /related tests/);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), []);
+});
+
+test("an invalid feature switch pattern prints a config error without a stack trace", (t) => {
+  const root = fixture(t);
+  const file = path.join(root, "qc.config.json");
+  const config = JSON.parse(readFileSync(file, "utf8"));
+  config.featureSwitches = { patterns: ["["] };
+  writeFileSync(file, JSON.stringify(config));
+  const run = check(root);
+  assert.equal(run.status, 1);
+  assert.match(run.stderr, /ConfigError: featureSwitches\.patterns/);
+  assert.doesNotMatch(run.stderr, /SyntaxError|^\s+at /m);
+});
+
 function fixture(t, check = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "qc-check-commands-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

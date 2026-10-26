@@ -41,7 +41,9 @@ Enable these five rules under `rules` in `qc.config.json`:
 - `no-literal-color`
 - `no-static-inline-style`
 
-The preset applies them to `clientFiles`. The primitive folders come from `ui.layers.primitive`.
+The preset applies them to `clientFiles`. The primitive folders come from `ui.layers.primitive`, which accepts one folder or an array.
+Local `memo` and `forwardRef` wrappers keep one component. Multiple components each receive a finding on their declaration.
+Literal colors fail in presentation attributes, class strings, and JSX style properties. Text attributes and theme token objects pass.
 Use classes and theme tokens for static presentation. Inline styles with runtime values, such as `style={{ width: size }}`, pass.
 An object with only literal values, such as `style={{ width: 12 }}`, fails `qc/no-static-inline-style`.
 
@@ -53,7 +55,10 @@ Create the initial baseline, then commit it:
 npx eslint frontend/src --suppress-rule qc/one-component-per-file --suppress-rule qc/raw-element-in-primitive --suppress-rule qc/no-arbitrary-class-value --suppress-rule qc/no-literal-color --suppress-rule qc/no-static-inline-style
 ```
 
-After adoption, run `npx eslint frontend/src` without suppression-generation flags. Findings beyond the baseline counts fail.
-An unused suppression fails by default; keep that check enabled.
+After adoption, run `npx qc lint`. It applies each baseline count per file and rule before checking changed lines.
+Findings above a recorded count remain subject to the changed-line check.
+Fewer findings than a recorded count fail as stale, including entries for untouched or deleted files.
+With `--staged`, the gate reads source files and the baseline from the index.
+Run `npx eslint frontend/src` without suppression-generation flags to check the whole frontend with the same baseline.
 After you fix findings, run `npx eslint frontend/src --prune-suppressions` and commit the smaller file.
 The baseline may only shrink: accept removals and lower counts.

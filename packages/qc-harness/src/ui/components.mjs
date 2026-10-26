@@ -19,9 +19,11 @@ export function firstSentence(comment) {
 /** The layer of a file: the longest `layers` prefix that holds it, else `feature:<name>`, else `platform`. */
 export function layerOf(rel, options, featureDir = "features") {
   let best = null;
-  for (const [layer, prefix] of Object.entries(options.layers ?? {})) {
-    const folder = `${prefix.replace(/\/+$/, "")}/`;
-    if (rel.startsWith(folder) && (best === null || folder.length > best.length)) best = { layer, length: folder.length };
+  for (const [layer, prefixes] of Object.entries(options.layers ?? {})) {
+    for (const prefix of [prefixes].flat()) {
+      const folder = `${prefix.replace(/\/+$/, "")}/`;
+      if (rel.startsWith(folder) && (best === null || folder.length > best.length)) best = { layer, length: folder.length };
+    }
   }
   if (best) return best.layer;
   const parts = rel.split("/");

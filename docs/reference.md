@@ -1127,6 +1127,8 @@ counts.
 
 `qc/one-component-per-file` permits at most one React component declaration in each `.tsx` file.
 It counts capitalized functions and arrows that return JSX, plus components declared with `forwardRef` or `memo`.
+Wrapping a component from the same file with `forwardRef` or `memo` keeps one component.
+When a file holds multiple components, the rule reports each declaration so changed lines include each new component.
 Each finding names both components, including declarations inside another component.
 
 `qc/raw-element-in-primitive` permits raw `form`, `dialog`, `input`, `select`, `textarea`, and `button` elements only under `ui.layers.primitive`.
@@ -1135,6 +1137,8 @@ The preset passes `ui.layers.primitive` as the `primitive` rule option, which ac
 
 `qc/no-arbitrary-class-value` refuses Tailwind arbitrary values, including `text-[11px]` and `md:hover:bg-[#123456]`.
 `qc/no-literal-color` refuses hex, `rgb()`, `rgba()`, `hsl()`, and `hsla()` literals in JSX presentation attributes, class strings, and style objects.
+Presentation attributes include `color`, `fill`, `stroke`, and `stopColor`.
+Text attributes such as `label`, `title`, and `value` pass. Theme token objects pass outside a JSX `style` object or its constant bindings.
 Both read class strings through the shared UI parser, including `className`, `class`, `ui.classCallees`, and `cva` variants.
 The preset passes `ui.classCallees` as the `classCallees` rule option. Use theme tokens and CSS variables for presentation values.
 
@@ -1151,7 +1155,7 @@ These rules ship off. Enable them under `rules` in `qc.config.json`; the preset 
 
 ### Adopt the UI rules with a baseline that only shrinks
 
-The five UI rules in #144 share ESLint's bulk suppressions mechanism:
+The five UI rules share ESLint's bulk suppressions mechanism:
 
 - `qc/one-component-per-file`
 - `qc/raw-element-in-primitive`
@@ -1167,8 +1171,11 @@ Create the initial baseline for all five rules, then commit the file:
 npx eslint frontend/src --suppress-rule qc/one-component-per-file --suppress-rule qc/raw-element-in-primitive --suppress-rule qc/no-arbitrary-class-value --suppress-rule qc/no-literal-color --suppress-rule qc/no-static-inline-style
 ```
 
-After adoption, run `npx eslint frontend/src` without suppression-generation flags. Findings beyond the recorded counts fail.
-ESLint fails on unused suppressions by default, so a stale entry fails after you remove its violation.
+After adoption, run `npx qc lint`. It reads `eslint-suppressions.json` and applies each count per file and rule before filtering changed lines.
+Findings beyond the recorded count remain subject to the changed-line check.
+An entry with fewer findings than its count fails as stale, including entries for untouched or deleted files.
+With `--staged`, the gate reads source files and the baseline from the index.
+You can also run `npx eslint frontend/src` without suppression-generation flags to check the whole frontend.
 Run `npx eslint frontend/src --prune-suppressions` to remove stale entries, then commit the smaller file.
 Keep the default unused-suppression check enabled. Accept only baseline changes that remove entries or reduce counts.
 Use this file as the sole lint baseline; it may only shrink after adoption.
@@ -1377,9 +1384,13 @@ export function View() {
 ```
 
 The `feature-switches` gate ships off. Set `gates["feature-switches"]` to `true` to check source files in each folder under `featureRoots`.
-The gate skips test files, dependencies, and build output. A matching `const`, `let`, or `var` declaration outside the switch file fails as `unwire-constant-outside-switch-file`.
+The gate skips `*.test.*` and `*.spec.*` files, dependencies, and build output.
+A matching `const`, `let`, or `var` declaration outside the feature's root switch file fails as `unwire-constant-outside-switch-file`.
+Nested files with the switch filename receive the same check as other source files.
+The gate prints one summary across all feature folders.
 
 `featureSwitches.file` sets the switch filename. `featureSwitches.patterns` lists regular expressions for declaration names.
+`load()` requires a filename without folders and an array of strings. Invalid regular expressions produce a config error.
 The defaults match names containing `UNWIRED`, starting with `SHOW_`, or ending with `_WIRED`.
 
 ```json
