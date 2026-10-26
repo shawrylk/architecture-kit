@@ -232,6 +232,7 @@ function apiEndpoint(args) {
  * `mergePullRequest` mutation when any argument, or any query file it reads, names it, whatever the URL spelling.
  * `nodeId` names each GraphQL mutation's PR, or null when its input cannot name one.
  * A GraphQL call whose query file the guard cannot read fails closed, and `unreadable` names that file.
+ * `inputField` names the field flag mixed with `--input`, which puts fields in the URL query string.
  * A call whose endpoint is a `repos/` REST path that stays inside it holds no mutation, so its arguments and files are not searched.
  * @param options.cwd the folder a relative query file resolves against
  */
@@ -247,26 +248,35 @@ export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
       }
       const withSettings = (calls) => calls.map((call) => ({ ...call, env: settings }));
       const found = args.filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
-      if (isRestPath(apiEndpoint(args) ?? "")) return withSettings(found);
-      const graphql = args.find((word) => GRAPHQL_ENDPOINT.test(word));
+      const endpoint = apiEndpoint(args);
+      if (isRestPath(endpoint ?? "")) return withSettings(found);
+      const graphql = endpoint !== null && GRAPHQL_ENDPOINT.test(endpoint) ? endpoint : undefined;
       let mutation = args.some((word) => MERGE_MUTATION.test(word));
       let unreadable;
       const fields = {};
       let body = null;
+      let input = false;
+      let inputField;
       for (const { flag, value } of bodyValues(args)) {
-        const input = flag === "--input";
+        if (flag === "--input") input = true;
+        else inputField ??= flag.startsWith("--") ? flag : `-${flag}`;
+        const isInput = flag === "--input";
         const at = value.indexOf("=");
-        if (!input && at === -1) continue;
+        if (!isInput && at === -1) continue;
         const key = value.slice(0, at);
         const field = value.slice(at + 1);
-        const file = input ? value : (flag === "F" || flag === "--field") && field.startsWith("@") ? field.slice(1) : null;
+        const file = isInput ? value : (flag === "F" || flag === "--field") && field.startsWith("@") ? field.slice(1) : null;
         const text = file === null ? field : queryText(cwd, file);
         if (text === null) unreadable ??= file;
         else if (MERGE_MUTATION.test(text)) mutation = true;
-        if (!input) fields[key] = text;
+        if (!isInput) fields[key] = text;
         else {
           try { body = JSON.parse(text); } catch { body = null; }
         }
+      }
+      if (input && inputField !== undefined && (graphql !== undefined || mutation)) {
+        found.push({ endpoint: graphql ?? "graphql", inputField });
+        return withSettings(found);
       }
       if (mutation) {
         const nodes = unreadable === undefined ? mutationNodes(fields.query ?? body?.query, { ...body?.variables, ...fields }) : [null];

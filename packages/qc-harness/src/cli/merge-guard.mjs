@@ -227,6 +227,9 @@ export function decide(call, { gh = runGh } = {}) {
   if (event === "PreToolUse") {
     for (const found of ghApiMerges(command, parse, { cwd })) {
       const use = "Run `gh pr merge <n> --match-head-commit <sha>` with the head an APPROVED review named.";
+      if (found.inputField !== undefined) {
+        return deny(`Merge guard: \`gh api ${found.endpoint}\` mixes \`--input\` with \`${found.inputField}\`. Fields enter the URL query string, so the guard cannot pin the body to one PR. ${use}`);
+      }
       const merge = apiPrOf(found);
       if (merge) {
         try {

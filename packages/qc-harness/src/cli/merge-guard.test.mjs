@@ -206,6 +206,38 @@ test("a GraphQL merge reads its node and base policy within the shared deadline"
   assert.equal(missing.calls.length, 0);
 });
 
+test("a GraphQL node lookup uses the endpoint host after a decoy header", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const node = JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
+  for (const tool of ["Bash", "PowerShell"]) {
+    const { gh, calls } = fakeGh(node);
+    const command = shell(dir, 'gh api -H https://github.com/graphql https://ghe.example.com/api/graphql -f query=\'mutation { mergePullRequest(input: {pullRequestId: "PR_ON"}) { clientMutationId } }\'', "PreToolUse", tool);
+    assert.equal(decide(command, { gh }), null);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].args.includes("id=PR_ON"));
+    assert.equal(calls[0].options.env.GH_HOST, "ghe.example.com");
+  }
+});
+
+test("GraphQL input mixed with fields denies before a decoy node lookup", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const query = 'mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }';
+  writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query, variables: { id: "PR_ON" } }));
+  const node = JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
+  const fields = ["-f id=PR_OFF", "-F id=PR_OFF", "--field=id=PR_OFF", "--raw-field id=PR_OFF", "-fid=PR_OFF", "-iFid=PR_OFF",
+    `-f query='mutation { mergePullRequest(input: {pullRequestId: "PR_OFF"}) { clientMutationId } }'`];
+  for (const field of fields) {
+    for (const tool of ["Bash", "PowerShell"]) {
+      const { gh, calls } = fakeGh(node);
+      const command = shell(dir, `gh api graphql --input body.json ${field}`, "PreToolUse", tool);
+      assert.match(denied(decide(command, { gh })) ?? "", /--input.*(?:-f|-F|--field|--raw-field)/, field);
+      assert.equal(calls.length, 0, field);
+    }
+  }
+  writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query: "query { viewer { login } }" }));
+  assert.match(denied(decide(shell(dir, "gh api graphql -f id=PR_OFF --input=body.json"))) ?? "", /--input.*-f/);
+});
+
 test("a GraphQL lookup shares the policy deadline and denies an expired read", (t) => {
   const { dir, base } = laneRepo(t, { swarm: {} });
   const start = Date.now();

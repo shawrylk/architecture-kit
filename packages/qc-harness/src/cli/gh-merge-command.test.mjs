@@ -99,6 +99,30 @@ test("GraphQL merges read node ids from query and input files", (t) => {
   }
 });
 
+test("a GraphQL endpoint ignores a preceding header value", () => {
+  for (const header of ["-H https://github.com/graphql", "--header=https://github.com/graphql", "-iHhttps://github.com/graphql"]) {
+    for (const parse of [segmentsOf, powershellSegments]) {
+      const [found] = ghApiMerges(`gh api ${header} https://ghe.example.com/api/graphql -f query='${MUTATION}'`, parse);
+      assert.equal(found.endpoint, "https://ghe.example.com/api/graphql", header);
+      assert.equal(found.nodeId, "X");
+    }
+  }
+});
+
+test("GraphQL input mixed with fields cannot select a node", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-gh-input-mix-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const query = 'mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }';
+  writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query, variables: { id: "PR_ON" } }));
+  for (const field of ["-f id=PR_OFF", `-f query='mutation { mergePullRequest(input: {pullRequestId: "PR_OFF"}) { clientMutationId } }'`]) {
+    for (const parse of [segmentsOf, powershellSegments]) {
+      const [found] = ghApiMerges(`gh api graphql --input body.json ${field}`, parse, { cwd: dir });
+      assert.equal(found.inputField, "-f");
+      assert.equal(found.nodeId, undefined);
+    }
+  }
+});
+
 test("a query file the call reads is searched for the mutation, and a file the guard cannot read fails closed", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-gh-api-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
