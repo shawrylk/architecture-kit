@@ -773,7 +773,7 @@ Known limits:
 |---|---|
 | Error | `no-cross-feature-internals`, `storage-only-in-resource`, `external-service-only-in-adapter`, `scoped-repository`, `tenant-scoped-table`, `no-raw-fetch`, `no-orchestration-in-trigger`, `no-sql-raw`, `registry-literal`, `durable-idempotency-key` |
 | Warning | `no-comment-paragraph`, `no-number-in-comment`, `no-supersession-trail`: each judges the style of a comment |
-| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `name-the-pattern` |
+| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `one-component-per-file`, `raw-element-in-primitive`, `name-the-pattern` |
 
 An `eslint-disable` comment silences its rule, and a disable comment that silences nothing is an
 error. `qc lint` judges only the changed lines, so a new disable comment is part of the change a
@@ -955,6 +955,27 @@ the IME guard first. A row or a button that reacts to Enter is not text entry, s
 With `ime.guards` set, only a call to one of them counts, and an inline `isComposing` or
 `keyCode === 229` check is reported as a second mechanism. With no guard set, either inline check
 counts.
+
+### Keep components separate and raw controls in primitives
+
+`qc/one-component-per-file` permits at most one React component declaration in each `.tsx` file.
+It counts capitalized functions and arrows that return JSX, plus components declared with `forwardRef` or `memo`.
+Each finding names both components, including declarations inside another component.
+
+`qc/raw-element-in-primitive` permits raw `form`, `dialog`, `input`, `select`, `textarea`, and `button` elements only under `ui.layers.primitive`.
+Use primitive components elsewhere. The `elements` rule option replaces the element list.
+The preset passes `ui.layers.primitive` as the `primitive` rule option, which accepts one folder or an array of folders.
+
+Both rules ship off. Enable them under `rules` in `qc.config.json`; the preset applies them to `clientFiles`.
+
+```json
+{ "rules": { "one-component-per-file": true, "raw-element-in-primitive": true } }
+```
+
+Use ESLint's `eslint-suppressions.json` as the baseline with ESLint 9.24 or later.
+Create the initial baseline with ESLint's `--suppress-rule` option for each rule, then commit it.
+The baseline may only shrink. ESLint fails on unused suppressions by default; keep that check enabled.
+After you remove violations, use `--prune-suppressions` to remove their baseline entries.
 
 ### Show the pending state on a write control
 

@@ -828,6 +828,64 @@ tester.run("registry-literal", rules["registry-literal"], {
   ],
 });
 
+const tsx = new RuleTester({
+  languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
+});
+const componentFile = "/repo/frontend/src/features/pins/view.tsx";
+const componentPair = { messageId: "multiple", data: { first: "First", second: "Second" } };
+
+console.log("→", "one-component-per-file");
+tsx.run("one-component-per-file", rules["one-component-per-file"], {
+  valid: [
+    { code: "function First() { return <div />; }", filename: componentFile },
+    { code: "const First = () => <>one</>; const helper = () => <span />;", filename: componentFile },
+    { code: "function First() { return <div />; } function Second() { return null; }", filename: componentFile },
+    { code: "const First = memo(forwardRef(function Inner() { return <div />; }));", filename: componentFile },
+    { code: "function First() { return <div />; } function Second() { return () => <span />; }", filename: componentFile },
+    { code: "const First = () => <div />; const Second = () => ({ icon: <span /> });", filename: componentFile },
+    { code: "const First = () => <div />; const Second = () => <span />;", filename: "/repo/view.jsx" },
+  ],
+  invalid: [
+    { code: "function First() { return <div />; } const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
+    { code: "const First = () => <>one</>; const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
+    { code: "const First = React.forwardRef(() => null); const Second = React.memo(Other);", filename: componentFile, errors: [componentPair] },
+    { code: "const First = memo(forwardRef(() => <div />)); const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
+    { code: "const First = function Named() { return <div />; }; function Second() { if (ready) return <span />; return null; }", filename: componentFile, errors: [componentPair] },
+    { code: "const First = () => ready ? <div /> : null; const Second = () => (ready && <span />) as React.ReactNode;", filename: componentFile, errors: [componentPair] },
+    { code: "function First() { const Second = () => <span />; return <div />; }", filename: componentFile, errors: [componentPair] },
+    { code: "const First = () => <div />; const Second = () => <span />;", filename: "C:\\repo\\view.tsx", errors: [componentPair] },
+    {
+      code: "const First = () => <div />; const Second = () => <span />; const Third = () => <p />;",
+      filename: componentFile,
+      errors: [componentPair, { messageId: "multiple", data: { first: "First", second: "Third" } }],
+    },
+  ],
+});
+
+console.log("→", "raw-element-in-primitive");
+tsx.run("raw-element-in-primitive", rules["raw-element-in-primitive"], {
+  valid: [
+    { code: "<><form /><dialog /><input /><select /><textarea /><button /></>;", filename: "/repo/frontend/src/platform/ui/primitives/form.tsx" },
+    { code: "<button />;", filename: "C:\\repo\\frontend\\src\\platform\\ui\\primitives\\nested\\button.tsx" },
+    { code: "<><Form /><Dialog /><Input /><Select /><Textarea /><Button /><div /><UI.button /></>;", filename: componentFile },
+    { code: "<button />;", filename: "/repo/shared/primitives/button.tsx", options: [{ primitive: "shared/primitives" }] },
+    { code: "<input />;", filename: "/repo/other/primitives/input.tsx", options: [{ primitive: ["shared/primitives", "other/primitives"] }] },
+    { code: "<button />;", filename: componentFile, options: [{ elements: ["a"] }] },
+    { code: "<button />;", filename: componentFile, options: [{ elements: [] }] },
+  ],
+  invalid: [
+    ...["form", "dialog", "input", "select", "textarea", "button"].map((element) => ({
+      code: `<${element} />;`, filename: componentFile, errors: [{ messageId: "raw", data: { element } }],
+    })),
+    { code: "<button />;", filename: "C:\\repo\\frontend\\src\\features\\pins\\view.tsx", errors: [{ messageId: "raw" }] },
+    { code: "<button />;", filename: "/repo/frontend/src/platform/ui/primitives-extra/button.tsx", errors: [{ messageId: "raw" }] },
+    { code: "<form><input /></form>;", filename: componentFile, errors: [{ messageId: "raw" }, { messageId: "raw" }] },
+    { code: "<a />;", filename: componentFile, options: [{ elements: ["a"] }], errors: [{ messageId: "raw", data: { element: "a" } }] },
+    { code: "<button />;", filename: "/repo/frontend/src/platform/ui/primitives/button.tsx", options: [{ primitive: "shared/primitives" }], errors: [{ messageId: "raw" }] },
+    { code: "<input />;", filename: componentFile, options: [{ primitive: [] }], errors: [{ messageId: "raw" }] },
+  ],
+});
+
 const pending = { messageId: "pending" };
 
 console.log("→", "mutation-control-pending");

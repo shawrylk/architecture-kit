@@ -29,6 +29,7 @@ function ruleOptions(config) {
   return {
     "no-sql-raw": { allow: config.sqlRaw.allow },
     "ime-safe-key": { components: config.ime.components, guards: config.ime.guards },
+    "raw-element-in-primitive": { primitive: config.ui.layers.primitive },
     "mutation-control-pending": {
       button: config.mutationControl.button,
       prop: config.mutationControl.prop,
@@ -117,7 +118,14 @@ const UNIVERSAL = [
 const SERVER = ["storage-only-in-resource", "tenant-scoped-table", "signal-last-param"];
 
 /** Rules that only make sense in the browser. */
-const CLIENT = ["no-raw-fetch", "storage-only-in-resource", "ime-safe-key", "mutation-control-pending"];
+const CLIENT = [
+  "no-raw-fetch",
+  "storage-only-in-resource",
+  "ime-safe-key",
+  "mutation-control-pending",
+  "one-component-per-file",
+  "raw-element-in-primitive",
+];
 
 /**
  * The architecture as a flat config. Spread it, then append your own blocks.

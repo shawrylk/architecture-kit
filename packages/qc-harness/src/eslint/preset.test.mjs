@@ -175,6 +175,29 @@ test("the mutationControl config reaches qc/mutation-control-pending", () => {
   assert.deepEqual(setting[1], { button: "Action", prop: "busy", handlers: ["onClick", "onSelect", "onConfirm"] });
 });
 
+test("the component and primitive rules reach only clientFiles and use the configured primitive folders", () => {
+  const names = ["one-component-per-file", "raw-element-in-primitive"];
+  const clientFiles = ["app/**/*.tsx"];
+  const blocks = preset({
+    config: config({ clientFiles, rules: Object.fromEntries(names.map((name) => [name, true])), ui: { layers: { primitive: ["app/primitives", "app/controls"] } } }),
+    languageOptions: { parser: tsparser },
+  });
+  const client = blocks.find((block) => block.files === clientFiles);
+  for (const name of names) {
+    assert.ok(client.rules[`qc/${name}`]);
+    assert.equal(emitted(preset({ config: config() })).has(`qc/${name}`), false);
+    assert.equal(emitted(blocks.filter((block) => block !== client)).has(`qc/${name}`), false);
+  }
+  assert.deepEqual(client.rules["qc/raw-element-in-primitive"][1], { primitive: ["app/primitives", "app/controls"] });
+  const linter = new Linter({ configType: "flat" });
+  const messages = (code, filename, name) => byRule(linter.verify(code, blocks, filename), `qc/${name}`);
+  const pair = "const First = () => <div />; const Second = () => <span />;";
+  assert.equal(messages(pair, "app/view.tsx", names[0]).length, 1);
+  assert.equal(messages(pair, "elsewhere/view.tsx", names[0]).length, 0);
+  assert.equal(messages("<input />;", "app/view.tsx", names[1]).length, 1);
+  assert.equal(messages("<input />;", "app/controls/input.tsx", names[1]).length, 0);
+});
+
 test("the preset reports an unused disable comment in every file", () => {
   const block = preset({ config: config() }).find((b) => b.linterOptions);
   assert.ok(block, "no linterOptions block emitted");
