@@ -10,6 +10,23 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("ci.requiredChecks defaults to an empty list and accepts check names", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-ci-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(load(root).ci, { requiredChecks: [] });
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ ci: { requiredChecks: ["build", "test"] } }));
+  assert.deepEqual(load(root).ci.requiredChecks, ["build", "test"]);
+});
+
+test("ci.requiredChecks rejects malformed configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-ci-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const ci of [null, [], false, "CI", { requiredChecks: null }, { requiredChecks: "build" }, { requiredChecks: [""] }, { requiredChecks: [" "] }, { requiredChecks: [1] }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ ci }));
+    assert.throws(() => load(root), /ci/);
+  }
+});
+
 test("featureSwitches validates its object, filename, patterns, and regular expressions", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-switch-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

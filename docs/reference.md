@@ -768,13 +768,18 @@ Its exit code says which:
 
 | Exit | Meaning |
 |---|---|
-| 0 | Every check is done, with no failure |
+| 0 | Every check is done and green, with no unfinished workflow or missing required check |
 | 1 | A bad argument |
 | 4 | `--max` minutes passed (55 by default) |
-| 5 | A check failed or was cancelled |
+| 5 | A completed check or workflow has a conclusion outside the green allowlist |
 | 6 | A check stayed queued for 15 minutes, as on a runner that is offline |
 
 A new head starts the queued timers over. Run it as one background command for each head.
+Only `success`, `neutral`, and `skipped` are green; the same allowlist applies to pull-request rollup states.
+An unfinished workflow on the head keeps the pull-request watch pending, even before its first check appears.
+Workflow reads use `gh api --paginate`, so runs on later pages also count.
+Set `ci.requiredChecks` in `qc.config.json` to a list of check names that must appear before the pull-request watch passes.
+The default is an empty list. A missing required check stays pending.
 
 With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
 The context watch speaks only to the main session, in every repository where `swarm.dispatch` is off.
@@ -892,8 +897,14 @@ The `swarm.review` keys that these rows name:
 | `roundFindings` | `8` | warn on a brief with more numbered findings; `0` turns it off |
 | `roundFiles` | `10` | warn on a brief that names more distinct file paths; `0` turns it off |
 
-With `requireGreen: "not-red"`, a failed, cancelled, timed-out, or action-required check refuses the review.
+With `requireGreen: "not-red"`, any completed check outside `success`, `neutral`, and `skipped` refuses the review, including `stale` and `startup_failure`.
+CI reads check runs and workflow runs with `gh api --paginate`.
+Check runs use `filter=all` and group by check suite and name; the newest run in each group decides.
+Two workflows with the same job name remain separate checks.
 A queued or running check allows the review with a note that names the check.
+An unfinished workflow on the head also counts as pending, even before it creates a check run.
+The optional `ci.requiredChecks` list in `qc.config.json` defaults to an empty list.
+A missing required check counts as pending, including when no checks have appeared.
 
 The hooks read these markers:
 

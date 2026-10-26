@@ -9,6 +9,7 @@ import path from "node:path";
 export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
+  ci: { requiredChecks: [] },
   // Where features live. Every structural gate walks these.
   featureRoots: ["backend/src/features", "frontend/src/features"],
   // The path segment that marks a feature, and the one file that crosses its boundary.
@@ -682,6 +683,10 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.ci)) throw new TypeError("ci must be an object");
+  if (!Array.isArray(config.ci.requiredChecks) || !config.ci.requiredChecks.every((name) => typeof name === "string" && name.trim())) {
+    throw new TypeError("ci.requiredChecks must be an array of non-empty strings");
+  }
   if (!isPlainObject(config.featureSwitches)) throw new TypeError("featureSwitches must be an object");
   const switches = config.featureSwitches;
   if (typeof switches.file !== "string" || !switches.file.trim() || /[\\/]/.test(switches.file) || [".", ".."].includes(switches.file)) {

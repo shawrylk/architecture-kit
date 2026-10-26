@@ -1,10 +1,94 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { ciNotGreen, ciState, notGreenReason } from "./ci-state.mjs";
 
 const SHA = "a".repeat(40);
 const run = (name, status, conclusion = null) => ({ name, status, conclusion });
-const reply = (...runs) => JSON.stringify({ total_count: runs.length, check_runs: runs });
+const reply = (...runs) => JSON.stringify({ total_count: runs.length, check_runs: runs, workflow_runs: [] });
+
+const ciGh = (checks, workflows) => (args) => args[1].includes("/actions/runs") ? JSON.stringify(workflows) : reply(...checks);
+
+test("unfinished workflows on the head are pending before checks exist and after checks pass", () => {
+  for (const status of ["queued", "in_progress", "waiting", "pending", "requested"]) {
+    for (const checks of [[], [run("lint", "completed", "success")]]) {
+      const calls = [];
+      const read = ciGh(checks, [{ workflow_runs: [] }, { workflow_runs: [{ name: "CI", head_sha: SHA, status }] }]);
+      const gh = (args, options) => (calls.push({ args, options }), read(args));
+      const state = ciState(SHA, "/c", { gh, origin: () => "o/r" });
+      assert.equal(state.pending, true);
+      assert.equal(state.unknown, null);
+      assert.equal(state.reason, `CI on aaaaaaa: CI is ${status}`);
+      assert.ok(calls[1].args.includes("--paginate"));
+      assert.ok(calls[1].args.includes("--slurp"));
+      assert.equal(calls[1].args[1], `repos/o/r/actions/runs?head_sha=${SHA}&per_page=100`);
+      assert.ok(calls[0].options.timeoutMs + calls[1].options.timeoutMs + 1000 < 10000);
+    }
+  }
+});
+
+test("completed workflows and workflows on other heads add no pending state", () => {
+  const gh = ciGh([run("lint", "completed", "success")], [{ workflow_runs: [
+    { name: "CI", head_sha: "b".repeat(40), status: "queued" },
+    { name: "CI", head_sha: SHA, status: "completed" },
+  ] }]);
+  assert.deepEqual(ciState(SHA, "/c", { gh, origin: () => "o/r" }), { reason: null, unknown: null });
+});
+
+test("a failed check wins over queued workflows and missing required checks", () => {
+  const gh = ciGh([run("build", "completed", "failure")], [{ workflow_runs: [{ name: "CI", head_sha: SHA, status: "queued" }] }]);
+  const state = ciState(SHA, "/c", { gh, origin: () => "o/r", requiredChecks: ["lint"] });
+  assert.equal(state.reason, "CI on aaaaaaa: build ended failure");
+  assert.equal(state.pending, undefined);
+});
+
+test("unreadable workflow lists keep a green-looking head unknown", () => {
+  for (const answer of [null, "not JSON", "{}", '[{"workflow_runs":[]},{}]']) {
+    const gh = (args) => args[1].includes("/actions/runs") ? answer : reply(run("lint", "completed", "success"));
+    assert.match(ciState(SHA, "/c", { gh, origin: () => "o/r" }).unknown ?? "", /gh/);
+  }
+});
+
+test("ciState reads required checks from the checkout configuration", (t) => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-ci-required-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ ci: { requiredChecks: ["build"] } }));
+  for (const checks of [[], [run("lint", "completed", "success")]]) {
+    const state = ciState(SHA, cwd, { gh: ciGh(checks, [{ workflow_runs: [] }]), origin: () => "o/r" });
+    assert.equal(state.pending, true);
+    assert.equal(state.reason, "CI on aaaaaaa: build is missing");
+  }
+  assert.deepEqual(ciState(SHA, cwd, { gh: ciGh([run("build", "completed", "success")], [{ workflow_runs: [] }]), origin: () => "o/r" }), { reason: null, unknown: null });
+});
+
+test("checks with the same name in different suites remain separate", () => {
+  const failed = { ...run("build", "completed", "failure"), check_suite: { id: 1 }, started_at: "2026-01-01", id: 1 };
+  const passed = { ...run("build", "completed", "success"), check_suite: { id: 2 }, started_at: "2026-01-02", id: 2 };
+  for (const runs of [[failed, passed], [passed, failed]]) assert.equal(notGreenReason(runs), "build ended failure");
+});
+
+test("ciState reads every check-run page", () => {
+  const calls = [];
+  const gh = (args) => {
+    calls.push(args);
+    return JSON.stringify([
+      { check_runs: [run("lint", "completed", "success")] },
+      { check_runs: [run("build", "completed", "failure")] },
+    ]);
+  };
+  assert.equal(ciState(SHA, "/c", { gh, origin: () => "o/r" }).reason, "CI on aaaaaaa: build ended failure");
+  assert.ok(calls[0].includes("--paginate"));
+  assert.ok(calls[0].includes("--slurp"));
+  assert.match(calls[0][1], /[?&]filter=all(?:&|$)/);
+});
+
+test("a queued rerun without a start time supersedes an older completed check", () => {
+  const older = { ...run("build", "completed", "success"), check_suite: { id: 1 }, started_at: "2026-01-01", id: 1 };
+  const newer = { ...run("build", "queued"), check_suite: { id: 1 }, started_at: null, id: 2 };
+  for (const runs of [[older, newer], [newer, older]]) assert.equal(notGreenReason(runs), "build is queued");
+});
 
 test("a head whose check runs all completed green is green", () => {
   assert.equal(notGreenReason([run("lint", "completed", "success"), run("docs", "completed", "skipped"), run("x", "completed", "neutral")]), null);
@@ -52,6 +136,12 @@ test("a newer success for another check preserves a failure", () => {
 test("each failing conclusion makes the head not green, and the reason names the run", () => {
   for (const conclusion of ["failure", "cancelled", "timed_out", "action_required"]) {
     assert.match(notGreenReason([run("ok", "completed", "success"), run("build", "completed", conclusion)]) ?? "", new RegExp(`build.*${conclusion}`));
+  }
+});
+
+test("every completed conclusion outside the green allowlist fails", () => {
+  for (const conclusion of ["stale", "startup_failure", "future_conclusion", "", null, undefined]) {
+    assert.equal(notGreenReason([{ name: "build", status: "completed", conclusion }]), `build ended ${conclusion}`);
   }
 });
 

@@ -3,15 +3,15 @@
 
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
-import { runGhResult } from "./gh-run.mjs";
+import { parseApiList, runGhResult } from "./gh-run.mjs";
+import { checkVerdict, pendingCiReason } from "./check-verdict.mjs";
+import { load } from "../config.mjs";
 
 const DEFAULT_MAX_MINUTES = 55;
 const DEFAULT_INTERVAL_SECONDS = 60;
 const QUEUED_LIMIT_MS = 15 * 60_000;
 const CODEX_TAIL_BYTES = 2048;
 const SHA_SUFFIX = /^(.+)@([0-9a-f]{7,40})$/i;
-const FAILED_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
-const FAILED_STATES = new Set(["FAILURE", "ERROR"]);
 
 export const EXIT = { PASSED: 0, BAD_INPUT: 1, TIMEOUT: 4, FAILED: 5, QUEUED: 6 };
 
@@ -89,22 +89,11 @@ const parseJson = (text) => {
   }
 };
 
-/** @returns "failed", "queued", "pending", or "passed" for one rollup entry, a check run or a status context. */
-function entryState(entry) {
-  if (entry.__typename === "StatusContext" || entry.context !== undefined) {
-    if (FAILED_STATES.has(entry.state)) return "failed";
-    return entry.state === "SUCCESS" ? "passed" : "pending";
-  }
-  if (entry.status !== "COMPLETED") return entry.status === "QUEUED" ? "queued" : "pending";
-  if (FAILED_CONCLUSIONS.has(entry.conclusion)) return "failed";
-  return "passed";
-}
-
 /**
  * Watches one pull request. The queued timers belong to a head, so a new head starts them over.
  * @returns a function that polls once and answers `{ state, detail, code }` for an event, or null.
  */
-function pullRequestWatcher(number, { repo, gh, now }) {
+function pullRequestWatcher(number, { repo, gh, now, requiredChecks }) {
   let head = null;
   let queuedSince = new Map();
   const args = ["pr", "view", String(number), "--json", "headRefOid,statusCheckRollup", ...(repo ? ["-R", repo] : [])];
@@ -116,12 +105,16 @@ function pullRequestWatcher(number, { repo, gh, now }) {
       queuedSince = new Map();
     }
     const at = now();
-    const states = view.statusCheckRollup.map((entry) => [entry.name ?? entry.context, entryState(entry)]);
+    const states = view.statusCheckRollup.map((entry) => [entry.name ?? entry.context, checkVerdict(entry)]);
     if (states.some(([, state]) => state === "failed")) return { state: "failed", detail: head, code: EXIT.FAILED };
     for (const [name] of [...queuedSince]) if (!states.some(([other, state]) => other === name && state === "queued")) queuedSince.delete(name);
     for (const [name, state] of states) if (state === "queued" && !queuedSince.has(name)) queuedSince.set(name, at);
     if ([...queuedSince.values()].some((since) => at - since > QUEUED_LIMIT_MS)) return { state: "queued", detail: head, code: EXIT.QUEUED };
-    if (states.length > 0 && states.every(([, state]) => state === "passed")) return { state: "passed", detail: head, code: EXIT.PASSED };
+    if (states.length > 0 && states.every(([, state]) => state === "passed")) {
+      const workflows = parseApiList(gh(["api", `repos/${repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate", "--slurp"]), "workflow_runs");
+      if (workflows === null || pendingCiReason(states.map(([name]) => name), workflows.filter((run) => run.head_sha === head), requiredChecks)) return null;
+      return { state: "passed", detail: head, code: EXIT.PASSED };
+    }
     return null;
   };
 }
@@ -139,16 +132,17 @@ function codexWatcher(file) {
  * or the one that `@<sha>` pins. A run of an earlier head never fires.
  */
 function runWatcher({ workflow, branch, sha }, { repo, gh }) {
-  const headArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/commits/${branch}`, "--jq", ".sha"];
-  const listArgs = ["run", "list", "--workflow", workflow, "--branch", branch, "--limit", "20", "--json", "status,conclusion,headSha", ...(repo ? ["-R", repo] : [])];
+  const headArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/commits/${encodeURIComponent(branch)}`, "--jq", ".sha"];
+  const listArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(branch)}&per_page=100`, "--paginate", "--slurp"];
   return () => {
     const head = sha ?? gh(headArgs)?.trim();
     if (!head) return null;
-    const latest = parseJson(gh(listArgs))?.find((run) => typeof run.headSha === "string" && run.headSha.startsWith(head.toLowerCase()) || run.headSha === head);
-    if (!latest || latest.status !== "completed") return null;
-    return latest.conclusion === "success"
-      ? { state: "passed", detail: latest.headSha, code: EXIT.PASSED }
-      : { state: "failed", detail: latest.headSha, code: EXIT.FAILED };
+    const runs = parseApiList(gh(listArgs), "workflow_runs")?.filter((run) => typeof run.head_sha === "string" && run.head_sha.toLowerCase().startsWith(head.toLowerCase()));
+    if (!runs?.length || pendingCiReason([], runs)) return null;
+    const latest = runs[0];
+    return checkVerdict(latest) === "passed"
+      ? { state: "passed", detail: latest.head_sha, code: EXIT.PASSED }
+      : { state: "failed", detail: latest.head_sha, code: EXIT.FAILED };
   };
 }
 
@@ -167,7 +161,7 @@ const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param deps `gh` returns stdout, null, or throws; `say`, `warn`, `now` and `sleep` replace the output and the clock, for a test.
  * @returns the exit code: 0 an item finished well, 4 the bound passed, 5 a check or run failed, 6 a job stayed queued.
  */
-export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep } = {}) {
+export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep, requiredChecks = load().ci.requiredChecks } = {}) {
   let parsed;
   try {
     parsed = parseWatchArgs(argv);
@@ -185,7 +179,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
       return null;
     }
   };
-  const context = { repo: parsed.repo, gh: read, now };
+  const context = { repo: parsed.repo, gh: read, now, requiredChecks };
   const watchers = [
     ...parsed.prs.map((number) => ({ item: `pr:${number}`, poll: pullRequestWatcher(number, context) })),
     ...parsed.codex.map((file) => ({ item: `codex:${file}`, poll: codexWatcher(file) })),
