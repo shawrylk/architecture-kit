@@ -6,6 +6,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } fr
 import os from "node:os";
 import path from "node:path";
 import { load } from "../config.mjs";
+import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 12;
@@ -154,7 +155,7 @@ export async function runCodexImplement(argv, { out = writeLine, ...options } = 
   return code;
 }
 
-async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line) } = {}) {
+async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, now = Date.now, say = (line) => console.error(line) } = {}) {
   let settings;
   try {
     settings = parseArgs(argv);
@@ -188,15 +189,25 @@ async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, 
     }
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
-    if (reportsLimit(result.tail ?? "", prompt)) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
+    const line = limitLineOf(result.tail ?? "", prompt);
+    if (line) {
+      const recordedAt = now();
+      const reset = resetTimeOf(line, recordedAt);
+      try {
+        writeLimit(limitFileOf(env), { until: reset ?? recordedAt + 3_600_000, source: reset === null ? "default" : "codex" }, recordedAt);
+      } catch (error) {
+        say(`qc codex-implement: cannot write the limit state: ${error.message}`);
+      }
+      return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
+    }
   }
   return finish(say, `out of runs: ${settings.maxRuns} runs and the progress file is not done`, 3);
 }
 
 /** A limit line counts only when Codex wrote it, not when the log echoes a line of the prompt. */
-function reportsLimit(tail, prompt) {
+function limitLineOf(tail, prompt) {
   const echoed = new Set(prompt.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
-  return tail.split(/\r?\n/).some((line) => LIMIT.test(line) && !echoed.has(line.trim()));
+  return tail.split(/\r?\n/).find((line) => LIMIT.test(line) && !echoed.has(line.trim())) ?? null;
 }
 
 function finish(say, message, code) {

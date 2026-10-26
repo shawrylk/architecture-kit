@@ -33,6 +33,7 @@ const USAGE = `qc — architecture gates
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
+  qc codex status         print whether Codex is free or limited, with the reset time and its source
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
   qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
@@ -95,6 +96,14 @@ async function main() {
   if (command === "codex-implement") {
     const { runCodexImplement } = await import("./codex-implement.mjs");
     process.exit(await runCodexImplement(rest));
+  }
+  if (command === "codex") {
+    if (rest[0] === "status") {
+      const { runCodexStatus } = await import("./codex-limit.mjs");
+      process.exit(runCodexStatus(rest.slice(1)));
+    }
+    console.log(USAGE);
+    process.exit(1);
   }
   // The slots are machine-wide, so the runner reads no configuration.
   if (command === "gate-slot") {

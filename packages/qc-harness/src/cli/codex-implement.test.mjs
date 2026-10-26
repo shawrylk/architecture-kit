@@ -1,13 +1,22 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DONE_MARKER, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
+const limitDir = mkdtempSync(path.join(os.tmpdir(), "qc-codex-implement-limit-"));
+const previousLimitFile = process.env.QC_CODEX_LIMIT_FILE;
+process.env.QC_CODEX_LIMIT_FILE = path.join(limitDir, "limit.json");
+after(() => {
+  if (previousLimitFile === undefined) delete process.env.QC_CODEX_LIMIT_FILE;
+  else process.env.QC_CODEX_LIMIT_FILE = previousLimitFile;
+  rmSync(limitDir, { recursive: true, force: true });
+});
+const T = Date.UTC(2026, 9, 26);
 
 function setup(t, { progress = "" } = {}) {
   const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-codex-implement-")));
@@ -270,6 +279,46 @@ test("a usage or spend limit in the output tail exits 2 and stops restarting", a
     assert.equal(await runCodexImplement(argv, { run, say: quiet }), 2, message);
     assert.equal(calls, 1, message);
   }
+});
+
+test("exit 2 writes the limit state with the reset time of the Codex line", async (t) => {
+  const { argv, dir } = setup(t);
+  const file = path.join(dir, "limit.json");
+  const run = async () => ({ status: 1, tail: "You have hit your usage limit. Try again in 2 hours 13 minutes." });
+  assert.equal(await runCodexImplement(argv, { run, say: quiet, env: { QC_CODEX_LIMIT_FILE: file }, now: () => T }), 2);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), {
+    until: new Date(T + 133 * 60_000).toISOString(), source: "codex", recordedAt: new Date(T).toISOString(),
+  });
+});
+
+test("exit 2 writes now plus 60 minutes when the line names no time", async (t) => {
+  const { argv, dir } = setup(t);
+  const file = path.join(dir, "limit.json");
+  const run = async () => ({ status: 1, tail: "You have hit your usage limit" });
+  assert.equal(await runCodexImplement(argv, { run, say: quiet, env: { QC_CODEX_LIMIT_FILE: file }, now: () => T }), 2);
+  assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), {
+    until: new Date(T + 3_600_000).toISOString(), source: "default", recordedAt: new Date(T).toISOString(),
+  });
+});
+
+test("a limit line echoed from the prompt writes no limit state", async (t) => {
+  const { argv, dir, brief } = setup(t);
+  const file = path.join(dir, "limit.json");
+  const line = "You have hit your usage limit. Try again in 2 hours 13 minutes.";
+  writeFileSync(brief, `# Brief\n${line}\n`);
+  const run = async () => ({ status: 1, tail: `user\n${line}\nexec failed` });
+  assert.equal(await runCodexImplement([...argv, "--max-runs", "1"], { run, say: quiet, env: { QC_CODEX_LIMIT_FILE: file }, now: () => T }), 3);
+  assert.equal(existsSync(file), false);
+});
+
+test("a limit-state write error reports the reason and preserves exit 2", async (t) => {
+  const { argv, dir } = setup(t);
+  const file = path.join(dir, "blocked", "limit.json");
+  writeFileSync(path.dirname(file), "blocks the directory");
+  const said = [];
+  const run = async () => ({ status: 1, tail: "You have hit your usage limit" });
+  assert.equal(await runCodexImplement(argv, { run, say: (line) => said.push(line), env: { QC_CODEX_LIMIT_FILE: file }, now: () => T }), 2);
+  assert.match(said.join("\n"), /cannot write.*limit/i);
 });
 
 test("--max-runs bounds the restarts and exits 3, with a default of 12", async (t) => {

@@ -523,11 +523,17 @@ The overrides apply to the runner's `codex exec` call only, so your interactive 
 - `-c model_auto_compact_token_limit=<n>` with `n` from `codex.compactTokens` in the worktree's `qc.config.json` (default `300000`). It is a backstop for a runaway item: each item runs in a fresh session and should finish under 200K.
 - `-c tool_output_token_limit=4000`, so one command output never carries more than 4,000 tokens.
 
+On exit `2`, the runner writes the limit state to `<os.tmpdir()>/architecture-kit/codex-limit.json`.
+Set `QC_CODEX_LIMIT_FILE` to use another path. The JSON stores `until`, `source`, and `recordedAt`, with both times as ISO strings.
+The `codex` source uses the reset time from Codex; the `default` source uses 60 minutes after the limit.
+`qc codex status` prints `Codex: free` for missing, invalid, or expired state.
+For an active limit, it prints the ISO reset time and its source. The status command reads no configuration.
+
 | Exit | Meaning |
 |---|---|
 | `0` | the progress file says `ALL TASKS DONE` |
 | `1` | a bad argument, a bad `codex.compactTokens`, or `codex` did not start |
-| `2` | the tail of a run matches `usage limit`, `spend cap`, `rate limit`, or `hit your limit`: dispatch the same brief to an `architecture:sdd-implementer` (sonnet) |
+| `2` | Codex reports `usage limit`, `spend cap`, `rate limit`, or `hit your limit`; record the reset for `qc codex status`, then dispatch the brief to an `architecture:sdd-implementer` (sonnet) |
 | `3` | `--max-runs` (default 12) runs ended and the progress file is not done |
 
 With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the
