@@ -1,6 +1,6 @@
 // Branch: each TSX file owns one component declaration.
 
-import { FUNCTIONS, propertyName, walk } from "../jsx.mjs";
+import { FUNCTIONS, lookup, propertyName, walk } from "../jsx.mjs";
 import { filenameOf, schemaOf } from "../options.mjs";
 
 function returnsJsxBranch(node) {
@@ -40,7 +40,13 @@ export default {
     const components = [];
     const keys = context.sourceCode.visitorKeys;
     function collectBranch(node, name, value) {
-      if (/^[A-Z]/.test(name ?? "") && componentBranch(value, keys)) components.push({ node, name });
+      if (/^[A-Z]/.test(name ?? "") && componentBranch(value, keys)) components.push({ node, name, value });
+    }
+    function wrappedDeclaration(value) {
+      if (!value) return null;
+      if (["TSAsExpression", "TSSatisfiesExpression", "TSNonNullExpression", "TSTypeAssertion"].includes(value.type)) return wrappedDeclaration(value.expression);
+      if (value.type === "CallExpression" && ["forwardRef", "memo"].includes(value.callee.name ?? propertyName(value.callee))) return wrappedDeclaration(value.arguments[0]);
+      return value.type === "Identifier" ? lookup(context.sourceCode, value)?.defs[0]?.node : null;
     }
     return {
       FunctionDeclaration(node) {
@@ -50,9 +56,13 @@ export default {
         if (node.id.type === "Identifier") collectBranch(node, node.id.name, node.init);
       },
       "Program:exit"() {
-        components.sort((left, right) => left.node.range[0] - right.node.range[0]);
-        for (const component of components.slice(1)) {
-          context.report({ node: component.node, messageId: "multiple", data: { first: components[0].name, second: component.name } });
+        const declarations = new Set(components.map((component) => component.node));
+        const distinct = components.filter((component) => !declarations.has(wrappedDeclaration(component.value)));
+        distinct.sort((left, right) => left.node.range[0] - right.node.range[0]);
+        if (distinct.length < 2) return;
+        for (const component of distinct) {
+          const other = component === distinct[0] ? distinct[1] : component;
+          context.report({ node: component.node, messageId: "multiple", data: { first: distinct[0].name, second: other.name } });
         }
       },
     };

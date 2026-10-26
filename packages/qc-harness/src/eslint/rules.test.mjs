@@ -2,38 +2,6 @@ import { RuleTester } from "eslint";
 import tsparser from "@typescript-eslint/parser";
 import { rules } from "./index.mjs";
 
-new RuleTester({
-  languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
-}).run("no-static-inline-style", rules["no-static-inline-style"], {
-  valid: [
-    { code: '<div className="w-full" />;', filename: "view.tsx" },
-    { code: '<div style={{ width: size }} />;', filename: "view.tsx" },
-    { code: '<div style={{ width: size, display: "flex" }} />;', filename: "view.tsx" },
-    { code: '<div style={{ width: getSize() }} />;', filename: "view.tsx" },
-    { code: '<div style={{ width: sizes.width }} />;', filename: "view.tsx" },
-    { code: '<div style={{ width: `${size}px` }} />;', filename: "view.tsx" },
-    { code: '<div style={{ ...styles, display: "flex" }} />;', filename: "view.tsx" },
-    { code: '<div style={{ [property]: "flex" }} />;', filename: "view.tsx" },
-    { code: '<div style={styles} />;', filename: "view.tsx" },
-    { code: '<div style={enabled ? styles : undefined} />;', filename: "view.tsx" },
-    { code: '<div style={{}} />;', filename: "view.tsx" },
-    { code: '<div data-style={{ width: 12 }} />;', filename: "view.tsx" },
-    { code: '<div style />;', filename: "view.tsx" },
-  ],
-  invalid: [
-    { code: '<div style={{ width: 12 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<div style={{ display: "flex", opacity: 1 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<Box style={{ marginTop: -2, zIndex: +1 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<div style={{ display: `flex` }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<Box style={{ visible: false, color: null }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<div style={{ ["display"]: "flex" }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<div style={({ width: 12 } as const)} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<div style={{ width: 12 as number }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<div style={{ width: 12 } satisfies CSSProperties} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
-    { code: '<><div style={{ width: 12 }} /><div style={{ height: 8 }} /></>;', filename: "view.tsx", errors: [{ messageId: "static" }, { messageId: "static" }] },
-  ],
-});
-
 const tester = new RuleTester({
   languageOptions: { ecmaVersion: 2023, sourceType: "module" },
 });
@@ -863,6 +831,37 @@ tester.run("registry-literal", rules["registry-literal"], {
 const tsx = new RuleTester({
   languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
 });
+console.log("→", "no-static-inline-style");
+tsx.run("no-static-inline-style", rules["no-static-inline-style"], {
+  valid: [
+    { code: '<div className="w-full" />;', filename: "view.tsx" },
+    { code: '<div style={{ width: size }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: size, display: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: getSize() }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: sizes.width }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: `${size}px` }} />;', filename: "view.tsx" },
+    { code: '<div style={{ ...styles, display: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={{ [property]: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={styles} />;', filename: "view.tsx" },
+    { code: '<div style={enabled ? styles : undefined} />;', filename: "view.tsx" },
+    { code: '<div style={{}} />;', filename: "view.tsx" },
+    { code: '<div data-style={{ width: 12 }} />;', filename: "view.tsx" },
+    { code: '<div style />;', filename: "view.tsx" },
+  ],
+  invalid: [
+    { code: '<div style={{ width: 12 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ display: "flex", opacity: 1 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<Box style={{ marginTop: -2, zIndex: +1 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ display: `flex` }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<Box style={{ visible: false, color: null }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ ["display"]: "flex" }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={({ width: 12 } as const)} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ width: 12 as number }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ width: 12 } satisfies CSSProperties} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<><div style={{ width: 12 }} /><div style={{ height: 8 }} /></>;', filename: "view.tsx", errors: [{ messageId: "static" }, { messageId: "static" }] },
+  ],
+});
+
 const componentFile = "/repo/frontend/src/features/pins/view.tsx";
 const componentPair = { messageId: "multiple", data: { first: "First", second: "Second" } };
 
@@ -878,18 +877,18 @@ tsx.run("one-component-per-file", rules["one-component-per-file"], {
     { code: "const First = () => <div />; const Second = () => <span />;", filename: "/repo/view.jsx" },
   ],
   invalid: [
-    { code: "function First() { return <div />; } const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
-    { code: "const First = () => <>one</>; const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
-    { code: "const First = React.forwardRef(() => null); const Second = React.memo(Other);", filename: componentFile, errors: [componentPair] },
-    { code: "const First = memo(forwardRef(() => <div />)); const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
-    { code: "const First = function Named() { return <div />; }; function Second() { if (ready) return <span />; return null; }", filename: componentFile, errors: [componentPair] },
-    { code: "const First = () => ready ? <div /> : null; const Second = () => (ready && <span />) as React.ReactNode;", filename: componentFile, errors: [componentPair] },
-    { code: "function First() { const Second = () => <span />; return <div />; }", filename: componentFile, errors: [componentPair] },
-    { code: "const First = () => <div />; const Second = () => <span />;", filename: "C:\\repo\\view.tsx", errors: [componentPair] },
+    { code: "function First() { return <div />; } const Second = () => <span />;", filename: componentFile, errors: [componentPair, componentPair] },
+    { code: "const First = () => <>one</>; const Second = () => <span />;", filename: componentFile, errors: [componentPair, componentPair] },
+    { code: "const First = React.forwardRef(() => null); const Second = React.memo(Other);", filename: componentFile, errors: [componentPair, componentPair] },
+    { code: "const First = memo(forwardRef(() => <div />)); const Second = () => <span />;", filename: componentFile, errors: [componentPair, componentPair] },
+    { code: "const First = function Named() { return <div />; }; function Second() { if (ready) return <span />; return null; }", filename: componentFile, errors: [componentPair, componentPair] },
+    { code: "const First = () => ready ? <div /> : null; const Second = () => (ready && <span />) as React.ReactNode;", filename: componentFile, errors: [componentPair, componentPair] },
+    { code: "function First() { const Second = () => <span />; return <div />; }", filename: componentFile, errors: [componentPair, componentPair] },
+    { code: "const First = () => <div />; const Second = () => <span />;", filename: "C:\\repo\\view.tsx", errors: [componentPair, componentPair] },
     {
       code: "const First = () => <div />; const Second = () => <span />; const Third = () => <p />;",
       filename: componentFile,
-      errors: [componentPair, { messageId: "multiple", data: { first: "First", second: "Third" } }],
+      errors: [componentPair, componentPair, { messageId: "multiple", data: { first: "First", second: "Third" } }],
     },
   ],
 });
@@ -956,6 +955,7 @@ jsx.run("no-literal-color", rules["no-literal-color"], {
     { code: '<div className="text-primary" style={{ color: "var(--foreground)" }} />;' },
     { code: '<Icon fill="currentColor" />; <a href="#abc">Link</a>;' },
     { code: 'const message = "#123456"; const data = { id: "#abc" };' },
+    { code: 'const styles = { borderColor: "#abc" };' },
     { code: 'cn("text-primary"); cva("bg-primary", { variants: { tone: { primary: "text-primary" } } });' },
     { code: 'cva("p-2", { variants: { tone: { "#abc": "text-primary" } }, defaultVariants: { tone: "#abc" } });' },
     { code: '<div style={{ color: theme.foreground, opacity: 0.5 }} />;' },
@@ -977,7 +977,6 @@ jsx.run("no-literal-color", rules["no-literal-color"], {
       'const styles = { color: "#AbCd" }; <div style={styles} />;',
       '<div style={{ boxShadow: `0 0 ${size}px #abc` }} />;',
       'classes("bg-[#abc]");',
-      'const styles = { borderColor: "#abc" };',
       'cn("shadow-[0_0_rgba(0,0,0,0.5)]");',
       '<div color={"#abc" || fallback} />;',
       'const variants = { tone: { custom: "bg-[#abc]" } }; cva("p-2", { variants });',

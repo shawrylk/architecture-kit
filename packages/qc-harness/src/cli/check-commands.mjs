@@ -38,7 +38,7 @@ function commandWords(command) {
   return words;
 }
 
-export function changedFiles(root, base, sincePush) {
+export function changedFiles(root, base, sincePush, command = "qc e2e") {
   const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   let ref = base;
   if (sincePush) {
@@ -58,7 +58,7 @@ export function changedFiles(root, base, sincePush) {
   try {
     mergeBase = git("merge-base", "--", "HEAD", ref).trim();
   } catch {
-    console.log(`WARN  merge base with ${ref} is unavailable; running related tests without file arguments`);
+    console.log(`WARN  merge base with ${ref} is unavailable; running ${command} without file arguments`);
     return null;
   }
   return git("diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=d", mergeBase, "--").split("\0").filter(Boolean);
@@ -83,7 +83,7 @@ export async function runCheckCommands(config, { sincePush = false } = {}) {
   const { commands, base } = config.check;
   const related = sincePush ? config.check.sincePush ?? config.check.related : config.check.related;
   if (related !== null) {
-    const files = changedFiles(config.root, base, sincePush);
+    const files = changedFiles(config.root, base, sincePush, "related tests");
     if (files === null || files.length > 0) {
       const code = await runCommand(config.root, related, files ?? []);
       if (code !== 0) return code;

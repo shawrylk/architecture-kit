@@ -6,6 +6,14 @@ import { loadTypeScript } from "./typescript.mjs";
 const ts = loadTypeScript();
 const extract = (text, rel = "frontend/src/platform/ui/primitives/button.tsx") => extractComponents(ts, rel, text);
 
+test("a layer accepts multiple folders and keeps the longest folder match", () => {
+  const options = { layers: { primitive: ["src/ui", "src/shared/primitives"], pattern: "src/ui/patterns" } };
+  assert.equal(layerOf("src/ui/button.tsx", options), "primitive");
+  assert.equal(layerOf("src/shared/primitives/input.tsx", options), "primitive");
+  assert.equal(layerOf("src/ui/patterns/form.tsx", options), "pattern");
+  assert.equal(layerOf("src/ui-extra/button.tsx", options), "platform");
+});
+
 test("a function component records its name, line, props and first JSDoc sentence", () => {
   const [button] = extract(`import React from "react";
 interface ButtonProps { label: string; onPress?: () => void }

@@ -10,6 +10,28 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("featureSwitches validates its object, filename, patterns, and regular expressions", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-switch-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const value of [null, [], false, "switches"]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches: value }));
+    assert.throws(() => load(root), /featureSwitches must be an object/);
+  }
+  for (const [key, values] of Object.entries({
+    file: [null, false, 3, [], {}, "", "  ", ".", "..", "nested/switches.ts", "nested\\switches.ts"],
+    patterns: [null, false, "SHOW_", {}, [3], [null], ["["], ["("]],
+  })) {
+    for (const value of values) {
+      writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches: { [key]: value } }));
+      assert.throws(() => load(root), new RegExp(`featureSwitches\\.${key}`));
+    }
+  }
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches: { file: "switches.ts", patterns: ["^CUSTOM_"] } }));
+  assert.deepEqual(load(root).featureSwitches, { file: "switches.ts", patterns: ["^CUSTOM_"] });
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches: { patterns: [] } }));
+  assert.deepEqual(load(root).featureSwitches.patterns, []);
+});
+
 test("codex defaults bound a short session and disable the skill plugin", () => {
   assert.deepEqual(load(here).codex, {
     compactTokens: 300000,
