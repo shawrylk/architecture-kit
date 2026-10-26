@@ -43,7 +43,7 @@ test("the bound stops polling and clips the final sleep", async () => {
   assert.deepEqual(timer.sleeps, [INTERVAL, 6 * 60 * 1000]);
 });
 
-test("a bound longer than 600 hours caps each pause and polls again", async () => {
+test("a long bound pauses for the poll interval and clips the final pause", async () => {
   const timer = clock();
   let calls = 0;
   const fetch = async () => { calls += 1; return response(SINCE); };

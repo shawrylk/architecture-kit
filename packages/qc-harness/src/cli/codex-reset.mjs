@@ -50,7 +50,7 @@ export async function waitForCodexReset({
       say(`qc codex-wait-reset: ${error.message}; polling continues`);
     }
     const remaining = deadline - now();
-    if (remaining > 0) await pause(Math.min(pollMs, remaining, MAX_TIMER_MS));
+    if (remaining > 0) await pause(Math.min(pollMs, remaining));
   }
   say("qc codex-wait-reset: wait bound reached");
   return false;
