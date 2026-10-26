@@ -1,5 +1,3 @@
-// This pipeline uses the latest cost per agent so resumed tasks count once.
-
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { latestCosts, ledgerFileOf, readLedger } from "./ledger.mjs";
@@ -54,7 +52,13 @@ export function runBudget(config, args = []) {
     console.error("qc budget report: this folder is in no git checkout.");
     return 1;
   }
-  const budgets = budgetsOf(config);
+  let budgets;
+  try {
+    budgets = budgetsOf(config);
+  } catch (error) {
+    console.error(error.message);
+    return 1;
+  }
   for (const line of budgetReport(readLedger(file), budgets)) console.log(line);
   return 0;
 }

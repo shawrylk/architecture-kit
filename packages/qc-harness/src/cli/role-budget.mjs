@@ -1,9 +1,7 @@
-// The branch that resolves an agent's role and closes work calls at its context budget.
 import { HANDOFF_STEPS, isHandoffCall } from "./budget.mjs";
 import { contextDefaults } from "../config.mjs";
 import { reviewSettings } from "./workflow-settings.mjs";
 
-// This branch returns the orchestrator's compaction note at each reminder interval.
 export function orchestratorVerdict({ tokens, compactAt, count, state }) {
   if (count % contextDefaults.every !== 0 || !(tokens >= compactAt)) return null;
   if (state.budgetFiredAt !== undefined && count - state.budgetFiredAt < contextDefaults.repeatEvery) return null;
@@ -26,7 +24,7 @@ export function roleBudgetVerdict({ role, tokens, budget, call, state }) {
     state.budgetClosed = true;
     if (isHandoffCall(call)) return null;
     const steps = role === "reviewer"
-      ? "Send the verdict report now. Open with `VERDICT:` for the work you reviewed, then add a line " +
+      ? "Put the full review in your final report. If files remain, open with `VERDICT: CHANGES_REQUIRED <sha>`, then add a line " +
         "`UNREVIEWED:` listing the files left. The controller sends a fresh reviewer with `Scope:` for those files."
       : HANDOFF_STEPS;
     return {

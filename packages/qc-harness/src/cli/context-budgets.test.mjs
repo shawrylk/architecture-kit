@@ -14,6 +14,14 @@ test("budgetsOf resolves the default budgets for every role", () => {
   });
 });
 
+test("unknown keys inside every budget role name the key in the error", () => {
+  for (const role of ["orchestrator", "implementer", "reviewer", "codex"]) {
+    assert.throws(() => budgetsOf(configWith({ [role]: { handOffAt: 200000 } })), {
+      message: `budgets.${role}.handOffAt in qc.config.json must be a known key (${Object.keys(defaults.budgets[role]).join(", ")}), got 200000`,
+    });
+  }
+});
+
 test("a null role turns its budget off", () => {
   for (const role of ["orchestrator", "implementer", "reviewer", "codex"]) {
     assert.equal(budgetsOf(configWith({ [role]: null }))[role], null);

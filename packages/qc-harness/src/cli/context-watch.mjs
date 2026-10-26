@@ -1,31 +1,57 @@
 #!/usr/bin/env node
 // The context-watch trigger reminds the main session to compact at a clean break.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { defaults, load } from "../config.mjs";
+import { writeState } from "./budget-counter.mjs";
+import { checkoutRootOf } from "./checkout-root.mjs";
+import { budgetsOf } from "./context-budgets.mjs";
+import { dispatchSettings } from "./dispatch.mjs";
 import { contextOf, lastUsage } from "./transcript-usage.mjs";
 
-export const START = 150_000;
+export const START = defaults.budgets.orchestrator.compactAt;
 export const STEP = 50_000;
 export const TELL_USER = 300_000;
 
 export function decide(call, { tmp = os.tmpdir() } = {}) {
   if (call.agent_id || !call.transcript_path) return null;
+  let budget;
+  try {
+    const cwd = call.cwd ?? process.cwd();
+    const config = load(checkoutRootOf(cwd) ?? cwd);
+    if (dispatchSettings(config.swarm)) return null;
+    budget = budgetsOf(config).orchestrator;
+  } catch {
+    return null;
+  }
+  if (!budget) return null;
   const tokens = contextOf(lastUsage(call.transcript_path));
-  const step = tokens < START ? -1 : Math.floor((tokens - START) / STEP);
+  if (!Number.isFinite(tokens)) return null;
+  const step = tokens < budget.compactAt ? -1 : Math.floor((tokens - budget.compactAt) / STEP);
   const directory = path.join(tmp, "claude-context-watch");
   const file = path.join(directory, `${String(call.session_id ?? "").replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
+  const lock = `${file}.lock`;
+  mkdirSync(directory, { recursive: true });
+  try {
+    mkdirSync(lock);
+  } catch (error) {
+    if (error.code === "EEXIST") return null;
+    throw error;
+  }
   let kept = -1;
   try {
-    kept = JSON.parse(readFileSync(file, "utf8")).step ?? -1;
-  } catch {
-    // A session without readable state starts below the first step.
-  }
-  if (step !== kept) {
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(file, JSON.stringify({ step }));
+    try {
+      kept = JSON.parse(readFileSync(file, "utf8")).step ?? -1;
+    } catch {
+      // A session without readable state starts below the first step.
+    }
+    // Only a compaction below compactAt resets the thresholds already noted.
+    if (step > kept || (step === -1 && kept !== -1)) writeState(file, { step });
+  } finally {
+    rmdirSync(lock);
   }
   if (step <= kept) return null;
   const k = Math.round(tokens / 1000);
