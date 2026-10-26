@@ -54,6 +54,101 @@ const config = (dir, command = "node gen.mjs") => ({
   worktree: { base: "main" },
 });
 
+function pullRequestIo(dir, { view = null, create = "  https://github.com/example/repo/pull/9\n" } = {}) {
+  const events = [];
+  return {
+    events,
+    say: quiet(events),
+    run,
+    gh(args, { cwd }) {
+      assert.equal(cwd, dir);
+      events.push(args);
+      return args[1] === "view" ? view : create;
+    },
+  };
+}
+
+const pullRequestCalls = [
+  ["pr", "view", "feat/7-integration", "--json", "number"],
+  ["pr", "create", "--draft", "--head", "feat/7-integration", "--base", "main", "--title", "feat: integrate the batch for #7", "--body", "Refs #7"],
+];
+
+test("--pr opens a draft pull request and strips origin from the base", async (t) => {
+  const dir = batchWithOrigin(t);
+  git(dir, "push", "origin", "main");
+  const io = pullRequestIo(dir);
+  const argv = ["--pr", "--issue", "7", "--from", "origin/main", "feat/1-a", "feat/2-b"];
+  assert.equal(await runIntegrate(config(dir), argv, io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+  assert.ok(io.events.includes("pr     https://github.com/example/repo/pull/9"));
+});
+
+test("--pr reports an existing pull request without creating another", async (t) => {
+  const dir = batchWithOrigin(t);
+  const io = pullRequestIo(dir, { view: '{"number":9}' });
+  assert.equal(await runIntegrate(config(dir), ["--pr", "--issue", "7", "--from", "main", "feat/1-a"], io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), [pullRequestCalls[0]]);
+  assert.ok(io.events.includes("pr     exists"));
+});
+
+test("integrate without --pr never calls gh", async (t) => {
+  const dir = batchWithOrigin(t);
+  const io = pullRequestIo(dir);
+  assert.equal(await runIntegrate(config(dir), ["--issue", "7", "--from", "main", "feat/1-a"], io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), []);
+});
+
+test("--pr needs a pushed branch before any merge", async (t) => {
+  for (const reason of ["push disabled", "origin absent"]) {
+    await t.test(reason, async (t) => {
+      const dir = reason === "push disabled" ? batchWithOrigin(t) : batch(t);
+      const settings = { ...config(dir), integrate: { push: reason !== "push disabled" } };
+      const before = git(dir, "rev-parse", "HEAD");
+      const errors = [];
+      t.mock.method(console, "error", quiet(errors));
+      const io = pullRequestIo(dir);
+      assert.equal(await runIntegrate(settings, ["--pr", "--issue", "7", "--from", "main", "feat/1-a"], io), 1);
+      assert.match(errors.join("\n"), /pull request needs a pushed branch/i);
+      assert.equal(git(dir, "rev-parse", "HEAD"), before);
+      assert.equal(git(dir, "branch", "--show-current"), "main");
+      assert.deepEqual(io.events, []);
+    });
+  }
+});
+
+test("--pr creates the pull request before the second cadence push", async (t) => {
+  const dir = batchWithOrigin(t);
+  const io = pullRequestIo(dir);
+  const settings = { ...config(dir), integrate: { ciEvery: 2 } };
+  const argv = ["--pr", "--issue", "7", "--from", "main", "feat/1-a", "feat/2-b", "feat/3-c"];
+  assert.equal(await runIntegrate(settings, argv, io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+  const pushes = io.events.flatMap((event, i) => typeof event === "string" && event.startsWith("push") ? [i] : []);
+  assert.equal(pushes.length, 2);
+  const created = io.events.findIndex((event) => Array.isArray(event) && event[1] === "create");
+  assert.ok(pushes[0] < created && created < pushes[1]);
+});
+
+test("--pr reports gh pr create when creation fails", async (t) => {
+  const dir = batchWithOrigin(t);
+  const io = pullRequestIo(dir, { create: null });
+  const errors = [];
+  t.mock.method(console, "error", quiet(errors));
+  assert.equal(await runIntegrate(config(dir), ["--pr", "--issue", "7", "--from", "main", "feat/1-a"], io), 1);
+  assert.match(errors.join("\n"), /gh pr create/);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+});
+
+test("--pr opens the pull request for an existing remote branch without another push", async (t) => {
+  const dir = batchWithOrigin(t);
+  const argv = ["--issue", "7", "--from", "main", "feat/1-a"];
+  assert.equal(await runIntegrate(config(dir), argv, { say: () => {}, run }), 0);
+  const io = pullRequestIo(dir);
+  assert.equal(await runIntegrate(config(dir), ["--pr", ...argv], io), 0);
+  assert.deepEqual(io.events.filter(Array.isArray), pullRequestCalls);
+  assert.equal(io.events.filter((event) => typeof event === "string" && event.startsWith("push")).length, 0);
+});
+
 test("the integration branch names its issue, and an issue that is no number is refused", () => {
   assert.equal(integrationBranch({ issue: "7" }), "feat/7-integration");
   assert.equal(integrationBranch({ issue: "7", type: "fix", slug: "Desktop Round" }), "fix/7-desktop-round");
