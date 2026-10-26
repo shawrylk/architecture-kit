@@ -288,7 +288,7 @@ test("an implementer the task gate refuses holds no implementer slot", (t) => {
   const ws = workspace(t);
   recordDispatch(judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp));
   implementerStop(ws, commitIn(ws.linked, "b.txt"));
-  const output = dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked), "architecture:sdd-implementer", { tool_use_id: "toolu_2" }), ws.tmp);
+  const output = dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked, "Runtime: claude test"), "architecture:sdd-implementer", { tool_use_id: "toolu_2" }), ws.tmp);
   assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /^Task gate:/);
   const slots = path.join(ws.tmp, "architecture-kit", "dispatch");
   const claims = existsSync(slots) ? readdirSync(slots, { recursive: true }).filter((name) => String(name).endsWith(".claim")) : [];
@@ -297,7 +297,7 @@ test("an implementer the task gate refuses holds no implementer slot", (t) => {
 
 test("the guard records an accepted task dispatch", (t) => {
   const ws = workspace(t);
-  assert.equal(dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp), null);
+  assert.equal(dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked, "Runtime: claude test")), ws.tmp), null);
   assert.deepEqual(readLedger(ws.ledger).map((record) => [record.type, record.task, record.branch]), [["dispatch", true, "feat/1-x"]]);
 });
 
