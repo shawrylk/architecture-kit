@@ -121,6 +121,73 @@ const signalCall = (ws, main, agentType = "architecture:sdd-implementer", tool_n
 });
 const noteOf = (output) => output?.hookSpecificOutput?.additionalContext ?? null;
 
+function mainCall(ws, tokens = 213_000) {
+  const transcript = path.join(ws.tmp, "main.jsonl");
+  const lines = [10_000, tokens].map((input_tokens) => ({
+    type: "assistant", message: { usage: { input_tokens } },
+  }));
+  writeFileSync(transcript, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
+  return { ...callOf(ws.linked, null), transcript_path: transcript };
+}
+
+test("the orchestrator gets the compaction note on its 5th call and not on the 4th", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws);
+  for (let count = 1; count <= 4; count++) assert.equal(runGuard(ws, call), null);
+  const output = runGuard(ws, call).hookSpecificOutput;
+  assert.match(output.additionalContext, /Context budget: this session sends about 213K tokens per call, past budgets\.orchestrator\.compactAt \(200000\)\. Run \/compact/);
+  assert.equal(output.permissionDecision, undefined);
+  assert.equal(countOf(ws, "orchestrator"), 5);
+  assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 5);
+});
+
+test("the note repeats only after 20 more calls", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws);
+  for (let count = 1; count < 5; count++) runGuard(ws, call);
+  const first = runGuard(ws, call);
+  assert.match(noteOf(first), /Run \/compact/);
+  for (let count = 6; count < 25; count++) assert.equal(runGuard(ws, call), null);
+  assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 5);
+  assert.deepEqual(runGuard(ws, call), first);
+  assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 25);
+});
+
+test("a main session below compactAt gets nothing", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws, 199_999);
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, call), null);
+  assert.equal(countOf(ws, "orchestrator"), 5);
+});
+
+test("budgets.orchestrator null gets nothing", (t) => {
+  const ws = workspace(t, { dispatch: {} }, { budgets: { orchestrator: null } });
+  const call = mainCall(ws);
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, call), null);
+  assert.equal(existsSync(ws.counters), false);
+});
+
+test("with swarm.dispatch off the main session is not counted", (t) => {
+  const ws = workspace(t);
+  const call = mainCall(ws);
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, call), null);
+  assert.equal(existsSync(ws.counters), false);
+});
+
+test("a main call with no transcript_path gets nothing and throws nothing", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, callOf(ws.linked, null)), null);
+});
+
+test("main-session config and transcript errors leave the call alone", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws);
+  call.transcript_path = path.join(ws.tmp, "missing.jsonl");
+  for (let count = 1; count <= 5; count++) assert.equal(runGuard(ws, call), null);
+  writeFileSync(path.join(ws.linked, "qc.config.json"), "{");
+  assert.equal(runGuard(ws, call), null);
+});
+
 test("an implementer at the remind line gets one note", (t) => {
   const ws = workspace(t, { dispatch: {} });
   const call = signalCall(ws, transcripts(ws, "a1", [10_000, 110_000]));

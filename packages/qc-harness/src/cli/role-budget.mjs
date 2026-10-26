@@ -1,6 +1,16 @@
 // The branch that resolves an agent's role and closes work calls at its context budget.
 import { HANDOFF_STEPS, isHandoffCall } from "./budget.mjs";
+import { contextDefaults } from "../config.mjs";
 import { reviewSettings } from "./workflow-settings.mjs";
+
+// This branch returns the orchestrator's compaction note at each reminder interval.
+export function orchestratorVerdict({ tokens, compactAt, count, state }) {
+  if (count % contextDefaults.every !== 0 || !(tokens >= compactAt)) return null;
+  if (state.budgetFiredAt !== undefined && count - state.budgetFiredAt < contextDefaults.repeatEvery) return null;
+  state.budgetFiredAt = count;
+  return `Context budget: this session sends about ${Math.round(tokens / 1000)}K tokens per call, past budgets.orchestrator.compactAt (${compactAt}). ` +
+    "Run /compact at the next green step. Keep the plan path, the open PR numbers, each branch and its head, and the ledger path in the summary.";
+}
 
 export function budgetRoleOf(agentType, swarm) {
   const settings = reviewSettings(swarm);

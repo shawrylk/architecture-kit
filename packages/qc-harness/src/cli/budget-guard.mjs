@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// The PreToolUse trigger for the tool-call budget of swarm.md. It runs on every call of every agent,
-// so it spawns no process and touches one small file. The main session has no agent id and is exempt.
+// The PreToolUse trigger for tool-call and context budgets. It spawns no process.
+// The main session gets only the orchestrator's compaction reminder while dispatch is on.
 
 import { existsSync } from "node:fs";
 import os from "node:os";
@@ -12,7 +12,8 @@ import { bumpCount, counterFileOf, readState, stateFileOf, writeState } from "./
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { contextSettings, contextVerdict, estimateOf, handbackStamp } from "./context-signal.mjs";
-import { budgetRoleOf, roleBudgetVerdict } from "./role-budget.mjs";
+import { dispatchSettings } from "./dispatch.mjs";
+import { budgetRoleOf, orchestratorVerdict, roleBudgetVerdict } from "./role-budget.mjs";
 import { agentTranscriptOf, contextOf, firstPromptOf, firstUsage, lastUsage } from "./transcript-usage.mjs";
 
 const HANDBACK = "SubagentHandback";
@@ -22,7 +23,7 @@ const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", 
 /** The verdict on one tool call. @returns the hook output, or null to let the call run with no message. */
 export function decide(call, tmp = os.tmpdir()) {
   const agentId = call.agent_id;
-  if (typeof agentId !== "string" || agentId === "") return null;
+  if (typeof agentId !== "string" || agentId === "") return orchestratorOutput(call, tmp);
   const root = checkoutRootOf(call.cwd ?? process.cwd());
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
 
@@ -40,6 +41,29 @@ export function decide(call, tmp = os.tmpdir()) {
   const existing = output?.hookSpecificOutput?.additionalContext;
   const note = roleOutput.hookSpecificOutput.additionalContext;
   return context(existing ? `${existing}\n${note}` : note);
+}
+
+// This branch keeps the main session's counter and compaction reminder separate from agent limits.
+function orchestratorOutput(call, tmp) {
+  try {
+    const root = checkoutRootOf(call.cwd ?? process.cwd());
+    if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
+    const config = load(root);
+    if (!dispatchSettings(config.swarm)) return null;
+    const budget = budgetsOf(config).orchestrator;
+    if (!budget) return null;
+    const session = call.session_id ?? "session";
+    const count = bumpCount(counterFileOf(session, "orchestrator", tmp));
+    if (count % contextDefaults.every !== 0) return null;
+    const tokens = contextOf(lastUsage(call.transcript_path));
+    const file = stateFileOf(session, "orchestrator", tmp);
+    const state = readState(file);
+    const note = orchestratorVerdict({ tokens, compactAt: budget.compactAt, count, state });
+    writeState(file, state);
+    return note ? context(note) : null;
+  } catch {
+    return null;
+  }
 }
 
 function toolCallOutput(call, root, swarm, tmp) {

@@ -1,9 +1,34 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { budgetRoleOf, roleBudgetVerdict } from "./role-budget.mjs";
+import { budgetRoleOf, orchestratorVerdict, roleBudgetVerdict } from "./role-budget.mjs";
 
 const budget = { remindAt: 110_000, handoffAt: 150_000 };
 const call = { tool_name: "Bash", tool_input: { command: "npm test" } };
+
+test("the orchestrator stays quiet below compactAt and between checking calls", () => {
+  const state = {};
+  const input = { compactAt: 200_000, state };
+  assert.equal(orchestratorVerdict({ ...input, tokens: 199_999, count: 5 }), null);
+  assert.equal(orchestratorVerdict({ ...input, tokens: 213_000, count: 4 }), null);
+  assert.deepEqual(state, {});
+});
+
+test("the orchestrator reminds at compactAt and repeats after twenty calls", () => {
+  const state = {};
+  const input = { tokens: 213_000, compactAt: 200_000, state };
+  const note = orchestratorVerdict({ ...input, count: 5 });
+  assert.match(note, /Context budget: this session sends about 213K tokens per call, past budgets\.orchestrator\.compactAt \(200000\)\. Run \/compact/);
+  assert.match(note, /Keep the plan path, the open PR numbers, each branch and its head, and the ledger path in the summary\.$/);
+  assert.equal(state.budgetFiredAt, 5);
+  assert.equal(orchestratorVerdict({ ...input, count: 10 }), null);
+  assert.equal(state.budgetFiredAt, 5);
+  assert.equal(orchestratorVerdict({ ...input, count: 25 }), note);
+  assert.equal(state.budgetFiredAt, 25);
+});
+
+test("the orchestrator reminds exactly at compactAt", () => {
+  assert.match(orchestratorVerdict({ tokens: 200_000, compactAt: 200_000, count: 5, state: {} }), /about 200K tokens per call/);
+});
 
 test("budgetRoleOf resolves the configured roles only while dispatch is on", () => {
   for (const [agentType, role] of [
