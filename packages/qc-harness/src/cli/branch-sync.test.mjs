@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { syncBranch } from "./branch-sync.mjs";
+import { runBranch, syncBranch } from "./branch-sync.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 const quiet = (lines) => (line) => lines.push(line);
@@ -115,4 +115,84 @@ test("sync refuses a merge in progress", async (t) => {
 test("sync throws when the generator fails", async (t) => {
   const dir = batch(t);
   await assert.rejects(() => syncBranch(config(dir, 'node -e "process.exit(1)"'), dir, { say: quiet([]), run }), /generated\.command failed/);
+});
+
+test("branch sync pushes a changed branch through a gate slot in its worktree", async (t) => {
+  const dir = batch(t);
+  const said = [];
+  const calls = [];
+  const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
+  assert.equal(await runBranch(config(dir), ["sync", dir], { say: quiet(said), run, runSlot }), 0);
+  assert.deepEqual(calls, [{ words: ["git", "push", "-u", "origin", "feat/5-mine"], cwd: dir }]);
+  assert.ok(said.includes("push  feat/5-mine"));
+});
+
+test("branch sync with --no-push skips the gate slot", async (t) => {
+  const dir = batch(t);
+  const calls = [];
+  const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
+  assert.equal(await runBranch(config(dir), ["sync", dir, "--no-push"], { say: quiet([]), run, runSlot }), 0);
+  assert.deepEqual(calls, []);
+  git(dir, "merge-base", "--is-ancestor", "main", "HEAD");
+});
+
+test("branch sync skips the gate slot for an up-to-date branch", async (t) => {
+  const dir = batch(t);
+  git(dir, "merge", "--no-edit", "main");
+  const calls = [];
+  const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
+  assert.equal(await runBranch(config(dir), ["sync", dir], { say: quiet([]), run, runSlot }), 0);
+  assert.deepEqual(calls, []);
+});
+
+test("branch sync returns one after a conflict and skips the gate slot", async (t) => {
+  const dir = batch(t);
+  commitFile(dir, "a.txt", "mine\n");
+  git(dir, "switch", "-q", "main");
+  commitFile(dir, "a.txt", "theirs\n");
+  git(dir, "switch", "-q", "feat/5-mine");
+  const calls = [];
+  const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
+  assert.equal(await runBranch(config(dir), ["sync", dir], { say: quiet([]), run, runSlot }), 1);
+  assert.deepEqual(calls, []);
+  assert.ok(existsSync(path.join(dir, ".git", "MERGE_HEAD")));
+});
+
+test("branch sync returns the gate slot's failure code", async (t) => {
+  const dir = batch(t);
+  const calls = [];
+  const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 7; };
+  assert.equal(await runBranch(config(dir), ["sync", dir], { say: quiet([]), run, runSlot }), 7);
+  assert.deepEqual(calls, [{ words: ["git", "push", "-u", "origin", "feat/5-mine"], cwd: dir }]);
+});
+
+for (const argv of [["sync"], ["sync", ".", "extra"], ["merge", "."], [], ["sync", ".", "--base"], ["sync", ".", "--unknown"]]) {
+  test(`branch rejects invalid arguments ${JSON.stringify(argv)} with usage`, async () => {
+    const said = [];
+    const calls = [];
+    const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
+    assert.equal(await runBranch(config("."), argv, { say: quiet(said), run, runSlot }), 2);
+    assert.match(said.join("\n"), /qc branch sync <worktree> \[--base <ref>\] \[--no-push\]/);
+    assert.deepEqual(calls, []);
+  });
+}
+
+test("branch sync resolves its worktree against config.root and accepts --base", async (t) => {
+  const dir = batch(t);
+  const cfg = { ...config(dir), root: path.dirname(dir), worktree: { base: "missing-base" } };
+  const calls = [];
+  const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
+  assert.equal(await runBranch(cfg, ["sync", path.basename(dir), "--base", "main"], { say: quiet([]), run, runSlot }), 0);
+  assert.deepEqual(calls, [{ words: ["git", "push", "-u", "origin", "feat/5-mine"], cwd: dir }]);
+});
+
+test("branch sync prints a refusal and skips the gate slot", async (t) => {
+  const dir = batch(t);
+  writeFileSync(path.join(dir, "a.txt"), "dirty\n");
+  const said = [];
+  const calls = [];
+  const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
+  assert.equal(await runBranch(config(dir), ["sync", dir], { say: quiet(said), run, runSlot }), 1);
+  assert.match(said.join("\n"), /^qc branch: .*working tree has changes/);
+  assert.deepEqual(calls, []);
 });

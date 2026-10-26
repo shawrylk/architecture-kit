@@ -56,6 +56,8 @@ const USAGE = `qc — architecture gates
                            refuse a dirty tree; delete it, then its branch once merged, pushed, or a merged PR head
   qc migrations renumber --onto <ref> [--branch <ref>]
                            move this branch's migrations after the last one of <ref>, and rewrite references
+  qc branch sync <worktree> [--base <ref>] [--no-push]
+                           merge the base, renumber migrations, regenerate, and push through a machine gate slot
   qc integrate --issue <n> [--type <t>] [--slug <s>] [--from <ref>] <branch>...
                            one <t>/<n>-<s> branch for a batch: merge, renumber, regenerate; stop on a conflict
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
@@ -203,6 +205,10 @@ async function main() {
     case "migrations": {
       const { runMigrations } = await import("./migrations.mjs");
       process.exit(runMigrations(config, rest));
+    }
+    case "branch": {
+      const { runBranch } = await import("./branch-sync.mjs");
+      process.exit(await runBranch(config, rest));
     }
     case "integrate": {
       const { runIntegrate } = await import("./integrate.mjs");

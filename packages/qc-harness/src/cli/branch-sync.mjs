@@ -1,6 +1,46 @@
+import path from "node:path";
+import { parseArgs } from "node:util";
 import { globMatcher } from "../glob.mjs";
+import { runInShell } from "./child-run.mjs";
+import { runGateSlot } from "./gate-slot.mjs";
 import { git, lines, runShell, tryGit } from "./integrate.mjs";
 import { posixDir, renumber } from "./migrations.mjs";
+
+export const USAGE = "qc branch sync <worktree> [--base <ref>] [--no-push]";
+
+/** A branch: dispatch a sync and push its changes through a machine gate slot. */
+export async function runBranch(config, argv, deps = {}) {
+  const {
+    say = (line) => console.log(line),
+    run,
+    runSlot = (words, cwd) => runGateSlot(["--", ...words], { run: (line, env) => runInShell(line, env, cwd) }),
+  } = deps;
+  let values;
+  let positionals;
+  try {
+    if (argv[0] !== "sync") throw new Error("expected the sync sub-command");
+    ({ values, positionals } = parseArgs({
+      args: argv.slice(1),
+      options: { base: { type: "string" }, "no-push": { type: "boolean" } },
+      strict: true,
+      allowPositionals: true,
+    }));
+    if (positionals.length !== 1) throw new Error("name exactly one worktree");
+  } catch (error) {
+    say(`qc branch: ${error.message}\n\n${USAGE}`);
+    return 2;
+  }
+  try {
+    const worktree = path.resolve(config.root, positionals[0]);
+    const result = await syncBranch(config, worktree, { base: values.base, say, run });
+    if (result.code !== 0 || !result.changed || values["no-push"]) return result.code;
+    say(`push  ${result.branch}`);
+    return await runSlot(["git", "push", "-u", "origin", result.branch], worktree);
+  } catch (error) {
+    say(`qc branch: ${error.message}`);
+    return 1;
+  }
+}
 
 /** A pipeline: merge the base, renumber the branch's migrations, and commit generated files. */
 export async function syncBranch(config, worktree, options = {}) {
