@@ -63,7 +63,10 @@ export function codemodSource(ts, name, text, map, callees) {
   const edits = [];
   for (const token of classTokensOf(ts, parseSource(ts, name, text), callees)) {
     const next = rewriteToken(token.text, map);
-    if (next !== token.text) edits.push({ ...token, next });
+    if (next !== token.text) {
+      const quote = token.identifierKey && !ts.isIdentifierText(next, ts.ScriptTarget.Latest);
+      edits.push({ ...token, next: quote ? JSON.stringify(next) : next });
+    }
   }
   let out = text;
   for (const edit of edits.sort((a, b) => b.start - a.start)) out = out.slice(0, edit.start) + edit.next + out.slice(edit.end);
