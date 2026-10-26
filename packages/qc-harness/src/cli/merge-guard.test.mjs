@@ -154,6 +154,24 @@ test("an API merge passes when the base has no config and denies an unreadable P
   assert.match(denied(decide(command, { gh: fakeGh(prView("f".repeat(40))).gh })) ?? "", /base commit.*not in this repository/);
 });
 
+test("a placeholder REST merge reads its PR base with the inline or current repository", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  for (const [prefix, repo] of [["", null], ["GH_REPO=other/project ", "other/project"]]) {
+    const { gh, calls } = fakeGh(prView(base));
+    assert.equal(decide(shell(dir, `${prefix}gh api -X PUT repos/{owner}/{repo}/pulls/5/merge`), { gh }), null);
+    assert.deepEqual(calls[0].args, ["pr", "view", "5", ...(repo ? ["-R", repo] : []), "--json", "baseRefName,baseRefOid"]);
+    assert.deepEqual(calls[0].options.env, {});
+  }
+  gitIn(dir, "add", ".");
+  gitIn(dir, "commit", "-q", "-m", "enable dispatch");
+  const enabled = gitIn(dir, "rev-parse", "HEAD");
+  const command = shell(dir, "gh api -X PUT repos/{owner}/{repo}/pulls/5/merge");
+  assert.match(denied(decide(command, { gh: fakeGh(prView(enabled)).gh })) ?? "", /gh pr merge/);
+  const { gh, calls } = fakeGh(prView(base));
+  assert.match(denied(decide(shell(dir, "gh api -X PUT repos/{owner}/project/pulls/5/merge"), { gh })) ?? "", /gh pr merge/);
+  assert.equal(calls.length, 0);
+});
+
 test("every API merge in a command reads its own base policy", (t) => {
   const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } });
   writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: {} }));
@@ -161,6 +179,44 @@ test("every API merge in a command reads its own base policy", (t) => {
   const off = gitIn(dir, "rev-parse", "HEAD");
   const gh = fakeGh((args) => prView(args[2] === "23" ? off : base)).gh;
   assert.match(denied(decide(shell(dir, "gh api repos/o/r/pulls/23/merge; gh api repos/o/r/pulls/24/merge"), { gh })) ?? "", /gh pr merge/);
+});
+
+test("a GraphQL merge reads its node and base policy within the shared deadline", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  const command = shell(dir, 'GH_CONFIG_DIR=account GH_REPO=ignored/repo gh api https://ghe.example.com/api/graphql -f query=\'mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }\' -F id=PR_123');
+  const node = (oid) => JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: oid, repository: { nameWithOwner: "o/r" } } } });
+  const { gh, calls } = fakeGh(node(base));
+  assert.equal(decide(command, { gh }), null);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args.slice(0, 2), ["api", "graphql"]);
+  assert.match(calls[0].args.join(" "), /node\(id:\s*\$id\)\s*\{\s*\.\.\. on PullRequest\s*\{\s*number baseRefName baseRefOid repository\s*\{\s*nameWithOwner/);
+  assert.ok(calls[0].args.includes("id=PR_123"));
+  assert.deepEqual(calls[0].options.env, { GH_CONFIG_DIR: "account", GH_HOST: "ghe.example.com" });
+  assert.ok(calls[0].options.timeoutMs > 0);
+  gitIn(dir, "add", ".");
+  gitIn(dir, "commit", "-q", "-m", "enable dispatch");
+  const enabled = gitIn(dir, "rev-parse", "HEAD");
+  assert.match(denied(decide(command, { gh: fakeGh(node(enabled)).gh })) ?? "", /gh pr merge/);
+  for (const answer of [null, "invalid", JSON.stringify({ data: { node: { id: "issue" } } }), JSON.stringify({ data: { node: null } }), node("f".repeat(40))]) {
+    assert.match(denied(decide(command, { gh: fakeGh(answer).gh })) ?? "", /base policy cannot be read/);
+  }
+  assert.match(denied(decide(command, { gh: () => { throw new Error("lookup failed"); } })) ?? "", /base policy cannot be read/);
+  const missing = fakeGh(node(base));
+  assert.match(denied(decide(shell(dir, "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'"), { gh: missing.gh })) ?? "", /gh pr merge/);
+  assert.equal(missing.calls.length, 0);
+});
+
+test("a GraphQL lookup shares the policy deadline and denies an expired read", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const start = Date.now();
+  const clock = t.mock.method(Date, "now", () => start);
+  const { gh, calls } = fakeGh(() => {
+    clock.mock.mockImplementation(() => start + 60_000);
+    return JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
+  });
+  const command = shell(dir, 'gh api graphql -f query=\'mutation { mergePullRequest(input: {pullRequestId: "PR_123"}) { clientMutationId } }\'');
+  assert.match(denied(decide(command, { gh })) ?? "", /base policy cannot be read/);
+  assert.equal(calls.length, 1);
 });
 
 test("a merge inside a nested shell is judged too", (t) => {
