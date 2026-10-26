@@ -31,7 +31,7 @@ test("an invalid feature switch pattern prints a config error without a stack tr
   writeFileSync(file, JSON.stringify(config));
   const run = check(root);
   assert.equal(run.status, 1);
-  assert.match(run.stderr, /ConfigError: featureSwitches\.patterns/);
+  assert.equal(run.stderr, 'qc: invalid qc.config.json: featureSwitches.patterns contains an invalid regular expression: "["\n');
   assert.doesNotMatch(run.stderr, /SyntaxError|^\s+at /m);
 });
 

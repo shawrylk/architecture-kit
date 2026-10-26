@@ -136,7 +136,15 @@ async function main() {
     const { runWatch } = await import("./watch.mjs");
     process.exit(await runWatch(rest));
   }
-  const config = load(process.cwd());
+  let config;
+  try {
+    config = load(process.cwd());
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    console.error(`qc: invalid qc.config.json: ${error.message}`);
+    process.exitCode = 1;
+    return;
+  }
 
   switch (command) {
     case "e2e": {
