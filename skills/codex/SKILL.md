@@ -84,13 +84,13 @@ Omit the flag to keep the Codex config value.
 Run this in the background from the main checkout. The form is for PowerShell:
 
 ```powershell
-npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --effort <value> *> <wrapper.log>
+npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> [--effort <value>] *> <wrapper.log>
 ```
 
 - In a POSIX shell, use this form:
 
   ```bash
-  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> --effort <value> > <wrapper.log> 2>&1
+  npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --progress <progress.md> --log <codex.log> [--effort <value>] > <wrapper.log> 2>&1
   ```
 - The runner writes `exit <code>` as its last stdout line on every exit path, so the wrapper log carries it and the forms need no `echo`. `qc watch --codex` reads that line. It decodes the UTF-16LE file that PowerShell 5.1 writes for `*>`.
 - Never call `codex exec` directly. Each run starts a fresh session with full access. The runner sends the prompt on stdin, then closes stdin.

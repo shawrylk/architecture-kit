@@ -133,21 +133,22 @@ for (const exists of [false, true]) {
   });
 }
 
-for (const exists of [false, true]) {
-  test(`an invalid committer identity stops before fetching or switching to an ${exists ? "existing" : "absent"} integration branch`, async (t) => {
+for (const [committerName, exists] of [["", false], ["", true], ["qc", false], ["qc", true]]) {
+  test(`an invalid committer identity (${committerName || "empty name"}) stops before fetching or switching to an ${exists ? "existing" : "absent"} integration branch`, async (t) => {
     const dir = batchWithOrigin(t);
     if (exists) git(dir, "branch", "feat/7-integration", "main");
     const before = git(dir, "rev-parse", "HEAD");
     authorEnvironment(t, {
       GIT_AUTHOR_NAME: "qc",
       GIT_AUTHOR_EMAIL: "qc@example.com",
-      GIT_COMMITTER_NAME: "",
+      GIT_COMMITTER_NAME: committerName,
       GIT_COMMITTER_EMAIL: "",
     });
     const errors = [];
     t.mock.method(console, "error", quiet(errors));
     assert.equal(await runIntegrate(config(dir, null), ["--issue", "7", "feat/1-a"], { say: () => {}, run }), 1);
     assert.match(errors.join("\n"), /git var GIT_COMMITTER_IDENT/);
+    if (committerName) assert.match(errors.join("\n"), /no committer email/);
     assert.equal(existsSync(path.join(dir, ".git", "FETCH_HEAD")), false);
     assert.equal(git(dir, "branch", "--show-current"), "main");
     assert.equal(git(dir, "rev-parse", "HEAD"), before);

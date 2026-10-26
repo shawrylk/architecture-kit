@@ -78,6 +78,15 @@ function pullRequestBase(root, ref) {
   throw new Error(`the pull request base must name a branch, got ${JSON.stringify(ref)}`);
 }
 
+/** Branch: read a Git identity and require its email. */
+function identityEmail(root, role) {
+  const variable = `GIT_${role.toUpperCase()}_IDENT`;
+  const identity = git(root, ["var", variable]).trim();
+  const email = /<([^<>]+)> \d+ [+-]\d{4}$/.exec(identity)?.[1];
+  if (!email) throw new Error(`git var ${variable} returned no ${role} email`);
+  return email;
+}
+
 /** `qc integrate`. @returns the exit code */
 export async function runIntegrate(config, argv, { say = (line) => console.log(line), run = runShell, gh = runGh } = {}) {
   let options;
@@ -96,10 +105,8 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
     if (options.pr && !canPush) throw new Error("a pull request needs a pushed branch: enable integrate.push and configure origin");
     if (tryGit(root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).ok) throw new Error("a merge is in progress: resolve it, commit it, then run qc integrate again");
     if (git(root, ["status", "--porcelain"]).trim() !== "") throw new Error("the working tree has changes: commit or stash them first");
-    const identity = git(root, ["var", "GIT_AUTHOR_IDENT"]).trim();
-    const email = /<([^<>]+)> \d+ [+-]\d{4}$/.exec(identity)?.[1];
-    if (!email) throw new Error("git var GIT_AUTHOR_IDENT returned no author email");
-    git(root, ["var", "GIT_COMMITTER_IDENT"]);
+    const email = identityEmail(root, "author");
+    identityEmail(root, "committer");
     tryGit(root, ["fetch", "--quiet", "origin"]);
     const base = options.from ?? config.worktree?.base ?? "origin/main";
     const prBase = options.pr

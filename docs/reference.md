@@ -734,7 +734,7 @@ For an active limit, it prints the ISO expiry time and its source. The status co
 
 Without `--wait-reset`, a limit ends the runner with exit `2`.
 With `--wait-reset`, it polls `https://codex-resets.com/api/v1/status` every 30 minutes without a model call.
-`--poll-minutes <n>` sets the interval in minutes. A value outside the positive finite numbers exits `1` before the job starts.
+`--poll-minutes <n>` accepts a positive finite number up to `35791` minutes. A value outside this range exits `1` before the job starts.
 An announced reset after the limit clears the state before the same brief resumes. A limit retry keeps its run allowance.
 `--max-hours` defaults to `6`, accepts positive finite hours, and bounds all reset waits in the job together.
 At the bound, the runner keeps the later of the estimate and 60 minutes after that moment, then exits `2`.

@@ -3,13 +3,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 const STATUS_URL = "https://codex-resets.com/api/v1/status";
 const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+const MAX_TIMER_MS = 2147483647;
+const MAX_POLL_MINUTES = Math.floor(MAX_TIMER_MS / MINUTE_MS);
 const USAGE = "usage: qc codex-wait-reset --since <iso> [--max-hours <n>] [--poll-minutes <n>]\nexit 0 on a reset, 1 at the bound or on bad input";
 
 /** Branch: validates the shared poll interval before a request starts. */
 export function parsePollMinutes(value = 30) {
   const minutes = Number(value);
-  if (!Number.isFinite(minutes) || minutes <= 0 || !Number.isFinite(minutes * MINUTE_MS)) {
-    throw new Error("--poll-minutes must be a positive finite number");
+  if (!Number.isFinite(minutes) || minutes <= 0 || minutes > MAX_POLL_MINUTES) {
+    throw new Error(`--poll-minutes must be a positive finite number up to ${MAX_POLL_MINUTES} minutes`);
   }
   return minutes;
 }
@@ -48,7 +50,7 @@ export async function waitForCodexReset({
       say(`qc codex-wait-reset: ${error.message}; polling continues`);
     }
     const remaining = deadline - now();
-    if (remaining > 0) await pause(Math.min(pollMs, remaining));
+    if (remaining > 0) await pause(Math.min(pollMs, remaining, MAX_TIMER_MS));
   }
   say("qc codex-wait-reset: wait bound reached");
   return false;
