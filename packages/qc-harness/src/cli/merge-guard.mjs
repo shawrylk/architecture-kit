@@ -17,6 +17,7 @@ import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
+import { promotionBranchName } from "./review-promotion.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
 
@@ -56,7 +57,7 @@ export function mergeVerdict(merges, records, kind, lane = null, promotion = nul
       return {
         refusal:
           `Merge guard: the ledger holds no APPROVED branch review of scope "${promotion}" on ${merge.sha}. ` +
-          `Run \`qc review promotion ${merge.selector || "<pr>"}\` on that head, and merge after every scope approves.`,
+          `Run \`qc review promotion ${merge.number ?? (/^[1-9]\d*$/.test(merge.selector ?? "") ? merge.selector : "<pr>")}\` on that head, and merge after every scope approves.`,
       };
     }
     if (verdict?.verdict === "APPROVED") continue;
@@ -85,13 +86,15 @@ export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict
 function prBaseOf(merge, cwd, gh, timeoutMs) {
   const args = merge.nodeId
     ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner}}}}", "-f", `id=${merge.nodeId}`]
-    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName"];
+    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository"];
   try {
     const answer = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
     const pr = merge.nodeId ? answer?.data?.node : answer;
     if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
       typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
-    return typeof pr?.baseRefName === "string" ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null } : null;
+    return typeof pr?.baseRefName === "string"
+      ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null, number: Number.isInteger(pr.number) && pr.number > 0 ? pr.number : null, sameRepository: pr.isCrossRepository === false }
+      : null;
   } catch {
     return null;
   }
@@ -268,9 +271,9 @@ export function decide(call, { gh = runGh } = {}) {
         if (!workflow) continue;
         const records = readLedger(workflow.ledger);
         const promotion = workflow.review.promotion;
-        const promotionScope = promotion && pr.head?.replace(/^origin\//, "") === promotion.integration.replace(/^origin\//, "") &&
-          pr.name.replace(/^origin\//, "") === promotion.release.replace(/^origin\//, "") ? PROMOTION_SCOPE : null;
-        const result = mergeVerdict([merge], records, workflow.review.merge, laneOf(workflow, records, pr, deadline), promotionScope);
+        const promotionScope = promotion && pr.sameRepository && promotionBranchName(pr.head) === promotionBranchName(promotion.integration) &&
+          promotionBranchName(pr.name) === promotionBranchName(promotion.release) ? PROMOTION_SCOPE : null;
+        const result = mergeVerdict([{ ...merge, number: pr.number }], records, workflow.review.merge, laneOf(workflow, records, pr, deadline), promotionScope);
         if (result.refusal) return deny(result.refusal);
         notes.push(...result.direct);
       } catch (error) {
