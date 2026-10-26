@@ -5,6 +5,8 @@
 // A `gh pr merge` that names another repository than the checkout's `origin` is that repository's own, so it passes.
 // A raw API merge, REST or GraphQL, reads the base policy of its PR. It passes with `swarm.dispatch` off.
 // It denies with dispatch on, or when the guard cannot read the PR or its base.
+// Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes.
+// This applies in every checkout, with `swarm.dispatch` on or off.
 
 import { fileURLToPath } from "node:url";
 import { PARSERS } from "./bash-command-guard.mjs";

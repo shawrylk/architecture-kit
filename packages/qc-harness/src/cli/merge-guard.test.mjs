@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -206,6 +206,45 @@ test("a GraphQL merge reads its node and base policy within the shared deadline"
   assert.equal(missing.calls.length, 0);
 });
 
+test("a GraphQL endpoint with a fragment and stdin denies with dispatch on", (t) => {
+  const { on } = workspace(t);
+  for (const tool of ["Bash", "PowerShell"]) {
+    assert.match(denied(decide(shell(on, "gh api 'graphql#x' --input -", "PreToolUse", tool))) ?? "", /gh pr merge/);
+  }
+});
+
+test("a GraphQL endpoint with a fragment keeps its GHE host for the node lookup", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const node = JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
+  for (const tool of ["Bash", "PowerShell"]) {
+    const { gh, calls } = fakeGh(node);
+    const command = `gh api 'https://ghe.example.com/api/graphql#x' -f query='mutation { mergePullRequest(input: {pullRequestId: "PR_ON"}) { clientMutationId } }'`;
+    assert.equal(decide(shell(dir, command, "PreToolUse", tool), { gh }), null);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].args.includes("id=PR_ON"));
+    assert.equal(calls[0].options.env.GH_HOST, "ghe.example.com");
+  }
+});
+
+test("a REST endpoint with a fragment reads the PR base policy", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  for (const tool of ["Bash", "PowerShell"]) {
+    const { gh, calls } = fakeGh(prView(base));
+    assert.equal(decide(shell(dir, "gh api 'repos/o/r/pulls/1/merge#x' -X PUT", "PreToolUse", tool), { gh }), null);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, ["pr", "view", "1", "-R", "o/r", "--json", "baseRefName,baseRefOid"]);
+  }
+});
+
+test("the merge guard documents the unconditional GraphQL input-field denial", () => {
+  const reference = readFileSync(new URL("../../../../docs/reference.md", import.meta.url), "utf8");
+  const header = readFileSync(HOOK, "utf8").split("import ")[0].replace(/^\/\/ ?/gm, "").replace(/\s+/g, " ");
+  for (const text of [reference, header]) {
+    assert.ok(text.includes("Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes."));
+    assert.ok(text.includes("This applies in every checkout, with `swarm.dispatch` on or off."));
+  }
+});
+
 test("a GraphQL node lookup uses the endpoint host after a decoy header", (t) => {
   const { dir, base } = laneRepo(t, { swarm: {} });
   const node = JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
@@ -236,6 +275,21 @@ test("GraphQL input mixed with fields denies before a decoy node lookup", (t) =>
   }
   writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query: "query { viewer { login } }" }));
   assert.match(denied(decide(shell(dir, "gh api graphql -f id=PR_OFF --input=body.json"))) ?? "", /--input.*-f/);
+});
+
+test("GraphQL input-field denial covers reads and writes with dispatch on or off", (t) => {
+  const { on, off } = workspace(t);
+  for (const dir of [on, off]) {
+    for (const query of ["query { viewer { login } }", 'mutation { mergePullRequest(input: {pullRequestId: "PR_ON"}) { clientMutationId } }']) {
+      writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query }));
+      for (const tool of ["Bash", "PowerShell"]) {
+        const { gh, calls } = fakeGh(null);
+        const command = shell(dir, "gh api graphql --input body.json -f id=PR_OFF", "PreToolUse", tool);
+        assert.match(denied(decide(command, { gh })) ?? "", /--input.*-f/);
+        assert.equal(calls.length, 0);
+      }
+    }
+  }
 });
 
 test("a GraphQL lookup shares the policy deadline and denies an expired read", (t) => {
