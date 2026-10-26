@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { decide } from "./dispatch-guard.mjs";
+import { runtimeTagOf } from "./dispatch-route.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { judgeTask, recordDispatch } from "./task-gate.mjs";
 
@@ -56,7 +57,7 @@ const call = (ws, type, prompt) => ({
   hook_event_name: "PreToolUse",
   tool_name: "Agent",
   tool_use_id: "toolu_1",
-  tool_input: { subagent_type: type, description: "Review", prompt },
+  tool_input: { subagent_type: type, description: runtimeTagOf({ subagent_type: type }, { codexModel: null }) + "Review", prompt },
 });
 const reviewPrompt = (ws, more = "") => `Review the branch.\nWorktree: ${ws.linked}\n${more}`;
 const judge = (ws, type, prompt, deps = { ciState: green }) => judgeTask(call(ws, type, prompt), ws.tmp, deps);

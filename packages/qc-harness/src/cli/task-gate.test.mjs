@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { decide as dispatchDecide } from "./dispatch-guard.mjs";
+import { runtimeTagOf } from "./dispatch-route.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { gitOut } from "./git-read.mjs";
 import { BRIEF } from "./test-brief.mjs";
@@ -52,7 +53,7 @@ const dispatch = (cwd, prompt, subagent_type = "architecture:sdd-implementer", e
   hook_event_name: "PreToolUse",
   tool_name: "Agent",
   tool_use_id: "toolu_1",
-  tool_input: { subagent_type, description: "Task", prompt },
+  tool_input: { subagent_type, description: runtimeTagOf({ subagent_type }, { codexModel: null }) + "Task", prompt },
   ...extra,
 });
 const taskPrompt = (worktree, more = "") => `Read the brief.\nBrief: ${BRIEF}\nWorktree: ${worktree}\n${more}`;

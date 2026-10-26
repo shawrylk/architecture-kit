@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { decide } from "./dispatch-guard.mjs";
+import { runtimeTagOf } from "./dispatch-route.mjs";
 
 const GUARD = fileURLToPath(new URL("./dispatch-guard.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
@@ -35,7 +36,7 @@ function workspace(t, dispatch = { maxPromptChars: 300 }) {
   return { on, off, plain, tmp, slots: path.join(tmp, "architecture-kit", "dispatch") };
 }
 
-const agentCall = (cwd, tool_input, extra = {}) => ({
+const untaggedCall = (cwd, tool_input, extra = {}) => ({
   session_id: "session-aaaa",
   cwd,
   hook_event_name: "PreToolUse",
@@ -43,6 +44,10 @@ const agentCall = (cwd, tool_input, extra = {}) => ({
   tool_input,
   ...extra,
 });
+const agentCall = (cwd, input, extra = {}) => untaggedCall(cwd, {
+  ...input,
+  description: runtimeTagOf(input, { codexModel: null }) + (input.description ?? "work"),
+}, extra);
 const subagentEvent = (cwd, agent_type, hook_event_name = "SubagentStop") => ({
   session_id: "session-aaaa",
   cwd,
@@ -59,6 +64,30 @@ const implementer = {
 };
 /** A reviewer prompt that names the checkout, so the task gate can read its branch and head. */
 const reviewerOf = (ws, subagent_type) => ({ subagent_type, prompt: `Worktree: ${ws.on}` });
+
+test("a dispatch with no runtime tag is refused and the refusal quotes the tag", (t) => {
+  const ws = workspace(t);
+  const tag = runtimeTagOf(implementer, { codexModel: null });
+  const reason = reasonOf(decide(untaggedCall(ws.on, implementer), ws.tmp));
+  assert.ok(reason?.includes(`"${tag}"`), reason);
+  assert.equal(existsSync(ws.slots), false);
+  assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
+});
+
+test("a codex dispatch whose description says Claude is refused", (t) => {
+  const ws = workspace(t);
+  const input = { subagent_type: "architecture:codex", model: "gpt-6.1-sol", description: "Claude default \u00b7 work", prompt: "p" };
+  const reason = reasonOf(decide(untaggedCall(ws.on, input), ws.tmp, Date.now(), { codexModel: null }));
+  assert.ok(reason?.includes('"Codex default \u00b7 "'), reason);
+  assert.equal(existsSync(ws.slots), false);
+});
+
+test("a tagged dispatch passes", (t) => {
+  const ws = workspace(t);
+  assert.equal(decide(agentCall(ws.on, { model: "gpt-6.1-sol", prompt: "p" }), ws.tmp), null);
+  const input = { subagent_type: "codex", model: "gpt-6.1-sol", description: "Codex gpt-6.1-sol \u00b7 work", prompt: "p" };
+  assert.equal(decide(untaggedCall(ws.on, input), ws.tmp, Date.now(), { codexModel: "gpt-6.1-sol" }), null);
+});
 
 test("a checkout with no config, or a swarm section with no dispatch key, sees no change", (t) => {
   const ws = workspace(t);
