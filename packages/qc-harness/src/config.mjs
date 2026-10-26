@@ -26,6 +26,10 @@ export const defaults = {
     maxRuns: 2,
   },
 
+  throwawayDb: {
+    schemaCommand: null,
+  },
+
   docs: {
     root: "docs",
     decisions: "docs/decisions.md",
