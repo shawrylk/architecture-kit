@@ -75,6 +75,19 @@ test("redaction preserves public text and ignores commit allow directives", () =
   assert.equal(redactOutput(""), "");
 });
 
+test("redaction removes AWS operator assignments from the review probes", () => {
+  const value = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  for (const name of ["AWS_SECRET_ACCESS_KEY", "aws_secret_access_key"]) {
+    for (const separator of [":=", "?=", "+=", "!=", "-->", "=:="]) {
+      for (const spacing of ["", " ", "\t"]) {
+        const assignment = `${name}${spacing}${separator}${spacing}${value}`;
+        assert.equal(redactOutput(`Before ${assignment}\n${assignment}\nafter`), "Before [REDACTED]\n[REDACTED]\nafter");
+        assert.equal(redactOutput(`qc-allow-secret ${assignment}`), "qc-allow-secret [REDACTED]");
+      }
+    }
+  }
+});
+
 test("bodies redact secrets and append the AI label by default", () => {
   assert.equal(postBody(`Body: ${secrets[3]}`), `Body: [REDACTED]\n\n${label}`);
   assert.equal(postBody(""), label);

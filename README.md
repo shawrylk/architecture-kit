@@ -105,8 +105,10 @@ The runner passes this environment allowlist, plus names in `codex.envAllow` (de
 
 The four proxy names and the `npm_config_` prefix match in any case on every platform.
 Other names and prefixes require exact case except on Windows.
-Names allowed only by `DOCKER_` or `npm_config_` stay out if they contain `TOKEN`, `PASSWORD`, `SECRET`, or `AUTH`, in any case.
+Names allowed only by `DOCKER_` or `npm_config_` stay out when they contain a hold-back word, in any case.
+The hold-back words are `TOKEN`, `PASS`, `PWD`, `SECRET`, `AUTH`, `CRED`, and `KEY`.
 An entry in `codex.envAllow` can pass such a name in full.
+The `GIT_` prefix passes names such as `GIT_ASKPASS` and `GIT_CONFIG_KEY_<n>` for pushes.
 Tokens such as `GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN`, and `NODE_AUTH_TOKEN` require an entry in `codex.envAllow`.
 Each `codex.envAllow` entry must be non-empty and have no leading or trailing whitespace.
 A brief that needs `gh` reads its token through `gh auth token`.

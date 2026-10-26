@@ -39,7 +39,7 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
     const key = normalize(name);
     return value !== undefined && (SYSTEM_ENV_NAMES.has(key) || /^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/i.test(key)
       || /^(CODEX_|GIT_|QC_)/.test(key)
-      || ((key.startsWith("DOCKER_") || /^npm_config_/i.test(key)) && !/TOKEN|PASSWORD|SECRET|AUTH/i.test(key))
+      || ((key.startsWith("DOCKER_") || /^npm_config_/i.test(key)) && !/TOKEN|PASS|PWD|SECRET|AUTH|CRED|KEY/i.test(key))
       || extra.has(key));
   }));
 }

@@ -36,6 +36,18 @@ test("ordinary text and short token prefixes pass", () => {
   assert.deepEqual(findSecrets("const token = 'ghp_short'; // AWS_ACCESS_KEY_ID"), []);
 });
 
+test("AWS operator assignments cover the review probes and compact values", () => {
+  const value = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  for (const separator of [":=", "?=", "+=", "!=", "-->", "=:="]) {
+    for (const spacing of ["", " ", "\t"]) {
+      const line = `aws_secret_access_key${spacing}${separator}${spacing}${value}`;
+      assert.deepEqual(findSecrets(line), ["aws-secret-key"], line);
+      assert.deepEqual(findSecrets(`${line} # qc-allow-secret`), []);
+      assert.equal(redactOutput(line), "[REDACTED]");
+    }
+  }
+});
+
 test("AWS names and workflow references pass without a literal 40-character value", () => {
   for (const line of [
     "AWS_SECRET_ACCESS_KEY",

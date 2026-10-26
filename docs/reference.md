@@ -317,7 +317,10 @@ The secret patterns derive from pr-autopilot's `commitguard.py` at commit `d937f
 They cover AWS keys, GitHub tokens and personal access tokens, private key headers, Anthropic keys, Slack tokens, and npm tokens.
 The AWS secret rule requires a literal value of 40 base64 characters; workflow secret references pass.
 It accepts prefixed names such as `TF_VAR_aws_secret_access_key` and `PROD_AWS_SECRET_ACCESS_KEY`.
-Whitespace, quotes, `:`, `=`, and `=>` can separate the name and value, including the `aws configure set` form.
+Whitespace can separate the name and value, including the `aws configure set` form.
+An operator separator contains one to three characters from `:`, `=`, `?`, `+`, `!`, `>`, and `-`, with optional whitespace.
+This covers `:=`, `?=`, `+=`, and compact assignments such as `aws_secret_access_key:=<value>`; quotes around names and values also pass.
+The separator pattern stays linear in time.
 Findings name the file, added line number, and rule without printing the secret.
 Every guard diff uses fixed `a/` and `b/` prefixes and disables external diff drivers.
 
@@ -335,11 +338,15 @@ Protected: .github/workflows/**, .husky/pre-commit
 `qc codex-implement` passes these comma-separated globs to the hook through `QC_PROTECTED_ALLOW`.
 These exceptions permit path changes; added secrets and conflict markers still fail.
 After each child run, the runner checks every new commit against the policy captured before the child starts.
-Before each run, it records the run branch and every ref tip, including remote-tracking refs.
+Before each run, it records the run branch, every ref tip, and the effective origin URL from `git ls-remote --get-url origin`.
 After the run, it scans only `HEAD`, `refs/heads/<run branch>`, and `refs/remotes/origin/<run branch>`.
 Other worktrees and fetched branches outside the run stay outside this scan.
 The recorded tips exclude existing history, and `git ls-remote origin refs/heads/<base>` supplies the remote base tip.
-If that read fails, the scan uses the `origin/<base>` tip recorded before the run.
+The guard accepts only the line whose refname equals `refs/heads/<base>` exactly.
+After the run, it compares the effective origin URL with the recorded URL, including any `insteadOf` rewrite.
+If the URL changes, the base exclusion uses only the `origin/<base>` tip recorded before the run.
+Every `ls-remote` call has a 30-second timeout and sets `GIT_TERMINAL_PROMPT=0` and `GCM_INTERACTIVE=never`.
+A timeout or failure also uses the recorded tip; on Windows, the deadline ends the Git transport process tree.
 The scan deduplicates revisions and exclusions, then passes them to `git rev-list --stdin`.
 The configured base is `worktree.base`, which defaults to `origin/main`.
 Merge commits use `--diff-merges=remerge` with Git 2.36 or later, and `--cc` with older Git.
@@ -642,6 +649,8 @@ The command resolves the worktree path against the repository root and follows f
 
 `--base <ref>` overrides `worktree.base`, which defaults to `origin/main`.
 `--no-push` completes the sync and skips the push.
+The pause check reads from the repository root before changes and again before the push.
+A missing worktree or a folder outside Git reports the normal input error with exit `1`.
 A branch with no local commits ahead of its upstream skips generation and the push when it already contains the base.
 When the base is merged, a branch ahead of its upstream, or without one, runs the generator and pushes on a rerun.
 A source conflict leaves the merge in progress and skips the push.
@@ -653,6 +662,7 @@ The command resolves generated conflicts only when `generated.command` exists; o
 | `0` | The sync succeeds, or the branch already contains the base. |
 | `1` | The command refuses the sync, finds a source conflict, or encounters a failure. |
 | `2` | The arguments are invalid; the command prints its usage. |
+| `5` | The kit is paused, or the command cannot read the operator pause. |
 
 The command returns the gate slot's exit code when the push fails.
 
@@ -769,8 +779,10 @@ The child receives this environment allowlist, plus names in `codex.envAllow`:
 
 The four proxy names and the `npm_config_` prefix match in any case on every platform.
 Other names and prefixes require exact case except on Windows.
-Names allowed only by `DOCKER_` or `npm_config_` stay out if they contain `TOKEN`, `PASSWORD`, `SECRET`, or `AUTH`, in any case.
+Names allowed only by `DOCKER_` or `npm_config_` stay out when they contain a hold-back word, in any case.
+The hold-back words are `TOKEN`, `PASS`, `PWD`, `SECRET`, `AUTH`, `CRED`, and `KEY`.
 An entry in `codex.envAllow` can pass such a name in full.
+The `GIT_` prefix passes names such as `GIT_ASKPASS` and `GIT_CONFIG_KEY_<n>` for pushes.
 Tokens such as `GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN`, and `NODE_AUTH_TOKEN` pass only when `codex.envAllow` names them.
 A brief that needs `gh` reads its own token through `gh auth token`.
 
@@ -1998,7 +2010,10 @@ exempt. `valeConfig` names the repository's Vale config and defaults to `.vale/.
 Every title, body, and comment the kit posts to GitHub passes through `output-redaction.mjs`.
 It imports the guard's credential patterns from `secret-patterns.mjs` and adds one rule for whole PEM blocks.
 It matches credential patterns over the whole text and replaces each match, including its secret value, with `[REDACTED]`.
-AWS redaction covers prefixed names, whitespace assignments, and `=>` assignments, including their literal secret values.
+AWS redaction covers prefixed names and the guard's operator separators, including `:=`, `?=`, `+=`, and compact assignments.
+It removes the whole literal value; workflow references and nonliteral placeholders pass.
+Whitespace can span a newline during redaction, so a name followed by a literal value on the next line also redacts.
+YAML block scalars and PGP private keys stay outside these patterns.
 It redacts each PEM private key from its `BEGIN` header through its matching `END` header, across lines or on one line.
 A `BEGIN` header without a matching `END` header redacts through the end of the text.
 The commit guard's `qc-allow-secret` directive never exempts a public post from redaction.

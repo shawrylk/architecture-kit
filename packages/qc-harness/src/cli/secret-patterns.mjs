@@ -1,7 +1,7 @@
 /** Fragment: finds the secret shapes shared with pr-autopilot's commit guard. */
 export const secretPatterns = [
   ["aws-access-key", /A[KS]IA[0-9A-Z]{16}/],
-  ["aws-secret-key", /(?<![A-Za-z0-9])aws[_-]secret[_-]access[_-]key\b["']?(?:\s*(?:=>|[:=])\s*|\s+)["']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/i],
+  ["aws-secret-key", /(?<![A-Za-z0-9])aws[_-]secret[_-]access[_-]key\b["']?(?:\s*[:=?+!>-]{1,3}\s*|\s+)["']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/i],
   ["github-token", /gh[pousr]_[A-Za-z0-9]{36,}/],
   ["github-pat", /github_pat_[A-Za-z0-9_]{40,}/],
   ["private-key", /-----BEGIN [A-Z ]*PRIVATE KEY-----/],

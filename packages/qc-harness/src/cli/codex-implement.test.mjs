@@ -293,9 +293,12 @@ test("Docker and npm prefixes withhold credential names unless explicitly allowe
     "DOCKER_TOKEN", "DOCKER_password", "DOCKER_sEcReT_FILE", "DOCKER_AUTH_CONFIG",
     "DOCKER_CUSTOM_TOKEN_SUFFIX", "docker_password", "Docker_Custom_Token", "npm_config__authToken", "npm_config_//registry.npmjs.org/:_authToken",
     "npm_config_password", "NPM_CONFIG_SECRET", "Npm_Config_Auth", "npm_config_custom_token_suffix",
+    "DOCKER_PASS", "DOCKER_PWD", "DOCKER_CREDENTIALS", "npm_config_key",
+    "DOCKER_pass_FILE", "DOCKER_pWd", "DOCKER_cReD", "DOCKER_key",
+    "npm_config_pass", "NPM_CONFIG_PWD", "Npm_Config_Credentials", "npm_config_client_KEY",
   ];
   const credentials = Object.fromEntries(names.map((name) => [name, `value-${name}`]));
-  const allowed = { DOCKER_HOST: "docker", npm_config_registry: "registry", NPM_CONFIG_CACHE: "cache", Npm_Config_Custom: "custom", CODEX_AUTH: "codex", GIT_AUTH: "git", QC_SECRET: "qc" };
+  const allowed = { DOCKER_HOST: "docker", npm_config_registry: "registry", NPM_CONFIG_CACHE: "cache", Npm_Config_Custom: "custom", CODEX_AUTH: "codex", GIT_AUTH: "git", QC_SECRET: "qc", GIT_ASKPASS: "askpass", GIT_CONFIG_KEY_0: "config", GIT_TOKEN: "token", GIT_PASSWORD: "git" };
   const source = { ...allowed, ...credentials };
   for (const platform of ["linux", "win32"]) {
     assert.deepEqual(codexEnvironment(source, [], platform), allowed);

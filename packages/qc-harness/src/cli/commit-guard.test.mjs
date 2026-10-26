@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -34,6 +34,20 @@ test("only added start and end conflict markers fail", () => {
     assert.deepEqual(guard(patch("src/a.mjs", `-${marker}\n ${marker}\n+safe`)), []);
   }
   assert.deepEqual(guard(patch("src/a.mjs", "+=======\n+ <<<<<<< HEAD\n+<<<<<<<\n+>>>>>>>")), []);
+});
+
+test("AWS operator assignments fail the guard with spaced and compact values", () => {
+  const value = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  for (const name of ["AWS_SECRET_ACCESS_KEY", "aws_secret_access_key"]) {
+    for (const separator of [":=", "?=", "+=", "!=", "-->", "=:="]) {
+      for (const spacing of ["", " ", "\t"]) {
+        const line = `${name}${spacing}${separator}${spacing}${value}`;
+        assert.deepEqual(guard(patch("Makefile", `+${line}`)), [{ path: "Makefile", line: 1, rule: "aws-secret-key" }]);
+        assert.deepEqual(guard(patch("Makefile", `+${line} # qc-allow-secret`)), []);
+        assert.deepEqual(guard(patch("Makefile", `-${line}\n safe`)), []);
+      }
+    }
+  }
 });
 
 test("each default protected path binds only the implementer", () => {
@@ -199,6 +213,137 @@ test("a moved local base cannot hide a run commit, even when the remote read fai
   assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }).map((finding) => finding.commit), [bad]);
 });
 
+for (const redirect of ["url", "insteadOf"]) test(`a changed origin ${redirect} uses only the recorded base`, (t) => {
+  const upstream = repo(t);
+  upstream.put("base.md", "safe\n");
+  upstream.commit();
+  upstream.git("branch", "-M", "main");
+  const r = repo(t);
+  r.git("remote", "add", "origin", upstream.root);
+  r.git("fetch", "-q", "origin");
+  r.git("checkout", "-qfb", "run", "origin/main");
+  const before = guardRefs(r.root);
+  r.put("secret.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  const bad = guardHead(r.root);
+  r.git("update-ref", "refs/remotes/origin/main", bad);
+  r.git("update-ref", "refs/heads/main", bad);
+  r.git("config", "remote.origin.pushurl", upstream.root);
+  if (redirect === "url") r.git("config", "remote.origin.url", ".");
+  else r.git("config", `url.file:///${r.root.replace(/\\/g, "/")}/.insteadOf`, upstream.root);
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main", branch: "run" }).map((finding) => finding.commit), [bad]);
+});
+
+test("the remote base read matches the whole refname", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  r.git("branch", "-M", "main");
+  r.git("remote", "add", "origin", r.root);
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  r.git("checkout", "-qb", "run");
+  const before = guardRefs(r.root);
+  r.put("secret.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  const bad = guardHead(r.root);
+  r.git("update-ref", "refs/heads/a/refs/heads/main", bad);
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main", branch: "run" }).map((finding) => finding.commit), [bad]);
+});
+
+for (const failure of ["ETIMEDOUT", "failure"]) test(`remote reads disable prompts, bound their time, and fall back on ${failure}`, (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  r.git("remote", "add", "origin", r.root);
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  const calls = [];
+  interceptGit(t, (command, args, options, execute) => {
+    if (args.includes("ls-remote")) {
+      calls.push({ args, options });
+      if (!args.includes("--get-url")) throw Object.assign(new Error(failure), { code: failure });
+    }
+    return execute(command, args, options);
+  });
+  const before = guardRefs(r.root);
+  r.put("secret.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  const bad = guardHead(r.root);
+  r.git("update-ref", "refs/remotes/origin/main", bad);
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }).map((finding) => finding.commit), [bad]);
+  assert.equal(calls.filter(({ args }) => args.includes("--get-url")).length, 2);
+  assert.equal(calls.filter(({ args }) => !args.includes("--get-url")).length, 1);
+  for (const { options } of calls) {
+    assert.equal(options.timeout, 30_000);
+    assert.equal(options.env.GIT_TERMINAL_PROMPT, "0");
+    assert.equal(options.env.GCM_INTERACTIVE, "never");
+  }
+});
+
+test("failed origin URL reads use only the recorded tip", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  r.git("branch", "-M", "main");
+  r.git("remote", "add", "origin", r.root);
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  r.git("checkout", "-qb", "run");
+  let remoteReads = 0;
+  interceptGit(t, (command, args, options, execute) => {
+    if (args.includes("ls-remote")) {
+      if (args.includes("--get-url")) throw new Error("cannot read origin URL");
+      remoteReads += 1;
+    }
+    return execute(command, args, options);
+  });
+  const before = guardRefs(r.root);
+  r.put("secret.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  const bad = guardHead(r.root);
+  r.git("update-ref", "refs/heads/main", bad);
+  r.git("update-ref", "refs/remotes/origin/main", bad);
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main", branch: "run" }).map((finding) => finding.commit), [bad]);
+  assert.equal(remoteReads, 0);
+});
+
+test("a stalled Windows remote loses its transport process at the deadline", { skip: process.platform !== "win32" }, async (t) => {
+  const server = spawn(process.execPath, ["--input-type=module", "-e", `
+    import http from "node:http";
+    const server = http.createServer((request) => request.socket.on("close", () => process.stdout.write("closed\\n")));
+    server.listen(0, "127.0.0.1", () => process.stdout.write(String(server.address().port) + "\\n"));
+  `], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  t.after(() => server.kill());
+  const port = await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.stdout.once("data", (chunk) => resolve(Number(chunk.toString().trim())));
+  });
+  let timer;
+  const closed = new Promise((resolve, reject) => {
+    server.stdout.on("data", (chunk) => { if (chunk.toString().includes("closed")) resolve(); });
+    timer = setTimeout(() => reject(new Error("the remote transport kept its socket open")), 10_000);
+  });
+  t.after(() => clearTimeout(timer));
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  r.git("remote", "add", "origin", `http://127.0.0.1:${port}/repo`);
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  const before = guardRefs(r.root);
+  r.put("secret.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  const bad = guardHead(r.root);
+  interceptGit(t, (command, args, options, execute) => {
+    if (args.includes("ls-remote") && !args.includes("--get-url")) {
+      assert.equal(command, process.execPath);
+      return execute(command, args.map((word) => word === "29000" ? "1000" : word), options);
+    }
+    return execute(command, args, options);
+  });
+  const started = Date.now();
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }).map((finding) => finding.commit), [bad]);
+  assert.ok(Date.now() - started < 5000);
+  await closed;
+});
+
 test("a confirmed remote base excludes a merge even when its local tracking ref is stale", (t) => {
   const upstream = repo(t);
   upstream.put("base.md", "safe\n");
@@ -300,13 +445,13 @@ test("merge scans select remerge from git 2.36 and combined diffs on older git, 
   const r = repo(t);
   r.put("a.md", "base\n");
   r.commit();
+  r.git("remote", "add", "origin", r.root);
   const before = guardRefs(r.root);
   r.git("checkout", "-qb", "base");
   r.put("a.md", "base changed\n");
   r.put(".github/workflows/base.yml", "safe\n");
   r.commit();
   r.git("update-ref", "refs/heads/main", "HEAD");
-  r.git("remote", "add", "origin", r.root);
   r.git("checkout", "-qb", "run", before.head);
   r.put("a.md", "run changed\n");
   r.commit();

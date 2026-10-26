@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, test } from "node:test";
-import { runBranch, syncBranch } from "./branch-sync.mjs";
+import { runBranch, syncBranch, USAGE } from "./branch-sync.mjs";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 const quiet = (lines) => (line) => lines.push(line);
@@ -19,6 +19,27 @@ beforeEach((t) => {
     else process.env.QC_GATE_SLOT_DIR = previous;
     rmSync(directory, { recursive: true, force: true });
   });
+});
+
+test("branch usage lists the pause refusal exit", () => {
+  assert.match(USAGE, /exit 5.*paus/i);
+});
+
+for (const target of ["does-not-exist", "outside-git"]) test(`a ${target} target reports an input error rather than a pause`, async (t) => {
+  const root = batch(t);
+  const worktree = path.join(os.tmpdir(), `${path.basename(root)}-${target}`);
+  if (target === "outside-git") {
+    mkdirSync(worktree);
+    t.after(() => rmSync(worktree, { recursive: true, force: true }));
+  }
+  const lines = [];
+  assert.equal(await runBranch(config(root), ["sync", worktree], {
+    say: quiet(lines), runSlot: () => assert.fail("an invalid worktree must never push"),
+  }), 1);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], target === "does-not-exist" ? /git branch --show-current: failed/ : /not a git repository/i);
+  assert.doesNotMatch(lines[0], /pause|qc resume/);
+  assert.equal(git(root, "status", "--porcelain"), "");
 });
 
 test("a pause refuses sync before branch changes or a push", async (t) => {
@@ -341,11 +362,14 @@ for (const argv of [["sync"], ["sync", ".", "extra"], ["merge", "."], [], ["sync
 }
 
 test("branch sync resolves its worktree against config.root and accepts --base", async (t) => {
-  const dir = batch(t);
-  const cfg = { ...config(dir), root: path.dirname(dir), worktree: { base: "missing-base" } };
+  const root = batch(t);
+  git(root, "checkout", "-q", "main");
+  const dir = path.join(root, ".worktree", "run");
+  git(root, "worktree", "add", "-q", dir, "feat/5-mine");
+  const cfg = { ...config(dir), root, worktree: { base: "missing-base" } };
   const calls = [];
   const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
-  assert.equal(await runBranch(cfg, ["sync", path.basename(dir), "--base", "main"], { say: quiet([]), run, runSlot }), 0);
+  assert.equal(await runBranch(cfg, ["sync", path.relative(root, dir), "--base", "main"], { say: quiet([]), run, runSlot }), 0);
   assert.deepEqual(calls, [{ words: ["git", "push", "-u", "origin", "feat/5-mine"], cwd: dir }]);
 });
 

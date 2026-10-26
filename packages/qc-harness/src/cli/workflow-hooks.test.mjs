@@ -51,7 +51,7 @@ test("every hook script in src/cli is registered, in hooks.json or in a shell ho
 
 test("workflow scripts stay silent without swarm.dispatch, and the merge guard denies an unreadable base", (t) => {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-workflow-hooks-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   execFileSync("git", ["init", "-q"], { cwd: base, stdio: "pipe" });
   writeFileSync(path.join(base, "qc.config.json"), JSON.stringify({ swarm: {} }));
   const events = {

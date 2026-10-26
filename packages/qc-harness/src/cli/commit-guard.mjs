@@ -64,6 +64,20 @@ export function checkDiff(diff, { protectedPaths = [], role, allow = [], paths =
 
 let mergeDiffOption;
 
+// A resource: ends the Windows process tree before the synchronous caller's deadline.
+const remoteReadScript = `
+  const { spawn, spawnSync } = require("node:child_process");
+  const [deadline, command, ...args] = process.argv.slice(1);
+  const child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"], windowsHide: true });
+  child.on("error", () => process.exit(1));
+  child.on("close", (code) => process.exit(code ?? 1));
+  setTimeout(() => {
+    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 1000 });
+    child.kill();
+    process.exit(124);
+  }, Number(deadline)).unref();
+`;
+
 /** Resource: selects the merge diff format once for the process's Git version. */
 function mergeDiff(root) {
   if (mergeDiffOption === undefined) {
@@ -78,9 +92,19 @@ function mergeDiff(root) {
 
 /** Resource: reads Git without external diff drivers, text converters, or rename folding. */
 function git(root, args, input) {
-  return execFileSync("git", ["-c", "core.quotePath=false", "-C", root, ...args], {
+  const remote = args[0] === "ls-remote";
+  const words = ["-c", "core.quotePath=false", "-C", root, ...args];
+  return execFileSync(remote && process.platform === "win32" ? process.execPath : "git",
+    remote && process.platform === "win32" ? ["-e", remoteReadScript, "--", "29000", "git", ...words] : words, {
     encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+    ...(remote ? { timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" } } : {}),
   });
+}
+
+/** Resource: reads the effective origin URL without opening an interactive prompt. */
+function originUrl(root) {
+  try { return git(root, ["ls-remote", "--get-url", "origin"]).trim(); }
+  catch { return null; }
 }
 
 /** Fragment: captures the commit boundary before the child runs. */
@@ -93,18 +117,25 @@ export function guardHead(root) {
 /** Resource: records every ref tip, including remote-tracking refs, before the child runs. */
 export function guardRefs(root) {
   const refs = Object.fromEntries(git(root, ["for-each-ref", "--format=%(refname) %(objectname)"]).trim().split("\n").filter(Boolean).map((line) => line.split(" ")));
-  return { head: guardHead(root), branch: git(root, ["branch", "--show-current"]).trim(), refs: [...new Set(Object.values(refs))], recordedRefs: refs };
+  return { head: guardHead(root), branch: git(root, ["branch", "--show-current"]).trim(), refs: [...new Set(Object.values(refs))], recordedRefs: refs, originUrl: originUrl(root) };
 }
 
 /** Fragment: excludes commits reached by the configured remote base. */
-function baseExclusion(root, base = "origin/main", recordedRefs = {}) {
+function baseExclusion(root, base = "origin/main", recordedRefs = {}, recordedUrl) {
   const branch = base.replace(/^origin\//, "");
+  const recorded = recordedRefs[`refs/remotes/origin/${branch}`];
+  const fallback = recorded ? [recorded] : [];
+  if (recordedUrl !== undefined) {
+    const currentUrl = originUrl(root);
+    if (recordedUrl === null || currentUrl === null || currentUrl !== recordedUrl) return fallback;
+  }
   try {
-    const tip = git(root, ["ls-remote", "origin", `refs/heads/${branch}`]).trim().split(/\s+/)[0];
+    const refname = `refs/heads/${branch}`;
+    const tip = git(root, ["ls-remote", "origin", refname]).trim().split(/\r?\n/)
+      .map((line) => line.split(/\s+/)).find(([, ref]) => ref === refname)?.[0];
     return tip ? [tip] : [];
   } catch {
-    const tip = recordedRefs[`refs/remotes/origin/${branch}`];
-    return tip ? [tip] : [];
+    return fallback;
   }
 }
 
@@ -117,12 +148,12 @@ export function checkRunCommits(root, before, options) {
   const runRefs = branch ? [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`] : [];
   const tips = Object.fromEntries(git(root, ["for-each-ref", "--format=%(refname) %(objectname)", ...runRefs]).trim().split("\n").filter(Boolean).map((line) => line.split(" ")));
   const revisions = [...(guardHead(root) ? ["HEAD"] : []), ...runRefs.map((ref) => tips[ref]).filter(Boolean)];
-  return scanCommits(root, revisions, [...refs, ...(head ? [head] : [])], options, before?.recordedRefs);
+  return scanCommits(root, revisions, [...refs, ...(head ? [head] : [])], options, before?.recordedRefs, before?.originUrl);
 }
 
 /** Pipeline: scans the selected commits with one shared content and path policy. */
-function scanCommits(root, revisions, excluded, options, recordedRefs) {
-  const boundary = new Set([...excluded, ...baseExclusion(root, options.base, recordedRefs)]);
+function scanCommits(root, revisions, excluded, options, recordedRefs, recordedUrl) {
+  const boundary = new Set([...excluded, ...baseExclusion(root, options.base, recordedRefs, recordedUrl)]);
   const input = [...new Set(revisions), ...[...boundary].map((oid) => `^${oid}`)].join("\n") + "\n";
   const commits = git(root, ["rev-list", "--reverse", "--parents", "--stdin"], input).trim().split("\n").filter(Boolean);
   const findings = [];
