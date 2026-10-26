@@ -497,6 +497,34 @@ names each variable the command reads, such as `{ "DATABASE_URL": "{url}" }`.
 files once when a run fails under load. It reads the Jest or Vitest JSON report the run wrote, and
 reruns nothing when the failure is no test failure or more than five files failed.
 
+#### Sync a branch with its base
+
+```bash
+npx qc branch sync <worktree> [--base <ref>] [--no-push]
+```
+
+The command resolves the worktree path against the repository root and follows five steps:
+
+1. It checks for a clean tree, an attached and unprotected branch, and a completed merge.
+2. It fetches `origin` and merges the base, leaving source conflicts for you to resolve.
+3. It renumbers the branch's migrations after the base's last migration and rewrites references.
+4. It commits the merge, runs `generated.command`, and commits the generated changes.
+5. It pushes the changed branch with `git push -u origin <branch>` through `qc gate-slot`.
+
+`--base <ref>` overrides `worktree.base`, which defaults to `origin/main`.
+`--no-push` completes the sync and skips the push.
+An up-to-date branch skips the push.
+A source conflict leaves the merge in progress and skips the push.
+The command resolves conflicts in generated files before it runs the generator.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | The sync succeeds, or the branch already contains the base. |
+| `1` | The command refuses the sync, finds a source conflict, or encounters a failure. |
+| `2` | The arguments are invalid; the command prints its usage. |
+
+The command returns the gate slot's exit code when the push fails.
+
 #### Run an implementer on Codex
 
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude stays the one
