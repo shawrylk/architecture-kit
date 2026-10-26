@@ -50,6 +50,7 @@ import { literalRegistries } from "../registries.mjs";
 import { checkThresholdRatchet } from "../gates/threshold-ratchet.mjs";
 import { checkParity, placeholderSlices } from "../gates/parity.mjs";
 import { checkIntegrationImports } from "../gates/integration-imports.mjs";
+import { checkFeatureSwitches } from "../gates/feature-switches.mjs";
 import { checkClosedSetWriters, matchedKeys } from "../gates/closed-set-writers.mjs";
 import { checkDocClaims, parseDocClaims } from "../gates/doc-claims.mjs";
 import { checkContractIdempotency, checkLedgerGrowth } from "../gates/contract-idempotency.mjs";
@@ -933,6 +934,17 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     const subjects = await integrationSubjects(config, tree);
     problems.push(...checkIntegrationImports(subjects, config.integrationImports));
     lines.push(`OK  integration  ${subjects.length} integration test(s), each importing the product it integrates with`);
+  }
+
+  if (enabled(config.gates, "feature-switches")) {
+    for (const root of config.featureRoots) {
+      for (const folder of tree.foldersIn(root)) {
+        const rels = tree.under(join(root, folder)).filter((file) => SOURCE_EXTENSION.test(file) && !SKIP.test(`/${file}`));
+        const files = await readEach(config.root, rels);
+        problems.push(...checkFeatureSwitches(files, config.featureSwitches));
+        lines.push(`OK  switches     ${files.length} file(s) hold no unwire constant outside ${config.featureSwitches.file}`);
+      }
+    }
   }
 
   if (enabled(config.gates, "closed-set-writers")) {

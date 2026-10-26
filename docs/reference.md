@@ -1137,6 +1137,44 @@ a pattern of `productPackages` counts anywhere. A test that imports none fails a
 { "gates": { "integration-imports": true }, "integrationImports": { "productPackages": ["^@app/(?:domain|contracts)(?:/|$)"] } }
 ```
 
+### Keep an unwired control behind a feature switch
+
+Use one `features/<feature>/feature-switches.ts` file per feature. Export one object whose keys hold boolean values:
+
+```ts
+export const featureSwitches = {
+  SHOW_DELETE: false,
+  EXPORT_WIRED: false,
+};
+```
+
+Keep an unwired control in JSX behind its key, so the control keeps an importer and the dead-code gate stays green:
+
+```tsx
+import { featureSwitches } from "./feature-switches";
+import { DeleteButton } from "./delete-button";
+
+export function View() {
+  return <>{featureSwitches.SHOW_DELETE && <DeleteButton />}</>;
+}
+```
+
+The `feature-switches` gate ships off. Set `gates["feature-switches"]` to `true` to check source files in each folder under `featureRoots`.
+The gate skips test files, dependencies, and build output. A matching `const`, `let`, or `var` declaration outside the switch file fails as `unwire-constant-outside-switch-file`.
+
+`featureSwitches.file` sets the switch filename. `featureSwitches.patterns` lists regular expressions for declaration names.
+The defaults match names containing `UNWIRED`, starting with `SHOW_`, or ending with `_WIRED`.
+
+```json
+{
+  "gates": { "feature-switches": true },
+  "featureSwitches": {
+    "file": "feature-switches.ts",
+    "patterns": ["UNWIRED", "^SHOW_", "_WIRED$"]
+  }
+}
+```
+
 ### Give every key of a closed set a writer
 
 The `closed-set-writers` gate ships off. Each entry of `closedSetWriters.sets` names the `source`

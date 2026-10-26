@@ -339,6 +339,9 @@ export const defaults = {
     productPackages: [],
   },
 
+  // Keep unwired controls in JSX while their feature switch controls their visibility.
+  featureSwitches: { file: "feature-switches.ts", patterns: ["UNWIRED", "^SHOW_", "_WIRED$"] },
+
   // Each set: `source` declares the keys, `key` and `writer` are patterns whose first group is a key,
   // `roots` hold the writers, and `declaredAhead` maps a key with no writer yet to its reason.
   closedSetWriters: { sets: [] },
@@ -411,6 +414,7 @@ export const defaults = {
     // sets, its claims. Shipped on, each would also red a consumer's enforcement map on upgrade.
     parity: false,
     "integration-imports": false,
+    "feature-switches": false,
     "closed-set-writers": false,
     "doc-claims": false,
     "tenant-isolation-test": false,
