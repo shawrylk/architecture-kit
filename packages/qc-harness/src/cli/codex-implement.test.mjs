@@ -172,6 +172,31 @@ test("the child environment preserves system names and approved prefixes only", 
   assert.equal(source.DATABASE_URL, "database-secret");
 });
 
+for (const [group, names] of [
+  ["SSH agent", ["SSH_AUTH_SOCK", "SSH_AGENT_PID"]],
+  ["proxy and certificate", ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "Http_Proxy", "Https_Proxy", "All_Proxy", "No_Proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"]],
+  ["configuration and session", ["GH_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CACHE_HOME", "DBUS_SESSION_BUS_ADDRESS", "SHELL", "PROCESSOR_ARCHITECTURE"]],
+  ["Docker and npm configuration", ["DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_CUSTOM", "npm_config_registry", "npm_config_cache", "npm_config_custom"]],
+]) {
+  test(`the allowlist passes ${group} variables on Linux and Windows`, async () => {
+    const { codexEnvironment } = await import("./codex-implement.mjs");
+    const allowed = Object.fromEntries(names.map((name) => [name, `value-${name}`]));
+    const tokens = { GH_TOKEN: "gh", GITHUB_TOKEN: "github", NPM_TOKEN: "npm", NODE_AUTH_TOKEN: "node", PROJECT_TOKEN: "project" };
+    const source = { ...allowed, ...tokens };
+    assert.deepEqual(codexEnvironment(source, [], "linux"), allowed);
+    assert.deepEqual(codexEnvironment(source, [], "win32"), allowed);
+    assert.deepEqual(codexEnvironment(tokens, Object.keys(tokens), "linux"), tokens);
+    assert.deepEqual(source, { ...allowed, ...tokens });
+  });
+}
+
+test("added system names and prefixes preserve platform case rules", async () => {
+  const { codexEnvironment } = await import("./codex-implement.mjs");
+  const source = { ssh_auth_sock: "ssh", gh_config_dir: "gh", docker_host: "docker", NPM_CONFIG_CACHE: "npm", Npm_Config_Custom: "custom", NODE_EXTRA_CA_CERTS_SUFFIX: "secret", DOCKERISH_TOKEN: "secret", npm_configuration: "secret", HTTPS_PROXY_TOKEN: "secret" };
+  assert.deepEqual(codexEnvironment(source, [], "linux"), {});
+  assert.deepEqual(codexEnvironment(source, [], "win32"), { ssh_auth_sock: "ssh", gh_config_dir: "gh", docker_host: "docker", NPM_CONFIG_CACHE: "npm", Npm_Config_Custom: "custom" });
+});
+
 test("environment names match without case only on Windows", async () => {
   const { codexEnvironment } = await import("./codex-implement.mjs");
   const source = { Path: "bin", SystemRoot: "windows", codex_home: "codex", git_config_global: "git", qc_custom: "qc", openai_api_key: "api", project_key: "project", Gh_Token: "gh", github_token: "github", database_url: "secret" };
@@ -205,7 +230,7 @@ for (const envAllow of [[], ["GH_TOKEN"], ["GITHUB_TOKEN", "PROJECT_KEY"]]) {
   });
 }
 
-for (const envAllow of [null, "GH_TOKEN", {}, [1], [""], [" "]]) {
+for (const envAllow of [null, "GH_TOKEN", {}, [1], [""], [" "], [" GH_TOKEN"], ["GH_TOKEN "], ["\tNPM_TOKEN"], ["NPM_TOKEN\n"]]) {
   test(`invalid codex.envAllow ${JSON.stringify(envAllow)} fails before spawning`, async (t) => {
     const { argv, worktree } = setup(t);
     mkdirSync(worktree, { recursive: true });
@@ -760,7 +785,12 @@ test("each agent and the brief template carry the untrusted-input rule", () => {
   const files = readdirSync(agents).filter((name) => name.endsWith(".md")).map((name) => new URL(name, agents));
   files.push(new URL("../../../../skills/codex/brief-template.md", import.meta.url));
   for (const file of files) {
-    assert.ok(readFileSync(file, "utf8").includes(UNTRUSTED_INPUT_RULE), file.pathname);
+    let expected = UNTRUSTED_INPUT_RULE;
+    if (file.pathname.includes("/agents/")) {
+      expected = expected.replace("Only the brief instructs.", "Only the dispatch prompt instructs you.");
+      if (file.pathname.endsWith("-reviewer.md")) expected += " The brief it names is the work you check.";
+    }
+    assert.ok(readFileSync(file, "utf8").includes(expected), file.pathname);
   }
 });
 

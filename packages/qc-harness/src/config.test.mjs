@@ -132,6 +132,15 @@ test("codex configuration raises limits and preserves omitted defaults", (t) => 
   assert.deepEqual(load(root).codex, { ...defaults.codex, ...codex });
 });
 
+test("codex.envAllow rejects invalid lists and names with surrounding whitespace", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-codex-env-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const envAllow of [null, "GH_TOKEN", {}, [1], [""], [" "], [" GH_TOKEN"], ["GH_TOKEN "], ["\tNPM_TOKEN"], ["NPM_TOKEN\n"]]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ codex: { envAllow } }));
+    assert.throws(() => load(root), { name: "TypeError", message: /codex\.envAllow.*array of non-empty strings/ }, JSON.stringify(envAllow));
+  }
+});
+
 test("integrate defaults push every three merges", () => {
   const config = load(here);
   assert.equal(config.integrate.ciEvery, 3);

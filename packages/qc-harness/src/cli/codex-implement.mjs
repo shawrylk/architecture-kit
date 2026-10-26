@@ -26,6 +26,9 @@ const SYSTEM_ENV_NAMES = new Set([
   "USERNAME", "USERDOMAIN", "USERDOMAIN_ROAMINGPROFILE", "COMPUTERNAME", "SYSTEMROOT", "SYSTEMDRIVE",
   "WINDIR", "COMSPEC", "OS", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432", "COMMONPROGRAMFILES",
   "COMMONPROGRAMFILES(X86)", "COMMONPROGRAMW6432", "PUBLIC", "OPENAI_API_KEY",
+  "SSH_AUTH_SOCK", "SSH_AGENT_PID", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+  "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+  "DBUS_SESSION_BUS_ADDRESS", "SHELL", "PROCESSOR_ARCHITECTURE",
 ]);
 
 /** Fragment: builds the environment allowlist for a Codex child process. */
@@ -34,7 +37,8 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
   const extra = new Set(envAllow.map(normalize));
   return Object.fromEntries(Object.entries(env).filter(([name, value]) => {
     const key = normalize(name);
-    return value !== undefined && (SYSTEM_ENV_NAMES.has(key) || /^(CODEX_|GIT_|QC_)/.test(key) || extra.has(key));
+    return value !== undefined && (SYSTEM_ENV_NAMES.has(key) || /^(HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY)$/i.test(key)
+      || /^(CODEX_|GIT_|QC_|DOCKER_)/.test(key) || key.startsWith(normalize("npm_config_")) || extra.has(key));
   }));
 }
 
@@ -153,9 +157,6 @@ function codexSettingsOf(worktree) {
   if (typeof codex.preamble !== "string") throw new Error("codex.preamble in qc.config.json must be a string");
   if (!Array.isArray(codex.disablePlugins) || !codex.disablePlugins.every((name) => typeof name === "string" && name.trim())) {
     throw new Error("codex.disablePlugins in qc.config.json must be an array of non-empty strings");
-  }
-  if (!Array.isArray(codex.envAllow) || !codex.envAllow.every((name) => typeof name === "string" && name.trim())) {
-    throw new Error("codex.envAllow in qc.config.json must be an array of non-empty strings");
   }
   return codex;
 }

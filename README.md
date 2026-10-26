@@ -88,10 +88,24 @@ A drift of the kit setup, such as a changed git hook, is a note and never blocks
 the kit through the git hooks and the CI workflow. The Codex runner uses `danger-full-access`,
 so Codex commits, pushes, and runs the git hooks.
 
-The runner passes an allowlisted environment. System variables cover paths, home and profile folders,
-app data, temporary folders, locale, terminal, user, and Windows system names.
-It also passes names with the `CODEX_`, `GIT_`, or `QC_` prefix, `OPENAI_API_KEY`, and names in `codex.envAllow` (default `[]`).
-Names match without case on Windows. `GH_TOKEN` and `GITHUB_TOKEN` require an entry in `codex.envAllow`.
+The runner passes this environment allowlist, plus names in `codex.envAllow` (default `[]`):
+
+| Group | Names or prefixes |
+|---|---|
+| Paths and folders | `PATH`, `PATHEXT`, `HOME`, `HOMEDRIVE`, `HOMEPATH`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `ALLUSERSPROFILE`, `TEMP`, `TMP`, `TMPDIR`, `PUBLIC` |
+| Locale | `LANG`, `LANGUAGE`, `LC_ALL`, `LC_CTYPE`, `LC_COLLATE`, `LC_MESSAGES`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME` |
+| Terminal | `TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TERMINFO`, `TERMINFO_DIRS`, `NO_COLOR`, `FORCE_COLOR` |
+| User | `USER`, `LOGNAME`, `USERNAME`, `USERDOMAIN`, `USERDOMAIN_ROAMINGPROFILE`, `COMPUTERNAME` |
+| Windows | `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC`, `OS`, `PROGRAMFILES`, `PROGRAMFILES(X86)`, `PROGRAMW6432`, `COMMONPROGRAMFILES`, `COMMONPROGRAMFILES(X86)`, `COMMONPROGRAMW6432`, `PROCESSOR_ARCHITECTURE` |
+| SSH agent | `SSH_AUTH_SOCK`, `SSH_AGENT_PID` |
+| Proxies and certificates | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS` |
+| Configuration and session | `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `DBUS_SESSION_BUS_ADDRESS`, `SHELL` |
+| Prefixes | `CODEX_`, `GIT_`, `QC_`, `DOCKER_`, `npm_config_` |
+| OpenAI API | `OPENAI_API_KEY` |
+
+The four proxy names match in any case on every platform. Other names and prefixes require exact case except on Windows.
+Tokens such as `GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN`, and `NODE_AUTH_TOKEN` require an entry in `codex.envAllow`.
+Each `codex.envAllow` entry must be non-empty and have no leading or trailing whitespace.
 A brief that needs `gh` reads its token through `gh auth token`.
 
 ## Task and merge gates

@@ -688,6 +688,10 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (isPlainObject(config.codex) && (!Array.isArray(config.codex.envAllow)
+    || !config.codex.envAllow.every((name) => typeof name === "string" && name.length > 0 && name === name.trim()))) {
+    throw new TypeError("codex.envAllow must be an array of non-empty strings without surrounding whitespace");
+  }
   if (Object.hasOwn(user, "post") && !isPlainObject(user.post)) throw new TypeError("post must be an object");
   if (typeof config.post.aiLabel !== "boolean") throw new TypeError("post.aiLabel must be a boolean");
   if (Object.hasOwn(user, "guard") && !isPlainObject(user.guard)) throw new TypeError("guard must be an object");

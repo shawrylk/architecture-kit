@@ -725,11 +725,23 @@ codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c 
 ```
 
 The runner keeps `danger-full-access` so Codex commits, pushes, and runs the git hooks.
-The child receives an allowlisted environment. System variables cover paths, home and profile folders,
-app data, temporary folders, locale, terminal, user, and Windows system names such as `SYSTEMROOT`, `WINDIR`, `COMSPEC`, and `SYSTEMDRIVE`.
-The allowlist also includes names with the `CODEX_`, `GIT_`, or `QC_` prefix, `OPENAI_API_KEY`, and names in `codex.envAllow`.
-Names match without case on Windows; other systems require exact case.
-`GH_TOKEN` and `GITHUB_TOKEN` pass only when `codex.envAllow` names them.
+The child receives this environment allowlist, plus names in `codex.envAllow`:
+
+| Group | Names or prefixes |
+|---|---|
+| Paths and folders | `PATH`, `PATHEXT`, `HOME`, `HOMEDRIVE`, `HOMEPATH`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `ALLUSERSPROFILE`, `TEMP`, `TMP`, `TMPDIR`, `PUBLIC` |
+| Locale | `LANG`, `LANGUAGE`, `LC_ALL`, `LC_CTYPE`, `LC_COLLATE`, `LC_MESSAGES`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME` |
+| Terminal | `TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TERMINFO`, `TERMINFO_DIRS`, `NO_COLOR`, `FORCE_COLOR` |
+| User | `USER`, `LOGNAME`, `USERNAME`, `USERDOMAIN`, `USERDOMAIN_ROAMINGPROFILE`, `COMPUTERNAME` |
+| Windows | `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC`, `OS`, `PROGRAMFILES`, `PROGRAMFILES(X86)`, `PROGRAMW6432`, `COMMONPROGRAMFILES`, `COMMONPROGRAMFILES(X86)`, `COMMONPROGRAMW6432`, `PROCESSOR_ARCHITECTURE` |
+| SSH agent | `SSH_AUTH_SOCK`, `SSH_AGENT_PID` |
+| Proxies and certificates | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS` |
+| Configuration and session | `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `DBUS_SESSION_BUS_ADDRESS`, `SHELL` |
+| Prefixes | `CODEX_`, `GIT_`, `QC_`, `DOCKER_`, `npm_config_` |
+| OpenAI API | `OPENAI_API_KEY` |
+
+The four proxy names match in any case on every platform. Other names and prefixes require exact case except on Windows.
+Tokens such as `GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN`, and `NODE_AUTH_TOKEN` pass only when `codex.envAllow` names them.
 A brief that needs `gh` reads its own token through `gh auth token`.
 
 The output appends to `--log`, which defaults to `<progress>.log`. The runner reads the brief again before each run.
@@ -752,7 +764,7 @@ The runner validates the worktree's brief and Codex settings before launch:
 | `--poll-minutes` | `30`; a positive interval of at most 35791 minutes for `--wait-reset` |
 | `codex.briefMaxLines` | `40` non-blank lines in the brief |
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
-| `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables |
+| `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
 | Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, and `Exit criteria` |
 
