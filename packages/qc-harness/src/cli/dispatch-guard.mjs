@@ -6,7 +6,8 @@ import { existsSync } from "node:fs";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import { dispatchNote, dispatchRefusal, dispatchSettingsAt, isImplementer, slotRefusal, typeOf } from "./dispatch.mjs";
-import { codexModelOf, tagRefusal } from "./dispatch-route.mjs";
+import { codexModelOf, routeRefusal, tagRefusal } from "./dispatch-route.mjs";
+import { limitFileOf, readLimit } from "./codex-limit.mjs";
 import { claimSlot, clearSlots, reclaimSlot, releaseHolder, releaseSlot, slotDirOf } from "./dispatch-slot.mjs";
 import { judgeTask, recordDispatch } from "./task-gate.mjs";
 
@@ -77,6 +78,9 @@ export function decide(call, tmp = os.tmpdir(), now = Date.now(), reads = {}) {
   const codexModel = "codexModel" in reads ? reads.codexModel : codexModelOf(process.env);
   const tag = tagRefusal(input, { codexModel });
   if (tag) return deny(tag);
+  const limit = readLimit(limitFileOf(process.env, tmp), now);
+  const route = routeRefusal(input, settings, limit);
+  if (route) return deny(route);
   // The task gate judges before the slot is claimed, so a refused task holds no slot.
   const task = judgeTask(call, tmp, reads);
   if (task.refusal) return deny(task.refusal);

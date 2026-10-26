@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { decide } from "./dispatch-guard.mjs";
+import { limitFileOf, writeLimit } from "./codex-limit.mjs";
 import { runtimeTagOf } from "./dispatch-route.mjs";
 
 const GUARD = fileURLToPath(new URL("./dispatch-guard.mjs", import.meta.url));
@@ -60,7 +61,7 @@ const reasonOf = (output) =>
 const implementer = {
   subagent_type: "architecture:sdd-implementer",
   description: "Task 1",
-  prompt: "Brief: brief.md",
+  prompt: "Brief: brief.md\nRuntime: claude test",
 };
 /** A reviewer prompt that names the checkout, so the task gate can read its branch and head. */
 const reviewerOf = (ws, subagent_type) => ({ subagent_type, prompt: `Worktree: ${ws.on}` });
@@ -87,6 +88,36 @@ test("a tagged dispatch passes", (t) => {
   assert.equal(decide(agentCall(ws.on, { model: "gpt-6.1-sol", prompt: "p" }), ws.tmp), null);
   const input = { subagent_type: "codex", model: "gpt-6.1-sol", description: "Codex gpt-6.1-sol \u00b7 work", prompt: "p" };
   assert.equal(decide(untaggedCall(ws.on, input), ws.tmp, Date.now(), { codexModel: "gpt-6.1-sol" }), null);
+});
+
+test("a codex dispatch while Codex is limited is refused and names the sonnet implementer", (t) => {
+  const ws = workspace(t);
+  writeLimit(limitFileOf({}, ws.tmp), { until: Date.now() + 3_600_000, source: "codex" });
+  const input = { subagent_type: "codex", model: "gpt-6.1-sol", prompt: "Brief: brief.md" };
+  const reason = reasonOf(decide(agentCall(ws.on, input), ws.tmp, Date.now(), { codexModel: null })) ?? "";
+  for (const text of ["qc codex status", "architecture:sdd-implementer", "sonnet", "Brief: brief.md"]) {
+    assert.ok(reason.includes(text), text);
+  }
+  assert.equal(existsSync(ws.slots), false);
+  assert.equal(decide(agentCall(ws.on, { ...implementer, prompt: "Brief: brief.md" }), ws.tmp), null);
+});
+
+test("a limit that has passed counts as free", (t) => {
+  const ws = workspace(t);
+  const now = Date.now();
+  writeLimit(limitFileOf({}, ws.tmp), { until: now, source: "codex" });
+  const input = { subagent_type: "codex", model: "gpt-6.1-sol", prompt: "Brief: brief.md" };
+  assert.equal(decide(agentCall(ws.on, input), ws.tmp, now, { codexModel: null }), null);
+  const reason = reasonOf(decide(agentCall(ws.on, { ...implementer, prompt: "Brief: brief.md" }), ws.tmp, now)) ?? "";
+  assert.ok(reason.includes("Runtime: claude <reason>"), reason);
+});
+
+test("an implementer dispatch while Codex is free needs a Runtime line", (t) => {
+  const ws = workspace(t);
+  const reason = reasonOf(decide(agentCall(ws.on, { ...implementer, prompt: "Brief: brief.md" }), ws.tmp)) ?? "";
+  assert.ok(reason.includes("Runtime: claude <reason>"), reason);
+  assert.equal(existsSync(ws.slots), false);
+  assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
 });
 
 test("a checkout with no config, or a swarm section with no dispatch key, sees no change", (t) => {

@@ -2,9 +2,28 @@
 import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { familyOf, typeOf } from "./dispatch.mjs";
+import { familyOf, isImplementer, typeOf } from "./dispatch.mjs";
 
 export const isCodexType = (type) => type === "codex" || type === "architecture:codex";
+const RUNTIME_LINE = /^[\t ]*Runtime:[\t ]+claude[\t ]+\S[^\r\n]*$/m;
+
+export function routeRefusal(input, settings, limit) {
+  const type = typeOf(input);
+  const prompt = typeof input.prompt === "string" ? input.prompt : "";
+  if (isCodexType(type)) {
+    if (!limit) return null;
+    const preferred = "architecture:sdd-implementer";
+    const fallback = settings.implementerTypes.includes(preferred) ? preferred :
+      settings.implementerTypes.find((name) => name.endsWith("sdd-implementer")) ?? preferred;
+    const brief = prompt.match(/^[\t ]*Brief:[^\r\n]*$/m)?.[0] ?? "Brief: <path>";
+    return `Dispatch guard: Codex is limited until ${limit.until.toISOString()}; run \`qc codex status\` to check the limit. ` +
+      `Dispatch \`${fallback}\` with model \`sonnet\` and the same brief:\n${brief}`;
+  }
+  if (!limit && isImplementer(type, settings) && !RUNTIME_LINE.test(prompt)) {
+    return "Dispatch guard: an implementer dispatch while Codex is free needs a prompt line `Runtime: claude <reason>` with a reason.";
+  }
+  return null;
+}
 
 export function codexModelOf(env = process.env) {
   const home = env.CODEX_HOME || path.join(os.homedir(), ".codex");

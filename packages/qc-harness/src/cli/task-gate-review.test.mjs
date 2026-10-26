@@ -177,7 +177,7 @@ test("a long brief file warns and still passes, and the warning reaches the sess
   const task = implement(ws, "Read it.", brief);
   assert.equal(task.refusal, null);
   assert.match(task.note ?? "", /9 numbered findings/);
-  const output = decide(call(ws, IMPLEMENTER, `Read it.\nBrief: ${brief}\nWorktree: ${ws.linked}`), ws.tmp, Date.now(), { ciState: green });
+  const output = decide(call(ws, IMPLEMENTER, `Read it.\nBrief: ${brief}\nWorktree: ${ws.linked}\nRuntime: claude test`), ws.tmp, Date.now(), { ciState: green });
   assert.match(output.hookSpecificOutput.additionalContext, /disjoint paths/);
   assert.equal(output.hookSpecificOutput.permissionDecision, undefined);
 });

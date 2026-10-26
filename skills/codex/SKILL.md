@@ -15,7 +15,7 @@ stop reading: none of its rules apply.
 - The one exception is a fix inside the `swarm.direct` limits, where that lane is on. The main session makes that edit.
 - The main session also edits the controller paths that the guard allows, such as `*.md` and `docs/**`. A clean `git merge` and a `git push` by hand are fine.
 - Reviews stay on Claude, with `architecture:sdd-branch-reviewer` (opus). The merge guard counts only a branch review by default.
-- On exit 2, a Codex limit, send the same brief to an `architecture:sdd-implementer` (sonnet).
+- On exit 2, a Codex limit, send the same brief to an `architecture:sdd-implementer` (sonnet). The guard refuses a codex dispatch while `qc codex status` shows a limit. While Codex is free, an implementer dispatch needs a prompt line `Runtime: claude <reason>`. Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other.
 
 ## Write the brief
 

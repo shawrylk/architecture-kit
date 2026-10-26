@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { codexModelOf, isCodexType, runtimeTagOf, tagRefusal } from "./dispatch-route.mjs";
+import { codexModelOf, isCodexType, routeRefusal, runtimeTagOf, tagRefusal } from "./dispatch-route.mjs";
 
 function configHome(t, content) {
   const home = mkdtempSync(path.join(os.tmpdir(), "qc-route-"));
@@ -59,4 +59,37 @@ test("tagRefusal quotes the exact tag for a missing description, wrong runtime, 
       `Dispatch guard: the description of a architecture:codex dispatch must start with "${tag}" so the agent panel shows the runtime and the model. Write "${tag}<what the agent does>".`,
     );
   }
+});
+
+const settings = { implementerTypes: ["codex", "architecture:codex", "architecture:sdd-implementer"] };
+const limit = { until: new Date("2026-10-26T15:00:00Z"), source: "codex" };
+
+test("routeRefusal refuses Codex while limited and names the Sonnet implementer with the same brief", () => {
+  for (const subagent_type of ["codex", "architecture:codex"]) {
+    const refusal = routeRefusal({ subagent_type, prompt: "Read the brief.\nBrief: brief.md\nReport: report.md" }, settings, limit);
+    for (const text of ["2026-10-26T15:00:00.000Z", "qc codex status", "architecture:sdd-implementer", "sonnet", "Brief: brief.md"]) {
+      assert.ok(refusal.includes(text), text);
+    }
+  }
+});
+
+test("routeRefusal allows an implementer while Codex is limited and Codex while free", () => {
+  assert.equal(routeRefusal({ subagent_type: "architecture:sdd-implementer", prompt: "Brief: brief.md" }, settings, limit), null);
+  for (const subagent_type of ["codex", "architecture:codex"]) {
+    assert.equal(routeRefusal({ subagent_type, prompt: "Brief: brief.md" }, settings, null), null);
+  }
+});
+
+test("routeRefusal requires a Claude Runtime line with a reason for an implementer while Codex is free", () => {
+  for (const runtime of ["", "Runtime: claude", "Runtime: codex x", "Runtime: claude   ", "Runtime: claude\nother text"]) {
+    const refusal = routeRefusal({ subagent_type: "architecture:sdd-implementer", prompt: `Brief: brief.md\n${runtime}` }, settings, null);
+    assert.ok(refusal.includes("Runtime: claude <reason>"), runtime);
+  }
+  assert.equal(routeRefusal({ subagent_type: "architecture:sdd-implementer", prompt: "Brief: brief.md\nRuntime: claude codex is down" }, settings, null), null);
+});
+
+test("routeRefusal uses the configured sdd-implementer fallback and leaves other roles alone", () => {
+  const custom = { implementerTypes: ["codex", "custom:sdd-implementer"] };
+  assert.ok(routeRefusal({ subagent_type: "codex", prompt: "Brief: brief.md" }, custom, limit).includes("custom:sdd-implementer"));
+  assert.equal(routeRefusal({ subagent_type: "general-purpose" }, settings, null), null);
 });
