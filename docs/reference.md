@@ -714,20 +714,23 @@ On a limit line, the runner writes `<os.tmpdir()>/architecture-kit/codex-<uid>/c
 On POSIX, `<uid>` is the user ID; Windows uses the login name. The private folder has mode `0o700` on POSIX.
 Set a non-empty `QC_CODEX_LIMIT_FILE` to use another path.
 The JSON stores `until`, `source`, and `recordedAt`, with both times as ISO strings.
-The `codex` source parses relative days, hours, minutes, seconds, and milliseconds, including `1.898s`, `500ms`, `6m0s`, and `1h2m3s`.
+The `codex` source parses relative days, hours, minutes, seconds, and milliseconds after the last `try again in`, regardless of case.
+It accepts `1.898s`, `500ms`, `6m0s`, and `1h2m3s`, and excludes numbers within identifiers or decimal fragments.
 It rounds a fractional duration up to the next whole second.
 The `default` source uses 60 minutes after the limit when the line gives no valid reset time.
-With `--wait-reset`, either source keeps the state until at least the job's reset wait bound.
+With `--wait-reset`, the runner refreshes the state at each poll.
+It uses the later of the reset estimate and the next poll plus 60 seconds.
+When the poll margin wins, the source is `wait`, and status prints `(reset wait bound)`.
 The state means Codex is limited now. The runner deletes it after a reset and after every run without a limit line.
 If deletion fails, the runner writes a note to stderr and keeps the run's exit code.
 `qc codex status` prints `Codex: free` for missing, invalid, or expired state.
-For an active limit, it prints the ISO reset time and its source. The status command reads no configuration.
+For an active limit, it prints the ISO expiry time and its source. The status command reads no configuration.
 
 Without `--wait-reset`, a limit ends the runner with exit `2`.
 With `--wait-reset`, it polls `https://codex-resets.com/api/v1/status` every 15 minutes without a model call.
 An announced reset after the limit clears the state before the same brief resumes. A limit retry keeps its run allowance.
 `--max-hours` defaults to `6`, accepts positive finite hours, and bounds all reset waits in the job together.
-At the bound, the runner exits `2` and leaves the state file in place.
+At the bound, the runner records a `default` limit for 60 minutes after that moment, then exits `2`.
 
 The standalone command waits for a reset without starting a model or changing the limit state:
 

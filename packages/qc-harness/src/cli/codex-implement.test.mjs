@@ -145,7 +145,7 @@ for (const tail of ["usage limit", "usage limit. Try again in 20s"]) {
         return { status: 0, tail: "done" };
       },
       fetch: async () => {
-        states.push(readLimit(file, timer.now()));
+        states.push({ ...readLimit(file, timer.now()), polledAt: timer.now() });
         return { ok: true, json: async () => ({ data: { latest_reset: {
           announced_at: new Date(start + (timer.now() > start + 3_600_000 ? 1000 : 0)).toISOString(),
         } } }) };
@@ -154,7 +154,12 @@ for (const tail of ["usage limit", "usage limit. Try again in 20s"]) {
     assert.equal(code, 0);
     assert.equal(runs, 2);
     assert.equal(states.length, 6);
-    assert.ok(states.every((state) => state?.until.getTime() === start + 6 * 3_600_000));
+    const estimate = start + (tail.includes("20s") ? 20_000 : 3_600_000);
+    for (const state of states) {
+      const nextPoll = state.polledAt + 15 * 60_000;
+      assert.equal(state.until?.getTime(), Math.max(estimate, nextPoll + 60_000));
+      assert.equal(state.source, nextPoll + 60_000 > estimate ? "wait" : "default");
+    }
     assert.equal(existsSync(file), false);
   });
 }
@@ -186,20 +191,70 @@ test("one limit hit shares its recorded timestamp with the reset wait", async (t
   assert.equal(checked, true);
 });
 
-test("--wait-reset exits two at its bound without another model call", async (t) => {
+for (const tail of ["usage limit", "usage limit. Try again in 20s", "usage limit. Try again in 8h"]) {
+test(`--wait-reset leaves a fresh default limit at its bound: ${tail}`, async (t) => {
   const { argv } = setup(t);
   const timer = resetClock();
   let runs = 0;
   const exits = [];
   const code = await runCodexImplement([...argv, "--wait-reset", "--max-hours", "0.3"], {
     ...timer, say: quiet, out: (line) => exits.push(line),
-    run: async () => { runs += 1; return { status: 1, tail: "usage limit" }; },
+    run: async () => { runs += 1; return { status: 1, tail }; },
     fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: { announced_at: "2025-12-31T23:00:00.000Z" } } }) }),
   });
   assert.equal(code, 2);
   assert.equal(runs, 1);
   assert.equal(timer.now(), Date.parse("2026-01-01T00:18:00.000Z"));
   assert.deepEqual(exits, ["exit 2"]);
+  assert.deepEqual(readLimit(process.env.QC_CODEX_LIMIT_FILE, timer.now()), {
+    until: new Date(timer.now() + 3_600_000), source: "default",
+  });
+  const record = JSON.parse(readFileSync(process.env.QC_CODEX_LIMIT_FILE, "utf8"));
+  assert.equal(record.recordedAt, new Date(timer.now()).toISOString());
+});
+}
+
+for (const [duration, milliseconds, source] of [["20s", 16 * 60_000, "wait"], ["8h", 8 * 3_600_000, "codex"]]) {
+  test(`an interrupted reset wait keeps the later estimate or next poll margin: ${duration}`, async (t) => {
+    const { argv, dir } = setup(t);
+    const file = path.join(dir, "limit.json");
+    const timer = resetClock();
+    const start = timer.now();
+    const states = [];
+    const code = await runCodexImplement([...argv, "--wait-reset"], {
+      ...timer, env: { QC_CODEX_LIMIT_FILE: file }, say: quiet, out: quiet,
+      run: async () => ({ status: 2, tail: `usage limit. Try again in ${duration}` }),
+      fetch: async () => {
+        states.push(readLimit(file, timer.now()));
+        throw new Error("status endpoint unavailable");
+      },
+      sleep: async (ms) => {
+        await timer.sleep(ms);
+        throw new Error("wait interrupted");
+      },
+    });
+    assert.equal(code, 1);
+    assert.deepEqual(states, [{ until: new Date(start + milliseconds), source }]);
+    assert.deepEqual(readLimit(file, timer.now()), states[0]);
+    assert.equal(readLimit(file, start + milliseconds), null);
+  });
+}
+
+test("the next poll margin follows the remaining wait at the final poll", async (t) => {
+  const { argv } = setup(t);
+  const timer = resetClock();
+  const start = timer.now();
+  const states = [];
+  const code = await runCodexImplement([...argv, "--wait-reset", "--max-hours", "0.3"], {
+    ...timer, say: quiet, out: quiet,
+    run: async () => ({ status: 2, tail: "usage limit. Try again in 20s" }),
+    fetch: async () => {
+      states.push(readLimit(process.env.QC_CODEX_LIMIT_FILE, timer.now()));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  assert.equal(code, 2);
+  assert.deepEqual(states, [16, 19].map((minutes) => ({ until: new Date(start + minutes * 60_000), source: "wait" })));
 });
 
 test("repeated limits share one wait bound and use each limit's timestamp", async (t) => {
@@ -926,4 +981,4 @@ test("the CLI prints `exit 1` as the last stdout line after a usage error", () =
   const result = spawnSync(process.execPath, [QC, "codex-implement"], { encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.equal(result.stdout.trimEnd().split("\n").at(-1), "exit 1");
-});
+  });

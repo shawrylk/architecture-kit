@@ -84,7 +84,7 @@ test("CI on the branch head lets an implementer continue after a controller comm
     assert.deepEqual(task.record.ciPass, { sha: head, reason: ci(head) });
     const refusal = judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp, { ci: () => null }).refusal;
     assert.ok(refusal.includes(`when CI on ${head.slice(0, 7)}`));
-    assert.match(refusal, /passes only a prompt with no `Fix:` line/);
+    assert.match(refusal, /A prompt with no `Fix:` line passes when/);
   }
 });
 

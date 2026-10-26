@@ -5,6 +5,7 @@ import { spawnCommand as spawn } from "./spawn-command.mjs";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { setTimeout as pause } from "node:timers/promises";
 import { load } from "../config.mjs";
 import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, waitForCodexReset } from "./codex-reset.mjs";
@@ -267,21 +268,42 @@ async function runJob(argv, {
     if (line) {
       const recordedAt = now();
       const reset = resetTimeOf(line, recordedAt);
+      const estimate = reset ?? recordedAt + 3_600_000;
+      const source = reset === null ? "default" : "codex";
       if (settings.waitReset) resetDeadline ??= recordedAt + settings.maxHours * 60 * 60 * 1000;
-      try {
-        writeLimit(limitFileOf(env), {
-          until: Math.max(reset ?? recordedAt + 3_600_000, resetDeadline ?? 0),
-          source: reset === null ? "default" : "codex",
-        }, recordedAt);
-      } catch (error) {
-        say(`qc codex-implement: cannot write the limit state: ${error.message}`);
-      }
+      /** Branch: records the limit and reports a write error without changing the exit code. */
+      const recordLimit = (until, source, at) => {
+        try {
+          writeLimit(limitFileOf(env), { until, source }, at);
+        } catch (error) {
+          say(`qc codex-implement: cannot write the limit state: ${error.message}`);
+        }
+      };
+      /** Branch: keeps the state through the next poll and its margin. */
+      const refreshWait = (at, delay = 15 * 60_000) => {
+        const waitUntil = Math.min(at + delay, resetDeadline) + 60_000;
+        recordLimit(Math.max(estimate, waitUntil), waitUntil > estimate ? "wait" : source, at);
+      };
+      if (settings.waitReset) refreshWait(recordedAt);
+      else recordLimit(estimate, source, recordedAt);
       if (!settings.waitReset) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
       const hit = recordedAt;
       const remaining = resetDeadline - hit;
       if (remaining <= 0 || !await waitForCodexReset({
-        since: new Date(hit).toISOString(), maxHours: remaining / (60 * 60 * 1000), fetch, now, sleep, say,
-      })) return finish(say, "Codex reset wait bound reached", 2);
+        since: new Date(hit).toISOString(), maxHours: remaining / (60 * 60 * 1000), now, say,
+        fetch: (...args) => {
+          refreshWait(now());
+          return (fetch ?? globalThis.fetch)(...args);
+        },
+        sleep: (delay) => {
+          refreshWait(now(), delay);
+          return (sleep ?? pause)(delay);
+        },
+      })) {
+        const expiredAt = now();
+        recordLimit(expiredAt + 3_600_000, "default", expiredAt);
+        return finish(say, "Codex reset wait bound reached", 2);
+      }
       clearLimit(limitFileOf(env), say);
       // A usage limit leaves the run unfinished, so its retry keeps the same run allowance.
       count -= 1;

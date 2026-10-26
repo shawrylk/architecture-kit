@@ -9,13 +9,15 @@ export function limitFileOf(env = process.env, tmp = os.tmpdir()) {
 }
 
 export function resetTimeOf(line, now) {
-  const relative = /\bin\s+(.+)/i.exec(line);
+  const relative = line.split(/\btry\s+again\s+in\b/i).slice(1).at(-1);
   if (relative) {
     const units = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
     let duration = 0;
-    for (const match of relative[1].matchAll(/(\d+(?:\.\d+)?)\s*(ms|days?|hours?|minutes?|seconds?|[dhms])(?=\d|\b)/gi)) {
-      const unit = match[2].toLowerCase();
-      duration += Number(match[1]) * units[unit === "ms" ? unit : unit[0]];
+    for (const run of relative.matchAll(/(?<![\p{L}\p{N}.])(?:\d+(?:\.\d+)?\s*(?:ms|days?|hours?|minutes?|seconds?|[dhms]))+(?![\p{L}\p{N}])/giu)) {
+      for (const match of run[0].matchAll(/(\d+(?:\.\d+)?)\s*([a-z]+)/gi)) {
+        const unit = match[2].toLowerCase();
+        duration += Number(match[1]) * units[unit === "ms" ? unit : unit[0]];
+      }
     }
     const until = now + Math.ceil(duration / 1000) * 1000;
     if (Number.isFinite(until) && until > now) return until;
@@ -63,7 +65,7 @@ export function readLimit(file, now = Date.now()) {
   try {
     validateLimitFolder(file);
     const record = JSON.parse(readFileSync(file, "utf8"));
-    if (typeof record?.until !== "string" || !["codex", "default"].includes(record.source)) return null;
+    if (typeof record?.until !== "string" || !["codex", "default", "wait"].includes(record.source)) return null;
     const until = new Date(record.until);
     return until.getTime() > now ? { until, source: record.source } : null;
   } catch {
@@ -74,7 +76,7 @@ export function readLimit(file, now = Date.now()) {
 export function runCodexStatus(args, { env = process.env, tmp = os.tmpdir(), now = Date.now(), out = console.log } = {}) {
   const limit = readLimit(limitFileOf(env, tmp), now);
   if (limit) {
-    const source = limit.source === "codex" ? "reset time from Codex" : "default: 60 minutes after the limit";
+    const source = { codex: "reset time from Codex", default: "default: 60 minutes after the limit", wait: "reset wait bound" }[limit.source];
     out(`Codex: limited until ${limit.until.toISOString()} (${source})`);
   } else {
     out("Codex: free");

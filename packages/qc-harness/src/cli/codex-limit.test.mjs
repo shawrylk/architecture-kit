@@ -65,6 +65,22 @@ for (const [duration, seconds] of [["1.898s", 2], ["500ms", 1], ["6m0s", 360], [
   });
 }
 
+test("resetTimeOf ignores organization IDs before the last retry hint", async () => {
+  const { resetTimeOf } = await limit();
+  const line = "Rate limit reached for gpt-4o in organization org-3h7Kq2s9xYz on tokens per min (TPM). Please try again in 1.898s.";
+  assert.equal(resetTimeOf(line, T), T + 2000);
+  assert.equal(resetTimeOf("Try again in 3h. TRY AGAIN IN 500ms.", T), T + 1000);
+  assert.equal(resetTimeOf("Rate limit in 3h without a retry hint.", T), null);
+});
+
+test("resetTimeOf excludes durations embedded in IDs or decimal fragments", async () => {
+  const { resetTimeOf } = await limit();
+  for (const fragment of ["org-3h7Kq2s9xYz", "abc20s", ".898s", "1.2.3s", "é20s", "3h7K"]) {
+    assert.equal(resetTimeOf(`Try again in ${fragment}.`, T), null, fragment);
+    assert.equal(resetTimeOf(`Try again in ${fragment}; 500ms.`, T), T + 1000, fragment);
+  }
+});
+
 test("resetTimeOf uses today or tomorrow for a bare clock time", async () => {
   const { resetTimeOf } = await limit();
   const morning = new Date(2026, 9, 26, 10).getTime();
@@ -125,11 +141,12 @@ test("writeLimit replaces a state-file link without changing its target", async 
   assert.ok(readLimit(file, T));
 });
 
-for (const [source, suffix] of [["codex", "reset time from Codex"], ["default", "default: 60 minutes after the limit"]]) {
+for (const [source, suffix] of [["codex", "reset time from Codex"], ["default", "default: 60 minutes after the limit"], ["wait", "reset wait bound"]]) {
   test(`runCodexStatus prints the limit with source ${source} and returns zero`, async (t) => {
-    const { runCodexStatus, writeLimit } = await limit();
+    const { readLimit, runCodexStatus, writeLimit } = await limit();
     const { file } = setup(t);
     writeLimit(file, { until: T + 3_600_000, source }, T);
+    assert.deepEqual(readLimit(file, T), { until: new Date(T + 3_600_000), source });
     const lines = [];
     assert.equal(runCodexStatus([], { env: { QC_CODEX_LIMIT_FILE: file }, now: T, out: (line) => lines.push(line) }), 0);
     assert.deepEqual(lines, [`Codex: limited until ${new Date(T + 3_600_000).toISOString()} (${suffix})`]);
