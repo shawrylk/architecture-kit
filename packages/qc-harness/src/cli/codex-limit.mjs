@@ -1,19 +1,20 @@
 // Keep the limit record separate so the runner and status command share one source.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 
 export function limitFileOf(env = process.env, tmp = os.tmpdir()) {
-  return env.QC_CODEX_LIMIT_FILE ?? path.join(tmp, "architecture-kit", "codex-limit.json");
+  return env.QC_CODEX_LIMIT_FILE || path.join(tmp, "architecture-kit", "codex-limit.json");
 }
 
 export function resetTimeOf(line, now) {
   const relative = /\bin\s+(.+)/i.exec(line);
   if (relative) {
-    const units = { day: 86_400_000, hour: 3_600_000, minute: 60_000 };
+    const units = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000 };
     let duration = 0;
-    for (const match of relative[1].matchAll(/\b(\d+)\s*(day|hour|minute)s?\b/gi)) {
-      duration += Number(match[1]) * units[match[2].toLowerCase()];
+    for (const match of relative[1].matchAll(/\b(\d+)\s*(days?|hours?|minutes?|seconds?|[dhms])\b/gi)) {
+      duration += Number(match[1]) * units[match[2][0].toLowerCase()];
     }
     const until = now + duration;
     if (Number.isFinite(until) && until > now) return until;
@@ -35,14 +36,31 @@ export function resetTimeOf(line, now) {
   return Number.isFinite(until) && until > now ? until : null;
 }
 
+/** Branch: refuses a shared or redirected folder before the limit state is read or written. */
+function validateLimitFolder(file) {
+  const folder = lstatSync(path.dirname(file));
+  if (!folder.isDirectory() || folder.isSymbolicLink() ||
+    (process.platform !== "win32" && (folder.uid !== process.getuid() || (folder.mode & 0o022) !== 0))) {
+    throw new Error(`unsafe limit folder: ${path.dirname(file)}`);
+  }
+}
+
 export function writeLimit(file, { until, source }, now = Date.now()) {
   const record = { until: new Date(until).toISOString(), source, recordedAt: new Date(now).toISOString() };
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(record)}\n`);
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  validateLimitFolder(file);
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
+    renameSync(temporary, file);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
 }
 
 export function readLimit(file, now = Date.now()) {
   try {
+    validateLimitFolder(file);
     const record = JSON.parse(readFileSync(file, "utf8"));
     if (typeof record?.until !== "string" || !["codex", "default"].includes(record.source)) return null;
     const until = new Date(record.until);

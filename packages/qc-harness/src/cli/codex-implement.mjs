@@ -2,7 +2,7 @@
 // after each stop until the progress file says it is done. It never calls Claude; exit 2 hands the brief back.
 
 import { spawnCommand as spawn } from "./spawn-command.mjs";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { load } from "../config.mjs";
@@ -60,11 +60,12 @@ const LEAN_RULES = [
   "- Load no skill and read no SKILL.md or plugin file. The global instructions that say to load skills do not apply to this run; this brief holds the rules.",
   "- Search with `rg -n -m 20 <pattern> <path>`. Read at most 150 lines per call by range, never a whole file. End any command that can print more than 4,000 characters with a limit.",
   "- Never run `gh issue view`: the brief holds the issue. Use `git status --short` and `git log -n 5 --oneline`.",
-  "- Start no helper agents. Run no broad audit, no Playwright, and no full gate. Run the tests of the touched files, and the local check once before the push.",
+  "- Start no helper agents. Run no broad audit or full gate. Run no Playwright except `npx qc e2e` when `check.e2e` is set. Run the tests of the touched files, and the local check once before the push.",
   "- Write every item first, each test first, and update the progress file after each item. Then run the local check once, make one commit, and push once.",
   "- Read at most 15 files before the first code edit. Research that needs more belongs to a planner, and the brief names the planner output to read instead.",
   "- Wrap each heavy command in `npx qc gate-slot --`: the local check, a test run of more than one file, a live database test, a commit, and a push.",
   "- Before the push, run the live database tests of the server code you touched through `npx qc throwaway-db --`. Never use port 5432 or another port the local stack owns.",
+  "- Before the push, run `npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e` when `check.e2e` is set.",
   "- Work up to about 200K tokens in a session. Then leave the progress file exact and stop, so a fresh session continues.",
   "- Keep the report under 15 lines.",
   "- These rules never override the brief on commits or pushes. Where the brief says not to commit, make no commit. Where it says not to push, push nothing.",
@@ -154,7 +155,10 @@ function validateBrief(brief, codex) {
 
 /** Fragment: reads the role limits that `budgets.codex` sets; null turns the launch overrides off. */
 function codexLimitsOf(worktree) {
-  return budgetsOf(load(worktree)).codex;
+  const config = load(worktree);
+  const budgets = config.budgets;
+  const codexOnly = budgets && typeof budgets === "object" && !Array.isArray(budgets) ? { codex: budgets.codex } : budgets;
+  return budgetsOf({ ...config, budgets: codexOnly }).codex;
 }
 
 /** The brief is read again for each run, so an edit reaches the next session. */
@@ -257,23 +261,25 @@ async function runJob(argv, {
       return finish(say, `codex did not run: ${error.message}`, 1);
     }
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
-    if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
     const line = limitLineOf(result.tail ?? "", prompt);
-    if (result.status === 2 || line) {
+    if (!line) rmSync(limitFileOf(env), { force: true });
+    if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
+    if (line) {
       const recordedAt = now();
-      const reset = line ? resetTimeOf(line, recordedAt) : null;
+      const reset = resetTimeOf(line, recordedAt);
       try {
         writeLimit(limitFileOf(env), { until: reset ?? recordedAt + 3_600_000, source: reset === null ? "default" : "codex" }, recordedAt);
       } catch (error) {
         say(`qc codex-implement: cannot write the limit state: ${error.message}`);
       }
       if (!settings.waitReset) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
-      const hit = now();
+      const hit = recordedAt;
       resetDeadline ??= hit + settings.maxHours * 60 * 60 * 1000;
       const remaining = resetDeadline - hit;
       if (remaining <= 0 || !await waitForCodexReset({
         since: new Date(hit).toISOString(), maxHours: remaining / (60 * 60 * 1000), fetch, now, sleep, say,
       })) return finish(say, "Codex reset wait bound reached", 2);
+      rmSync(limitFileOf(env), { force: true });
       // A usage limit leaves the run unfinished, so its retry keeps the same run allowance.
       count -= 1;
     }

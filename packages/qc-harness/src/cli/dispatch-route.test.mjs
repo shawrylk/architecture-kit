@@ -93,3 +93,9 @@ test("routeRefusal uses the configured sdd-implementer fallback and leaves other
   assert.ok(routeRefusal({ subagent_type: "codex", prompt: "Brief: brief.md" }, custom, limit).includes("custom:sdd-implementer"));
   assert.equal(routeRefusal({ subagent_type: "general-purpose" }, settings, null), null);
 });
+
+test("routeRefusal accepts case variants and zero or more horizontal spaces after Runtime:", () => {
+  for (const runtime of ["Runtime:claude reason", "Runtime: Claude reason", "rUnTiMe:\tClAuDe\treason", "  RUNTIME:  CLAUDE reason  "]) {
+    assert.equal(routeRefusal({ subagent_type: "architecture:sdd-implementer", prompt: `Brief: brief.md\n${runtime}` }, settings, null), null, runtime);
+  }
+});

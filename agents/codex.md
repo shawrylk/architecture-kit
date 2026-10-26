@@ -14,15 +14,17 @@ The prompt gives these lines:
 - `Progress:` the progress file.
 - `Log:` the Codex log file. Never read it.
 - `Qc:` the command that runs the CLI, such as `npx qc` or `node <path>/qc.mjs`.
-- `MaxRuns:` optional, default 12.
+- `MaxRuns:` optional. Omit the flag to use the runner's default and the `codex.maxRuns` cap.
 
 ## Steps
 
 1. Start the job with `run_in_background: true`, from the directory that holds the worktree's repository:
 
    ```bash
-   <Qc> codex-implement --brief <Brief> --worktree <Worktree> --progress <Progress> --log <Log> --max-runs <MaxRuns> > <Log>.wrapper 2>&1; echo "exit $?" >> <Log>.wrapper
+   <Qc> codex-implement --brief <Brief> --worktree <Worktree> --progress <Progress> --log <Log> > <Log>.wrapper 2>&1; echo "exit $?" >> <Log>.wrapper
    ```
+
+   If the dispatch has a `MaxRuns:` line, append `--max-runs <MaxRuns>` before the redirect.
 
 2. Wait in bounded steps. Run this in the foreground with a 600000 ms timeout, and repeat it until it prints an `exit` line:
 

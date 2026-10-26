@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -20,6 +20,7 @@ test("limitFileOf uses the override or the architecture-kit folder in the tempor
   const { limitFileOf } = await limit();
   assert.equal(limitFileOf({ QC_CODEX_LIMIT_FILE: "custom.json" }, "tmp"), "custom.json");
   assert.equal(limitFileOf({}, "tmp"), path.join("tmp", "architecture-kit", "codex-limit.json"));
+  assert.equal(limitFileOf({ QC_CODEX_LIMIT_FILE: "" }, "tmp"), path.join("tmp", "architecture-kit", "codex-limit.json"));
 });
 
 test("resetTimeOf adds every relative day, hour, and minute unit regardless of case", async () => {
@@ -33,6 +34,16 @@ test("resetTimeOf parses an absolute date with an ordinal suffix and a trailing 
   assert.equal(resetTimeOf("try again at Oct 29th, 2026 3:12 PM.", T), new Date("Oct 29, 2026 3:12 PM").getTime());
 });
 
+test("resetTimeOf parses seconds and abbreviated relative units", async () => {
+  const { resetTimeOf } = await limit();
+  for (const [duration, milliseconds] of [
+    ["20s", 20_000], ["20 seconds", 20_000], ["1 SECOND", 1000],
+    ["1h 2m 3s", 3_723_000], ["2 hours 13 minutes 20 seconds", 8_000_000],
+  ]) {
+    assert.equal(resetTimeOf(`rate limit: try again in ${duration}`, T), T + milliseconds, duration);
+  }
+});
+
 test("resetTimeOf uses today or tomorrow for a bare clock time", async () => {
   const { resetTimeOf } = await limit();
   const morning = new Date(2026, 9, 26, 10).getTime();
@@ -41,7 +52,7 @@ test("resetTimeOf uses today or tomorrow for a bare clock time", async () => {
   assert.equal(resetTimeOf("Try again at 3:12 PM.", evening), new Date(2026, 9, 27, 15, 12).getTime());
 });
 
-for (const line of ["You have hit your usage limit", "Try again at a mystery time.", "Try again at Oct 25th, 2026 3:12 PM."]) {
+for (const line of ["You have hit your usage limit", "Try again at a mystery time.", "Try again at Oct 20th, 2026 3:12 PM."]) {
   test(`resetTimeOf returns null for ${line}`, async () => {
     const { resetTimeOf } = await limit();
     assert.equal(resetTimeOf(line, T), null);
@@ -69,6 +80,28 @@ test("writeLimit creates the folder and stores ISO times, and readLimit returns 
     until: new Date(until).toISOString(), source: "codex", recordedAt: new Date(T).toISOString(),
   });
   assert.deepEqual(readLimit(file, T), { until: new Date(until), source: "codex" });
+  if (process.platform !== "win32") assert.equal(statSync(path.dirname(file)).mode & 0o777, 0o700);
+});
+
+test("writeLimit refuses a symbolic link for its state folder", async (t) => {
+  const { writeLimit } = await limit();
+  const { dir, file } = setup(t);
+  const target = path.join(dir, "other-user");
+  mkdirSync(target);
+  symlinkSync(target, path.dirname(file), process.platform === "win32" ? "junction" : "dir");
+  assert.throws(() => writeLimit(file, { until: T + 1000, source: "codex" }, T), /unsafe limit folder/i);
+});
+
+test("writeLimit replaces a state-file link without changing its target", async (t) => {
+  const { writeLimit, readLimit } = await limit();
+  const { dir, file } = setup(t);
+  mkdirSync(path.dirname(file));
+  const target = path.join(dir, "target.txt");
+  writeFileSync(target, "keep");
+  linkSync(target, file);
+  writeLimit(file, { until: T + 1000, source: "codex" }, T);
+  assert.equal(readFileSync(target, "utf8"), "keep");
+  assert.ok(readLimit(file, T));
 });
 
 for (const [source, suffix] of [["codex", "reset time from Codex"], ["default", "default: 60 minutes after the limit"]]) {
