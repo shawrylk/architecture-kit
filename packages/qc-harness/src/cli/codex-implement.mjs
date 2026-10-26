@@ -6,6 +6,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } fr
 import os from "node:os";
 import path from "node:path";
 import { load } from "../config.mjs";
+import { budgetsOf } from "./context-budgets.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 12;
@@ -43,7 +44,6 @@ export function parseArgs(argv) {
 const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").trimEnd().split(/\r?\n/).at(-1).trim() === DONE_MARKER;
 
 const SKILL_PLUGIN = "superpowers@claude-plugins-official";
-const TOOL_OUTPUT_TOKENS = 4000;
 
 const LEAN_RULES = [
   "Lean rules for every session. They cut repeated reading and helper agents. Never drop a security, tenant, data, or correctness check that this brief asks for.",
@@ -107,11 +107,8 @@ function pluginOverrides(env) {
   return [...new Set([...enabled, SKILL_PLUGIN])].flatMap((name) => ["-c", `plugins.${JSON.stringify(name)}.enabled=false`]);
 }
 
-/** @returns `codex.compactTokens` of the worktree's config; throws when it is not a positive whole number. */
-function compactTokensOf(worktree) {
-  const value = load(worktree).codex.compactTokens;
-  if (!Number.isInteger(value) || value < 1) throw new Error(`codex.compactTokens in qc.config.json must be a positive whole number, got ${JSON.stringify(value)}`);
-  return value;
+function codexLimitsOf(worktree) {
+  return budgetsOf(load(worktree)).codex;
 }
 
 /** The brief is read again for each run, so an edit reaches the next session. */
@@ -162,9 +159,9 @@ async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, 
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
     return 1;
   }
-  let compactTokens;
+  let codexLimits;
   try {
-    compactTokens = compactTokensOf(settings.worktree);
+    codexLimits = codexLimitsOf(settings.worktree);
   } catch (error) {
     return finish(say, error.message, 1);
   }
@@ -178,7 +175,7 @@ async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, 
       return finish(say, `cannot read the brief: ${error.message}`, 1);
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
-    const limits = ["-c", `model_auto_compact_token_limit=${compactTokens}`, "-c", `tool_output_token_limit=${TOOL_OUTPUT_TOKENS}`];
+    const limits = codexLimits === null ? [] : ["-c", `model_auto_compact_token_limit=${codexLimits.compactAt}`, "-c", `tool_output_token_limit=${codexLimits.toolOutputTokens}`];
     const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env), ...limits, prompt];
     let result;
     try {

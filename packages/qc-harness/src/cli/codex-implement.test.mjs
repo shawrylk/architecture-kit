@@ -235,6 +235,34 @@ test("a bad codex.compactTokens exits 1 with no run", async (t) => {
   }
 });
 
+test("budgets.codex.compactAt wins over codex.compactTokens", async (t) => {
+  const { call } = await firstCall(t, {
+    config: { codex: { compactTokens: 250000 }, budgets: { codex: { compactAt: 180000 } } },
+  });
+  assert.ok(overrides(call.args).includes("model_auto_compact_token_limit=180000"));
+});
+
+test("budgets.codex.toolOutputTokens sets tool_output_token_limit", async (t) => {
+  const { call } = await firstCall(t, { config: { budgets: { codex: { toolOutputTokens: 2000 } } } });
+  assert.ok(overrides(call.args).includes("tool_output_token_limit=2000"));
+});
+
+test("a bad budgets.codex value exits 1 with no run", async (t) => {
+  for (const codex of ["big", [], { compactAt: 0 }, { toolOutputTokens: 1.5 }]) {
+    const { code, call } = await firstCall(t, { config: { budgets: { codex } } });
+    assert.equal(code, 1, JSON.stringify(codex));
+    assert.equal(call, undefined);
+  }
+});
+
+test("a null budgets.codex turns off the limit overrides", async (t) => {
+  const { code, call } = await firstCall(t, { config: { budgets: { codex: null } } });
+  assert.equal(code, 0);
+  const set = overrides(call.args);
+  assert.ok(!set.some((entry) => entry.startsWith("model_auto_compact_token_limit=")));
+  assert.ok(!set.some((entry) => entry.startsWith("tool_output_token_limit=")));
+});
+
 test("every run prompt tells Codex to load no skill and holds the read caps", async (t) => {
   const { call } = await firstCall(t);
   const prompt = call.args.at(-1);
