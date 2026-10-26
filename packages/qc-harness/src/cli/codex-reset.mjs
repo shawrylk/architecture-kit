@@ -1,9 +1,18 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 const STATUS_URL = "https://codex-resets.com/api/v1/status";
-const POLL_MS = 15 * 60 * 1000;
+const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
-const USAGE = "usage: qc codex-wait-reset --since <iso> [--max-hours <n>]\nexit 0 on a reset, 1 at the bound or on bad input";
+const USAGE = "usage: qc codex-wait-reset --since <iso> [--max-hours <n>] [--poll-minutes <n>]\nexit 0 on a reset, 1 at the bound or on bad input";
+
+/** Branch: validates the shared poll interval before a request starts. */
+export function parsePollMinutes(value = 30) {
+  const minutes = Number(value);
+  if (!Number.isFinite(minutes) || minutes <= 0 || !Number.isFinite(minutes * MINUTE_MS)) {
+    throw new Error("--poll-minutes must be a positive finite number");
+  }
+  return minutes;
+}
 
 /** Branch: validates the shared wait bound before a request starts. */
 export function parseMaxHours(value = 6) {
@@ -16,12 +25,13 @@ export function parseMaxHours(value = 6) {
 
 /** Pipeline: polls without a model until a reset follows the usage limit or the bound expires. */
 export async function waitForCodexReset({
-  since, maxHours = 6, fetch = globalThis.fetch, now = Date.now, sleep: pause = sleep,
+  since, maxHours = 6, pollMinutes = 30, fetch = globalThis.fetch, now = Date.now, sleep: pause = sleep,
   say = (line) => console.error(line),
 }) {
   const hit = Date.parse(since);
   if (!Number.isFinite(hit)) throw new Error("--since must be an ISO timestamp");
   const deadline = now() + parseMaxHours(maxHours) * HOUR_MS;
+  const pollMs = parsePollMinutes(pollMinutes) * MINUTE_MS;
   say(`qc codex-wait-reset: waiting for a reset after ${since}`);
   while (now() < deadline) {
     try {
@@ -38,7 +48,7 @@ export async function waitForCodexReset({
       say(`qc codex-wait-reset: ${error.message}; polling continues`);
     }
     const remaining = deadline - now();
-    if (remaining > 0) await pause(Math.min(POLL_MS, remaining));
+    if (remaining > 0) await pause(Math.min(pollMs, remaining));
   }
   say("qc codex-wait-reset: wait bound reached");
   return false;
@@ -51,11 +61,14 @@ export async function runCodexWaitReset(argv, { say = (line) => console.error(li
     const flags = {};
     for (let index = 0; index < argv.length; index += 2) {
       const flag = argv[index];
-      if (flag !== "--since" && flag !== "--max-hours") throw new Error(`unknown argument ${flag}`);
+      if (flag !== "--since" && flag !== "--max-hours" && flag !== "--poll-minutes") throw new Error(`unknown argument ${flag}`);
       if (argv[index + 1] === undefined) throw new Error(`${flag} needs a value`);
       flags[flag] = argv[index + 1];
     }
-    return await waitForCodexReset({ ...options, since: flags["--since"], maxHours: parseMaxHours(flags["--max-hours"]), say }) ? 0 : 1;
+    return await waitForCodexReset({
+      ...options, since: flags["--since"], maxHours: parseMaxHours(flags["--max-hours"]),
+      pollMinutes: parsePollMinutes(flags["--poll-minutes"]), say,
+    }) ? 0 : 1;
   } catch (error) {
     say(`qc codex-wait-reset: ${error.message}\n${USAGE}`);
     return 1;

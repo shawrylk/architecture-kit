@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { runCodexWaitReset, waitForCodexReset } from "./codex-reset.mjs";
 
 const SINCE = "2026-01-01T00:00:00.000Z";
-const INTERVAL = 15 * 60 * 1000;
+const INTERVAL = 30 * 60 * 1000;
 const quiet = () => {};
 
 function clock() {
@@ -38,9 +38,9 @@ test("the bound stops polling and clips the final sleep", async () => {
   const timer = clock();
   let calls = 0;
   const fetch = async () => { calls += 1; return response(SINCE); };
-  assert.equal(await waitForCodexReset({ since: SINCE, maxHours: 0.3, fetch, ...timer, say: quiet }), false);
+  assert.equal(await waitForCodexReset({ since: SINCE, maxHours: 0.6, fetch, ...timer, say: quiet }), false);
   assert.equal(calls, 2);
-  assert.deepEqual(timer.sleeps, [INTERVAL, 3 * 60 * 1000]);
+  assert.deepEqual(timer.sleeps, [INTERVAL, 6 * 60 * 1000]);
 });
 
 test("a fetch error keeps polling", async () => {
@@ -67,7 +67,7 @@ test("the standalone command exits zero on a reset and one at its bound", async 
   assert.equal(await runCodexWaitReset(["--since", SINCE], {
     ...timer, fetch: async () => { calls += 1; return response(SINCE); }, say: quiet,
   }), 1);
-  assert.equal(calls, 24);
+  assert.equal(calls, 12);
   assert.equal(timer.now() - Date.parse(SINCE), 6 * 60 * 60 * 1000);
 });
 
@@ -76,6 +76,41 @@ test("invalid wait arguments fail before fetching", async () => {
     ["--since", SINCE, "--max-hours"], ...["0", "-1", "Infinity", "NaN"].map((hours) => ["--since", SINCE, "--max-hours", hours])]) {
     assert.equal(await runCodexWaitReset(argv, { fetch: async () => assert.fail("no fetch"), say: quiet }), 1);
   }
+});
+
+for (const minutes of ["0.5", "7.5", "90"]) {
+  test(`the standalone command polls every ${minutes} minutes`, async () => {
+    const timer = clock();
+    let calls = 0;
+    assert.equal(await runCodexWaitReset(["--since", SINCE, "--poll-minutes", minutes], {
+      ...timer, say: quiet,
+      fetch: async () => response(++calls === 1 ? SINCE : "2026-01-01T00:00:01.000Z"),
+    }), 0);
+    assert.equal(calls, 2);
+    assert.deepEqual(timer.sleeps, [Number(minutes) * 60_000]);
+  });
+}
+
+test("an invalid poll interval fails before fetching with usage", async () => {
+  for (const value of [undefined, "0", "-1", "Infinity", "-Infinity", "NaN", "invalid", "", " ", "1e308"]) {
+    const messages = [];
+    const argv = ["--since", SINCE, "--poll-minutes", ...(value === undefined ? [] : [value])];
+    assert.equal(await runCodexWaitReset(argv, {
+      fetch: async () => assert.fail("no fetch"), say: (line) => messages.push(line),
+    }), 1);
+    assert.match(messages.join("\n"), /--poll-minutes (must be a positive finite number|needs a value)/);
+    assert.match(messages.join("\n"), /usage: qc codex-wait-reset/);
+  }
+});
+
+test("the selected poll interval clips its final sleep at the bound", async () => {
+  const timer = clock();
+  let calls = 0;
+  assert.equal(await runCodexWaitReset(["--since", SINCE, "--poll-minutes", "7.5", "--max-hours", "0.2"], {
+    ...timer, say: quiet, fetch: async () => { calls += 1; return response(SINCE); },
+  }), 1);
+  assert.equal(calls, 2);
+  assert.deepEqual(timer.sleeps, [7.5 * 60_000, 4.5 * 60_000]);
 });
 
 test("HTTP errors, invalid JSON, and missing reset data keep polling", async () => {
@@ -114,4 +149,7 @@ test("the dispatcher returns after fetch and exposes the wait command in help", 
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /codex-wait-reset --since <iso> \[--max-hours <n>\]/);
   assert.match(help.stdout, /--wait-reset/);
+  assert.match(help.stdout, /codex-implement[^\n]+\[--effort <low\|medium\|high>\][^\n]+\[--poll-minutes <n>\]/);
+  assert.match(help.stdout, /codex-wait-reset[^\n]+\[--poll-minutes <n>\]/);
+  assert.match(help.stdout, /--wait-reset polls every 30 minutes/);
 });

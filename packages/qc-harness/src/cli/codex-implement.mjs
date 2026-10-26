@@ -8,7 +8,7 @@ import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { load } from "../config.mjs";
 import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
-import { parseMaxHours, waitForCodexReset } from "./codex-reset.mjs";
+import { parseMaxHours, parsePollMinutes, waitForCodexReset } from "./codex-reset.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
@@ -17,10 +17,10 @@ const TAIL_CHARS = 4000;
 const LIMIT = /usage limit|spend cap|rate limit|hit your limit/i;
 
 const USAGE =
-  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]\n" +
+  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
   "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs";
 
-const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours" };
+const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
 
 /** @returns the settings with resolved paths; throws an Error naming the bad or missing flag. */
 export function parseArgs(argv) {
@@ -36,6 +36,7 @@ export function parseArgs(argv) {
   for (const flag of ["--brief", "--worktree", "--progress"]) if (!found[FLAGS[flag]]) throw new Error(`${flag} is required`);
   const maxRuns = found.maxRuns === undefined ? DEFAULT_MAX_RUNS : Number(found.maxRuns);
   if (!Number.isInteger(maxRuns) || maxRuns < 1) throw new Error(`--max-runs must be a positive integer, got ${found.maxRuns}`);
+  if (found.effort !== undefined && !["low", "medium", "high"].includes(found.effort)) throw new Error("--effort must be low, medium, or high");
   const progress = path.resolve(found.progress);
   return {
     brief: path.resolve(found.brief),
@@ -43,8 +44,10 @@ export function parseArgs(argv) {
     progress,
     log: path.resolve(found.log ?? `${progress}.log`),
     maxRuns,
+    effort: found.effort,
     waitReset: found.waitReset ?? false,
     maxHours: parseMaxHours(found.maxHours),
+    pollMinutes: parsePollMinutes(found.pollMinutes),
   };
 }
 
@@ -254,7 +257,8 @@ async function runJob(argv, {
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
     const limits = codexLimits === null ? [] : ["-c", `model_auto_compact_token_limit=${codexLimits.compactAt}`, "-c", `tool_output_token_limit=${codexLimits.toolOutputTokens}`];
-    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, "-"];
+    const effort = settings.effort === undefined ? [] : ["-c", `model_reasoning_effort=${settings.effort}`];
+    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, ...effort, "-"];
     let result;
     try {
       result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...env, QC_ROLE: "implementer" }, log: settings.log });
@@ -280,7 +284,7 @@ async function runJob(argv, {
         }
       };
       /** Branch: keeps the state through the next poll and its margin. */
-      const refreshWait = (at, delay = 15 * 60_000) => {
+      const refreshWait = (at, delay = settings.pollMinutes * 60_000) => {
         const waitUntil = Math.min(at + delay, resetDeadline) + 60_000;
         recordLimit(Math.max(estimate, waitUntil), waitUntil > estimate ? "wait" : source, at);
       };
@@ -290,7 +294,7 @@ async function runJob(argv, {
       const hit = recordedAt;
       const remaining = resetDeadline - hit;
       if (remaining <= 0 || !await waitForCodexReset({
-        since: new Date(hit).toISOString(), maxHours: remaining / (60 * 60 * 1000), now, say,
+        since: new Date(hit).toISOString(), maxHours: remaining / (60 * 60 * 1000), pollMinutes: settings.pollMinutes, now, say,
         fetch: (...args) => {
           refreshWait(now());
           return (fetch ?? globalThis.fetch)(...args);

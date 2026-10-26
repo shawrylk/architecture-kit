@@ -33,6 +33,58 @@ function setup(t, { progress = "" } = {}) {
 
 const quiet = () => {};
 
+for (const effort of ["low", "medium", "high"]) {
+  test(`--effort ${effort} reaches every run and reset retry`, async (t) => {
+    const { argv, progress } = setup(t);
+    const calls = [];
+    const code = await runCodexImplement([...argv, "--effort", effort, "--max-runs", "2", "--wait-reset"], {
+      ...resetClock(), say: quiet, out: quiet,
+      fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: { announced_at: "2026-01-01T00:01:00.000Z" } } }) }),
+      run: async (call) => {
+        calls.push(call);
+        if (calls.length === 1) return { status: 2, tail: "usage limit" };
+        if (calls.length === 3) appendFileSync(progress, `${DONE_MARKER}\n`);
+        return { status: 0, tail: "ok" };
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(calls.length, 3);
+    for (const { args } of calls) {
+      const index = args.indexOf(`model_reasoning_effort=${effort}`);
+      assert.ok(index > 0);
+      assert.equal(args[index - 1], "-c");
+      assert.equal(args.at(-1), "-");
+    }
+  });
+}
+
+test("omitting --effort preserves the Codex config value", async (t) => {
+  const { argv, progress } = setup(t);
+  assert.equal(await runCodexImplement(argv, {
+    say: quiet, out: quiet,
+    run: async ({ args }) => {
+      assert.equal(args.some((arg) => arg.startsWith("model_reasoning_effort=")), false);
+      appendFileSync(progress, `${DONE_MARKER}\n`);
+      return { status: 0, tail: "ok" };
+    },
+  }), 0);
+});
+
+test("an invalid effort exits one with usage before Codex starts", async (t) => {
+  const { argv } = setup(t);
+  for (const effort of ["xhigh", "HIGH", "", "0"]) {
+    const messages = [];
+    const exits = [];
+    assert.equal(await runCodexImplement([...argv, "--effort", effort], {
+      run: async () => assert.fail("no run"),
+      say: (line) => messages.push(line), out: (line) => exits.push(line),
+    }), 1);
+    assert.match(messages.join("\n"), /--effort must be low, medium, or high/);
+    assert.match(messages.join("\n"), /usage: qc codex-implement/);
+    assert.deepEqual(exits, ["exit 1"]);
+  }
+});
+
 function resetClock() {
   let time = Date.parse("2026-01-01T00:00:00.000Z");
   const sleeps = [];
@@ -65,7 +117,7 @@ test("--wait-reset resumes the same brief and progress after the second poll", a
   assert.equal(calls.length, 2);
   assert.equal(calls[0].input, calls[1].input);
   assert.equal(calls[0].log, calls[1].log);
-  assert.deepEqual(timer.sleeps, [15 * 60 * 1000]);
+  assert.deepEqual(timer.sleeps, [30 * 60 * 1000]);
   assert.deepEqual(exits, ["exit 0"]);
 });
 
@@ -153,10 +205,10 @@ for (const tail of ["usage limit", "usage limit. Try again in 20s"]) {
     });
     assert.equal(code, 0);
     assert.equal(runs, 2);
-    assert.equal(states.length, 6);
+    assert.equal(states.length, 4);
     const estimate = start + (tail.includes("20s") ? 20_000 : 3_600_000);
     for (const state of states) {
-      const nextPoll = state.polledAt + 15 * 60_000;
+      const nextPoll = state.polledAt + 30 * 60_000;
       assert.equal(state.until?.getTime(), Math.max(estimate, nextPoll + 60_000));
       assert.equal(state.source, nextPoll + 60_000 > estimate ? "wait" : "default");
     }
@@ -219,7 +271,7 @@ for (const [tail, until, source] of [
   });
 }
 
-for (const [duration, milliseconds, source] of [["20s", 16 * 60_000, "wait"], ["8h", 8 * 3_600_000, "codex"]]) {
+for (const [duration, milliseconds, source] of [["20s", 31 * 60_000, "wait"], ["8h", 8 * 3_600_000, "codex"]]) {
   test(`an interrupted reset wait keeps the later estimate or next poll margin: ${duration}`, async (t) => {
     const { argv, dir } = setup(t);
     const file = path.join(dir, "limit.json");
@@ -250,7 +302,7 @@ test("the next poll margin follows the remaining wait at the final poll", async 
   const timer = resetClock();
   const start = timer.now();
   const states = [];
-  const code = await runCodexImplement([...argv, "--wait-reset", "--max-hours", "0.3"], {
+  const code = await runCodexImplement([...argv, "--wait-reset", "--poll-minutes", "15", "--max-hours", "0.3"], {
     ...timer, say: quiet, out: quiet,
     run: async () => ({ status: 2, tail: "usage limit. Try again in 20s" }),
     fetch: async () => {
@@ -267,7 +319,7 @@ test("repeated limits share one wait bound and use each limit's timestamp", asyn
   const timer = resetClock();
   let runs = 0;
   let polls = 0;
-  const code = await runCodexImplement([...argv, "--wait-reset", "--max-hours", "0.5"], {
+  const code = await runCodexImplement([...argv, "--wait-reset", "--poll-minutes", "15", "--max-hours", "0.5"], {
     ...timer, say: quiet, out: quiet,
     run: async () => {
       runs += 1;
@@ -320,6 +372,54 @@ test("parseArgs accepts the wait flag among value flags and validates the bound"
   assert.equal(parsed.maxHours, 0.5);
   for (const hours of ["0", "-1", "NaN", "Infinity"]) {
     assert.throws(() => parseArgs([...argv, "--max-hours", hours]), /--max-hours/);
+  }
+});
+
+for (const minutes of ["0.5", "7.5", "90"]) {
+  test(`--poll-minutes ${minutes} controls the reset wait and limit state`, async (t) => {
+    const { argv, progress } = setup(t);
+    const timer = resetClock();
+    const start = timer.now();
+    let runs = 0;
+    let polls = 0;
+    const states = [];
+    assert.equal(await runCodexImplement([...argv, "--wait-reset", "--poll-minutes", minutes], {
+      ...timer, say: quiet, out: quiet,
+      run: async () => {
+        if (++runs === 1) return { status: 2, tail: "usage limit. Try again in 20s" };
+        appendFileSync(progress, `${DONE_MARKER}\n`);
+        return { status: 0, tail: "ok" };
+      },
+      fetch: async () => {
+        states.push(readLimit(process.env.QC_CODEX_LIMIT_FILE, timer.now()));
+        return { ok: true, json: async () => ({ data: { latest_reset: {
+          announced_at: new Date(start + (++polls === 1 ? 0 : 1000)).toISOString(),
+        } } }) };
+      },
+    }), 0);
+    assert.equal(runs, 2);
+    assert.equal(polls, 2);
+    const interval = Number(minutes) * 60_000;
+    assert.deepEqual(timer.sleeps, [interval]);
+    assert.deepEqual(states, [1, 2].map((count) => ({ until: new Date(start + count * interval + 60_000), source: "wait" })));
+    assert.equal(existsSync(process.env.QC_CODEX_LIMIT_FILE), false);
+  });
+}
+
+test("an invalid poll interval exits one before a run or fetch", async (t) => {
+  const { argv } = setup(t);
+  for (const wait of [[], ["--wait-reset"]]) {
+    for (const value of [undefined, "0", "-1", "Infinity", "-Infinity", "NaN", "invalid", "", " ", "1e308"]) {
+      const messages = [];
+      const exits = [];
+      assert.equal(await runCodexImplement([...argv, ...wait, "--poll-minutes", ...(value === undefined ? [] : [value])], {
+        run: async () => assert.fail("no run"), fetch: async () => assert.fail("no fetch"),
+        say: (line) => messages.push(line), out: (line) => exits.push(line),
+      }), 1);
+      assert.match(messages.join("\n"), /--poll-minutes (must be a positive finite number|needs a value)/);
+      assert.match(messages.join("\n"), /usage: qc codex-implement/);
+      assert.deepEqual(exits, ["exit 1"]);
+    }
   }
 });
 
@@ -475,6 +575,8 @@ test("the codex agent's default command passes the runner's argument limits", ()
   const argv = command.split(/\s+/).map((arg) => ({ "<Brief>": "brief.md", "<Worktree>": ".", "<Progress>": "progress.md", "<Log>": "run.log" })[arg] ?? arg);
   assert.equal(parseArgs(argv).maxRuns, 1);
   assert.match(agent, /If the dispatch has a `MaxRuns:` line, append `--max-runs <MaxRuns>` before the redirect/);
+  assert.match(agent, /`Effort:` optional\. Use `low`, `medium`, or `high`/);
+  assert.match(agent, /If the dispatch has an `Effort:` line, append `--effort <Effort>` before the redirect/);
 });
 
 test("the sdd implementer names the e2e exit step beside the database step", () => {

@@ -668,7 +668,7 @@ The orchestrator and Codex leave no cost record, so the report says so in one li
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.
 
 ```bash
-npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]
+npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
 ```
 
 The runner passes the prompt on stdin to this command, with `QC_ROLE=implementer` in the environment:
@@ -692,6 +692,8 @@ The runner validates the worktree's brief and Codex settings before launch:
 | Setting or requirement | Default or rule |
 |---|---|
 | `--max-runs` | `1`; a positive whole number, capped by `codex.maxRuns` (default `2`) |
+| `--effort` | optional; `low`, `medium`, or `high`; omission keeps the Codex config value |
+| `--poll-minutes` | `30`; a positive finite interval in minutes for `--wait-reset` |
 | `codex.briefMaxLines` | `40` non-blank lines in the brief |
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
@@ -701,12 +703,16 @@ The overrides apply to the runner's `codex exec` call only, so your interactive 
 
 | Override | Source |
 |---|---|
+| `-c model_reasoning_effort=<value>` | `--effort`; applies to every run, including a retry after a reset; omitted without the flag |
 | `-c plugins."<name>".enabled=false` | enabled plugins in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), plus `codex.disablePlugins` (default `["superpowers@claude-plugins-official"]`) |
 | `-c model_auto_compact_token_limit=<n>` | `budgets.codex.compactAt`; null uses `codex.compactTokens` (default `300000`) |
 | `-c tool_output_token_limit=<n>` | `budgets.codex.toolOutputTokens` (default `4000`) |
 
 The lean rules tell the run to load no skill. A null `budgets.codex` omits both limit overrides.
 The runner validates only `budgets.codex`; a bad budget for another role leaves its launch unchanged.
+An invalid `--effort` value exits `1` with a usage line before Codex starts.
+The `codex` agent accepts an optional `Effort:` dispatch line and passes it as `--effort`.
+Choose `high` for a design or a change across many files, and `medium` for a small fix.
 
 An unfinished run counts as limited only when its output contains a limit line that the prompt did not echo.
 A bare status `2` counts as a failed run and consumes the run allowance. The restart loop continues while runs remain.
@@ -727,7 +733,8 @@ If deletion fails, the runner writes a note to stderr and keeps the run's exit c
 For an active limit, it prints the ISO expiry time and its source. The status command reads no configuration.
 
 Without `--wait-reset`, a limit ends the runner with exit `2`.
-With `--wait-reset`, it polls `https://codex-resets.com/api/v1/status` every 15 minutes without a model call.
+With `--wait-reset`, it polls `https://codex-resets.com/api/v1/status` every 30 minutes without a model call.
+`--poll-minutes <n>` sets the interval in minutes. A value outside the positive finite numbers exits `1` before the job starts.
 An announced reset after the limit clears the state before the same brief resumes. A limit retry keeps its run allowance.
 `--max-hours` defaults to `6`, accepts positive finite hours, and bounds all reset waits in the job together.
 At the bound, the runner keeps the later of the estimate and 60 minutes after that moment, then exits `2`.
@@ -736,10 +743,11 @@ It keeps the estimate's source when the estimate wins; otherwise, it uses `defau
 The standalone command waits for a reset without starting a model or changing the limit state:
 
 ```bash
-npx qc codex-wait-reset --since <iso> [--max-hours <n>]
+npx qc codex-wait-reset --since <iso> [--max-hours <n>] [--poll-minutes <n>]
 ```
 
-It uses the same polling interval and default bound. It exits `0` after a reset, or `1` at the bound or on invalid input.
+It uses the same 30-minute default interval, `--poll-minutes` override, and default bound.
+It exits `0` after a reset, or `1` at the bound or on invalid input.
 
 | Exit | Meaning |
 |---|---|
