@@ -6,6 +6,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } fr
 import os from "node:os";
 import path from "node:path";
 import { load } from "../config.mjs";
+import { parseMaxHours, waitForCodexReset } from "./codex-reset.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -13,19 +14,21 @@ const TAIL_CHARS = 4000;
 const LIMIT = /usage limit|spend cap|rate limit|hit your limit/i;
 
 const USAGE =
-  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]\n" +
+  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]\n" +
   "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs";
 
-const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns" };
+const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours" };
 
 /** @returns the settings with resolved paths; throws an Error naming the bad or missing flag. */
 export function parseArgs(argv) {
   const found = {};
-  for (let index = 0; index < argv.length; index += 2) {
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--wait-reset") { found.waitReset = true; continue; }
     const key = FLAGS[argv[index]];
     if (!key) throw new Error(`unknown argument ${argv[index]}`);
     if (argv[index + 1] === undefined) throw new Error(`${argv[index]} needs a value`);
     found[key] = argv[index + 1];
+    index += 1;
   }
   for (const flag of ["--brief", "--worktree", "--progress"]) if (!found[FLAGS[flag]]) throw new Error(`${flag} is required`);
   const maxRuns = found.maxRuns === undefined ? DEFAULT_MAX_RUNS : Number(found.maxRuns);
@@ -37,6 +40,8 @@ export function parseArgs(argv) {
     progress,
     log: path.resolve(found.log ?? `${progress}.log`),
     maxRuns,
+    waitReset: found.waitReset ?? false,
+    maxHours: parseMaxHours(found.maxHours),
   };
 }
 
@@ -206,7 +211,10 @@ export async function runCodexImplement(argv, { out = writeLine, ...options } = 
   return code;
 }
 
-async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line) } = {}) {
+async function runJob(argv, {
+  run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
+  fetch, now = Date.now, sleep,
+} = {}) {
   let settings;
   try {
     settings = parseArgs(argv);
@@ -222,6 +230,7 @@ async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, 
     return finish(say, error.message, 1);
   }
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
+  let resetDeadline;
   for (let count = 1; count <= settings.maxRuns; count += 1) {
     if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
     let prompt;
@@ -241,7 +250,17 @@ async function runJob(argv, { run, codexCommand = ["codex"], env = process.env, 
     }
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
-    if (reportsLimit(result.tail ?? "", prompt)) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
+    if (result.status === 2 || reportsLimit(result.tail ?? "", prompt)) {
+      if (!settings.waitReset) return finish(say, "Codex reports a usage or spend limit: dispatch the same brief to a Claude sdd-implementer", 2);
+      const hit = now();
+      resetDeadline ??= hit + settings.maxHours * 60 * 60 * 1000;
+      const remaining = resetDeadline - hit;
+      if (remaining <= 0 || !await waitForCodexReset({
+        since: new Date(hit).toISOString(), maxHours: remaining / (60 * 60 * 1000), fetch, now, sleep, say,
+      })) return finish(say, "Codex reset wait bound reached", 2);
+      // A usage limit leaves the run unfinished, so its retry keeps the same run allowance.
+      count -= 1;
+    }
   }
   return finish(say, `out of runs: ${settings.maxRuns} runs and the progress file is not done`, 3);
 }

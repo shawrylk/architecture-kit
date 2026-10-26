@@ -30,9 +30,12 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
-  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>]
+  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--wait-reset] [--max-hours <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
+                           --wait-reset polls every 15 minutes without a model, then resumes the same brief; --max-hours defaults to 6
+  qc codex-wait-reset --since <iso> [--max-hours <n>]
+                           wait for a later Codex reset without a model; exit 0 on a reset, 1 at the bound; default 6 hours
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
   qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
@@ -94,7 +97,13 @@ async function main() {
   // The runner reads no configuration, so it runs from any folder.
   if (command === "codex-implement") {
     const { runCodexImplement } = await import("./codex-implement.mjs");
-    process.exit(await runCodexImplement(rest));
+    process.exitCode = await runCodexImplement(rest);
+    return;
+  }
+  if (command === "codex-wait-reset") {
+    const { runCodexWaitReset } = await import("./codex-reset.mjs");
+    process.exitCode = await runCodexWaitReset(rest);
+    return;
   }
   // The slots are machine-wide, so the runner reads no configuration.
   if (command === "gate-slot") {

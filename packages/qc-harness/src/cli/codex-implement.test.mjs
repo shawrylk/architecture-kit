@@ -23,6 +23,125 @@ function setup(t, { progress = "" } = {}) {
 
 const quiet = () => {};
 
+function resetClock() {
+  let time = Date.parse("2026-01-01T00:00:00.000Z");
+  const sleeps = [];
+  return { now: () => time, sleeps, sleep: async (ms) => { sleeps.push(ms); time += ms; } };
+}
+
+test("--wait-reset resumes the same brief and progress after the second poll", async (t) => {
+  const { argv, progress } = setup(t);
+  const timer = resetClock();
+  const calls = [];
+  let polls = 0;
+  const run = async (call) => {
+    calls.push(call);
+    if (calls.length === 1) return { status: 2, tail: "usage limit" };
+    appendFileSync(progress, `${DONE_MARKER}\n`);
+    return { status: 0, tail: "done" };
+  };
+  const fetch = async () => {
+    assert.equal(calls.length, 1, "the wait never starts a model");
+    polls += 1;
+    return { ok: true, json: async () => ({ data: { latest_reset: {
+      announced_at: polls === 1 ? "2026-01-01T00:00:00.000Z" : "2026-01-01T00:15:00.000Z",
+    } } }) };
+  };
+  const exits = [];
+  assert.equal(await runCodexImplement([...argv, "--wait-reset"], { run, fetch, ...timer, say: quiet, out: (line) => exits.push(line) }), 0);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].input, calls[1].input);
+  assert.equal(calls[0].log, calls[1].log);
+  assert.deepEqual(timer.sleeps, [15 * 60 * 1000]);
+  assert.deepEqual(exits, ["exit 0"]);
+});
+
+test("--wait-reset exits two at its bound without another model call", async (t) => {
+  const { argv } = setup(t);
+  const timer = resetClock();
+  let runs = 0;
+  const exits = [];
+  const code = await runCodexImplement([...argv, "--wait-reset", "--max-hours", "0.3"], {
+    ...timer, say: quiet, out: (line) => exits.push(line),
+    run: async () => { runs += 1; return { status: 1, tail: "usage limit" }; },
+    fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: { announced_at: "2025-12-31T23:00:00.000Z" } } }) }),
+  });
+  assert.equal(code, 2);
+  assert.equal(runs, 1);
+  assert.equal(timer.now(), Date.parse("2026-01-01T00:18:00.000Z"));
+  assert.deepEqual(exits, ["exit 2"]);
+});
+
+test("repeated limits share one wait bound and use each limit's timestamp", async (t) => {
+  const { argv } = setup(t);
+  const timer = resetClock();
+  let runs = 0;
+  let polls = 0;
+  const code = await runCodexImplement([...argv, "--wait-reset", "--max-hours", "0.5"], {
+    ...timer, say: quiet, out: quiet,
+    run: async () => {
+      runs += 1;
+      if (runs === 2) await timer.sleep(1);
+      return { status: 2, tail: "" };
+    },
+    fetch: async () => {
+      polls += 1;
+      return { ok: true, json: async () => ({ data: { latest_reset: {
+        announced_at: polls === 1 ? "2025-12-31T23:00:00.000Z" : "2026-01-01T00:15:00.000Z",
+      } } }) };
+    },
+  });
+  assert.equal(code, 2);
+  assert.equal(runs, 2);
+  assert.equal(timer.now(), Date.parse("2026-01-01T00:30:00.000Z"));
+});
+
+test("a limit without --wait-reset exits two without fetching", async (t) => {
+  const { argv } = setup(t);
+  assert.equal(await runCodexImplement(argv, {
+    say: quiet, out: quiet,
+    run: async () => ({ status: 2, tail: "" }),
+    fetch: async () => assert.fail("no fetch"),
+  }), 2);
+});
+
+test("parseArgs accepts the wait flag among value flags and validates the bound", () => {
+  const argv = ["--brief", "b", "--worktree", "w", "--progress", "p"];
+  assert.equal(parseArgs(argv).waitReset, false);
+  assert.equal(parseArgs(argv).maxHours, 6);
+  const parsed = parseArgs(["--wait-reset", ...argv, "--max-hours", "0.5"]);
+  assert.equal(parsed.waitReset, true);
+  assert.equal(parsed.maxHours, 0.5);
+  for (const hours of ["0", "-1", "NaN", "Infinity"]) {
+    assert.throws(() => parseArgs([...argv, "--max-hours", hours]), /--max-hours/);
+  }
+});
+
+test("the Windows CLI resumes after fetch and returns without a forced exit", { skip: process.platform !== "win32" }, (t) => {
+  const { dir, argv, progress } = setup(t);
+  const attempt = path.join(dir, "attempt");
+  const fake = path.join(dir, "fake.mjs");
+  writeFileSync(fake, `import { existsSync, writeFileSync, appendFileSync } from 'node:fs';
+    for await (const chunk of process.stdin) {}
+    if (existsSync(${JSON.stringify(attempt)})) appendFileSync(${JSON.stringify(progress)}, ${JSON.stringify(DONE_MARKER)});
+    else { writeFileSync(${JSON.stringify(attempt)}, '1'); console.error('usage limit'); process.exitCode = 2; }`);
+  writeFileSync(path.join(dir, "codex.cmd"), `@echo off\r\n@"${process.execPath}" "${fake}" %*\r\n`);
+  const cli = new URL("./qc.mjs", import.meta.url).href;
+  const source = `globalThis.fetch = async () => {
+      console.error('fake reset fetch');
+      return { ok: true, json: async () => ({ data: { latest_reset: { announced_at: new Date(Date.now() + 1000).toISOString() } } }) };
+    };
+    process.exit = () => { throw new Error('forced exit after fetch'); };
+    process.argv = [process.execPath, ${JSON.stringify(QC)}, 'codex-implement', ...${JSON.stringify(argv)}, '--wait-reset'];
+    await import(${JSON.stringify(cli)});`;
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", source], {
+    encoding: "utf8", timeout: 10000, env: { ...process.env, PATH: dir, PATHEXT: ".EXE;.CMD" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stderr, /fake reset fetch/);
+  assert.equal(result.stdout.trim(), "exit 0");
+});
+
 test("an unreadable progress path reports the error and writes exit 1", async (t) => {
   const { argv, progress } = setup(t);
   rmSync(progress);
