@@ -2,8 +2,11 @@
 // The trigger that holds `gh pr merge` to its review. Before the call it needs `--match-head-commit` and an
 // APPROVED review of `swarm.review.merge` for that sha, or a head inside the direct lane of `swarm.direct`.
 // After the call it records the merge and its issues.
-// A merge that names another repository than the checkout's `origin` is that repository's own, so it passes.
-// With `swarm.dispatch` off at the PR base, the merge needs no review, including a raw API merge.
+// A `gh pr merge` that names another repository than the checkout's `origin` is that repository's own, so it passes.
+// A raw API merge, REST or GraphQL, reads the base policy of its PR. It passes with `swarm.dispatch` off.
+// It denies with dispatch on, or when the guard cannot read the PR or its base.
+// Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes.
+// This applies in every checkout, with `swarm.dispatch` on or off.
 
 import { fileURLToPath } from "node:url";
 import { PARSERS } from "./bash-command-guard.mjs";
@@ -72,9 +75,14 @@ export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict
 
 /** The base the PR of `merge` merges into, as gh reads it before the merge: `{ name, oid }`, or null. `oid` is null when gh names none. */
 function prBaseOf(merge, cwd, gh, timeoutMs) {
-  const args = ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid"];
+  const args = merge.nodeId
+    ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner}}}}", "-f", `id=${merge.nodeId}`]
+    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid"];
   try {
-    const pr = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
+    const answer = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
+    const pr = merge.nodeId ? answer?.data?.node : answer;
+    if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
+      typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
     return typeof pr?.baseRefName === "string" ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null } : null;
   } catch {
     return null;
@@ -94,13 +102,16 @@ function policyOf(merge, root, cwd, gh, deadline) {
   return { pr, workflow: workflowAt(root, { baseOid: pr.oid, git }) };
 }
 
-/** The fragment that names the PR of a REST merge endpoint; null when the endpoint cannot name one. */
-function apiPrOf({ endpoint, env }) {
-  const match = /^(?:https?:\/\/([^/]+)\/(?:api\/v3\/)?)?\/?(?:repos\/([^/]+\/[^/]+)\/)?pulls\/(\d+)\/merge\/?(?:\?.*)?$/.exec(endpoint);
-  if (!match || /[{}]/.test(endpoint)) return null;
+/** The fragment that names a REST or GraphQL merge's PR; null when the call cannot name one. */
+function apiPrOf({ endpoint, env, nodeId }) {
   const { GH_REPO, ...settings } = env;
-  if (match[1]) settings.GH_HOST = match[1] === "api.github.com" ? "github.com" : match[1];
-  return { selector: match[3], repo: match[2] ?? GH_REPO ?? null, env: settings };
+  const host = /^https?:\/\/([^/]+)\//.exec(endpoint)?.[1];
+  if (host) settings.GH_HOST = host === "api.github.com" ? "github.com" : host;
+  if (nodeId !== undefined) return nodeId ? { nodeId, env: settings } : null;
+  const match = /^(?:https?:\/\/([^/]+)\/(?:api\/v3\/)?)?\/?(?:repos\/([^/]+\/[^/]+)\/)?pulls\/(\d+)\/merge\/?(?:\?.*)?$/.exec(endpoint);
+  if (!match || /[{}]/.test(endpoint.replace("repos/{owner}/{repo}/", "repos/owner/repo/"))) return null;
+  const repo = match[2] === "{owner}/{repo}" ? GH_REPO ?? null : match[2] ?? GH_REPO ?? null;
+  return { selector: match[3], repo, env: settings };
 }
 
 /**
@@ -218,6 +229,9 @@ export function decide(call, { gh = runGh } = {}) {
   if (event === "PreToolUse") {
     for (const found of ghApiMerges(command, parse, { cwd })) {
       const use = "Run `gh pr merge <n> --match-head-commit <sha>` with the head an APPROVED review named.";
+      if (found.inputField !== undefined) {
+        return deny(`Merge guard: \`gh api ${found.endpoint}\` mixes \`--input\` with \`${found.inputField}\`. Fields enter the URL query string, so the guard cannot pin the body to one PR. ${use}`);
+      }
       const merge = apiPrOf(found);
       if (merge) {
         try {

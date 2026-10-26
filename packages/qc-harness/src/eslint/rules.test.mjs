@@ -2,6 +2,38 @@ import { RuleTester } from "eslint";
 import tsparser from "@typescript-eslint/parser";
 import { rules } from "./index.mjs";
 
+new RuleTester({
+  languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
+}).run("no-static-inline-style", rules["no-static-inline-style"], {
+  valid: [
+    { code: '<div className="w-full" />;', filename: "view.tsx" },
+    { code: '<div style={{ width: size }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: size, display: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: getSize() }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: sizes.width }} />;', filename: "view.tsx" },
+    { code: '<div style={{ width: `${size}px` }} />;', filename: "view.tsx" },
+    { code: '<div style={{ ...styles, display: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={{ [property]: "flex" }} />;', filename: "view.tsx" },
+    { code: '<div style={styles} />;', filename: "view.tsx" },
+    { code: '<div style={enabled ? styles : undefined} />;', filename: "view.tsx" },
+    { code: '<div style={{}} />;', filename: "view.tsx" },
+    { code: '<div data-style={{ width: 12 }} />;', filename: "view.tsx" },
+    { code: '<div style />;', filename: "view.tsx" },
+  ],
+  invalid: [
+    { code: '<div style={{ width: 12 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ display: "flex", opacity: 1 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<Box style={{ marginTop: -2, zIndex: +1 }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ display: `flex` }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<Box style={{ visible: false, color: null }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ ["display"]: "flex" }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={({ width: 12 } as const)} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ width: 12 as number }} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<div style={{ width: 12 } satisfies CSSProperties} />;', filename: "view.tsx", errors: [{ messageId: "static" }] },
+    { code: '<><div style={{ width: 12 }} /><div style={{ height: 8 }} /></>;', filename: "view.tsx", errors: [{ messageId: "static" }, { messageId: "static" }] },
+  ],
+});
+
 const tester = new RuleTester({
   languageOptions: { ecmaVersion: 2023, sourceType: "module" },
 });
@@ -828,7 +860,131 @@ tester.run("registry-literal", rules["registry-literal"], {
   ],
 });
 
+const tsx = new RuleTester({
+  languageOptions: { parser: tsparser, ecmaVersion: 2023, sourceType: "module" },
+});
+const componentFile = "/repo/frontend/src/features/pins/view.tsx";
+const componentPair = { messageId: "multiple", data: { first: "First", second: "Second" } };
+
+console.log("→", "one-component-per-file");
+tsx.run("one-component-per-file", rules["one-component-per-file"], {
+  valid: [
+    { code: "function First() { return <div />; }", filename: componentFile },
+    { code: "const First = () => <>one</>; const helper = () => <span />;", filename: componentFile },
+    { code: "function First() { return <div />; } function Second() { return null; }", filename: componentFile },
+    { code: "const First = memo(forwardRef(function Inner() { return <div />; }));", filename: componentFile },
+    { code: "function First() { return <div />; } function Second() { return () => <span />; }", filename: componentFile },
+    { code: "const First = () => <div />; const Second = () => ({ icon: <span /> });", filename: componentFile },
+    { code: "const First = () => <div />; const Second = () => <span />;", filename: "/repo/view.jsx" },
+  ],
+  invalid: [
+    { code: "function First() { return <div />; } const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
+    { code: "const First = () => <>one</>; const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
+    { code: "const First = React.forwardRef(() => null); const Second = React.memo(Other);", filename: componentFile, errors: [componentPair] },
+    { code: "const First = memo(forwardRef(() => <div />)); const Second = () => <span />;", filename: componentFile, errors: [componentPair] },
+    { code: "const First = function Named() { return <div />; }; function Second() { if (ready) return <span />; return null; }", filename: componentFile, errors: [componentPair] },
+    { code: "const First = () => ready ? <div /> : null; const Second = () => (ready && <span />) as React.ReactNode;", filename: componentFile, errors: [componentPair] },
+    { code: "function First() { const Second = () => <span />; return <div />; }", filename: componentFile, errors: [componentPair] },
+    { code: "const First = () => <div />; const Second = () => <span />;", filename: "C:\\repo\\view.tsx", errors: [componentPair] },
+    {
+      code: "const First = () => <div />; const Second = () => <span />; const Third = () => <p />;",
+      filename: componentFile,
+      errors: [componentPair, { messageId: "multiple", data: { first: "First", second: "Third" } }],
+    },
+  ],
+});
+
+console.log("→", "raw-element-in-primitive");
+tsx.run("raw-element-in-primitive", rules["raw-element-in-primitive"], {
+  valid: [
+    { code: "<><form /><dialog /><input /><select /><textarea /><button /></>;", filename: "/repo/frontend/src/platform/ui/primitives/form.tsx" },
+    { code: "<button />;", filename: "C:\\repo\\frontend\\src\\platform\\ui\\primitives\\nested\\button.tsx" },
+    { code: "<><Form /><Dialog /><Input /><Select /><Textarea /><Button /><div /><UI.button /></>;", filename: componentFile },
+    { code: "<button />;", filename: "/repo/shared/primitives/button.tsx", options: [{ primitive: "shared/primitives" }] },
+    { code: "<input />;", filename: "/repo/other/primitives/input.tsx", options: [{ primitive: ["shared/primitives", "other/primitives"] }] },
+    { code: "<button />;", filename: componentFile, options: [{ elements: ["a"] }] },
+    { code: "<button />;", filename: componentFile, options: [{ elements: [] }] },
+  ],
+  invalid: [
+    ...["form", "dialog", "input", "select", "textarea", "button"].map((element) => ({
+      code: `<${element} />;`, filename: componentFile, errors: [{ messageId: "raw", data: { element } }],
+    })),
+    { code: "<button />;", filename: "C:\\repo\\frontend\\src\\features\\pins\\view.tsx", errors: [{ messageId: "raw" }] },
+    { code: "<button />;", filename: "/repo/frontend/src/platform/ui/primitives-extra/button.tsx", errors: [{ messageId: "raw" }] },
+    { code: "<form><input /></form>;", filename: componentFile, errors: [{ messageId: "raw" }, { messageId: "raw" }] },
+    { code: "<a />;", filename: componentFile, options: [{ elements: ["a"] }], errors: [{ messageId: "raw", data: { element: "a" } }] },
+    { code: "<button />;", filename: "/repo/frontend/src/platform/ui/primitives/button.tsx", options: [{ primitive: "shared/primitives" }], errors: [{ messageId: "raw" }] },
+    { code: "<input />;", filename: componentFile, options: [{ primitive: [] }], errors: [{ messageId: "raw" }] },
+  ],
+});
+
 const pending = { messageId: "pending" };
+
+console.log("→", "no-arbitrary-class-value");
+jsx.run("no-arbitrary-class-value", rules["no-arbitrary-class-value"], {
+  valid: [
+    { code: '<div className="text-sm md:hover:bg-primary" />;' },
+    { code: '<div title="text-[11px]" />; const label = "p-[3px]";' },
+    { code: 'cn("p-2", { "text-sm": active });' },
+    { code: 'cva("p-2", { variants: { size: { small: "text-sm" } }, defaultVariants: { size: "text-[11px]" } });' },
+    { code: '<div className="data-[state=open]:text-sm [&>span]:p-2" />;' },
+    { code: '<div className="supports-[display:grid]:grid hover:[&>span]:p-2" />;' },
+    { code: 'other("text-[11px]");' },
+    { code: 'cn("text-[11px]");', options: [{ classCallees: [] }] },
+  ],
+  invalid: [
+    ...['<div className="text-[11px]" />;', '<div class="md:hover:bg-[#123456]" />;',
+      '<div className={active ? "w-[3rem]" : "w-4"} />;',
+      'cn("p-2", { "md:hover:text-[11px]": active });',
+      'cva("p-2", { variants: { size: { small: "text-[11px]" } } });',
+      'cva("p-2", { compoundVariants: [{ size: "small", className: "p-[3px]" }] });',
+      'classes("text-[11px]");',
+      'cn("!text-[11px]");', 'cn("-mt-[2px]!");', 'cn("bg-primary/[.35]");',
+      '<div className="[color:var(--foreground)]" />;',
+      'const variants = { size: { small: "text-[11px]" } }; cva("p-2", { variants });',
+    ].map((code) => ({ code, ...(code.startsWith("classes") ? { options: [{ classCallees: ["classes"] }] } : {}), errors: [{ messageId: "arbitrary" }] })),
+    { code: '<div className={`p-2 ${active ? "text-[11px]" : "text-sm"}`} />;', errors: [{ messageId: "arbitrary" }] },
+    { code: 'cn("p-[3px] text-[11px]");', errors: [{ messageId: "arbitrary" }, { messageId: "arbitrary" }] },
+    { code: '<div className={"text-[11px]" as string} />;', languageOptions: { parser: tsparser }, errors: [{ messageId: "arbitrary" }] },
+    { code: 'const variants = { size: { small: "text-[11px]" } }; cva("p-2", { variants });', filename: "/repo/view.jsx", errors: [{ messageId: "arbitrary" }] },
+  ],
+});
+
+console.log("→", "no-literal-color");
+jsx.run("no-literal-color", rules["no-literal-color"], {
+  valid: [
+    { code: '<div className="text-primary" style={{ color: "var(--foreground)" }} />;' },
+    { code: '<Icon fill="currentColor" />; <a href="#abc">Link</a>;' },
+    { code: 'const message = "#123456"; const data = { id: "#abc" };' },
+    { code: 'cn("text-primary"); cva("bg-primary", { variants: { tone: { primary: "text-primary" } } });' },
+    { code: 'cva("p-2", { variants: { tone: { "#abc": "text-primary" } }, defaultVariants: { tone: "#abc" } });' },
+    { code: '<div style={{ color: theme.foreground, opacity: 0.5 }} />;' },
+    { code: '<div style={{ color: "var(--rgb)" }} />;' },
+    { code: 'const styles = { color: "rgb(var(--foreground))" }; <div style={styles} />;' },
+    { code: '<div data-testid="#abc" id="#abc" />;' },
+    { code: '<div title="#12345 #123456789" />;' },
+    { code: 'other("bg-[#abc]");' },
+    { code: 'cn("bg-[#abc]");', options: [{ classCallees: [] }] },
+  ],
+  invalid: [
+    ...['<Icon fill="#abc" />;', '<Icon stroke={"#12345678"} />;',
+      '<div color={active ? "rgb(1, 2, 3)" : color} />;',
+      '<div style={{ color: "rgba(1, 2, 3, 0.5)" }} />;',
+      '<div style={{ background: "linear-gradient(#abc, var(--background))" }} />;',
+      '<div className="md:hover:bg-[#123456]" />;',
+      'cn("text-[hsl(120,50%,50%)]");',
+      'cva("p-2", { variants: { tone: { custom: "bg-[hsla(120,50%,50%,0.5)]" } } });',
+      'const styles = { color: "#AbCd" }; <div style={styles} />;',
+      '<div style={{ boxShadow: `0 0 ${size}px #abc` }} />;',
+      'classes("bg-[#abc]");',
+      'const styles = { borderColor: "#abc" };',
+      'cn("shadow-[0_0_rgba(0,0,0,0.5)]");',
+      '<div color={"#abc" || fallback} />;',
+      'const variants = { tone: { custom: "bg-[#abc]" } }; cva("p-2", { variants });',
+    ].map((code) => ({ code, ...(code.startsWith("classes") ? { options: [{ classCallees: ["classes"] }] } : {}), errors: [{ messageId: "color" }] })),
+    { code: 'const variants = { tone: { custom: "bg-[#abc]" } }; cva("p-2", { variants });', filename: "/repo/view.jsx", errors: [{ messageId: "color" }] },
+  ],
+});
 
 console.log("→", "mutation-control-pending");
 jsx.run("mutation-control-pending", rules["mutation-control-pending"], {

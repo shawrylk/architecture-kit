@@ -58,6 +58,21 @@ test("a gh api call to a PR's merge endpoint is found, in each spelling, and no 
 
 const MUTATION = "mutation { mergePullRequest(input: {pullRequestId: \"X\"}) { clientMutationId } }";
 
+test("API endpoint matching strips the query and fragment while keeping the host", () => {
+  for (const parse of [segmentsOf, powershellSegments]) {
+    for (const suffix of ["#x", "?x=1", "?x=1#fragment", "#fragment?x=1"]) {
+      for (const endpoint of ["graphql", "https://ghe.example.com/api/graphql"]) {
+        assert.deepEqual(ghApiMerges(`gh api '${endpoint}${suffix}' --input -`, parse), [
+          { endpoint, unreadable: "-", env: {} },
+        ]);
+      }
+      assert.deepEqual(ghApiMerges(`gh api 'repos/o/r/pulls/1/merge${suffix}' -X PUT`, parse), [
+        { endpoint: "repos/o/r/pulls/1/merge", env: {} },
+      ]);
+    }
+  }
+});
+
 test("a mutation word in any argument is found, whatever the spelling of the GraphQL URL", () => {
   for (const url of ["graphql", "/graphql", "https://api.github.com/graphql", "https://ghe.example.com/api/graphql", "graphql/"]) {
     assert.deepEqual(ghApiMerges(`gh api ${url} -f query='${MUTATION}'`, segmentsOf).map((call) => call.endpoint), [url], url);
@@ -66,6 +81,61 @@ test("a mutation word in any argument is found, whatever the spelling of the Gra
   assert.equal(ghApiMerges(`gh api graphql -f query='${MUTATION}'`, powershellSegments).length, 1);
   assert.equal(ghApiMerges(`gh api graphql -f query='query { viewer { login } }'`, segmentsOf).length, 0);
   assert.equal(ghApiMerges("gh api https://api.github.com/graphql -f query='query { viewer { login } }'", segmentsOf).length, 0);
+});
+
+test("GraphQL merges carry each node id from the mutation or a field", () => {
+  const query = 'mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }';
+  assert.equal(ghApiMerges(`gh api graphql -f query='${MUTATION}'`, segmentsOf)[0].nodeId, "X");
+  for (const flags of ["-f id=PR_123", "-F id=PR_123", "--raw-field=id=PR_123", "--field id=PR_123", "-fid=PR_123", "-iFid=PR_123"]) {
+    for (const parse of [segmentsOf, powershellSegments]) {
+      assert.equal(ghApiMerges(`gh api graphql -f query='${query}' ${flags}`, parse)[0].nodeId, "PR_123", flags);
+    }
+  }
+  assert.equal(ghApiMerges(`gh api graphql -f query='${query}'`, segmentsOf)[0].nodeId, null);
+  const multiple = 'mutation { a: mergePullRequest(input: {pullRequestId: "ON"}) { clientMutationId } b: mergePullRequest(input: {pullRequestId: "OFF"}) { clientMutationId } }';
+  assert.deepEqual(ghApiMerges(`gh api graphql -f query='${multiple}'`, segmentsOf).map((call) => call.nodeId), ["ON", "OFF"]);
+});
+
+test("GraphQL node identity ignores text inside comments and string values", () => {
+  const query = 'mutation { mergePullRequest(input: {clientMutationId: "pullRequestId: $decoy", pullRequestId: "ON"}) { clientMutationId } }';
+  assert.equal(ghApiMerges(`gh api graphql -f query='${query}' -f decoy=OFF`, segmentsOf)[0].nodeId, "ON");
+  const comment = 'mutation { mergePullRequest(input: { # pullRequestId: $decoy\n pullRequestId: "ON"}) { clientMutationId } }';
+  assert.equal(ghApiMerges(`gh api graphql -f query='${comment}' -f decoy=OFF`, segmentsOf)[0].nodeId, "ON");
+});
+
+test("GraphQL merges read node ids from query and input files", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-gh-node-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const query = 'mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }';
+  writeFileSync(path.join(dir, "merge.graphql"), query);
+  writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query, variables: { id: "PR_file" } }));
+  for (const args of ["-F query=@merge.graphql -F id=PR_file", "--input body.json"]) {
+    assert.equal(ghApiMerges(`gh api graphql ${args}`, segmentsOf, { cwd: dir })[0].nodeId, "PR_file");
+  }
+});
+
+test("a GraphQL endpoint ignores a preceding header value", () => {
+  for (const header of ["-H https://github.com/graphql", "--header=https://github.com/graphql", "-iHhttps://github.com/graphql"]) {
+    for (const parse of [segmentsOf, powershellSegments]) {
+      const [found] = ghApiMerges(`gh api ${header} https://ghe.example.com/api/graphql -f query='${MUTATION}'`, parse);
+      assert.equal(found.endpoint, "https://ghe.example.com/api/graphql", header);
+      assert.equal(found.nodeId, "X");
+    }
+  }
+});
+
+test("GraphQL input mixed with fields cannot select a node", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-gh-input-mix-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const query = 'mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }';
+  writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query, variables: { id: "PR_ON" } }));
+  for (const field of ["-f id=PR_OFF", `-f query='mutation { mergePullRequest(input: {pullRequestId: "PR_OFF"}) { clientMutationId } }'`]) {
+    for (const parse of [segmentsOf, powershellSegments]) {
+      const [found] = ghApiMerges(`gh api graphql --input body.json ${field}`, parse, { cwd: dir });
+      assert.equal(found.inputField, "-f");
+      assert.equal(found.nodeId, undefined);
+    }
+  }
 });
 
 test("a query file the call reads is searched for the mutation, and a file the guard cannot read fails closed", (t) => {

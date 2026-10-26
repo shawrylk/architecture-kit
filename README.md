@@ -105,7 +105,7 @@ Every rule below is off until a repository turns it on.
 | Feature | Turn it on with |
 |---|---|
 | The reference architecture: docs, decisions, quality thresholds, and the PR policy workflow | `qc init --full` |
-| Lint rules of the reference stack: `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key` | `rules` in `qc.config.json` |
+| Lint rules of the reference stack: `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `one-component-per-file`, `raw-element-in-primitive` | `rules` in `qc.config.json` |
 | A prose style for docs and PR bodies, through Vale | `qc init --full`, then `qc prose` |
 | A tool-call budget for each subagent | `swarm.toolCallBudget` |
 | The subagent workflow: dispatch rules, reviews, and merge checks | `swarm.dispatch` |

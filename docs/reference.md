@@ -627,7 +627,7 @@ stopping the call they are judging; the session note skips the tool line instead
 With `swarm.dispatch` on, more hooks hold the subagent workflow to its conventions. Each one reads or
 writes one ledger: JSON lines in `<git common dir>/qc/ledger.jsonl`, shared by every worktree. The
 record types are `dispatch`, `stop`, `verdict`, `merge`, `issue-update`, and `cost`. `qc ledger [--cost] [branch]`
-prints them. Each check does nothing when `swarm.dispatch` is off in the repository it judges. That is the repository of the named worktree, and the repository of the working directory when no worktree is named. The one exception is the merge record, which the worktree check of section 8 reads.
+prints them. Each check does nothing when `swarm.dispatch` is off in the repository it judges. That is the repository of the named worktree, and the repository of the working directory when no worktree is named. The exceptions are the denial for mixed GraphQL input and fields, and the merge record that the worktree check of section 8 reads.
 
 | Check | Hook | What it refuses |
 |---|---|---|
@@ -635,7 +635,7 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Test first | the same | an implementer report with no line that starts `RED:`, or none that starts `GREEN:`. A report with a `HANDOFF: <path>` line needs neither; it needs a note at that path with `Brief:`, `Worktree:`, `Branch:`, and `Head:` lines and non-empty `## Done`, `## Left`, and `## Next step` sections. The stop records the note's path |
 | Task review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an implementer on a branch whose head holds an implementer commit that no verdict names. A controller commit after a reviewed head needs no review. An implementer whose prompt has the `HANDOFF: <path>` line of the newest implementer stop on the branch continues that task and passes; the next implementer after it needs a review, and a review of the later head covers both stops. A stop head whose check runs on GitHub include a failed, cancelled, timed-out, or action-required run, or a run that has not completed, needs no review first: the next implementer continues the task and passes, and the ledger records the sha and the reason in the dispatch record. A head with all runs green, with no runs, or with no readable answer from `gh` keeps the refusal, which says the review runs once CI on the head is green |
 | Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line or continues the newest stop's hand-off. The ledger records the reason or the note. A resume through `SendMessage` passes |
-| Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names and that the direct lane does not cover. A `gh api` call to a merge endpoint is refused outright. So is a `gh api` call that holds the `mergePullRequest` mutation in an argument or in a readable query file, and a query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A merge that names a repository other than `origin` passes with a note, whether it names it with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
+| Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names and that the direct lane does not cover. A raw API merge, REST or GraphQL, reads the base policy of its PR. It passes with `swarm.dispatch` off at the base. It denies with dispatch on, or when the guard cannot read the PR or its base. Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes. This applies in every checkout, with `swarm.dispatch` on or off. A query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A `gh pr merge` that names a repository other than `origin` passes with a note. It can name the repository with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
 | Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
 | Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths`, unless the direct lane covers it |
 | Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
@@ -775,7 +775,7 @@ Known limits:
 |---|---|
 | Error | `no-cross-feature-internals`, `storage-only-in-resource`, `external-service-only-in-adapter`, `scoped-repository`, `tenant-scoped-table`, `no-raw-fetch`, `no-orchestration-in-trigger`, `no-sql-raw`, `registry-literal`, `durable-idempotency-key` |
 | Warning | `no-comment-paragraph`, `no-number-in-comment`, `no-supersession-trail`: each judges the style of a comment |
-| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `name-the-pattern` |
+| Off until `rules` turns it on | `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `mutation-control-pending`, `one-component-per-file`, `raw-element-in-primitive`, `no-arbitrary-class-value`, `no-literal-color`, `no-static-inline-style`, `name-the-pattern` |
 
 An `eslint-disable` comment silences its rule, and a disable comment that silences nothing is an
 error. `qc lint` judges only the changed lines, so a new disable comment is part of the change a
@@ -957,6 +957,56 @@ the IME guard first. A row or a button that reacts to Enter is not text entry, s
 With `ime.guards` set, only a call to one of them counts, and an inline `isComposing` or
 `keyCode === 229` check is reported as a second mechanism. With no guard set, either inline check
 counts.
+
+### Keep components separate and raw controls in primitives
+
+`qc/one-component-per-file` permits at most one React component declaration in each `.tsx` file.
+It counts capitalized functions and arrows that return JSX, plus components declared with `forwardRef` or `memo`.
+Each finding names both components, including declarations inside another component.
+
+`qc/raw-element-in-primitive` permits raw `form`, `dialog`, `input`, `select`, `textarea`, and `button` elements only under `ui.layers.primitive`.
+Use primitive components elsewhere. The `elements` rule option replaces the element list.
+The preset passes `ui.layers.primitive` as the `primitive` rule option, which accepts one folder or an array of folders.
+
+`qc/no-arbitrary-class-value` refuses Tailwind arbitrary values, including `text-[11px]` and `md:hover:bg-[#123456]`.
+`qc/no-literal-color` refuses hex, `rgb()`, `rgba()`, `hsl()`, and `hsla()` literals in JSX presentation attributes, class strings, and style objects.
+Both read class strings through the shared UI parser, including `className`, `class`, `ui.classCallees`, and `cva` variants.
+The preset passes `ui.classCallees` as the `classCallees` rule option. Use theme tokens and CSS variables for presentation values.
+
+`qc/no-static-inline-style` rejects a JSX `style` object whose values are all literals, such as `style={{ display: "flex", width: 12 }}`.
+Move those values to classes or theme tokens.
+A runtime value, such as `style={{ width: size }}`, permits the object, including mixed literal and runtime values.
+Spreads and runtime property names also pass. Empty objects pass because they hold no presentation values.
+
+These rules ship off. Enable them under `rules` in `qc.config.json`; the preset applies them to `clientFiles`.
+
+```json
+{ "rules": { "one-component-per-file": true, "raw-element-in-primitive": true, "no-arbitrary-class-value": true, "no-literal-color": true, "no-static-inline-style": true } }
+```
+
+### Adopt the UI rules with a baseline that only shrinks
+
+The five UI rules in #144 share ESLint's bulk suppressions mechanism:
+
+- `qc/one-component-per-file`
+- `qc/raw-element-in-primitive`
+- `qc/no-arbitrary-class-value`
+- `qc/no-literal-color`
+- `qc/no-static-inline-style`
+
+Use ESLint 9.24 or later; the kit uses ESLint 9.39.
+For an existing frontend, `eslint --suppress-rule <rule>` writes `eslint-suppressions.json` for the selected rule.
+Create the initial baseline for all five rules, then commit the file:
+
+```sh
+npx eslint frontend/src --suppress-rule qc/one-component-per-file --suppress-rule qc/raw-element-in-primitive --suppress-rule qc/no-arbitrary-class-value --suppress-rule qc/no-literal-color --suppress-rule qc/no-static-inline-style
+```
+
+After adoption, run `npx eslint frontend/src` without suppression-generation flags. Findings beyond the recorded counts fail.
+ESLint fails on unused suppressions by default, so a stale entry fails after you remove its violation.
+Run `npx eslint frontend/src --prune-suppressions` to remove stale entries, then commit the smaller file.
+Keep the default unused-suppression check enabled. Accept only baseline changes that remove entries or reduce counts.
+Use this file as the sole lint baseline; it may only shrink after adoption.
 
 ### Show the pending state on a write control
 

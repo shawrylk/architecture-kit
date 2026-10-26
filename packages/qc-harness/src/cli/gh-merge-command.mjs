@@ -13,10 +13,10 @@ const GH_SETTINGS = ["GH_CONFIG_DIR", "GH_HOST", "GH_REPO"];
 const VALUE_FLAGS = new Set(["-b", "--body", "-F", "--body-file", "-t", "--subject", "-A", "--author-email", "--match-head-commit", "--repo"]);
 const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s;
 const POWERSHELL_ENV = /^\$env:([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$/is;
-const MERGE_ENDPOINT = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge\/?(?:\?.*)?$/;
+const MERGE_ENDPOINT = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?(?:repos\/[^/]+\/[^/]+\/)?pulls\/\d+\/merge\/?$/;
 const MERGE_MUTATION = /\bmergePullRequest\b/;
-const GRAPHQL_ENDPOINT = /(?:^|\/)graphql\/?(?:\?.*)?$/;
-const FIELD_FLAGS = new Set(["--field"]);
+const GRAPHQL_ENDPOINT = /(?:^|\/)graphql\/?$/;
+const FIELD_FLAGS = new Set(["--field", "--raw-field"]);
 const PR_URL = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/;
 const REST_PATH = /^(?:https?:\/\/[^/]+\/(?:api\/v3\/)?)?\/?repos\//;
 /** The short flags of `gh pr merge` and of `gh api` that take a value, and the long flags of `gh api` that do. */
@@ -24,6 +24,8 @@ const MERGE_VALUE_LETTERS = "bFtAR";
 const API_VALUE_LETTERS = "FfHXqtp";
 const API_VALUE_FLAGS = new Set(["--field", "--raw-field", "--header", "--method", "--jq", "--template", "--input", "--hostname", "--cache", "--preview"]);
 const MAX_QUERY_BYTES = 1024 * 1024;
+
+const endpointPathFragment = (endpoint) => endpoint.split(/[?#]/, 1)[0];
 
 /** Only the settings that choose gh's account or host; a token is a credential and is never kept. */
 const kept = (env) => Object.fromEntries(Object.entries(env).filter(([name]) => GH_SETTINGS.includes(name)));
@@ -138,32 +140,30 @@ function fileOf(cwd, spelled) {
 }
 
 /**
- * The files a `gh api` call reads its body from: each `-F key=@file`, and `--input file`. `-` is standard input.
+ * The fragment that reads the fields and input flags of a `gh api` call.
  * pflag reads a short flag with its value attached (`-Fkey=@file`, `-F=key=@file`) and a cluster of short flags
  * that ends in `-F` (`-iFkey=@file`, `-iF key=@file`). A letter that takes a value ends a cluster, so it hides an `F` after it.
  */
-function bodyFiles(args) {
-  const files = [];
-  const add = (field) => {
-    if (/^[^=]*=@/.test(field)) files.push(field.slice(field.indexOf("@") + 1));
-  };
+function bodyValues(args) {
+  const values = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    const cluster = /^-([A-Za-z]*)F(.*)$/s.exec(arg);
-    if (cluster && !/[fFHXqt]/.test(cluster[1])) {
-      const value = cluster[2] === "" ? args[++i] : cluster[2].replace(/^=/, "");
-      if (value !== undefined) add(value);
+    if (arg.startsWith("-") && !arg.startsWith("--")) {
+      const at = [...arg.slice(1)].findIndex((letter) => API_VALUE_LETTERS.includes(letter));
+      if (at === -1) continue;
+      const flag = arg[at + 1];
+      const value = at === arg.length - 2 ? args[++i] : arg.slice(at + 2).replace(/^=/, "");
+      if ((flag === "f" || flag === "F") && value !== undefined) values.push({ flag, value });
       continue;
     }
     const at = arg.startsWith("--") ? arg.indexOf("=") : -1;
     const flag = at === -1 ? arg : arg.slice(0, at);
-    if (flag !== "--input" && !FIELD_FLAGS.has(flag)) continue;
+    if (!API_VALUE_FLAGS.has(flag)) continue;
     const value = at === -1 ? args[++i] : arg.slice(at + 1);
     if (value === undefined) continue;
-    if (flag === "--input") files.push(value);
-    else add(value);
+    if (flag === "--input" || FIELD_FLAGS.has(flag)) values.push({ flag, value });
   }
-  return files;
+  return values;
 }
 
 /** The text of a query file, or null when it is standard input, too large, or unreadable. */
@@ -176,6 +176,36 @@ function queryText(cwd, spelled) {
   } catch {
     return null;
   }
+}
+
+/** The fragment that names each mutation's PR node, or null when its input cannot name one. */
+function mutationNodes(query, fields) {
+  if (typeof query !== "string") return [null];
+  const tokens = (query.match(/#[^\r\n]*|"""[\s\S]*?"""|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z_0-9]*|[^\s,]/g) ?? []).filter((token) => !token.startsWith("#"));
+  const nodes = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] !== "mergePullRequest") continue;
+    let node = null;
+    if (tokens[i + 1] === "(" && tokens[i + 2] === "input" && tokens[i + 3] === ":" && tokens[i + 4] === "{") {
+      let depth = 1;
+      let ids = 0;
+      for (let j = i + 5; j < tokens.length && depth > 0; j++) {
+        if (tokens[j] === "{") depth++;
+        if (tokens[j] === "}") depth--;
+        if (depth !== 1 || tokens[j] !== "pullRequestId" || tokens[j + 1] !== ":") continue;
+        ids++;
+        try {
+          const value = tokens[j + 2] === "$" ? fields[tokens[j + 3]] : JSON.parse(tokens[j + 2]);
+          node = typeof value === "string" && value.length > 0 ? value : null;
+        } catch {
+          node = null;
+        }
+      }
+      if (ids !== 1 || depth !== 0) node = null;
+    }
+    nodes.push(node);
+  }
+  return nodes.length > 0 ? nodes : [null];
 }
 
 /** True for a `repos/` path that stays inside `repos/`: no `..` segment, spelled or percent-encoded, and no end at `graphql`. */
@@ -199,10 +229,12 @@ function apiEndpoint(args) {
 }
 
 /**
- * Each `gh api` call that merges with no review check, as `{ endpoint, unreadable }`. `endpoint` is the PR merge
- * endpoint as written, or the GraphQL URL as written (`graphql` when the call spells none). A call holds a
+ * Each `gh api` call that merges with no review check, as `{ endpoint, nodeId, unreadable }`. `endpoint` is the PR merge
+ * endpoint or GraphQL URL without its query or fragment (`graphql` when the call spells none). A call holds a
  * `mergePullRequest` mutation when any argument, or any query file it reads, names it, whatever the URL spelling.
+ * `nodeId` names each GraphQL mutation's PR, or null when its input cannot name one.
  * A GraphQL call whose query file the guard cannot read fails closed, and `unreadable` names that file.
+ * `inputField` names the field flag mixed with `--input`, which puts fields in the URL query string.
  * A call whose endpoint is a `repos/` REST path that stays inside it holds no mutation, so its arguments and files are not searched.
  * @param options.cwd the folder a relative query file resolves against
  */
@@ -217,17 +249,42 @@ export function ghApiMerges(command, parse, { cwd = process.cwd() } = {}) {
         else if (args[i].startsWith("--hostname=")) settings.GH_HOST = args[i].slice("--hostname=".length);
       }
       const withSettings = (calls) => calls.map((call) => ({ ...call, env: settings }));
-      const found = args.filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
-      if (isRestPath(apiEndpoint(args) ?? "")) return withSettings(found);
-      const graphql = args.find((word) => GRAPHQL_ENDPOINT.test(word));
+      const found = args.map(endpointPathFragment).filter((word) => MERGE_ENDPOINT.test(word)).map((endpoint) => ({ endpoint }));
+      const spelled = apiEndpoint(args);
+      const endpoint = spelled === null ? null : endpointPathFragment(spelled);
+      if (isRestPath(endpoint ?? "")) return withSettings(found);
+      const graphql = endpoint !== null && GRAPHQL_ENDPOINT.test(endpoint) ? endpoint : undefined;
       let mutation = args.some((word) => MERGE_MUTATION.test(word));
       let unreadable;
-      for (const file of bodyFiles(args)) {
-        const text = queryText(cwd, file);
+      const fields = {};
+      let body = null;
+      let input = false;
+      let inputField;
+      for (const { flag, value } of bodyValues(args)) {
+        if (flag === "--input") input = true;
+        else inputField ??= flag.startsWith("--") ? flag : `-${flag}`;
+        const isInput = flag === "--input";
+        const at = value.indexOf("=");
+        if (!isInput && at === -1) continue;
+        const key = value.slice(0, at);
+        const field = value.slice(at + 1);
+        const file = isInput ? value : (flag === "F" || flag === "--field") && field.startsWith("@") ? field.slice(1) : null;
+        const text = file === null ? field : queryText(cwd, file);
         if (text === null) unreadable ??= file;
         else if (MERGE_MUTATION.test(text)) mutation = true;
+        if (!isInput) fields[key] = text;
+        else {
+          try { body = JSON.parse(text); } catch { body = null; }
+        }
       }
-      if (mutation) found.push({ endpoint: graphql ?? "graphql" });
+      if (input && inputField !== undefined && (graphql !== undefined || mutation)) {
+        found.push({ endpoint: graphql ?? "graphql", inputField });
+        return withSettings(found);
+      }
+      if (mutation) {
+        const nodes = unreadable === undefined ? mutationNodes(fields.query ?? body?.query, { ...body?.variables, ...fields }) : [null];
+        found.push(...nodes.map((nodeId) => ({ endpoint: graphql ?? "graphql", nodeId, ...(unreadable === undefined ? {} : { unreadable }) })));
+      }
       else if (graphql !== undefined && unreadable !== undefined) found.push({ endpoint: graphql, unreadable });
       return withSettings(found);
     });

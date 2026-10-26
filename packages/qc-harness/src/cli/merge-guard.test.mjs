@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -154,6 +154,24 @@ test("an API merge passes when the base has no config and denies an unreadable P
   assert.match(denied(decide(command, { gh: fakeGh(prView("f".repeat(40))).gh })) ?? "", /base commit.*not in this repository/);
 });
 
+test("a placeholder REST merge reads its PR base with the inline or current repository", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  for (const [prefix, repo] of [["", null], ["GH_REPO=other/project ", "other/project"]]) {
+    const { gh, calls } = fakeGh(prView(base));
+    assert.equal(decide(shell(dir, `${prefix}gh api -X PUT repos/{owner}/{repo}/pulls/5/merge`), { gh }), null);
+    assert.deepEqual(calls[0].args, ["pr", "view", "5", ...(repo ? ["-R", repo] : []), "--json", "baseRefName,baseRefOid"]);
+    assert.deepEqual(calls[0].options.env, {});
+  }
+  gitIn(dir, "add", ".");
+  gitIn(dir, "commit", "-q", "-m", "enable dispatch");
+  const enabled = gitIn(dir, "rev-parse", "HEAD");
+  const command = shell(dir, "gh api -X PUT repos/{owner}/{repo}/pulls/5/merge");
+  assert.match(denied(decide(command, { gh: fakeGh(prView(enabled)).gh })) ?? "", /gh pr merge/);
+  const { gh, calls } = fakeGh(prView(base));
+  assert.match(denied(decide(shell(dir, "gh api -X PUT repos/{owner}/project/pulls/5/merge"), { gh })) ?? "", /gh pr merge/);
+  assert.equal(calls.length, 0);
+});
+
 test("every API merge in a command reads its own base policy", (t) => {
   const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } });
   writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: {} }));
@@ -161,6 +179,130 @@ test("every API merge in a command reads its own base policy", (t) => {
   const off = gitIn(dir, "rev-parse", "HEAD");
   const gh = fakeGh((args) => prView(args[2] === "23" ? off : base)).gh;
   assert.match(denied(decide(shell(dir, "gh api repos/o/r/pulls/23/merge; gh api repos/o/r/pulls/24/merge"), { gh })) ?? "", /gh pr merge/);
+});
+
+test("a GraphQL merge reads its node and base policy within the shared deadline", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  const command = shell(dir, 'GH_CONFIG_DIR=account GH_REPO=ignored/repo gh api https://ghe.example.com/api/graphql -f query=\'mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }\' -F id=PR_123');
+  const node = (oid) => JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: oid, repository: { nameWithOwner: "o/r" } } } });
+  const { gh, calls } = fakeGh(node(base));
+  assert.equal(decide(command, { gh }), null);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args.slice(0, 2), ["api", "graphql"]);
+  assert.match(calls[0].args.join(" "), /node\(id:\s*\$id\)\s*\{\s*\.\.\. on PullRequest\s*\{\s*number baseRefName baseRefOid repository\s*\{\s*nameWithOwner/);
+  assert.ok(calls[0].args.includes("id=PR_123"));
+  assert.deepEqual(calls[0].options.env, { GH_CONFIG_DIR: "account", GH_HOST: "ghe.example.com" });
+  assert.ok(calls[0].options.timeoutMs > 0);
+  gitIn(dir, "add", ".");
+  gitIn(dir, "commit", "-q", "-m", "enable dispatch");
+  const enabled = gitIn(dir, "rev-parse", "HEAD");
+  assert.match(denied(decide(command, { gh: fakeGh(node(enabled)).gh })) ?? "", /gh pr merge/);
+  for (const answer of [null, "invalid", JSON.stringify({ data: { node: { id: "issue" } } }), JSON.stringify({ data: { node: null } }), node("f".repeat(40))]) {
+    assert.match(denied(decide(command, { gh: fakeGh(answer).gh })) ?? "", /base policy cannot be read/);
+  }
+  assert.match(denied(decide(command, { gh: () => { throw new Error("lookup failed"); } })) ?? "", /base policy cannot be read/);
+  const missing = fakeGh(node(base));
+  assert.match(denied(decide(shell(dir, "gh api graphql -f query='mutation { mergePullRequest(input: {}) { clientMutationId } }'"), { gh: missing.gh })) ?? "", /gh pr merge/);
+  assert.equal(missing.calls.length, 0);
+});
+
+test("a GraphQL endpoint with a fragment and stdin denies with dispatch on", (t) => {
+  const { on } = workspace(t);
+  for (const tool of ["Bash", "PowerShell"]) {
+    assert.match(denied(decide(shell(on, "gh api 'graphql#x' --input -", "PreToolUse", tool))) ?? "", /gh pr merge/);
+  }
+});
+
+test("a GraphQL endpoint with a fragment keeps its GHE host for the node lookup", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const node = JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
+  for (const tool of ["Bash", "PowerShell"]) {
+    const { gh, calls } = fakeGh(node);
+    const command = `gh api 'https://ghe.example.com/api/graphql#x' -f query='mutation { mergePullRequest(input: {pullRequestId: "PR_ON"}) { clientMutationId } }'`;
+    assert.equal(decide(shell(dir, command, "PreToolUse", tool), { gh }), null);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].args.includes("id=PR_ON"));
+    assert.equal(calls[0].options.env.GH_HOST, "ghe.example.com");
+  }
+});
+
+test("a REST endpoint with a fragment reads the PR base policy", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  for (const tool of ["Bash", "PowerShell"]) {
+    const { gh, calls } = fakeGh(prView(base));
+    assert.equal(decide(shell(dir, "gh api 'repos/o/r/pulls/1/merge#x' -X PUT", "PreToolUse", tool), { gh }), null);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, ["pr", "view", "1", "-R", "o/r", "--json", "baseRefName,baseRefOid"]);
+  }
+});
+
+test("the merge guard documents the unconditional GraphQL input-field denial", () => {
+  const reference = readFileSync(new URL("../../../../docs/reference.md", import.meta.url), "utf8");
+  const header = readFileSync(HOOK, "utf8").split("import ")[0].replace(/^\/\/ ?/gm, "").replace(/\s+/g, " ");
+  for (const text of [reference, header]) {
+    assert.ok(text.includes("Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes."));
+    assert.ok(text.includes("This applies in every checkout, with `swarm.dispatch` on or off."));
+  }
+});
+
+test("a GraphQL node lookup uses the endpoint host after a decoy header", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const node = JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
+  for (const tool of ["Bash", "PowerShell"]) {
+    const { gh, calls } = fakeGh(node);
+    const command = shell(dir, 'gh api -H https://github.com/graphql https://ghe.example.com/api/graphql -f query=\'mutation { mergePullRequest(input: {pullRequestId: "PR_ON"}) { clientMutationId } }\'', "PreToolUse", tool);
+    assert.equal(decide(command, { gh }), null);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].args.includes("id=PR_ON"));
+    assert.equal(calls[0].options.env.GH_HOST, "ghe.example.com");
+  }
+});
+
+test("GraphQL input mixed with fields denies before a decoy node lookup", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const query = 'mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }';
+  writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query, variables: { id: "PR_ON" } }));
+  const node = JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
+  const fields = ["-f id=PR_OFF", "-F id=PR_OFF", "--field=id=PR_OFF", "--raw-field id=PR_OFF", "-fid=PR_OFF", "-iFid=PR_OFF",
+    `-f query='mutation { mergePullRequest(input: {pullRequestId: "PR_OFF"}) { clientMutationId } }'`];
+  for (const field of fields) {
+    for (const tool of ["Bash", "PowerShell"]) {
+      const { gh, calls } = fakeGh(node);
+      const command = shell(dir, `gh api graphql --input body.json ${field}`, "PreToolUse", tool);
+      assert.match(denied(decide(command, { gh })) ?? "", /--input.*(?:-f|-F|--field|--raw-field)/, field);
+      assert.equal(calls.length, 0, field);
+    }
+  }
+  writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query: "query { viewer { login } }" }));
+  assert.match(denied(decide(shell(dir, "gh api graphql -f id=PR_OFF --input=body.json"))) ?? "", /--input.*-f/);
+});
+
+test("GraphQL input-field denial covers reads and writes with dispatch on or off", (t) => {
+  const { on, off } = workspace(t);
+  for (const dir of [on, off]) {
+    for (const query of ["query { viewer { login } }", 'mutation { mergePullRequest(input: {pullRequestId: "PR_ON"}) { clientMutationId } }']) {
+      writeFileSync(path.join(dir, "body.json"), JSON.stringify({ query }));
+      for (const tool of ["Bash", "PowerShell"]) {
+        const { gh, calls } = fakeGh(null);
+        const command = shell(dir, "gh api graphql --input body.json -f id=PR_OFF", "PreToolUse", tool);
+        assert.match(denied(decide(command, { gh })) ?? "", /--input.*-f/);
+        assert.equal(calls.length, 0);
+      }
+    }
+  }
+});
+
+test("a GraphQL lookup shares the policy deadline and denies an expired read", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  const start = Date.now();
+  const clock = t.mock.method(Date, "now", () => start);
+  const { gh, calls } = fakeGh(() => {
+    clock.mock.mockImplementation(() => start + 60_000);
+    return JSON.stringify({ data: { node: { number: 5, baseRefName: "main", baseRefOid: base, repository: { nameWithOwner: "o/r" } } } });
+  });
+  const command = shell(dir, 'gh api graphql -f query=\'mutation { mergePullRequest(input: {pullRequestId: "PR_123"}) { clientMutationId } }\'');
+  assert.match(denied(decide(command, { gh })) ?? "", /base policy cannot be read/);
+  assert.equal(calls.length, 1);
 });
 
 test("a merge inside a nested shell is judged too", (t) => {
