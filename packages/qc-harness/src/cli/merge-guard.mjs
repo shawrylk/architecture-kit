@@ -38,7 +38,7 @@ export function mergeVerdict(merges, records, kind, lane = null) {
       return { refusal: `Merge guard: \`gh pr merge\` must pass \`--match-head-commit <sha>\` with the head the ${kind} review approved, so a push after the review cannot merge unreviewed. Add it.` };
     }
     const verdict = decidingVerdictFor(records, merge.sha, [kind]);
-    const missing = dispatchedScopesFor(records, merge.sha).find(
+    const missing = (kind === "branch" ? dispatchedScopesFor(records, merge.sha) : []).find(
       (scope) => latestVerdictFor(records, merge.sha, [kind], scope)?.verdict !== "APPROVED",
     );
     if (verdict?.verdict === "APPROVED" && missing === undefined) continue;

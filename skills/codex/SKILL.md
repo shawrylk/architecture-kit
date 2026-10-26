@@ -124,7 +124,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 - Review a head only when CI on it is green and it contains the tip of the base branch.
 - Every dispatch carries a `Brief: <path>` line, a `Worktree: <path>` line, and a named model.
-- A pull request gets one branch review for each scope. Review a large head in parallel: one `architecture:sdd-branch-reviewer` for each feature, and one for the conflict resolutions, each with its own prompt line `Scope: <name>`. The merge waits until the newest review of every scope approves.
+- A pull request gets one branch review for each scope. Review a large head in parallel: one `architecture:sdd-branch-reviewer` for each feature, and one for the conflict resolutions, each with its own prompt line `Scope: <name>`. A merge that requires branch reviews waits until the newest review of every dispatched scope approves.
 - Each fix round gets one review of its increment, with a `Reviewed: <sha>` line that names the last reviewed head of the same scope.
 
 ## CI failures
@@ -132,7 +132,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - Read the failed step and the assertion before you act. Fetch the log of a job with `gh api repos/<owner>/<repo>/actions/jobs/<job id>/logs`.
 - Rerun a known flake once with `gh run rerun <run id> --failed`.
 - A runner or Docker failure that comes back, or a runner that stays offline, needs the user. Never change the CI routing, and never skip CI.
-- A real failure is a Codex brief. A Claude implementer for a CI fix carries the prompt line `Fix: ci`, and one for a review fix carries `Fix: review`; either may start on a red or unreviewed head.
+- A real failure is a Codex brief. A Claude implementer for a CI fix carries the prompt line `Fix: ci`, which needs known-red CI on the current head. A review fix carries `Fix: review`, which needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop.
 - Give each fix round to a fresh agent. Split a large round by file ownership: one worktree and sub-branch for each owner, merged into the branch by the controller.
 - `qc retry-failed` reruns the failed files of a local run once; a flake in CI gets one `gh run rerun <run id> --failed`.
 

@@ -575,3 +575,16 @@ test("a merge needs an APPROVED review of every scope dispatched on the branch",
   records.push({ type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "f", scope: "b" });
   assert.equal(mergeVerdict([{ sha }], records, "branch").refusal, null);
 });
+
+test("task merge reviews pass despite a scoped branch dispatch", (t) => {
+  const ws = workspace(t);
+  const command = `gh pr merge 60 --match-head-commit ${SHA}`;
+  appendRecord(ws.ledgerOf(ws.task), {
+    type: "dispatch", task: false, agentType: "sdd-branch-reviewer", branch: "feat/62-x", head: SHA, scope: "security",
+  });
+  assert.match(denied(decide(shell(ws.task, command))) ?? "", /no APPROVED task review/);
+  appendRecord(ws.ledgerOf(ws.task), verdict("task", "APPROVED"));
+  assert.equal(decide(shell(ws.task, command)), null);
+  appendRecord(ws.ledgerOf(ws.task), verdict("task", "CHANGES_REQUIRED"));
+  assert.match(denied(decide(shell(ws.task, command))) ?? "", /CHANGES_REQUIRED/);
+});
