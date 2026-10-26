@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { GLOBAL_SKILLS } from "./global-skills.mjs";
 
 const PLUGIN = fileURLToPath(new URL("../../../", import.meta.url));
 const EDIT_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
@@ -9,7 +10,7 @@ const EDIT_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 test("every skill applies only where qc.config.json exists, in its description and in its body", () => {
   const skills = readdirSync(`${PLUGIN}skills`);
   assert.ok(skills.length > 0);
-  for (const skill of skills) {
+  for (const skill of skills.filter((name) => !GLOBAL_SKILLS.includes(name))) {
     const text = readFileSync(`${PLUGIN}skills/${skill}/SKILL.md`, "utf8");
     const description = /^description: (.+)$/m.exec(text)?.[1] ?? "";
     assert.match(description, /only in a repository with a `qc\.config\.json`/, skill);
