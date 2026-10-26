@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathMatcher } from "../glob.mjs";
@@ -99,12 +99,17 @@ function mergeDiff(root) {
 function git(root, args, input) {
   const remote = args[0] === "ls-remote";
   const words = ["-c", "core.quotePath=false", ...(root === null ? [] : ["-C", root]), ...args];
-  return execFileSync(remote ? process.execPath : "git",
-    remote ? ["-e", remoteReadScript, "--", "29000", "git", ...words] : words, {
-    encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, windowsHide: true,
-    ...(root === null ? { cwd: os.tmpdir() } : {}),
-    ...(remote ? { timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" } } : {}),
-  });
+  const directory = root === null ? mkdtempSync(path.join(os.tmpdir(), "qc-guard-base-")) : null;
+  try {
+    return execFileSync(remote ? process.execPath : "git",
+      remote ? ["-e", remoteReadScript, "--", "29000", "git", ...words] : words, {
+      encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+      ...(directory === null ? {} : { cwd: directory }),
+      ...(remote ? { timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" } } : {}),
+    });
+  } finally {
+    if (directory !== null) rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 /** Resource: reads the effective origin URL without opening an interactive prompt. */
@@ -129,13 +134,21 @@ export function guardRefs(root) {
 /** Fragment: excludes commits reached by the configured remote base. */
 function baseExclusion(root, base = "origin/main", recordedRefs = {}, recordedUrl) {
   const branch = base.replace(/^origin\//, "");
-  const recorded = recordedRefs[`refs/remotes/origin/${branch}`];
+  const push = recordedUrl === undefined;
+  let recorded = recordedRefs[`refs/remotes/origin/${branch}`];
+  if (push) {
+    try { recorded = git(root, ["rev-parse", "--verify", `refs/remotes/origin/${branch}`]).trim(); }
+    catch { recorded = undefined; }
+  }
   const fallback = recorded ? [recorded] : [];
   const currentUrl = originUrl(root);
-  if (recordedUrl == null || currentUrl === null || currentUrl !== recordedUrl) return fallback;
+  if (recordedUrl === null || currentUrl === null || (!push && currentUrl !== recordedUrl)) return fallback;
+  const url = push ? currentUrl : recordedUrl;
+  const remoteUrl = url.includes("://") || /^[^/\\]+:/.test(url) || path.isAbsolute(url)
+    ? url : path.resolve(root, url);
   try {
     const refname = `refs/heads/${branch}`;
-    const tip = git(null, ["ls-remote", recordedUrl, refname]).trim().split(/\r?\n/)
+    const tip = git(null, ["ls-remote", remoteUrl, refname]).trim().split(/\r?\n/)
       .map((line) => line.split(/\s+/)).find(([, ref]) => ref === refname)?.[0];
     return tip ? [tip] : [];
   } catch {

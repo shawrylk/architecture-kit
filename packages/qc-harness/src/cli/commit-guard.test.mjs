@@ -2,11 +2,11 @@ import { strict as assert } from "node:assert";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { defaults } from "../config.mjs";
 import { checkDiff, protectedAllow, runCommitGuard, guardHead, guardRefs, checkRunCommits } from "./commit-guard.mjs";
 
@@ -256,22 +256,108 @@ for (const redirect of ["uploadpack", "sshCommand"]) test(`repository ${redirect
   assert.deepEqual(checkRunCommits(r.root, before, { base: "main", branch: "run" }).map((finding) => finding.commit), [bad]);
 });
 
+for (const offline of [false, true]) test(`an implementer can push a new ref over protected base history ${offline ? "offline" : "online"}`, (t) => {
+  const r = repo(t);
+  r.put("qc.config.json", "{}\n");
+  r.commit();
+  r.git("branch", "-M", "main");
+  r.git("remote", "add", "origin", r.root);
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  r.git("checkout", "-qb", "run");
+  r.put("run.md", "safe\n");
+  r.commit();
+  let reads = 0;
+  interceptGit(t, (command, args, options, execute) => {
+    if (args.includes("ls-remote") && !args.includes("--get-url")) {
+      reads += 1;
+      if (offline) throw new Error("offline origin");
+    }
+    return execute(command, args, options);
+  });
+  const lines = [];
+  assert.equal(runCommitGuard({ ...defaults, root: r.root }, {
+    argv: ["--push", guardHead(r.root), "0".repeat(40)],
+    env: { QC_ROLE: "implementer" }, say: (line) => lines.push(line),
+  }), 0, lines.join("\n"));
+  assert.equal(reads, 1);
+});
+
+for (const mode of ["push-new", "push-existing", "run-relative", "run-absolute", "run-file-url"]) test(`a merged remote base is excluded in ${mode} mode`, (t) => {
+  const upstream = repo(t);
+  upstream.put("qc.config.json", "{}\n");
+  upstream.commit();
+  upstream.git("branch", "-M", "main");
+  const r = repo(t);
+  const url = mode === "run-relative" ? path.relative(r.root, upstream.root)
+    : mode === "run-file-url" ? pathToFileURL(upstream.root).href : upstream.root;
+  r.git("remote", "add", "origin", url);
+  r.git("fetch", "-q", "origin");
+  r.git("checkout", "-qfb", "run", "origin/main");
+  const before = guardRefs(r.root);
+  r.put("run.md", "safe\n");
+  r.commit();
+  const previous = guardHead(r.root);
+  upstream.put("base.md", `ghp_${"a".repeat(36)}\n`);
+  upstream.put(".github/workflows/ci.yml", "safe\n");
+  upstream.commit();
+  r.git("fetch", "-q", "origin");
+  r.git("merge", "--no-ff", "-qm", "test: merge base", "origin/main");
+  r.git("update-ref", "refs/remotes/origin/main", before.head);
+  if (mode.startsWith("push")) {
+    const lines = [];
+    assert.equal(runCommitGuard({ ...defaults, root: r.root }, {
+      argv: ["--push", guardHead(r.root), mode === "push-new" ? "0".repeat(40) : previous],
+      env: { QC_ROLE: "implementer" }, say: (line) => lines.push(line),
+    }), 0, lines.join("\n"));
+  } else {
+    assert.deepEqual(checkRunCommits(r.root, before, { base: "main", branch: "run" }), []);
+  }
+});
+
+for (const url of ["../upstream", "https://example.test/repo.git", "git@example.test:repo.git", "host:repo.git", "C:/repo.git", "C:\\repo.git"]) test(`the base read resolves the origin URL ${url}`, (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  let readUrl;
+  interceptGit(t, (command, args, options, execute) => {
+    if (args.includes("ls-remote")) {
+      if (args.includes("--get-url")) return `${url}\n`;
+      readUrl = args.at(-2);
+      return `${guardHead(r.root)}\trefs/heads/main\n`;
+    }
+    return execute(command, args, options);
+  });
+  const before = guardRefs(r.root);
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }), []);
+  assert.equal(readUrl, url === "../upstream" ? path.resolve(r.root, url) : url);
+});
+
 test("the remote base read uses its recorded URL outside the repository", (t) => {
   const r = repo(t);
   r.put("base.md", "safe\n");
   r.commit();
   r.git("remote", "add", "origin", r.root);
   const before = guardRefs(r.root);
-  let remoteRead;
+  const remoteReads = [];
   interceptGit(t, (command, args, options, execute) => {
-    if (args.includes("ls-remote") && !args.includes("--get-url")) remoteRead = { args, options };
+    if (args.includes("ls-remote") && !args.includes("--get-url")) {
+      remoteReads.push({ args, options });
+      assert.ok(existsSync(options.cwd));
+      assert.deepEqual(readdirSync(options.cwd), []);
+    }
     return execute(command, args, options);
   });
   assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }), []);
-  assert.ok(remoteRead);
-  assert.ok(!remoteRead.args.includes("-C"));
-  assert.deepEqual(remoteRead.args.slice(-3), ["ls-remote", before.originUrl, "refs/heads/main"]);
-  assert.equal(remoteRead.options.cwd, os.tmpdir());
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }), []);
+  assert.equal(remoteReads.length, 2);
+  assert.notEqual(remoteReads[0].options.cwd, remoteReads[1].options.cwd);
+  for (const remoteRead of remoteReads) {
+    assert.ok(remoteRead);
+    assert.ok(!remoteRead.args.includes("-C"));
+    assert.deepEqual(remoteRead.args.slice(-3), ["ls-remote", before.originUrl, "refs/heads/main"]);
+    assert.equal(path.dirname(remoteRead.options.cwd), os.tmpdir());
+    assert.equal(existsSync(remoteRead.options.cwd), false);
+  }
 });
 
 test("the remote base read matches the whole refname", (t) => {
@@ -300,7 +386,11 @@ for (const failure of ["ETIMEDOUT", "failure"]) test(`remote reads disable promp
   interceptGit(t, (command, args, options, execute) => {
     if (args.includes("ls-remote")) {
       calls.push({ args, options });
-      if (!args.includes("--get-url")) throw Object.assign(new Error(failure), { code: failure });
+      if (!args.includes("--get-url")) {
+        assert.ok(existsSync(options.cwd));
+        assert.deepEqual(readdirSync(options.cwd), []);
+        throw Object.assign(new Error(failure), { code: failure });
+      }
     }
     return execute(command, args, options);
   });
@@ -312,6 +402,7 @@ for (const failure of ["ETIMEDOUT", "failure"]) test(`remote reads disable promp
   assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }).map((finding) => finding.commit), [bad]);
   assert.equal(calls.filter(({ args }) => args.includes("--get-url")).length, 2);
   assert.equal(calls.filter(({ args }) => !args.includes("--get-url")).length, 1);
+  assert.equal(existsSync(calls.find(({ args }) => !args.includes("--get-url")).options.cwd), false);
   for (const { options } of calls) {
     assert.equal(options.timeout, 30_000);
     assert.equal(options.env.GIT_TERMINAL_PROMPT, "0");

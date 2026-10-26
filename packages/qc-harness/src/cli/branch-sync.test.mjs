@@ -68,6 +68,23 @@ for (const paused of [false, true]) test(`a target from another repository is re
   assert.equal(git(worktree, "status", "--porcelain"), "");
 });
 
+for (const spelling of ["lowercase drive", "lowercase path", "linked root"]) test(`branch sync accepts the same repository with a ${spelling}`, {
+  skip: spelling !== "linked root" && process.platform !== "win32",
+}, async (t) => {
+  const root = batch(t);
+  const worktree = path.join(root, ".worktree", "run");
+  git(root, "worktree", "add", "-qb", "linked-run", worktree);
+  const configuredRoot = spelling === "lowercase drive" ? root[0].toLowerCase() + root.slice(1)
+    : spelling === "lowercase path" ? root.toLowerCase() : worktree;
+  const lines = [];
+  assert.equal(await runBranch(config(configuredRoot), ["sync", spelling === "linked root" ? "." : worktree, "--no-push"], {
+    say: quiet(lines), run, withSlot: (_words, _cwd, action) => action(),
+    runSlot: () => assert.fail("--no-push must never push"),
+  }), 0, lines.join("\n"));
+  git(worktree, "merge-base", "--is-ancestor", "main", "HEAD");
+  assert.equal(git(worktree, "status", "--porcelain"), "");
+});
+
 test("a pause refuses sync before branch changes or a push", async (t) => {
   const dir = batch(t);
   const head = git(dir, "rev-parse", "HEAD");

@@ -345,7 +345,9 @@ Before each run, it records the run branch, every ref tip, and the effective ori
 After the run, it scans only `HEAD`, `refs/heads/<run branch>`, and `refs/remotes/origin/<run branch>`.
 Other worktrees and fetched branches outside the run stay outside this scan.
 The recorded tips exclude existing history, and `git ls-remote <recorded URL> refs/heads/<base>` supplies the remote base tip.
-The base read runs from the system temp folder without `-C`, so the worktree's repository config never reaches it.
+Each base read runs without `-C` in a fresh folder under the system temp folder and removes that folder afterwards.
+The worktree's repository config stays outside the base read.
+Relative local origin paths resolve against the worktree root; absolute paths, URLs, and scp-style addresses stay unchanged.
 The guard accepts only the line whose refname equals `refs/heads/<base>` exactly.
 After the run, it compares the effective origin URL with the recorded URL, including any `insteadOf` rewrite.
 If the URL changes or no URL was recorded, the base exclusion uses only the `origin/<base>` tip recorded before the run.
@@ -358,6 +360,7 @@ The process reads the Git version once; ordinary commits use neither merge optio
 During a staged merge, the hook checks only paths and added lines that differ from every parent.
 The pre-push hook guards every pushed ref through `qc commit-guard --push <local oid> <remote oid>` with the same role rules.
 A new remote ref checks its history outside the base; a deleted ref has no commits to check.
+Push mode reads the current origin URL and the remote base tip; a failed read uses the local `origin/<base>` tip.
 An intermediate commit fails even if a later commit removes the finding.
 The hook and runner return exit `4`, "guard refused", and name each finding.
 The runner checks commits before accepting a completion marker or handling a usage limit.
