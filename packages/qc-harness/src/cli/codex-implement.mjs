@@ -136,7 +136,7 @@ function spawnRun({ command, args, input, env, log }, codexCommand) {
       reject(error);
     });
     child.stdin.on("error", (error) => {
-      if (error.code !== "EPIPE") reject(error);
+      if (error.code !== "EPIPE" && error.code !== "EOF") reject(error);
     });
     child.stdin.end(input);
     child.on("close", (status) => {
@@ -159,7 +159,12 @@ const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${lin
  * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs.
  */
 export async function runCodexImplement(argv, { out = writeLine, ...options } = {}) {
-  const code = await runJob(argv, options);
+  let code;
+  try {
+    code = await runJob(argv, options);
+  } catch (error) {
+    code = finish(options.say ?? ((line) => console.error(line)), error.message, 1);
+  }
   await out(`exit ${code}`);
   return code;
 }

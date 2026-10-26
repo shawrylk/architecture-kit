@@ -30,17 +30,23 @@ test("runtime import gate rejects packages in each import form", () => {
   assert.deepEqual(bareImports('import fs from "node:fs"; import "./local.mjs"; // import "ignored"\nconst example = `import "ignored"`;'), []);
 });
 
+test("the hook scan rejects an unresolved script variable", () => {
+  assert.throws(() => hookJavaScript('node -e "$MISSING_SCRIPT"'), /unresolved.*MISSING_SCRIPT/i);
+});
+
 function hookJavaScript(source) {
   const bodies = [...source.matchAll(/\bnode\s+-e\s+'([^']*)'/g)].map((match) => match[1]);
   const variables = new Map([...source.matchAll(/(?:^|\n)([A-Za-z_]\w*)='([^']*)'/g)].map((match) => [match[1], match[2]]));
   for (const match of source.matchAll(/\bnode\s+-e\s+"\$([A-Za-z_]\w*)"/g)) {
-    if (variables.has(match[1])) bodies.push(variables.get(match[1]));
+    assert.ok(variables.has(match[1]), `Unresolved hook script variable: ${match[1]}`);
+    bodies.push(variables.get(match[1]));
   }
   return bodies;
 }
 
 function runtimeImports(root) {
   const violations = [];
+  let hookScripts = 0;
   for (const directory of ["packages/qc-harness/src", "hooks"]) {
     for (const entry of readdirSync(join(root, directory), { recursive: true }).map(String)) {
       // Test modules execute in the development installation, outside the plugin runtime.
@@ -49,17 +55,20 @@ function runtimeImports(root) {
       const file = directory + "/" + entry.replaceAll("\\", "/");
       const source = readFileSync(join(root, file), "utf8");
       const bodies = entry.endsWith(".sh") ? hookJavaScript(source) : [source];
+      if (entry.endsWith(".sh")) hookScripts += bodies.length;
       for (const body of bodies) {
         for (const name of bareImports(body)) violations.push(`${file}: ${name}`);
       }
     }
   }
-  return violations;
+  return { violations, hookScripts };
 }
 
 
 test("plugin runtime imports only built-ins and relative files", () => {
-  assert.deepEqual(runtimeImports(fileURLToPath(new URL("../../../../", import.meta.url))), []);
+  const { violations, hookScripts } = runtimeImports(fileURLToPath(new URL("../../../../", import.meta.url)));
+  assert.deepEqual(violations, []);
+  assert.ok(hookScripts > 0, "the real hooks contain JavaScript scripts to scan");
 });
 
 for (const [file, source] of [
@@ -79,7 +88,7 @@ node -e "$SCRIPT"`],
       mkdirSync(join(root, "hooks"), { recursive: true });
       mkdirSync(join(root, "packages/qc-harness/src"), { recursive: true });
       writeFileSync(join(root, file), source);
-      assert.deepEqual(runtimeImports(root), [`${file}: forbidden-peer`]);
+      assert.deepEqual(runtimeImports(root).violations, [`${file}: forbidden-peer`]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -1,11 +1,20 @@
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { parseWatchArgs, runWatch } from "./watch.mjs";
 
 const MIN = 60_000;
+
+test("qc help describes the watch SHA suffix and bad-input exit code", () => {
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url))], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /qc watch .*--run <workflow>@<branch>\[@<sha>\]/);
+  assert.match(result.stdout, /exit 0 done, 1 bad input, 4 bound/);
+});
 
 /** A clock that the sleep advances, so a bound of 55 minutes costs no time. */
 function fakeClock() {

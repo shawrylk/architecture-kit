@@ -21,6 +21,22 @@ function setup(t, { progress = "" } = {}) {
 
 const quiet = () => {};
 
+test("an unreadable progress path reports the error and writes exit 1", async (t) => {
+  const { argv, progress } = setup(t);
+  rmSync(progress);
+  mkdirSync(progress);
+  const lines = [];
+  const messages = [];
+  const code = await runCodexImplement(argv, {
+    run: async () => assert.fail("no run"),
+    say: (line) => messages.push(line),
+    out: (line) => lines.push(line),
+  });
+  assert.equal(code, 1);
+  assert.deepEqual(lines, ["exit 1"]);
+  assert.match(messages.join("\n"), /qc codex-implement:.*EISDIR/);
+});
+
 for (const [name, progress] of [
   ["marker in prose", `Do not append ${DONE_MARKER} until the push succeeds.\n`],
   ["marker before more lines", `${DONE_MARKER}\nPush remains unfinished.\n`],
@@ -350,6 +366,24 @@ test("the default runner sends the prompt, closes stdin, and appends output to t
   t.after(() => delete process.env.FAKE_MODE);
   assert.equal(await runCodexImplement([...argv, "--log", log], { codexCommand: [process.execPath, fake], say: quiet }), 2);
   assert.ok(readFileSync(log, "utf8").split("\n").filter((entry) => entry.startsWith("{")).length >= 2, "the log is appended, not replaced");
+});
+
+test("an immediate Codex exit accepts a closed stdin pipe with a 200 KB prompt", async (t) => {
+  const { dir, argv, brief } = setup(t);
+  writeFileSync(brief, "x".repeat(200 * 1024));
+  const fake = path.join(dir, "exit-codex.mjs");
+  writeFileSync(fake, "process.exit(0);");
+  const messages = [];
+  const lines = [];
+  const code = await runCodexImplement([...argv, "--max-runs", "1"], {
+    codexCommand: [process.execPath, fake],
+    say: (line) => messages.push(line),
+    out: (line) => lines.push(line),
+  });
+  assert.equal(code, 3, messages.join("\n"));
+  assert.deepEqual(lines, ["exit 3"]);
+  assert.doesNotMatch(messages.join("\n"), /codex did not run/);
+  assert.match(messages.join("\n"), /run 1 ended with status 0/);
 });
 
 test("the default runner resolves a Windows command shim", { skip: process.platform !== "win32" }, async (t) => {

@@ -35,8 +35,8 @@ const USAGE = `qc — architecture gates
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
-  qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
-                           block until the first event among the items, print one EVENT line; exit 0 done, 4 bound (default 55 minutes), 5 failed, 6 queued past 15 minutes
+  qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
+                           block until the first event among the items, print one EVENT line; exit 0 done, 1 bad input, 4 bound (default 55 minutes), 5 failed, 6 queued past 15 minutes
   qc screens --map <json> --targets <left,right> --out <dir> [--only <names>] [--changed <target>]
                            capture authenticated screen pairs, compare pixels, and write a static gallery
   qc stack up|down|status [names...] [--timeout <milliseconds>]
