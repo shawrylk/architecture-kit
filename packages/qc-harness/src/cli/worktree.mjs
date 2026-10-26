@@ -6,6 +6,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } fro
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { runGh } from "./gh-run.mjs";
+import { pauseRefusal } from "./pause.mjs";
 
 export const USAGE = `qc worktree — a linked worktree under .worktree/ in the main checkout
 
@@ -139,6 +140,16 @@ function settleBranch(main, branch, from, gh) {
 }
 
 async function remove(main, targets, from, gh) {
+  try {
+    const refusal = pauseRefusal(main);
+    if (refusal) {
+      console.error(refusal);
+      return 5;
+    }
+  } catch (error) {
+    console.error(`cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`);
+    return 5;
+  }
   const listed = worktrees(main);
   const found = targets.map((target) => listed.find((entry) => keyOf(entry.path) === keyOf(target))).find(Boolean);
   const target = found?.path ?? targets[0];

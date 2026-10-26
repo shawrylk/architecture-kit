@@ -4,7 +4,7 @@ import path from "node:path";
 
 function pauseFile(root) {
   const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
-    cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+    cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000,
   }).trim();
   return path.join(common, "qc", "pause");
 }
@@ -23,7 +23,7 @@ export function pauseState(root) {
 /** Branch: refuse a command while the operator pause exists. */
 export function pauseRefusal(root) {
   const reason = pauseState(root);
-  return reason === null ? null : `Paused: ${reason}. Run qc resume to continue.`;
+  return reason === null ? null : `An operator paused the kit: ${reason}. Wait for the operator to run \`qc resume\`.`;
 }
 
 /** Trigger: set or inspect the operator pause. */
@@ -42,7 +42,7 @@ export function runPause(root, argv, { say = console.log } = {}) {
     const reason = argv[1]?.trim() || "operator pause";
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, `${reason}\n`);
-    say(`paused: ${reason}. Run qc resume to continue.`);
+    say(`paused: ${reason}. Wait for the operator to run \`qc resume\`.`);
     return 0;
   } catch (error) {
     say(`qc pause: ${error.message}`);

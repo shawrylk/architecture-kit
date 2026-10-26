@@ -21,6 +21,22 @@ beforeEach((t) => {
   });
 });
 
+test("a pause refuses sync before branch changes or a push", async (t) => {
+  const dir = batch(t);
+  const head = git(dir, "rev-parse", "HEAD");
+  mkdirSync(path.join(dir, ".git", "qc"), { recursive: true });
+  writeFileSync(path.join(dir, ".git", "qc", "pause"), "operator investigation\n");
+  const refusal = "An operator paused the kit: operator investigation. Wait for the operator to run `qc resume`.";
+  await assert.rejects(() => syncBranch(config(dir), dir), { message: refusal });
+  const lines = [];
+  assert.equal(await runBranch(config(dir), ["sync", "."], {
+    say: quiet(lines), runSlot: () => assert.fail("a paused branch must never push"),
+  }), 1);
+  assert.deepEqual(lines, [`qc branch: ${refusal}`]);
+  assert.equal(git(dir, "rev-parse", "HEAD"), head);
+  assert.equal(git(dir, "status", "--porcelain"), "");
+});
+
 test("each branch-sync test uses a private gate-slot folder", () => {
   const directory = process.env.QC_GATE_SLOT_DIR;
   assert.ok(directory);

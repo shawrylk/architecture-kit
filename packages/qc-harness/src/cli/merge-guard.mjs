@@ -96,12 +96,16 @@ function prBaseOf(merge, cwd, gh, timeoutMs) {
       typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
     return typeof pr?.baseRefName === "string"
       ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null, number: Number.isInteger(pr.number) && pr.number > 0 ? pr.number : null, sameRepository: pr.isCrossRepository === false,
-        labels: merge.nodeId ? pr.labels?.nodes ?? [] : pr.labels ?? [], moreLabels: merge.nodeId && pr.labels?.pageInfo?.hasNextPage === true }
+        labels: merge.nodeId ? pr.labels?.nodes : pr.labels,
+        moreLabels: merge.nodeId ? pr.labels?.pageInfo?.hasNextPage !== false : pr.labels?.length >= 100 }
       : null;
   } catch {
     return null;
   }
 }
+
+/** Record: a hold refusal that waits for the operator. */
+class HoldRefusal extends Error {}
 
 /** The fragment that reads one merge's PR base and workflow within the shared deadline. */
 function policyOf(merge, root, cwd, gh, deadline) {
@@ -120,12 +124,14 @@ function policyOf(merge, root, cwd, gh, deadline) {
     throw new Error("merge in qc.config.json must be an object");
   }
   const holdLabel = mergeConfig?.holdLabel === undefined ? defaults.merge.holdLabel : mergeConfig.holdLabel;
-  if (typeof holdLabel !== "string" || !holdLabel.trim()) throw new Error("merge.holdLabel must be a non-empty string");
+  if (typeof holdLabel !== "string" || !holdLabel.trim() || holdLabel !== holdLabel.trim()) {
+    throw new Error("merge.holdLabel must be a non-empty string without surrounding whitespace");
+  }
   if (pr.moreLabels || !Array.isArray(pr.labels) || pr.labels.some((label) => typeof label?.name !== "string")) {
     throw new Error("gh cannot read every PR label");
   }
-  if (pr.labels.some((label) => label.name.toLowerCase() === holdLabel.toLowerCase())) {
-    throw new Error(`PR label "${holdLabel}" holds this merge; remove the label to authorize a merge`);
+  if (pr.labels.some((label) => label.name.toLowerCase() === holdLabel.trim().toLowerCase())) {
+    throw new HoldRefusal(`PR label "${holdLabel}" holds this merge. Wait for the operator to remove the label.`);
   }
   return { pr, workflow: workflowAt(root, { baseOid: pr.oid, git }) };
 }
@@ -258,7 +264,7 @@ export function decide(call, { gh = runGh } = {}) {
       const refusal = pauseRefusal(root);
       if (refusal) return deny(`Merge guard: ${refusal}`);
     } catch (error) {
-      return deny(`Merge guard: cannot read the operator pause (${error.message}). Run qc resume to continue.`);
+      return deny(`Merge guard: cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`);
     }
   }
   let workflow;
@@ -282,6 +288,7 @@ export function decide(call, { gh = runGh } = {}) {
         try {
           if (!policyOf(merge, root, cwd, gh, deadline).workflow) continue;
         } catch (error) {
+          if (error instanceof HoldRefusal) return deny(`Merge guard: ${error.message}`);
           return deny(`Merge guard: the base policy cannot be read (${error.message}). ${use}`);
         }
       }
@@ -310,6 +317,7 @@ export function decide(call, { gh = runGh } = {}) {
         if (result.refusal) return deny(result.refusal);
         notes.push(...result.direct);
       } catch (error) {
+        if (error instanceof HoldRefusal) return deny(`Merge guard: ${error.message}`);
         return deny(`Merge guard: the base policy or ledger cannot be read (${error.message}), so no review can be checked.`);
       }
     }

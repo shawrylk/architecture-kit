@@ -688,6 +688,10 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.merge)) throw new TypeError("merge must be an object");
+  if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
+    throw new TypeError("merge.holdLabel must be a non-empty string without surrounding whitespace");
+  }
   if (isPlainObject(config.codex) && (!Array.isArray(config.codex.envAllow)
     || !config.codex.envAllow.every((name) => typeof name === "string" && name.length > 0 && name === name.trim()))) {
     throw new TypeError("codex.envAllow must be an array of non-empty strings without surrounding whitespace");

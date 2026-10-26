@@ -100,6 +100,7 @@ test("an operator pause refuses integration before any branch changes", async (t
     gh: () => assert.fail("GitHub must stay idle"),
   }), 5);
   assert.match(lines.join("\n"), /inspect the batch.*qc resume/);
+  assert.match(lines.join("\n"), /An operator paused the kit: inspect the batch\. Wait for the operator to run `qc resume`\./);
   assert.equal(git(dir, "branch", "--show-current"), "main");
   assert.equal(git(dir, "rev-parse", "HEAD"), before);
   assert.equal(git(dir, "branch", "--list", "feat/7-integration"), "");
@@ -107,6 +108,10 @@ test("an operator pause refuses integration before any branch changes", async (t
 
 test("integrate usage states the effective author rule", () => {
   assert.match(USAGE, /refuses.*branch.*author email.*effective Git author email/i);
+});
+
+test("integrate usage documents exit 5 for an operator pause", () => {
+  assert.match(USAGE, /exit 5.*operator pause/);
 });
 
 function authorEnvironment(t, values) {

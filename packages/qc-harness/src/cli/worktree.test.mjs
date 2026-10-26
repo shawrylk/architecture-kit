@@ -212,6 +212,21 @@ test("remove deletes the remote branch of a merged PR that gh pr merge could not
   rmSync(top, { recursive: true, force: true });
 });
 
+test("a pause refuses worktree removal before deleting a remote branch", async (t) => {
+  const { top, main } = fixture();
+  t.after(() => rmSync(top, { recursive: true, force: true }));
+  const { tip, where } = squashed(main, "wt-paused", "feat/paused");
+  mkdirSync(path.join(main, ".git", "qc"), { recursive: true });
+  writeFileSync(path.join(main, ".git", "qc", "pause"), "operator investigation\n");
+  const messages = [];
+  t.mock.method(console, "error", (line) => messages.push(line));
+  assert.equal(await removeIn(main, "wt-paused", fakeGh([{ number: 7, headRefOid: tip }]).gh), 5);
+  assert.deepEqual(messages, ["An operator paused the kit: operator investigation. Wait for the operator to run `qc resume`."]);
+  assert.match(git(main, "ls-remote", "--heads", "origin", "feat/paused"), new RegExp(`^${tip}\\s`));
+  assert.ok(existsSync(where));
+  assert.equal(git(main, "rev-parse", "feat/paused"), tip);
+});
+
 test("remove keeps a branch with unpushed commits when no merged PR has it as its head", async () => {
   const { top, main } = fixture();
   const where = added(main, "wt-k", "feat/k");

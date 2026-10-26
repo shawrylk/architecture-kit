@@ -710,14 +710,18 @@ The command writes `qc/pause` in the Git common folder, so every linked worktree
 Run `qc pause --status` to print the state and reason. Run `qc resume` to remove the pause.
 Both commands work even when `qc.config.json` contains invalid configuration.
 
-The pause blocks `qc codex-implement`, `qc integrate`, and merges through the merge guard, including manual merges.
-Every refusal names the reason and `qc resume`.
+The pause blocks `qc codex-implement`, `qc integrate`, `qc branch sync`, `qc worktree remove`, and merges through the merge guard.
+Every refusal names the reason and tells the agent to wait for the operator to run `qc resume`.
+`qc integrate` returns exit `5` when the pause blocks integration.
 The Codex runner checks before each run and exits `5`, "paused", before another session starts.
 An active session finishes its current run. The pause also leaves the existing GitHub auto-merge setting unchanged.
 
 Set `merge.holdLabel` in `qc.config.json` to choose the PR label that holds a merge; the default is `hold`.
 The merge guard reads the setting from the PR base and refuses a labeled PR, even with workflow dispatch off.
-The refusal names the label. Remove that label when the operator authorizes the merge.
+The refusal names the label and tells the agent to wait for the operator to remove it.
+An agent never resumes the kit or removes the hold label itself.
+`merge` must be an object. `merge.holdLabel` must be a non-empty string without surrounding whitespace.
+Missing labels or another page of labels refuse the merge. A full CLI page also refuses because more labels might exist.
 Keep the pull request body check for "no merge is authorized"; the label adds a separate hold.
 
 #### Run an implementer on Codex
@@ -834,6 +838,8 @@ It exits `0` after a reset, or `1` at the bound or on invalid input.
 | `1` | invalid arguments, Codex settings, `budgets.codex`, or brief; a file error; or `codex` did not start |
 | `2` | an output line reports `usage limit`, `spend cap`, `rate limit`, or `hit your limit`; the runner stops immediately or reaches its reset-wait bound |
 | `3` | `--max-runs` (default `1`) runs ended and the progress file is unfinished |
+| `4` | the guard refuses a finding in the run's changes |
+| `5` | the operator paused the kit, or the runner cannot read the pause |
 
 With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the controller note.
 The runner's prompt requires tests first, the touched tests, one local check, and the brief's commit and push rules.

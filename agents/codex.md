@@ -43,6 +43,7 @@ The prompt gives these lines:
 
 Before a merge, check `qc pause --status` and the PR labels.
 Stop while the operator pause or `merge.holdLabel` label applies; the default label is `hold`.
+Wait for the operator to run `qc resume` or remove the label. An agent never resumes or removes the label itself.
 Keep the pull request body check for "no merge is authorized".
 
 ## Reply (under 10 lines)

@@ -56,6 +56,30 @@ test("an operator pause stops the first run with exit 5", async (t) => {
   assert.match(messages.join("\n"), /operator investigation.*qc resume/);
 });
 
+test("a pause read error exits 5 and waits for the operator", async (t) => {
+  const fixture = setup(t);
+  mkdirSync(path.join(fixture.worktree, ".git", "qc", "pause"), { recursive: true });
+  const messages = [];
+  assert.equal(await runCodexImplement(fixture.argv, {
+    say: (line) => messages.push(line), out: quiet,
+    run: async () => assert.fail("Codex must stay stopped"),
+  }), 5);
+  assert.match(messages.join("\n"), /cannot read the operator pause \(.+\)\. Wait for the operator to run `qc resume`\./);
+});
+
+test("a finished brief exits 0 before checking a pause or its read error", async (t) => {
+  for (const unreadable of [false, true]) {
+    const fixture = setup(t, { progress: `${DONE_MARKER}\n` });
+    const file = path.join(fixture.worktree, ".git", "qc", "pause");
+    mkdirSync(path.dirname(file), { recursive: true });
+    if (unreadable) mkdirSync(file);
+    else writeFileSync(file, "operator investigation\n");
+    assert.equal(await runCodexImplement(fixture.argv, {
+      say: quiet, out: quiet, run: async () => assert.fail("the brief is complete"),
+    }), 0);
+  }
+});
+
 test("an operator pause between runs prevents another Codex session", async (t) => {
   const fixture = setup(t);
   let runs = 0;

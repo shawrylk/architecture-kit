@@ -39,6 +39,24 @@ test("merge.holdLabel defaults to hold and accepts a repository label", (t) => {
   assert.equal(load(root).merge.holdLabel, "operator-hold");
 });
 
+test("merge rejects a non-object configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-merge-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const value of [null, [], false, 5, "merge"]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ merge: value }));
+    assert.throws(() => load(root), { name: "TypeError", message: "merge must be an object" });
+  }
+});
+
+test("merge.holdLabel rejects invalid labels and surrounding whitespace", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-hold-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const holdLabel of [null, false, 5, [], {}, "", " ", " hold", "hold "]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ merge: { holdLabel } }));
+    assert.throws(() => load(root), { name: "TypeError", message: "merge.holdLabel must be a non-empty string without surrounding whitespace" });
+  }
+});
+
 test("guard defaults protect automation and configuration, and custom paths replace the defaults", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-guard-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

@@ -280,9 +280,13 @@ async function runJob(argv, {
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
   let resetDeadline;
   for (let count = 1; count <= settings.maxRuns; count += 1) {
-    const refusal = pauseRefusal(settings.worktree);
-    if (refusal) return finish(say, refusal, 5);
     if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
+    try {
+      const refusal = pauseRefusal(settings.worktree);
+      if (refusal) return finish(say, refusal, 5);
+    } catch (error) {
+      return finish(say, `cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`, 5);
+    }
     let prompt;
     try {
       prompt = promptFor(settings, codex);

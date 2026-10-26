@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
-import { execFileSync, spawnSync } from "node:child_process";
+import childProcess, { execFileSync, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +32,7 @@ test("pause and resume share the common git folder across worktrees and nested f
   assert.equal(readFileSync(path.join(root, ".git", "qc", "pause"), "utf8").trim(), "operator investigation");
   assert.equal(pauseState(nested), "operator investigation");
   assert.match(pauseRefusal(nested), /operator investigation.*qc resume/);
+  assert.equal(pauseRefusal(nested), "An operator paused the kit: operator investigation. Wait for the operator to run `qc resume`.");
   assert.equal(runPause(nested, ["--status"], { say }), 0);
   assert.match(lines.at(-1), /paused.*operator investigation/);
   assert.equal(runResume(nested, [], { say }), 0);
@@ -67,4 +69,22 @@ test("pause read errors refuse operation instead of treating the repository as r
   const { root } = repository(t);
   mkdirSync(path.join(root, ".git", "qc", "pause"), { recursive: true });
   assert.throws(() => pauseState(root));
+});
+
+test("the pause git lookup has a bounded timeout", (t) => {
+  const { root } = repository(t);
+  const original = childProcess.execFileSync;
+  const lookup = t.mock.method(childProcess, "execFileSync", (command, args, options) => {
+    assert.equal(command, "git");
+    assert.deepEqual(args, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    assert.ok(options.timeout > 0 && options.timeout <= 5000, "the git lookup needs a timeout within the hook budget");
+    return original(command, args, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(pauseState(root), null);
+  } finally {
+    lookup.mock.restore();
+    syncBuiltinESMExports();
+  }
 });

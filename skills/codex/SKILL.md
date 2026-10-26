@@ -176,7 +176,8 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 1. Grep the pull request body for "no merge is authorized". If it matches, stop.
 2. Check `qc pause --status`. Stop while paused; report the reason and wait for the operator to run `qc resume`.
-3. Check the PR labels. Stop when `merge.holdLabel` applies; its default is `hold`.
+   An agent never resumes the kit or removes the hold label itself.
+3. Check the PR labels. Stop when `merge.holdLabel` applies; its default is `hold`. Wait for the operator to remove the label.
 4. Merge with `gh pr merge <n> --merge --match-head-commit <the 40-character sha>`. Where the repository turns off merge commits, use the method it allows, still with `--match-head-commit`.
 5. Never use `--admin` or a force-push.
 6. Confirm that the pull request shows `MERGED` and that its head is in the base. After a squash, confirm that the base holds the change.

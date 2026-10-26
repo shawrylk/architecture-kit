@@ -19,7 +19,8 @@ export const USAGE = `qc integrate — one integration branch for a batch of bra
       manual pushes. An absent origin skips pushes. A conflict stops the run and lists the files.
       Resolve it, commit, and run the same command again: a branch already merged is skipped.
       --pr opens a draft pull request after the first push; it requires pushes and an origin remote.
-      It refuses each branch with an author email other than the effective Git author email.`;
+      It refuses each branch with an author email other than the effective Git author email.
+      It returns exit 5 when an operator pause blocks integration.`;
 
 export function tryGit(cwd, args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });

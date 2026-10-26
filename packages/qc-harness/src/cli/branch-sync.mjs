@@ -5,6 +5,7 @@ import { globMatcher } from "../glob.mjs";
 import { runGateSlot } from "./gate-slot.mjs";
 import { git, lines, runShell, tryGit } from "./integrate.mjs";
 import { posixDir, renumber } from "./migrations.mjs";
+import { pauseRefusal } from "./pause.mjs";
 
 export const USAGE = "qc branch sync <worktree> [--base <ref>] [--no-push]";
 
@@ -39,6 +40,8 @@ export async function runBranch(config, argv, deps = {}) {
     const worktree = path.resolve(config.root, positionals[0]);
     const result = await syncBranch(config, worktree, { base: values.base, say, run, withSlot });
     if (result.code !== 0 || !result.changed || values["no-push"]) return result.code;
+    const refusal = pauseRefusal(worktree);
+    if (refusal) throw new Error(refusal);
     say(`push  ${result.branch}`);
     return await runSlot(["git", "push", "-u", "origin", result.branch], worktree);
   } catch (error) {
@@ -49,6 +52,8 @@ export async function runBranch(config, argv, deps = {}) {
 
 /** A pipeline: merge the base, renumber the branch's migrations, and commit generated files. */
 export async function syncBranch(config, worktree, options = {}) {
+  const refusal = pauseRefusal(worktree);
+  if (refusal) throw new Error(refusal);
   const { say = (line) => console.log(line), run = runShell, withSlot = inGateSlot } = options;
   const base = options.base ?? config.worktree?.base ?? "origin/main";
   if (tryGit(worktree, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).ok) throw new Error("a merge is in progress: resolve it and commit it first");
