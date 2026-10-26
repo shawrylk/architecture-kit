@@ -1,15 +1,24 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { defaults } from "../config.mjs";
-import { checkDiff, protectedAllow, runCommitGuard, guardHead, checkRunCommits } from "./commit-guard.mjs";
+import { checkDiff, protectedAllow, runCommitGuard, guardHead, guardRefs, checkRunCommits } from "./commit-guard.mjs";
 
 const patch = (file, lines) => `diff --git a/${file} b/${file}\n--- a/${file}\n+++ b/${file}\n@@ -1 +1 @@\n${lines}\n`;
 const guard = (diff, options = {}) => checkDiff(diff, { protectedPaths: defaults.guard.protectedPaths, ...options });
+
+function interceptGit(t, intercept) {
+  const execute = childProcess.execFileSync;
+  t.mock.method(childProcess, "execFileSync", (command, args, options) => intercept(command, args, options, execute));
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+}
 
 test("only added secret lines fail; removed secrets and context pass", () => {
   const secret = `ghp_${"a".repeat(36)}`;
@@ -143,6 +152,106 @@ test("a root commit receives the same content checks", (t) => {
   assert.equal(findings[0].rule, "conflict-marker");
 });
 
+test("the run ignores sibling branches, detached worktrees, and fetched foreign refs", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  const branch = r.git("branch", "--show-current").trim();
+  const before = guardRefs(r.root);
+  for (const detached of [false, true]) {
+    const worktree = path.join(r.root, detached ? "detached" : "sibling");
+    r.git("worktree", "add", "-q", ...(detached ? ["--detach"] : ["-b", "other"]), worktree, before.head);
+    writeFileSync(path.join(worktree, "qc.config.json"), "{}\n");
+    r.git("-C", worktree, "add", "qc.config.json");
+    r.git("-C", worktree, "commit", "-qm", "test: foreign change");
+    r.git("update-ref", `refs/remotes/origin/foreign-${detached}`, r.git("-C", worktree, "rev-parse", "HEAD").trim());
+  }
+  assert.deepEqual(checkRunCommits(r.root, before, { branch, role: "implementer", protectedPaths: defaults.guard.protectedPaths }), []);
+});
+
+test("the run scans HEAD, its branch, and its remote branch even after a checkout", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  const before = guardRefs(r.root);
+  const commits = [];
+  for (const branch of ["run", "remote", "head"]) {
+    r.git("checkout", "-qb", branch, before.head);
+    r.put(`${branch}.md`, `ghp_${"a".repeat(36)}\n`);
+    r.commit();
+    commits.push(guardHead(r.root));
+  }
+  r.git("update-ref", "refs/remotes/origin/run", commits[1]);
+  r.git("branch", "-D", "remote");
+  assert.deepEqual(new Set(checkRunCommits(r.root, before, { branch: "run" }).map((finding) => finding.commit)), new Set(commits));
+});
+
+test("a moved local base cannot hide a run commit, even when the remote read fails", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  const before = guardRefs(r.root, "main");
+  r.put("secret.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  const bad = guardHead(r.root);
+  r.git("update-ref", "refs/remotes/origin/main", bad);
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }).map((finding) => finding.commit), [bad]);
+});
+
+test("a confirmed remote base excludes a merge even when its local tracking ref is stale", (t) => {
+  const upstream = repo(t);
+  upstream.put("base.md", "safe\n");
+  upstream.commit();
+  upstream.git("branch", "-M", "main");
+  const r = repo(t);
+  r.git("remote", "add", "origin", upstream.root);
+  r.git("fetch", "-q", "origin");
+  r.git("checkout", "-qfb", "run", "origin/main");
+  const before = guardRefs(r.root, "main");
+  upstream.put("qc.config.json", "{}\n");
+  upstream.commit();
+  r.git("fetch", "-q", "origin");
+  r.git("merge", "-q", "origin/main");
+  r.git("update-ref", "refs/remotes/origin/main", before.head);
+  assert.deepEqual(checkRunCommits(r.root, before, { base: "main", branch: "run", role: "implementer", protectedPaths: defaults.guard.protectedPaths }), []);
+});
+
+test("a large recorded boundary and tree tags reach rev-list without a long command line", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  r.git("tag", "tree", "HEAD^{tree}");
+  const before = guardRefs(r.root);
+  before.refs.push(...Array(900).fill(before.head));
+  r.put("secret.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  assert.deepEqual(checkRunCommits(r.root, before, {}).map((finding) => finding.rule), ["github-token"]);
+});
+
+test("rev-list receives only deduplicated refs and exclusions on stdin", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  const before = guardRefs(r.root);
+  r.put("new.md", "safe\n");
+  r.commit();
+  let calls = 0;
+  interceptGit(t, (command, args, options, execute) => {
+    if (args.includes("rev-list")) {
+      calls += 1;
+      assert.deepEqual(args.slice(4), ["rev-list", "--reverse", "--parents", "--stdin"]);
+      const lines = options.input.trim().split("\n");
+      assert.equal(lines.length, new Set(lines).size);
+      assert.ok(lines.includes(`^${before.head}`));
+      assert.ok(!args.includes("--all"));
+    }
+    return execute(command, args, options);
+  });
+  assert.deepEqual(checkRunCommits(r.root, before, {}), []);
+  assert.equal(calls, 1);
+});
+
 test("a merge excludes commits reached by the base branch", (t) => {
   const r = repo(t);
   r.put("base.md", "safe\n");
@@ -159,9 +268,97 @@ test("a merge excludes commits reached by the base branch", (t) => {
   r.commit();
   r.git("merge", "--no-ff", "-qm", "test: merge fixture", "side");
   r.git("update-ref", "refs/remotes/origin/main", r.git("rev-parse", "side").trim());
+  r.git("remote", "add", "origin", r.root);
+  r.git("update-ref", "refs/heads/main", r.git("rev-parse", "side").trim());
   const findings = checkRunCommits(r.root, before, { base: "main" });
   assert.ok(!findings.some((finding) => finding.commit === bad && finding.rule === "conflict-marker"));
   assert.deepEqual(findings, []);
+});
+
+test("a deleted side branch's intermediate secret stays in the run scan", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  r.git("branch", "-M", "run");
+  r.git("update-ref", "refs/remotes/origin/main", "HEAD");
+  const before = guardRefs(r.root);
+  r.git("checkout", "-qb", "side");
+  r.put("side.md", `ghp_${"a".repeat(36)}\n`);
+  r.commit();
+  const bad = guardHead(r.root);
+  r.put("side.md", "safe\n");
+  r.commit();
+  r.git("checkout", "-q", "run");
+  r.put("run.md", "safe\n");
+  r.commit();
+  r.git("merge", "--no-ff", "-qm", "test: merge side", "side");
+  r.git("branch", "-D", "side");
+  assert.deepEqual(checkRunCommits(r.root, before, { branch: "run" }), [{ path: "side.md", line: 1, rule: "github-token", commit: bad }]);
+});
+
+test("merge scans select remerge from git 2.36 and combined diffs on older git, with one version read", async (t) => {
+  const r = repo(t);
+  r.put("a.md", "base\n");
+  r.commit();
+  const before = guardRefs(r.root);
+  r.git("checkout", "-qb", "base");
+  r.put("a.md", "base changed\n");
+  r.put(".github/workflows/base.yml", "safe\n");
+  r.commit();
+  r.git("update-ref", "refs/heads/main", "HEAD");
+  r.git("remote", "add", "origin", r.root);
+  r.git("checkout", "-qb", "run", before.head);
+  r.put("a.md", "run changed\n");
+  r.commit();
+  assert.throws(() => r.git("merge", "--no-commit", "base"));
+  r.put("a.md", `resolved\nghp_${"a".repeat(36)}\n`);
+  r.put(".github/workflows/merge.yml", "safe\n");
+  r.commit();
+  const merge = guardHead(r.root);
+  let version;
+  let reads;
+  interceptGit(t, (command, args, options, execute) => {
+    if (args.includes("--version")) { reads += 1; return `git version ${version}\n`; }
+    if (args.includes("show")) {
+      const isMerge = args.includes(merge);
+      assert.equal(args.includes("--diff-merges=remerge"), isMerge && version !== "2.35.9");
+      assert.equal(args.includes("--cc"), isMerge && version === "2.35.9");
+    }
+    return execute(command, args, options);
+  });
+  for (version of ["2.35.9", "2.36.0", "2.54.0.windows.1"]) {
+    reads = 0;
+    const guardModule = await import(`./commit-guard.mjs?version=${version}`);
+    const findings = guardModule.checkRunCommits(r.root, before, { branch: "run", base: "main", role: "implementer", protectedPaths: defaults.guard.protectedPaths });
+    assert.deepEqual(findings, [
+      { path: "a.md", line: 2, rule: "github-token", commit: merge },
+      { path: ".github/workflows/merge.yml", rule: "protected-path", commit: merge },
+    ]);
+    const lines = [];
+    assert.equal(guardModule.runCommitGuard({ ...defaults, root: r.root }, { argv: ["--push", merge, before.head], env: {}, say: (line) => lines.push(line) }), 4);
+    assert.ok(lines.some((line) => line.includes("github-token")), lines.join("\n"));
+    assert.equal(reads, 1);
+  }
+});
+
+test("a clean merge's own secret and protected file are scanned", (t) => {
+  const r = repo(t);
+  r.put("base.md", "safe\n");
+  r.commit();
+  const before = guardRefs(r.root);
+  r.git("checkout", "-qb", "side");
+  r.put("side.md", "safe\n");
+  r.commit();
+  r.git("checkout", "-qb", "run", before.head);
+  r.put("run.md", "safe\n");
+  r.commit();
+  r.git("merge", "--no-ff", "--no-commit", "side");
+  r.put("base.md", `safe\nghp_${"a".repeat(36)}\n`);
+  r.put(".github/workflows/merge.yml", "safe\n");
+  r.commit();
+  const findings = checkRunCommits(r.root, before, { branch: "run", role: "implementer", protectedPaths: defaults.guard.protectedPaths });
+  assert.ok(findings.some((finding) => finding.rule === "github-token" && finding.commit === guardHead(r.root)));
+  assert.ok(findings.some((finding) => finding.rule === "protected-path" && finding.commit === guardHead(r.root)));
 });
 
 test("a base merge adds no protected paths to the run or staged guard", (t) => {
@@ -174,6 +371,8 @@ test("a base merge adds no protected paths to the run or staged guard", (t) => {
   r.commit();
   r.git("update-ref", "refs/remotes/origin/main", "HEAD");
   r.git("checkout", "-qb", "feature", before);
+  r.git("remote", "add", "origin", r.root);
+  r.git("update-ref", "refs/heads/main", r.git("rev-parse", "base").trim());
   r.put("feature.md", "safe\n");
   r.commit();
   r.git("merge", "--no-ff", "--no-commit", "base");
@@ -193,6 +392,8 @@ test("a merge scans its own secret resolution", (t) => {
   r.commit();
   r.git("update-ref", "refs/remotes/origin/main", "HEAD");
   r.git("checkout", "-qb", "feature", before);
+  r.git("remote", "add", "origin", r.root);
+  r.git("update-ref", "refs/heads/main", r.git("rev-parse", "base").trim());
   r.put("a.md", "feature changed\n");
   r.commit();
   assert.throws(() => r.git("merge", "--no-commit", "base"));

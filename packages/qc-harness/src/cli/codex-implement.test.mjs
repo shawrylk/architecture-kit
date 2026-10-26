@@ -131,6 +131,23 @@ test("the runner refuses every finding before accepting done or a limit", async 
   assert.ok(!messages.join("\n").includes(secret));
 });
 
+test("the runner retains its branch when the child checks out a clean commit", async (t) => {
+  const fixture = setup(t);
+  const before = commitFile(fixture, "existing.md", "safe\n");
+  const messages = [];
+  assert.equal(await runCodexImplement(fixture.argv, {
+    out: quiet, say: (line) => messages.push(line),
+    run: async () => {
+      commitFile(fixture, "secret.md", `ghp_${"a".repeat(36)}\n`);
+      const checkout = spawnSync("git", ["-C", fixture.worktree, "checkout", "-q", "--detach", before], { encoding: "utf8" });
+      assert.equal(checkout.status, 0, checkout.stderr);
+      appendFileSync(fixture.progress, `${DONE_MARKER}\n`);
+      return { status: 0 };
+    },
+  }), 4);
+  assert.ok(messages.some((line) => line.includes("github-token")), messages.join("\n"));
+});
+
 test("Protected exceptions reach each child and the runner replaces inherited exceptions", async (t) => {
   const fixture = setup(t);
   writeFileSync(fixture.brief, `${VALID_BRIEF}\nProtected: .github/workflows/**, .husky/**\n`);
@@ -180,14 +197,15 @@ test("prior findings are outside the run boundary, and current clean commits pas
   }), 0);
 });
 
-test("the runner scans new remote and side refs after HEAD resets", async (t) => {
-  for (const ref of ["refs/remotes/origin/pushed", "refs/heads/side"]) {
+test("the runner scans its remote ref and ignores foreign refs after HEAD resets", async (t) => {
+  for (const [ref, expected] of [["refs/remotes/origin/run", 4], ["refs/remotes/origin/pushed", 0], ["refs/heads/side", 0]]) {
     const fixture = setup(t);
     const before = commitFile(fixture, "existing.md", "safe\n");
     const git = (...args) => {
       const result = spawnSync("git", ["-C", fixture.worktree, ...args], { env: fixture.gitEnv, encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
     };
+    git("branch", "-M", "run");
     const messages = [];
     assert.equal(await runCodexImplement(fixture.argv, {
       say: (line) => messages.push(line), out: quiet,
@@ -198,8 +216,8 @@ test("the runner scans new remote and side refs after HEAD resets", async (t) =>
         appendFileSync(fixture.progress, `${DONE_MARKER}\n`);
         return { status: 0 };
       },
-    }), 4);
-    assert.ok(messages.some((line) => line.includes("github-token")), messages.join("\n"));
+    }), expected);
+    assert.equal(messages.some((line) => line.includes("github-token")), expected === 4, messages.join("\n"));
   }
 });
 
@@ -213,10 +231,12 @@ test("the runner records existing remote refs and excludes its configured base",
   const existing = commitFile(fixture, "existing.md", `ghp_${"b".repeat(36)}\n`);
   git("update-ref", "refs/remotes/origin/existing", existing);
   git("reset", "--hard", before);
+  git("remote", "add", "origin", fixture.worktree);
   assert.equal(await runCodexImplement(fixture.argv, {
     say: quiet, out: quiet,
     run: async () => {
       const base = commitFile(fixture, ".github/workflows/base.yml", "safe\n");
+      git("update-ref", "refs/heads/release", base);
       git("update-ref", "refs/remotes/origin/release", base);
       git("reset", "--hard", before);
       git("merge", "--ff-only", "origin/release");

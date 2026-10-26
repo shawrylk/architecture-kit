@@ -313,7 +313,7 @@ async function runJob(argv, {
       runError = error;
     }
     try {
-      const findings = checkRunCommits(settings.worktree, before, { protectedPaths, role: "implementer", allow, base: guardBase });
+      const findings = checkRunCommits(settings.worktree, before, { protectedPaths, role: "implementer", allow, base: guardBase, branch: before.branch });
       if (findings.length) {
         for (const finding of findings) say(`qc codex-implement: guard refused: ${findingName(finding)}`);
         return 4;

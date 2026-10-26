@@ -315,7 +315,9 @@ The exemption leaves the conflict marker rule in force.
 
 The secret patterns derive from pr-autopilot's `commitguard.py` at commit `d937f83`.
 They cover AWS keys, GitHub tokens and personal access tokens, private key headers, Anthropic keys, Slack tokens, and npm tokens.
-The AWS secret rule requires a literal value of 40 base64 characters after `=` or `:`; workflow secret references pass.
+The AWS secret rule requires a literal value of 40 base64 characters; workflow secret references pass.
+It accepts prefixed names such as `TF_VAR_aws_secret_access_key` and `PROD_AWS_SECRET_ACCESS_KEY`.
+Whitespace, quotes, `:`, `=`, and `=>` can separate the name and value, including the `aws configure set` form.
 Findings name the file, added line number, and rule without printing the secret.
 Every guard diff uses fixed `a/` and `b/` prefixes and disables external diff drivers.
 
@@ -333,12 +335,17 @@ Protected: .github/workflows/**, .husky/pre-commit
 `qc codex-implement` passes these comma-separated globs to the hook through `QC_PROTECTED_ALLOW`.
 These exceptions permit path changes; added secrets and conflict markers still fail.
 After each child run, the runner checks every new commit against the policy captured before the child starts.
-Before each run, it records every ref tip, including remote-tracking refs.
-After the run, it scans `rev-list --all --not <recorded refs> origin/<base>`, excluding commits reached by the recorded tips or configured base.
+Before each run, it records the run branch and every ref tip, including remote-tracking refs.
+After the run, it scans only `HEAD`, `refs/heads/<run branch>`, and `refs/remotes/origin/<run branch>`.
+Other worktrees and fetched branches outside the run stay outside this scan.
+The recorded tips exclude existing history, and `git ls-remote origin refs/heads/<base>` supplies the remote base tip.
+If that read fails, the scan uses the `origin/<base>` tip recorded before the run.
+The scan deduplicates revisions and exclusions, then passes them to `git rev-list --stdin`.
 The configured base is `worktree.base`, which defaults to `origin/main`.
-Merge commits use `--diff-merges=remerge` to check the merge's own changes.
+Merge commits use `--diff-merges=remerge` with Git 2.36 or later, and `--cc` with older Git.
+The process reads the Git version once; ordinary commits use neither merge option.
 During a staged merge, the hook checks only paths and added lines that differ from every parent.
-The pre-push hook checks each pushed range through `qc commit-guard --push <local oid> <remote oid>` with the same role rules.
+The pre-push hook guards every pushed ref through `qc commit-guard --push <local oid> <remote oid>` with the same role rules.
 A new remote ref checks its history outside the base; a deleted ref has no commits to check.
 An intermediate commit fails even if a later commit removes the finding.
 The hook and runner return exit `4`, "guard refused", and name each finding.
@@ -1980,7 +1987,9 @@ exempt. `valeConfig` names the repository's Vale config and defaults to `.vale/.
 ### Redact public posts and label AI text
 
 Every title, body, and comment the kit posts to GitHub passes through `output-redaction.mjs`.
+It imports the guard's credential patterns from `secret-patterns.mjs` and adds one rule for whole PEM blocks.
 It matches credential patterns over the whole text and replaces each match, including its secret value, with `[REDACTED]`.
+AWS redaction covers prefixed names, whitespace assignments, and `=>` assignments, including their literal secret values.
 It redacts each PEM private key from its `BEGIN` header through its matching `END` header, across lines or on one line.
 A `BEGIN` header without a matching `END` header redacts through the end of the text.
 The commit guard's `qc-allow-secret` directive never exempts a public post from redaction.

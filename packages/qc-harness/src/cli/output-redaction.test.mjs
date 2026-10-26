@@ -54,6 +54,19 @@ test("redaction removes AWS secret assignments including the complete value", ()
   assert.equal(redactOutput(`qc-allow-secret ${assignment}`), "qc-allow-secret [REDACTED]");
 });
 
+test("redaction covers prefixed AWS names, CLI whitespace, and arrow assignments", () => {
+  const value = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+  for (const [assignment, expected] of [
+    [`TF_VAR_aws_secret_access_key=${value}`, "TF_VAR_[REDACTED]"],
+    [`PROD_AWS_SECRET_ACCESS_KEY=${value}`, "PROD_[REDACTED]"],
+    [`aws configure set aws_secret_access_key ${value}`, "aws configure set [REDACTED]"],
+    [`"aws_secret_access_key" => "${value}"`, '"[REDACTED]"'],
+  ]) {
+    assert.equal(redactOutput(`Before ${assignment}\n${assignment}\nafter`), `Before ${expected}\n${expected}\nafter`);
+    assert.equal(redactOutput(`qc-allow-secret ${assignment}`), `qc-allow-secret ${expected}`);
+  }
+});
+
 test("redaction preserves public text and ignores commit allow directives", () => {
   const publicText = "# Public title\n\nRefs #195; ordinary-code_identifier.\r\n";
   assert.equal(redactOutput(publicText), publicText);

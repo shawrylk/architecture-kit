@@ -1,15 +1,11 @@
+import { secretPatterns } from "./secret-patterns.mjs";
+
 const AI_LABEL = "Written by an AI agent with architecture-kit.";
 
-/** Index: replacement patterns mirror secret-patterns.mjs, whose detector exposes rule names rather than match ranges. */
+/** Index: shares credential patterns and extends private-key headers to whole PEM blocks. */
 const patterns = [
   /-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/g,
-  /A[KS]IA[0-9A-Z]{16}/g,
-  /\baws[_-]secret[_-]access[_-]key\b["']?\s*[:=]\s*["']?[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gi,
-  /gh[pousr]_[A-Za-z0-9]{36,}/g,
-  /github_pat_[A-Za-z0-9_]{40,}/g,
-  /sk-ant-[A-Za-z0-9_-]{20,}/g,
-  /xox[abprs]-[A-Za-z0-9-]{10,}/g,
-  /npm_[A-Za-z0-9]{36}/g,
+  ...secretPatterns.map(([, pattern]) => new RegExp(pattern.source, `${pattern.flags}g`)),
 ];
 
 /** Fragment: redact whole credential matches and complete private-key blocks before a public post. */

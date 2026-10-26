@@ -27,26 +27,28 @@ export function checkDiff(diff, { protectedPaths = [], role, allow = [], paths =
   let file;
   let addedLine = 0;
   let inHunk = false;
+  let columns = 1;
   for (const line of diff.split("\n")) {
-    if (line.startsWith("diff --git ")) {
+    if (/^diff --(?:git|cc|combined) /.test(line)) {
       file = undefined;
       inHunk = false;
     } else if (!inHunk && (line.startsWith("--- ") || line.startsWith("+++ "))) {
       const parsed = patchPath(line.slice(4));
       if (parsed !== null) { file = parsed; changed.add(file); }
-    } else if (line.startsWith("@@ ")) {
-      const hunk = /\+(\d+)(?:,\d+)? @@/.exec(line);
+    } else if (/^@@+ /.test(line)) {
+      const hunk = /^(@{2,}) .*?\+(\d+)(?:,\d+)? \1/.exec(line);
       if (!hunk) throw new Error("cannot parse the guard diff hunk");
-      addedLine = Number(hunk[1]);
+      columns = hunk[1].length - 1;
+      addedLine = Number(hunk[2]);
       inHunk = true;
-    } else if (inHunk && line.startsWith("+")) {
+    } else if (inHunk && line.startsWith("+".repeat(columns))) {
       if (file === undefined) throw new Error("cannot identify the guard diff path");
-      const content = line.slice(1);
+      const content = line.slice(columns);
       const rules = findSecrets(content);
       if (/^(<<<<<<< |>>>>>>> )/.test(content)) rules.push("conflict-marker");
       for (const rule of rules) findings.push({ path: file, line: addedLine, rule });
       addedLine += 1;
-    } else if (inHunk && line.startsWith(" ")) {
+    } else if (inHunk && line.length >= columns && /^[ +]+$/.test(line.slice(0, columns))) {
       addedLine += 1;
     }
   }
@@ -60,10 +62,24 @@ export function checkDiff(diff, { protectedPaths = [], role, allow = [], paths =
   return findings;
 }
 
+let mergeDiffOption;
+
+/** Resource: selects the merge diff format once for the process's Git version. */
+function mergeDiff(root) {
+  if (mergeDiffOption === undefined) {
+    const version = /^git version (\d+)\.(\d+)/.exec(git(root, ["--version"]));
+    if (!version) throw new Error("cannot read the Git version for merge scanning");
+    const major = Number(version[1]);
+    const minor = Number(version[2]);
+    mergeDiffOption = major > 2 || (major === 2 && minor >= 36) ? "--diff-merges=remerge" : "--cc";
+  }
+  return mergeDiffOption;
+}
+
 /** Resource: reads Git without external diff drivers, text converters, or rename folding. */
-function git(root, args) {
+function git(root, args, input) {
   return execFileSync("git", ["-c", "core.quotePath=false", "-C", root, ...args], {
-    encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+    encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, windowsHide: true,
   });
 }
 
@@ -76,13 +92,20 @@ export function guardHead(root) {
 
 /** Resource: records every ref tip, including remote-tracking refs, before the child runs. */
 export function guardRefs(root) {
-  return { head: guardHead(root), refs: git(root, ["for-each-ref", "--format=%(objectname)"]).trim().split("\n").filter(Boolean) };
+  const refs = Object.fromEntries(git(root, ["for-each-ref", "--format=%(refname) %(objectname)"]).trim().split("\n").filter(Boolean).map((line) => line.split(" ")));
+  return { head: guardHead(root), branch: git(root, ["branch", "--show-current"]).trim(), refs: [...new Set(Object.values(refs))], recordedRefs: refs };
 }
 
 /** Fragment: excludes commits reached by the configured remote base. */
-function baseExclusion(root, base = "origin/main") {
-  const ref = base.startsWith("origin/") ? base : `origin/${base}`;
-  return git(root, ["for-each-ref", "--format=%(refname)", `refs/remotes/${ref}`]).trim() ? [ref] : [];
+function baseExclusion(root, base = "origin/main", recordedRefs = {}) {
+  const branch = base.replace(/^origin\//, "");
+  try {
+    const tip = git(root, ["ls-remote", "origin", `refs/heads/${branch}`]).trim().split(/\s+/)[0];
+    return tip ? [tip] : [];
+  } catch {
+    const tip = recordedRefs[`refs/remotes/origin/${branch}`];
+    return tip ? [tip] : [];
+  }
 }
 
 /** Branch: scans every commit added during one run, including intermediate commits. */
@@ -90,16 +113,22 @@ export function checkRunCommits(root, before, options) {
   const head = typeof before === "object" && before !== null ? before.head : before;
   if (head) git(root, ["merge-base", "--is-ancestor", head, "HEAD"]);
   const refs = typeof before === "object" && before !== null ? before.refs : [];
-  return scanCommits(root, ["--all", ...(guardHead(root) ? ["HEAD"] : [])], [...refs, ...(head ? [head] : [])], options);
+  const branch = options.branch ?? git(root, ["branch", "--show-current"]).trim();
+  const runRefs = branch ? [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`] : [];
+  const tips = Object.fromEntries(git(root, ["for-each-ref", "--format=%(refname) %(objectname)", ...runRefs]).trim().split("\n").filter(Boolean).map((line) => line.split(" ")));
+  const revisions = [...(guardHead(root) ? ["HEAD"] : []), ...runRefs.map((ref) => tips[ref]).filter(Boolean)];
+  return scanCommits(root, revisions, [...refs, ...(head ? [head] : [])], options, before?.recordedRefs);
 }
 
 /** Pipeline: scans the selected commits with one shared content and path policy. */
-function scanCommits(root, revisions, excluded, options) {
-  const boundary = [...excluded, ...baseExclusion(root, options.base)];
-  const commits = git(root, ["rev-list", "--reverse", ...revisions, ...(boundary.length ? ["--not", ...boundary] : [])]).trim().split("\n").filter(Boolean);
+function scanCommits(root, revisions, excluded, options, recordedRefs) {
+  const boundary = new Set([...excluded, ...baseExclusion(root, options.base, recordedRefs)]);
+  const input = [...new Set(revisions), ...[...boundary].map((oid) => `^${oid}`)].join("\n") + "\n";
+  const commits = git(root, ["rev-list", "--reverse", "--parents", "--stdin"], input).trim().split("\n").filter(Boolean);
   const findings = [];
-  for (const commit of commits) {
-    const args = ["show", "--format=", "--root", "--diff-merges=remerge", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv", "--no-renames"];
+  for (const entry of commits) {
+    const [commit, ...parents] = entry.split(" ");
+    const args = ["show", "--format=", "--root", ...(parents.length > 1 ? [mergeDiff(root)] : []), "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "--no-textconv", "--no-renames"];
     const paths = git(root, [...args, "--name-only", "-z", commit, "--"]).split("\0").filter(Boolean);
     const diff = git(root, [...args, "--unified=0", "--no-color", commit, "--"]);
     findings.push(...checkDiff(diff, { ...options, paths }).map((finding) => ({ ...finding, commit })));
