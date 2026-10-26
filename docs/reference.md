@@ -926,6 +926,46 @@ Several branch reviewers can review one head at once, each with its own prompt l
 The one-review rule counts each scope on its own.
 With `swarm.review.merge: "branch"`, the merge guard requires the newest review of every scope on the head to approve.
 
+#### The promotion review
+
+`qc review promotion <pr>` writes a scoped brief for a PR from the integration branch to the release branch.
+The PR head and base must belong to the same repository; fork PRs follow the usual review policy.
+Enable `swarm.dispatch`, then set `swarm.review.promotion` in `qc.config.json`:
+
+```json
+{
+  "swarm": {
+    "dispatch": {},
+    "review": {
+      "promotion": { "integration": "dev", "release": "main" }
+    }
+  }
+}
+```
+
+The key defaults to `null`, which turns the promotion policy off.
+The optional `surfaces` list replaces the default globs: `infra/**`, `**/migrations/**`, and `.github/workflows/**`.
+The command selects changed files that match those globs and writes `<git common dir>/qc/promotion/pr-<n>.md`.
+The brief shows up to 200 paths and counts the remaining paths.
+The first review lists files with `gh api --paginate repos/{owner}/{repo}/pulls/<pr>/files --jq '.[].filename'`.
+For a repeated promotion, the command finds the newest branch verdict with `Scope: promotion` on the integration branch.
+It adds `Reviewed: <sha>` to the brief and the dispatch, and lists files changed since that commit.
+Keep that line in the reviewer prompt so the gate accepts the review round.
+The increment uses `git diff --name-only <reviewed>..<head> --`; fetch both commits into the checkout before you run the command.
+Its four checks cover infrastructure, migrations, workflows, and secrets in logs.
+
+The output gives the controller a dispatch for `architecture:sdd-branch-reviewer` with model `opus`.
+Use its `Brief:`, `Scope: promotion`, and `Worktree:` prompt lines.
+Replace the worktree placeholder with a checkout on the integration branch at the PR head.
+The review remains a branch review with `Scope: promotion`.
+The report starts with `VERDICT: APPROVED <sha>` or `VERDICT: CHANGES_REQUIRED <sha>`.
+
+With `swarm.review.merge: "branch"`, the merge guard accepts the scoped APPROVED verdict for the configured integration-to-release PR at that head.
+With `swarm.review.merge: "task"`, the guard ignores the promotion approval and requires an APPROVED task verdict on the integration head.
+The promotion PR stays outside the direct lane in both modes.
+Merge with `gh pr merge <pr> --match-head-commit <sha>` after approval.
+A PR outside the configured branch pair follows the usual review policy.
+
 #### The direct lane for a small fix
 
 A small fix skips the subagent workflow. The main session edits it on a branch, and merges it with

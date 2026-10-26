@@ -3,7 +3,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { CONFIG_FILE, defaults, load, merge, reviewDefaults } from "../config.mjs";
+import { CONFIG_FILE, defaults, load, merge, promotionDefaults, reviewDefaults } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { configAtBase, directSettings } from "./direct-lane.mjs";
 import { dispatchSettings } from "./dispatch.mjs";
@@ -14,7 +14,7 @@ const KEY = "swarm.review";
 const MERGE_KINDS = ["branch", "task"];
 const SWITCH_KEYS = ["oneBranchReview", "requireGreen", "requireBase", "productDecisions"];
 const LIMIT_KEYS = ["roundFindings", "roundFiles"];
-const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", ...SWITCH_KEYS, ...LIMIT_KEYS];
+const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", "promotion", ...SWITCH_KEYS, ...LIMIT_KEYS];
 const STATE_FILE = "state.json";
 
 const isNameList = (value) => Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "");
@@ -31,6 +31,20 @@ export function reviewSettings(swarm = {}) {
   const unknown = Object.keys(raw).find((key) => !REVIEW_KEYS.includes(key));
   if (unknown !== undefined) throw new Error(`${KEY}.${unknown} in qc.config.json is not a review setting; the keys are ${REVIEW_KEYS.join(", ")}`);
   const merged = merge(reviewDefaults, raw);
+  let promotion = merged.promotion;
+  if (promotion !== null) {
+    if (typeof promotion !== "object" || Array.isArray(promotion)) throw wrong("promotion", promotion, "an object or null");
+    const unknown = Object.keys(promotion).find((key) => !["integration", "release", "surfaces"].includes(key));
+    if (unknown !== undefined) throw wrong(`promotion.${unknown}`, promotion[unknown], "absent; the keys are integration, release, surfaces");
+    promotion = { ...promotionDefaults, ...promotion };
+    for (const key of ["integration", "release"]) {
+      if (typeof promotion[key] !== "string" || !promotion[key].trim()) throw wrong(`promotion.${key}`, promotion[key], "a non-empty branch name");
+    }
+    if (promotion.integration === promotion.release) throw wrong("promotion.release", promotion.release, "different from swarm.review.promotion.integration");
+    if (!isNameList(promotion.surfaces) || promotion.surfaces.length === 0 || promotion.surfaces.some((glob) => !glob.trim())) {
+      throw wrong("promotion.surfaces", promotion.surfaces, "a non-empty list of non-empty globs");
+    }
+  }
   const { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills } = merged;
   if (!MERGE_KINDS.includes(mergeKind)) throw wrong("merge", mergeKind, `one of ${MERGE_KINDS.join(", ")}`);
   if (!Number.isInteger(maxTaskCalls) || maxTaskCalls < 1) throw wrong("maxTaskCalls", maxTaskCalls, "a positive whole number");
@@ -51,7 +65,7 @@ export function reviewSettings(swarm = {}) {
     if (!Number.isInteger(merged[key]) || merged[key] < 0) throw wrong(key, merged[key], "a whole number, 0 or more");
   }
   const enforcement = Object.fromEntries([...SWITCH_KEYS, ...LIMIT_KEYS].map((key) => [key, merged[key]]));
-  return { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, ...enforcement, implementerTypes: dispatch.implementerTypes };
+  return { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, promotion, ...enforcement, implementerTypes: dispatch.implementerTypes };
 }
 
 /** The workflow branch reads the PR base through `git`, or the checkout when `git` is absent; null while dispatch is off. */

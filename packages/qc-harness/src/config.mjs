@@ -614,9 +614,14 @@ export const contextDefaults = {
   handoffTypes: ["sdd-implementer", "architecture:sdd-implementer", "general-purpose"],
 };
 
+export const PROMOTION_SCOPE = "promotion";
+export const promotionDefaults = { surfaces: ["infra/**", "**/migrations/**", ".github/workflows/**"] };
+
 // What each key of `swarm.review` means when a repository omits it. The workflow checks run only while
 // `swarm.dispatch` is on, so this section alone turns nothing on.
 export const reviewDefaults = {
+  // Require a promotion review only when the repository chooses its branch pair.
+  promotion: null,
   // The review kind whose APPROVED verdict lets `gh pr merge` run: "branch" or "task".
   merge: "branch",
   // The largest tool-call estimate one plan task may carry.
