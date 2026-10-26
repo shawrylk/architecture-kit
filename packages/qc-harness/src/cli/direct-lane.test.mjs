@@ -194,6 +194,7 @@ test("a head with no commit past the base, the head of a protected branch, or a 
 test("a Write over a tracked binary has no size the lane can judge", (t) => {
   const root = repo(t);
   commit(root, "src/lib.dll", Buffer.from([0, 1, 2, 3]));
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
   const write = editLane({ root, base: BASE, protectedBranches: [], rel: "src/lib.dll", toolName: "Write", input: { content: "x" } });
   assert.match(write.problem, /src\/lib\.dll is a binary file/);
 });

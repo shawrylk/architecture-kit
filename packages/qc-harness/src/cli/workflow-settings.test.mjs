@@ -32,6 +32,32 @@ test("with swarm.dispatch off, the checks are off", (t) => {
   for (const dir of dirs) assert.equal(workflowAt(dir), null);
 });
 
+test("workflowAt reads the policy at the PR commit even when the checkout has no config", (t) => {
+  const { dirs } = folders(t, [null]);
+  const baseOid = "a".repeat(40);
+  const calls = [];
+  const git = (root, ...args) => {
+    calls.push({ root, args });
+    return args[0] === "show" ? JSON.stringify({ swarm: { dispatch: {}, direct: false } }) : "";
+  };
+  const workflow = workflowAt(dirs[0], { baseOid, git });
+  assert.equal(workflow.review.merge, "branch");
+  assert.equal(workflow.direct, null);
+  assert.deepEqual(calls.map(({ args }) => args), [["cat-file", "-e", `${baseOid}^{commit}`], ["show", `${baseOid}:qc.config.json`]]);
+  assert.throws(() => workflowAt(dirs[0], { baseOid: "main", git }), /no base commit/);
+  assert.equal(calls.length, 2);
+});
+
+test("the checkout can close the direct lane while the PR base keeps its review policy", (t) => {
+  const { dirs } = folders(t, [{ swarm: { direct: false } }, { swarm: { direct: { maxLines: 0 } } }]);
+  const git = (root, ...args) => args[0] === "show" ? JSON.stringify({ swarm: { dispatch: {} } }) : "";
+  for (const dir of dirs) {
+    const workflow = workflowAt(dir, { baseOid: "a".repeat(40), git });
+    assert.equal(workflow.review.merge, "branch");
+    assert.equal(workflow.direct, null);
+  }
+});
+
 test("an empty dispatch section takes every review default", () => {
   assert.deepEqual(reviewSettings({ dispatch: {} }), { ...reviewDefaults, implementerTypes: dispatchDefaults.implementerTypes });
 });
