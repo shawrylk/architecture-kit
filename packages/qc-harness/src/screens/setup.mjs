@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { PNG } from "pngjs";
+import { importConsumerPackage } from "../consumer-package.mjs";
+const { PNG } = await importConsumerPackage("pngjs");
 import { requireLocalhost } from "./map.mjs";
 import { targetSession } from "./stack-auth.mjs";
 import { privateRoot } from "./auth.mjs";

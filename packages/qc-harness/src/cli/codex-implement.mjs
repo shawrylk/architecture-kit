@@ -1,7 +1,7 @@
 // `qc codex-implement`: run one brief through `codex exec` as an implementer, and start a fresh session
 // after each stop until the progress file says it is done. It never calls Claude; exit 2 hands the brief back.
 
-import { spawn } from "node:child_process";
+import { spawnCommand as spawn } from "./spawn-command.mjs";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";

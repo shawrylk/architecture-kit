@@ -517,10 +517,11 @@ async function contractKeys(config, lines) {
   if (text === null) return [];
   let document;
   try {
-    const { parse } = await import("yaml");
+    const { importConsumerPackage } = await import("../consumer-package.mjs");
+    const { parse } = await importConsumerPackage("yaml", config.root);
     document = parse(text);
   } catch (error) {
-    const rule = error?.code === "ERR_MODULE_NOT_FOUND" ? "contract-reader-unavailable" : "unreadable-contract";
+    const rule = ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"].includes(error?.code) ? "contract-reader-unavailable" : "unreadable-contract";
     return [{ path: contract, rule, detail: error.message }];
   }
   const problems = checkContractKeys(document, contract);

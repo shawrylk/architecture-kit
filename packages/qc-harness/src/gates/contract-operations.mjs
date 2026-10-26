@@ -15,7 +15,7 @@ function peerMissing(error) {
   return wrapped;
 }
 
-const loadYaml = () => import("yaml");
+const loadYaml = async () => (await import("../consumer-package.mjs")).importConsumerPackage("yaml");
 
 async function parser(load) {
   try {

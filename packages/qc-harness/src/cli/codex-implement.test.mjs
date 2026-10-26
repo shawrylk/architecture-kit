@@ -350,6 +350,18 @@ test("the default runner spawns without a shell, closes stdin, and appends outpu
   assert.ok(readFileSync(log, "utf8").split("\n").filter((entry) => entry.startsWith("{")).length >= 2, "the log is appended, not replaced");
 });
 
+test("the default runner resolves a Windows command shim", { skip: process.platform !== "win32" }, async (t) => {
+  const { dir, argv, progress } = setup(t);
+  const fake = path.join(dir, "fake.mjs");
+  writeFileSync(fake, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(progress)}, ${JSON.stringify(DONE_MARKER)});`);
+  writeFileSync(path.join(dir, "fake-codex.cmd"), `@echo off\r\n@"${process.execPath}" "${fake}" %*\r\n`);
+  assert.equal(await runCodexImplement(argv, {
+    codexCommand: ["fake-codex"],
+    env: { ...process.env, PATH: dir, PATHEXT: ".EXE;.CMD" },
+    say: quiet,
+  }), 0);
+});
+
 test("qc codex-implement is wired, and prints usage errors with exit 1", () => {
   const result = spawnSync(process.execPath, [QC, "codex-implement"], { encoding: "utf8" });
   assert.equal(result.status, 1);
