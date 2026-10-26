@@ -499,6 +499,14 @@ reruns nothing when the failure is no test failure or more than five files faile
 
 #### Context budgets
 
+Three limits apply together. Each measures a different part of an agent's work.
+
+| Setting | Measure | Action |
+|---|---|---|
+| `swarm.toolCallBudget` | tool calls per subagent | reminds at 70%, then permits only the handoff at the limit; off by default |
+| `swarm.context` | latest request context divided by first request context | gives ratio reminders and handoff advice when enough calls remain |
+| `budgets` | context tokens per request, by role | reminds, compacts, or restricts work at the role's token limits |
+
 `budgets` in `qc.config.json` sets token limits for each role.
 `compactAt` triggers compaction, `remindAt` triggers a reminder, and `handoffAt` triggers a handoff.
 `toolOutputTokens` caps one Codex tool output.
@@ -511,11 +519,35 @@ reruns nothing when the failure is no test failure or more than five files faile
 | `codex` | `{ "compactAt": null, "toolOutputTokens": 4000 }` |
 
 The orchestrator, implementer, and reviewer budgets apply only when `swarm.dispatch` is on.
-They add to the ratio handoffs in `swarm.context` and the tool-call budget in `swarm.toolCallBudget`.
 `qc codex-implement` reads `budgets.codex` for its launch overrides.
 Set a role to `null` to turn its budget off.
 Each number must be a positive whole number, and `remindAt` must be smaller than `handoffAt`.
 A null `budgets.codex.compactAt` uses `codex.compactTokens`, whose default is `300000`.
+
+At `budgets.orchestrator.compactAt`, the orchestrator gets a note to run `/compact` at the next green step.
+The note asks it to keep the plan path, open pull request numbers, branches, heads, and ledger path in the summary.
+
+The implementer and both reviewer types get one reminder at their role's `remindAt`.
+At `handoffAt`, only calls that finish the handoff can run.
+The implementer writes a handoff note and reports its path on a `HANDOFF:` line.
+The reviewer sends a report that opens with `VERDICT:` for the work it reviewed.
+It adds an `UNREVIEWED:` line that lists the files left.
+The controller sends a fresh reviewer with `Scope:` for those files.
+
+`qc budget report` reads the agent ledger and reports the median and 90th percentile of context at the end of each task.
+It also reports the share of tasks whose `peakContext` reaches `handoffAt`.
+Context counts input tokens, cache reads, and cache creation; it excludes output tokens.
+The report lists the implementer before the reviewer and omits roles whose budgets are `null`.
+The cost roles `reviewer` and `branch-reviewer` both count as `reviewer`.
+The latest cost record replaces older records from a resumed agent.
+The report skips and counts cost records without `endContext`.
+The orchestrator and Codex leave no cost record, so the report says so in one line.
+
+| Report result | Advice |
+|---|---|
+| More than 10% of tasks reach `handoffAt` | raise `handoffAt` |
+| Otherwise, the 90th percentile ends under half of `handoffAt` | lower `handoffAt` |
+| Neither condition holds | keep `handoffAt` |
 
 #### Run an implementer on Codex
 
