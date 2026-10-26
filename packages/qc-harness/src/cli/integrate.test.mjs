@@ -93,7 +93,12 @@ for (const setting of ["different", "absent local"]) {
     const dir = batch(t);
     if (setting === "different") git(dir, "config", "user.email", "other@example.com");
     else git(dir, "config", "--unset", "user.email");
-    authorEnvironment(t, { GIT_AUTHOR_NAME: "qc", GIT_AUTHOR_EMAIL: "qc@example.com" });
+    authorEnvironment(t, {
+      GIT_AUTHOR_NAME: "qc",
+      GIT_AUTHOR_EMAIL: "qc@example.com",
+      GIT_COMMITTER_NAME: "qc",
+      GIT_COMMITTER_EMAIL: "qc@example.com",
+    });
     const errors = [];
     t.mock.method(console, "error", quiet(errors));
     assert.equal(await runIntegrate(config(dir, null), ["--issue", "7", "feat/1-a"], { say: () => {}, run }), 0, errors.join("\n"));
