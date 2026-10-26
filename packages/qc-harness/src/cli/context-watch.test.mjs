@@ -116,6 +116,71 @@ test("a lock older than 30 seconds expires and the next call takes it", (t) => {
   assert.equal(f.at(210_000), null);
 });
 
+test("a lock released before stat stays silent", (t) => {
+  const f = fixture(t);
+  const lock = `${f.state}.lock`;
+  mkdirSync(lock, { recursive: true });
+  const originalStat = fs.statSync;
+  t.mock.method(fs, "statSync", (file, ...args) => {
+    if (file === lock) {
+      fs.rmdirSync(lock);
+      throw Object.assign(new Error("released"), { code: "ENOENT" });
+    }
+    return originalStat(file, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.equal(f.at(210_000), null);
+  assert.equal(fs.existsSync(f.state), false);
+});
+
+test("stale lock removal preserves another hook's replacement lock", (t) => {
+  const f = fixture(t);
+  const lock = `${f.state}.lock`;
+  mkdirSync(lock, { recursive: true });
+  const old = new Date(Date.now() - 31_000);
+  utimesSync(lock, old, old);
+  const originalRemove = fs.rmdirSync;
+  let removed;
+  t.mock.method(fs, "rmdirSync", (file, ...args) => {
+    assert.notEqual(file, lock);
+    assert.ok(String(file).startsWith(`${lock}.`));
+    removed = file;
+    mkdirSync(lock);
+    return originalRemove(file, ...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.equal(f.at(210_000), null);
+  assert.ok(removed);
+  assert.equal(fs.existsSync(removed), false);
+  assert.equal(fs.existsSync(lock), true);
+  assert.equal(fs.existsSync(f.state), false);
+});
+
+test("a competing stale lock claim stays silent", (t) => {
+  const f = fixture(t);
+  const lock = `${f.state}.lock`;
+  mkdirSync(lock, { recursive: true });
+  const old = new Date(Date.now() - 31_000);
+  utimesSync(lock, old, old);
+  const originalRename = fs.renameSync;
+  let claimed = false;
+  t.mock.method(fs, "renameSync", (from, to) => {
+    if (from === lock) {
+      claimed = true;
+      fs.rmdirSync(lock);
+      throw Object.assign(new Error("claimed"), { code: "ENOENT" });
+    }
+    return originalRename(from, to);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.equal(f.at(210_000), null);
+  assert.equal(claimed, true);
+  assert.equal(fs.existsSync(f.state), false);
+});
+
 test("a lock at most 30 seconds old stays held", (t) => {
   const f = fixture(t);
   const lock = `${f.state}.lock`;

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -11,7 +11,7 @@ import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 const HEAD = "a".repeat(40);
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const PROMOTION = { integration: "dev", release: "main" };
-const PR = { number: 7, headRefName: "dev", baseRefName: "main", headRefOid: HEAD, url: "https://github.com/example/repo/pull/7", isCrossRepository: false };
+const PR = { number: 7, headRefName: "dev", baseRefName: "main", headRefOid: HEAD, url: "https://github.com/example/repo/pull/7", isCrossRepository: false, changedFiles: 3 };
 
 async function fixture(t, { swarm = { dispatch: {}, review: { promotion: PROMOTION } }, pr = PR, diff = "infra/net.tf\ndb/migrations/0042.sql\nsrc/a.ts\n", records = [], increment = "infra/increment.tf\nsrc/a.ts\n" } = {}) {
   const { runReview } = await import("./review-promotion.mjs");
@@ -24,6 +24,7 @@ async function fixture(t, { swarm = { dispatch: {}, review: { promotion: PROMOTI
   const out = [];
   const err = [];
   const calls = [];
+  const ghOptions = [];
   const gitCalls = [];
   const git = (cwd, ...args) => {
     assert.equal(cwd, root);
@@ -33,13 +34,62 @@ async function fixture(t, { swarm = { dispatch: {}, review: { promotion: PROMOTI
   const gh = (args, options) => {
     assert.equal(options.cwd, root);
     calls.push(args);
-    if (args.join(" ") === "pr view 7 --json number,headRefName,baseRefName,headRefOid,url,isCrossRepository") return pr === null ? null : JSON.stringify(pr);
+    ghOptions.push(options);
+    if (args.join(" ") === "pr view 7 --json number,headRefName,baseRefName,headRefOid,url,isCrossRepository,changedFiles") return pr === null ? null : JSON.stringify(pr);
     if (args.join(" ") === "api --paginate repos/{owner}/{repo}/pulls/7/files --jq .[].filename") return diff;
     assert.fail(`Unexpected gh call: ${args.join(" ")}`);
   };
   const run = (args = ["promotion", "7"]) => runReview(load(root), args, { gh, git, out: (line) => out.push(line), err: (line) => err.push(line) });
-  return { root, out, err, calls, gitCalls, run, file: path.join(root, ".git", "qc", "promotion", "pr-7.md") };
+  return { root, out, err, calls, ghOptions, gitCalls, run, file: path.join(root, ".git", "qc", "promotion", "pr-7.md") };
 }
+
+test("promotion consumers import the shared branch fragment", async () => {
+  const { promotionBranchName } = await import("./promotion-branch.mjs");
+  assert.equal(promotionBranchName("origin/main"), "main");
+  assert.equal(promotionBranchName("main"), "main");
+  for (const name of ["merge-guard", "review-promotion", "workflow-settings"]) {
+    const source = readFileSync(new URL(`./${name}.mjs`, import.meta.url), "utf8");
+    assert.match(source, /import \{ promotionBranchName \} from "\.\/promotion-branch\.mjs"/);
+    assert.doesNotMatch(source, /from "\.\/review-promotion\.mjs"/);
+  }
+});
+
+test("the paginated file request gets 120 seconds and requests the PR count", async (t) => {
+  const f = await fixture(t);
+  assert.equal(f.run(), 0, f.err.join("\n"));
+  assert.ok(f.calls[0].at(-1).split(",").includes("changedFiles"));
+  assert.equal(f.ghOptions[1].timeoutMs, 120_000);
+});
+
+for (const [read, expected] of [[2, 3], [4, 3], [3000, 3000], [3000, 3100]]) {
+  test(`promotion refuses ${read} listed files against ${expected} changed files`, async (t) => {
+    const diff = Array.from({ length: read }, (_, i) => `infra/${i}.tf`).join("\n");
+    const f = await fixture(t, { diff, pr: { ...PR, changedFiles: expected } });
+    assert.equal(f.run(), 1);
+    assert.match(f.err.join("\n"), new RegExp(`read ${read}.*changedFiles ${expected}`));
+    if (read === 3000) assert.match(f.err.join("\n"), /3,000.*limit/);
+    assert.equal(existsSync(f.file), false);
+    assert.deepEqual(f.out, []);
+  });
+}
+
+for (const changedFiles of [undefined, null, "3", -1]) {
+  test(`promotion refuses an invalid changedFiles count: ${changedFiles}`, async (t) => {
+    const f = await fixture(t, { pr: { ...PR, changedFiles } });
+    assert.equal(f.run(), 1);
+    assert.match(f.err.join("\n"), /changedFiles/);
+    assert.equal(existsSync(f.file), false);
+  });
+}
+
+test("a repeated approved promotion names its verdict and review file", async (t) => {
+  const f = await fixture(t, { records: [{ type: "verdict", kind: "branch", branch: "dev", scope: "promotion", verdict: "APPROVED", sha: "b".repeat(40), file: "reviews/promotion.md" }] });
+  assert.equal(f.run(), 0);
+  const brief = readFileSync(f.file, "utf8");
+  assert.match(brief, /Previous verdict: APPROVED/);
+  assert.match(brief, /Previous review: reviews\/promotion\.md/);
+  assert.doesNotMatch(brief, /Check each earlier finding/);
+});
 
 test("qc review promotion 7 writes the brief of the files on the risk surfaces", async (t) => {
   const f = await fixture(t);
@@ -123,7 +173,7 @@ test("the brief limits the paths to 200 and names how to read the rest", async (
 
 test("qc review lists a thousand changed files through the paginated API", async (t) => {
   const diff = Array.from({ length: 1000 }, (_, i) => `infra/${i}.tf`).join("\n");
-  const f = await fixture(t, { diff });
+  const f = await fixture(t, { diff, pr: { ...PR, changedFiles: 1000 } });
   assert.equal(await f.run(), 0, f.err.join("\n"));
   assert.match(readFileSync(f.file, "utf8"), /1000 of 1000/);
   assert.deepEqual(f.calls[1], ["api", "--paginate", "repos/{owner}/{repo}/pulls/7/files", "--jq", ".[].filename"]);
@@ -143,7 +193,7 @@ test("a repeated promotion names the newest scoped branch verdict and briefs its
   const record = { type: "verdict", kind: "branch", branch: "dev", scope: "promotion", verdict: "APPROVED", sha: "c".repeat(40) };
   const f = await fixture(t, { records: [
     record,
-    { ...record, sha: reviewed, verdict: "CHANGES_REQUIRED" },
+    { ...record, sha: reviewed, verdict: "CHANGES_REQUIRED", file: "reviews/changes-required.md" },
     { ...record, branch: "other" },
     { ...record, kind: "task" },
     { ...record, scope: "security" },
@@ -152,6 +202,9 @@ test("a repeated promotion names the newest scoped branch verdict and briefs its
   assert.equal(await f.run(), 0, f.err.join("\n"));
   const brief = readFileSync(f.file, "utf8");
   assert.ok(brief.includes(`\nReviewed: ${reviewed}\n`));
+  assert.match(brief, /Previous verdict: CHANGES_REQUIRED/);
+  assert.match(brief, /Previous review: reviews\/changes-required\.md/);
+  assert.match(brief, /Check each earlier finding.*not only the increment/);
   assert.ok(f.out[1].includes(`\nReviewed: ${reviewed}\n`));
   assert.match(brief, /1 of 2/);
   assert.match(brief, /infra\/increment\.tf/);

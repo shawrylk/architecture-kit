@@ -951,8 +951,14 @@ The optional `surfaces` list replaces the default globs: `infra/**`, `**/migrati
 The command selects changed files that match those globs and writes `<git common dir>/qc/promotion/pr-<n>.md`.
 The brief shows up to 200 paths and counts the remaining paths.
 The first review lists files with `gh api --paginate repos/{owner}/{repo}/pulls/<pr>/files --jq '.[].filename'`.
+The paginated request has a timeout of 120 seconds.
+The command compares the returned count with the PR's `changedFiles` count.
+If the counts differ or the list reaches 3,000 files, the command prints both counts and exits 1.
+It writes no brief.
 For a repeated promotion, the command finds the newest branch verdict with `Scope: promotion` on the integration branch.
 It adds `Reviewed: <sha>` to the brief and the dispatch, and lists files changed since that commit.
+The brief states the previous verdict and names its review file when the ledger records one.
+After `CHANGES_REQUIRED`, the reviewer must check each earlier finding and confirm its resolution, not only the increment.
 Keep that line in the reviewer prompt so the gate accepts the review round.
 The increment uses `git diff --name-only <reviewed>..<head> --`; fetch both commits into the checkout before you run the command.
 Its four checks cover infrastructure, migrations, workflows, and secrets in logs.
@@ -1414,6 +1420,7 @@ It keeps branches that it merged before that refusal.
 | `integrate.push` | `true` | Push to `origin` when that remote exists; `false` keeps the batch local. |
 | `integrate.branchPattern` | `^[a-z]+/[0-9]+-integration$` | Select the branches that use the integration lane. |
 | `integrate.review` | `true` | Enable the integration lane for the merge guard. |
+| `integrate.base` | Unset; `main` | Set the PR base branch for `--pr --from <sha>`; use a non-empty string. |
 
 The CI template runs on pull requests and pushes to `main` or `master`.
 Edit the trunk list for another base branch. A task branch push with no pull request runs no CI.
@@ -1527,7 +1534,8 @@ Nested files with the switch filename receive the same check as other source fil
 The gate prints one summary across all feature folders.
 
 `featureSwitches.file` sets the switch filename. `featureSwitches.patterns` lists regular expressions for declaration names.
-`load()` requires a filename without folders and an array of strings. Invalid regular expressions produce a config error.
+`load()` requires a filename without folders and an array of strings.
+For any config validation error, `qc` prints `qc: invalid qc.config.json: <message>` and exits 1.
 The defaults match names containing `UNWIRED`, starting with `SHOW_`, or ending with `_WIRED`.
 
 ```json

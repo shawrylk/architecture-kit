@@ -18,7 +18,7 @@ import { runGh } from "./gh-run.mjs";
 import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
 import { integrationLane } from "./integration-lane.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
-import { promotionBranchName } from "./review-promotion.mjs";
+import { promotionBranchName } from "./promotion-branch.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
 

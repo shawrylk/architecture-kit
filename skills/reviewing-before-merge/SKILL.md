@@ -15,6 +15,7 @@ remembers, which is never the pull request that needed it.
 
 **How to apply:**
 
+- Where a guard denies the `/code-review` skill, dispatch `architecture:sdd-branch-reviewer`, or ask the user to type `/code-review`.
 - Run `/code-review <pr-number>` once CI is green. The number makes the review read the merged
   diff, not your working tree.
 - Fix every finding, or answer it in the thread. A finding you disagree with gets a reason, not

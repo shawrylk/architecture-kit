@@ -14,7 +14,7 @@ Each rule below is a skill the `architecture` plugin ships. Load it with the Ski
 ## Always on
 
 - **Register the work.** Open a GitHub issue before the first edit of every task, in every repository that has an issue tracker. A small fix counts. `architecture:registering-work` has the details.
-- **Code review is suspended.** Never run `/code-review` on your own initiative, for any pull request. The user runs it.
+- **Review before merge.** Every pull request gets a review before it merges. `architecture:reviewing-before-merge` has the details.
 - **Prose in every reply.** `architecture:writing-plain-english` is the full standard. Every reply follows this core:
   - Lead with the answer or the result. Write no preamble, never restate the request, and do not close with a summary.
   - A step is one instruction in 20 words at most. A descriptive sentence is 25 words at most. One topic per sentence.
