@@ -10,6 +10,38 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("integrate defaults push every three merges", () => {
+  const config = load(here);
+  assert.equal(config.integrate.ciEvery, 3);
+  assert.equal(config.integrate.push, true);
+});
+
+test("integrate configuration preserves omitted defaults", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-integrate-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { ciEvery: 2 } }));
+  assert.equal(load(root).integrate.ciEvery, 2);
+  assert.equal(load(root).integrate.push, true);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { push: false } }));
+  assert.equal(load(root).integrate.ciEvery, 3);
+  assert.equal(load(root).integrate.push, false);
+});
+
+test("integrate configuration rejects invalid types and cadences", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-integrate-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const integrate of [null, [], false, "command"]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate }));
+    assert.throws(() => load(root), { name: "TypeError", message: /integrate must be an object/ });
+  }
+  for (const [key, values] of Object.entries({ ciEvery: [0, 1.5, "3"], push: ["yes"] })) {
+    for (const value of values) {
+      writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ integrate: { [key]: value } }));
+      assert.throws(() => load(root), { name: "TypeError", message: new RegExp(`integrate\\.${key}`) });
+    }
+  }
+});
+
 test("check defaults leave repository commands off", () => {
   assert.deepEqual(load(here).check, { related: null, commands: [], base: "origin/main" });
 });

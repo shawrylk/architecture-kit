@@ -284,6 +284,9 @@ export const defaults = {
     required: { "pre-commit": ["qc work-order-check"], "commit-msg": ["qc commit-msg"], "pre-push": ["qc check"] },
   },
 
+  // Push settled output in merge batches so each push triggers CI.
+  integrate: { ciEvery: 3, push: true },
+
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
     related: null,
@@ -642,6 +645,10 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.integrate)) throw new TypeError("integrate must be an object");
+  const { ciEvery, push } = config.integrate;
+  if (!Number.isInteger(ciEvery) || ciEvery < 1) throw new TypeError("integrate.ciEvery must be a positive integer");
+  if (typeof push !== "boolean") throw new TypeError("integrate.push must be a boolean");
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
   const { related, commands, base } = config.check;
   const command = (value) => typeof value === "string" && value.trim().length > 0;

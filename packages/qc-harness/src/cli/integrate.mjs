@@ -1,4 +1,4 @@
-// `qc integrate`: one integration branch for a batch of branches, so the batch runs one CI and merges once.
+// `qc integrate`: one integration branch for a batch of branches, with pushes at the configured CI cadence.
 // Each merge renumbers its migrations, and a conflict in generated files is settled by the generator.
 
 import { spawnSync } from "node:child_process";
@@ -11,8 +11,10 @@ export const USAGE = `qc integrate — one integration branch for a batch of bra
   qc integrate --issue <n> [--type <type>] [--slug <slug>] [--from <ref>] <branch>...
       make <type>/<n>-<slug> from <ref> (worktree.base by default), or continue it when it exists;
       merge each branch in order, renumber its migrations after the last one before it, and commit;
-      then run generated.command and commit what it changes. A conflict stops the run and lists the
-      files. Resolve it, commit, and run the same command again: a branch already merged is skipped.`;
+      run generated.command, commit its output, and push to origin every integrate.ciEvery merges
+      (3 by default), then settle and push any remaining changes. Set integrate.push to false for
+      manual pushes. An absent origin skips pushes. A conflict stops the run and lists the files.
+      Resolve it, commit, and run the same command again: a branch already merged is skipped.`;
 
 function tryGit(cwd, args) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true });
@@ -81,6 +83,33 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
     }
     const dir = posixDir(config.paths?.migrations);
     const generated = globMatcher(config.generated?.globs ?? []);
+    const ciEvery = config.integrate?.ciEvery ?? 3;
+    let merges = 0;
+    let pushed = false;
+
+    /** Pipeline: regenerate and commit the integration branch before a push. */
+    function settle() {
+      const command = config.generated?.command;
+      if (command) {
+        if (run(command, root) !== 0) throw new Error(`${command} failed; fix it, commit, and run qc integrate again`);
+        if (git(root, ["status", "--porcelain"]).trim() !== "") {
+          git(root, ["add", "-A"]);
+          git(root, ["commit", "-q", "-m", "chore: regenerate the generated files", "-m", `Refs #${options.issue}`]);
+          say(`commit the output of ${command}`);
+        }
+      }
+    }
+
+    /** Branch: publish the integration branch when its remote tracking ref differs. */
+    function pushIfAhead() {
+      if (config.integrate?.push === false || !tryGit(root, ["remote", "get-url", "origin"]).ok) return;
+      const remote = tryGit(root, ["rev-parse", "--verify", `refs/remotes/origin/${name}`]);
+      if (git(root, ["rev-parse", "HEAD"]).trim() === remote.out.trim()) return;
+      git(root, ["push", "-u", "origin", name]);
+      say(`push   ${name}`);
+      pushed = true;
+    }
+
     for (const branch of options.branches) {
       if (tryGit(root, ["merge-base", "--is-ancestor", branch, "HEAD"]).ok) {
         say(`skip   ${branch}: already merged`);
@@ -103,17 +132,17 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
       }
       git(root, ["commit", "-q", "--no-edit"]);
       say(`merge  ${branch}`);
-    }
-    const command = config.generated?.command;
-    if (command) {
-      if (run(command, root) !== 0) throw new Error(`${command} failed; fix it, commit, and run qc integrate again`);
-      if (git(root, ["status", "--porcelain"]).trim() !== "") {
-        git(root, ["add", "-A"]);
-        git(root, ["commit", "-q", "-m", "chore: regenerate the generated files", "-m", `Refs #${options.issue}`]);
-        say(`commit the output of ${command}`);
+      merges += 1;
+      if (merges === ciEvery) {
+        settle();
+        pushIfAhead();
+        merges = 0;
       }
     }
-    say(`OK  ${name} holds ${options.branches.length} branch(es). Push it: git push -u origin ${name}`);
+    settle();
+    pushIfAhead();
+    const hint = pushed ? "" : ` Push it: git push -u origin ${name}`;
+    say(`OK  ${name} holds ${options.branches.length} branch(es).${hint}`);
     return 0;
   } catch (error) {
     console.error(`qc integrate: ${error.message}`);
