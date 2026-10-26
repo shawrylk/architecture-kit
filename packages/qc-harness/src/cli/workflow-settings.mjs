@@ -3,9 +3,9 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { CONFIG_FILE, load, merge, reviewDefaults } from "../config.mjs";
+import { CONFIG_FILE, defaults, load, merge, reviewDefaults } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
-import { directSettings } from "./direct-lane.mjs";
+import { configAtBase, directSettings } from "./direct-lane.mjs";
 import { dispatchSettings } from "./dispatch.mjs";
 import { fileSafe } from "./edit-batch-state.mjs";
 import { ledgerFileOf } from "./ledger.mjs";
@@ -50,11 +50,19 @@ export function reviewSettings(swarm = {}) {
   return { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, ...enforcement, implementerTypes: dispatch.implementerTypes };
 }
 
-/** @returns the workflow of the checkout that holds `cwd`, or null when it has no config or the checks are off. */
-export function workflowAt(cwd) {
+/** The workflow branch reads the PR base through `git`, or the checkout when `git` is absent; null while dispatch is off. */
+export function workflowAt(cwd, { baseOid, git } = {}) {
   const root = checkoutRootOf(cwd);
-  if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
-  const config = load(root);
+  if (!root) return null;
+  let config;
+  if (git) {
+    const settings = configAtBase(root, baseOid, git, "the PR base");
+    if (settings.problem) throw new Error(settings.problem);
+    config = merge(defaults, settings.config);
+  } else {
+    if (!existsSync(path.join(root, CONFIG_FILE))) return null;
+    config = load(root);
+  }
   const review = reviewSettings(config.swarm);
   const ledger = review ? ledgerFileOf(root) : null;
   if (!review || !ledger) return null;
@@ -63,7 +71,9 @@ export function workflowAt(cwd) {
   let directProblem = null;
   try {
     direct = directSettings(config.swarm);
+    if (git && existsSync(path.join(root, CONFIG_FILE)) && !directSettings(load(root).swarm)) direct = null;
   } catch (error) {
+    direct = null;
     directProblem = error.message;
   }
   return {

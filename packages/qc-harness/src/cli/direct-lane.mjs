@@ -88,12 +88,14 @@ function gitBy(budgetMs) {
 
 const gitFailed = (git, what) => (git.late?.() ? `git ran past the ${LANE_BUDGET_MS} ms budget of the lane` : what);
 
-/**
- * The limits of `swarm.direct` in `qc.config.json` at the commit `base`, read through `git`. A branch cannot loosen its own
- * limits, so the lane never reads the checkout's file. `label` names the base in a problem.
- * @returns `{ direct }`, or `{ problem }` naming why the lane is closed.
- */
-function directAtBase(root, base, git, label = base) {
+/** The config resource at `base`, read through `git`; the PR base must name a local commit. Returns `{ config }` or `{ problem }`. */
+export function configAtBase(root, base, git, label = base) {
+  if (label === PR_BASE) {
+    if (typeof base !== "string" || !OBJECT_ID.test(base)) return { problem: "gh returned no base commit for the PR, so the lane cannot tell what the PR merges into" };
+    if (git(root, "cat-file", "-e", `${base}^{commit}`) === null) {
+      return { problem: gitFailed(git, `the PR base commit ${base.slice(0, 12)} is not in this repository, so run \`git fetch\``) };
+    }
+  }
   const text = git(root, "show", `${base}:${CONFIG_FILE}`);
   if (text === null) return { problem: gitFailed(git, `git cannot read ${CONFIG_FILE} at ${label}`) };
   try {
@@ -103,10 +105,20 @@ function directAtBase(root, base, git, label = base) {
     if (swarm !== undefined && (swarm === null || typeof swarm !== "object" || Array.isArray(swarm))) {
       return { problem: `swarm in ${CONFIG_FILE} at ${label} must be an object, got ${JSON.stringify(swarm)}` };
     }
-    const direct = directSettings(swarm);
-    return direct ? { direct } : { problem: `${KEY} is false at ${label}` };
+    return { config };
   } catch (error) {
     return { problem: error instanceof SyntaxError ? `${CONFIG_FILE} at ${label} is not JSON` : error.message };
+  }
+}
+
+function directAtBase(root, base, git, label = base) {
+  const settings = configAtBase(root, base, git, label);
+  if (settings.problem) return settings;
+  try {
+    const direct = directSettings(settings.config.swarm);
+    return direct ? { direct } : { problem: `${KEY} is false at ${label}` };
+  } catch (error) {
+    return { problem: error.message };
   }
 }
 
@@ -229,16 +241,12 @@ export function editLane({ root, base, protectedBranches, rel, toolName, input, 
  * APPROVED verdict that a path of `reviewPaths` needed, or null.
  */
 export function mergeLane({ root, baseOid, protectedBranches = [], sha, records, budgetMs = LANE_BUDGET_MS }) {
-  if (typeof baseOid !== "string" || !OBJECT_ID.test(baseOid)) return { problem: "gh returned no base commit for the PR, so the lane cannot tell what the PR merges into" };
   const git = gitBy(budgetMs);
-  if (git(root, "cat-file", "-e", `${baseOid}^{commit}`) === null) {
-    return { problem: gitFailed(git, `the PR base commit ${baseOid.slice(0, 12)} is not in this repository, so run \`git fetch\``) };
-  }
-  const fork = git(root, "merge-base", baseOid, sha);
-  if (!fork) return { problem: gitFailed(git, `git cannot find the merge base of ${PR_BASE} and ${sha}`) };
   const settings = directAtBase(root, baseOid, git, PR_BASE);
   if (!settings.direct) return settings;
   const { direct } = settings;
+  const fork = git(root, "merge-base", baseOid, sha);
+  if (!fork) return { problem: gitFailed(git, `git cannot find the merge base of ${PR_BASE} and ${sha}`) };
   const history = git(root, "rev-list", `${fork}..${sha}`);
   const changes = history === null ? null : changesSince(root, fork, { head: sha, git });
   if (!changes) return { problem: gitFailed(git, `git cannot diff ${sha} against ${PR_BASE}`) };
