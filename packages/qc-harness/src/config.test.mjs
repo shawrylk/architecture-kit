@@ -32,6 +32,21 @@ test("featureSwitches validates its object, filename, patterns, and regular expr
   assert.deepEqual(load(root).featureSwitches.patterns, []);
 });
 
+test("featureSwitches validation throws plain TypeErrors with their stacks", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-switch-errors-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const featureSwitches of [null, { file: "" }, { patterns: "SHOW_" }, { patterns: ["["] }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ featureSwitches }));
+    assert.throws(() => load(root), (error) => {
+      assert.equal(error.constructor, TypeError);
+      assert.equal(error.name, "TypeError");
+      assert.match(error.message, /^featureSwitches/);
+      assert.match(error.stack, /at load \(/);
+      return true;
+    });
+  }
+});
+
 test("codex defaults bound a short session and disable the skill plugin", () => {
   assert.deepEqual(load(here).codex, {
     compactTokens: 300000,

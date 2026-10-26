@@ -10,14 +10,14 @@ import { runCheck } from "./check.mjs";
 
 const view = { path: "src/features/pins/view.tsx", contents: "const SHOW_DELETE = false;" };
 
-function fixture(gates) {
+function fixture(gates, featureRoots = ["src/features"]) {
   const dir = mkdtempSync(path.join(tmpdir(), "qc-feature-switches-"));
   execFileSync("git", ["init", "-q"], { cwd: dir });
   const files = {
     "package.json": '{"name":"t","private":true,"type":"module"}',
     "quality-thresholds.json": '{"gates":{}}',
     "versions.json": '{"libraries":{}}',
-    "qc.config.json": JSON.stringify({ featureRoots: ["src/features"], gates }),
+    "qc.config.json": JSON.stringify({ featureRoots, gates }),
     [view.path]: view.contents,
     "src/features/pins/feature-switches.ts": "export const PIN_UNWIRED = true;",
     "src/features/pins/view.test.tsx": "const SHOW_TEST = false;",
@@ -49,6 +49,18 @@ test("runCheck finds declarations in feature source files when the gate is on", 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+for (const featureRoot of ["./src/features", "src/features/"]) {
+  test(`the root switch exemption normalizes featureRoots: ${featureRoot}`, async (t) => {
+    const dir = fixture({ "feature-switches": true }, [featureRoot]);
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    writeFileSync(path.join(dir, view.path), "export const title = 'Pins';");
+    writeFileSync(path.join(dir, "src/features/pins/feature-switches.ts"), "export const SHOW_DELETE = false;");
+    const { problems, lines } = await runCheck(load(dir));
+    assert.deepEqual(problems.filter((problem) => problem.rule === "unwire-constant-outside-switch-file"), []);
+    assert.ok(lines.includes("OK  switches     2 file(s) hold no unwire constant outside feature-switches.ts"));
+  });
+}
 
 test("runCheck leaves the feature-switches gate off when it is unset", async () => {
   const dir = fixture({});

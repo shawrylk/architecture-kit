@@ -1228,12 +1228,13 @@ npx eslint frontend/src --suppress-rule qc/one-component-per-file --suppress-rul
 
 After adoption, run `npx qc lint`. It reads `eslint-suppressions.json` and applies each count per file and rule before filtering changed lines.
 Findings beyond the recorded count remain subject to the changed-line check.
-An entry with fewer findings than its count fails as stale, including entries for untouched or deleted files.
+With no named files, an entry with fewer findings than its count fails as stale, including untouched or deleted lintable files.
+Named-file runs skip the stale check. The gate skips baseline entries for unsupported or ignored files.
 With `--staged`, the gate reads source files and the baseline from the index.
 You can also run `npx eslint frontend/src` without suppression-generation flags to check the whole frontend.
 Run `npx eslint frontend/src --prune-suppressions` to remove stale entries, then commit the smaller file.
 Keep the default unused-suppression check enabled. Accept only baseline changes that remove entries or reduce counts.
-Use this file as the sole lint baseline; it may only shrink after adoption.
+Use `eslint-suppressions.json` as the baseline for existing findings, beside the filter for changed lines; it may only shrink after adoption.
 
 ### Show the pending state on a write control
 

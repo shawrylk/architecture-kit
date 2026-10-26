@@ -131,10 +131,10 @@ function lintBaseline(root, staged) {
   return baseline;
 }
 
-function applyBaseline(results, baseline, root) {
+function applyBaseline(results, baseline, root, checkStale) {
   const byFile = new Map(results.map((result) => [path.relative(root, result.filePath).split(path.sep).join("/"), result]));
   let stale = false;
-  for (const [file, rules] of Object.entries(baseline)) {
+  for (const [file, rules] of baseline) {
     const result = byFile.get(file);
     const counts = new Map();
     for (const message of result?.messages ?? []) {
@@ -142,7 +142,7 @@ function applyBaseline(results, baseline, root) {
     }
     for (const [rule, { count }] of Object.entries(rules)) {
       const actual = counts.get(rule) ?? 0;
-      if (actual < count) {
+      if (checkStale && actual < count) {
         console.error(`${file}: ${count - actual} suppressions left that do not occur anymore (${rule}); prune eslint-suppressions.json`);
         stale = true;
       }
@@ -170,12 +170,15 @@ export async function runLintChanged(config, args) {
   }
   const base = options.staged ? null : baseOf(root, options.base ?? config.check.base);
   const changed = changedLines(root, { staged: options.staged, base });
-  const wanted = options.files.map((file) => path.relative(root, path.resolve(file)).split(path.sep).join("/"));
+  const wanted = new Set(options.files.map((file) => path.relative(root, path.resolve(file)).split(path.sep).join("/")));
   const eslint = new ESLint({ cwd: root });
   const files = [];
+  const applicableBaseline = new Map();
   for (const file of new Set([...changed.keys(), ...Object.keys(baseline)])) {
-    if (!LINTABLE.test(file) || (!Object.hasOwn(baseline, file) && wanted.length > 0 && !wanted.includes(file))) continue;
-    if ((!options.staged && !existsSync(path.join(root, file))) || (await eslint.isPathIgnored(path.join(root, file)))) continue;
+    if (!LINTABLE.test(file) || (wanted.size > 0 && !wanted.has(file))) continue;
+    if (await eslint.isPathIgnored(path.join(root, file))) continue;
+    if (Object.hasOwn(baseline, file)) applicableBaseline.set(file, baseline[file]);
+    if (!options.staged && !existsSync(path.join(root, file))) continue;
     files.push(file);
   }
   const results = [];
@@ -186,8 +189,8 @@ export async function runLintChanged(config, args) {
     if (options.staged && staged === null) continue;
     results.push(...(staged === null ? await eslint.lintFiles([filePath]) : await eslint.lintText(staged, { filePath })));
   }
-  const stale = applyBaseline(results, baseline, root);
-  const selected = wanted.length > 0 ? new Map([...changed].filter(([file]) => wanted.includes(file))) : changed;
+  const stale = applyBaseline(results, applicableBaseline, root, wanted.size === 0);
+  const selected = wanted.size > 0 ? new Map([...changed].filter(([file]) => wanted.has(file))) : changed;
   const { kept, skipped } = onChangedLines(results.filter((result) => selected.has(path.relative(root, result.filePath).split(path.sep).join("/"))), selected, root);
   const errors = kept.filter(({ message }) => message.fatal || message.severity === 2);
   for (const { file, message } of kept) {

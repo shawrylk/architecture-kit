@@ -115,6 +115,55 @@ test("qc lint applies the baseline per file and rule up to the recorded count", 
   assert.match(otherFile.stderr, /src\/new\.mjs:1:1.*no-var/);
 });
 
+for (const staged of [false, true]) {
+  test(`named files apply their baseline without linting other files or checking stale entries (staged=${staged})`, (t) => {
+    const { root, git, qc } = repo(t);
+    writeFileSync(path.join(root, "eslint.config.mjs"), `export default [{
+      files: ["**/*.mjs"],
+      plugins: { probe: { rules: { selected: { create(context) {
+        if (context.filename.endsWith("old.mjs")) throw new Error("unselected file was linted");
+        return {};
+      } } } } },
+      rules: { "no-var": "error", "probe/selected": "error" },
+    }];\n`);
+    writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({
+      "src/old.mjs": { "no-var": { count: 2 } },
+      "src/new.mjs": { "no-var": { count: 1 } },
+    }));
+    const source = path.join(root, "src", "new.mjs");
+    const run = () => {
+      if (staged) git("add", "-A");
+      return qc(...(staged ? ["--staged"] : []), "src/new.mjs");
+    };
+    writeFileSync(source, "var fresh = 1;\n");
+    const suppressed = run();
+    assert.equal(suppressed.status, 0, suppressed.stderr);
+    writeFileSync(source, "const fresh = 1;\n");
+    const stale = run();
+    assert.equal(stale.status, 0, stale.stderr);
+    assert.doesNotMatch(stale.stderr, /suppressions left/);
+    writeFileSync(source, "var fresh = 1;\nvar added = 2;\n");
+    const increased = run();
+    assert.equal(increased.status, 1, increased.stderr);
+    assert.match(increased.stderr, /src\/new\.mjs:1:1.*no-var/);
+  });
+}
+
+for (const staged of [false, true]) {
+  for (const file of ["src/notes.md", "src/ignored.mjs"]) {
+    test(`qc lint skips a baseline for an unsupported or ignored file: ${file} (staged=${staged})`, (t) => {
+      const { root, git, qc } = repo(t);
+      writeFileSync(path.join(root, "eslint.config.mjs"), 'export default [{ ignores: ["src/ignored.mjs"] }, { files: ["**/*.mjs"], rules: { "no-var": "error" } }];\n');
+      writeFileSync(path.join(root, file), "var skipped = 1;\n");
+      writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({ [file]: { "no-var": { count: 1 } } }));
+      if (staged) git("add", "eslint-suppressions.json", file);
+      const result = qc(...(staged ? ["--staged"] : []));
+      assert.equal(result.status, 0, result.stderr);
+      assert.doesNotMatch(result.stderr, /suppressions left/);
+    });
+  }
+}
+
 test("qc lint fails stale baseline entries, including untouched and deleted files", (t) => {
   const { root, qc } = repo(t);
   const baseline = path.join(root, "eslint-suppressions.json");
