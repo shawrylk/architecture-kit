@@ -19,6 +19,8 @@ const USAGE = `qc — architecture gates
   qc init [--full]         scaffold the config, hooks and workflow; --full adds the reference architecture
   qc user-config apply|check|capture [--dry-run]
                            synchronize the shared Claude and Codex user settings
+  qc setup [--dry-run] [--config <file>] [--model <id>]...
+                           set up user compaction, the Claude core rules, and personal skills
   qc feature <name>        scaffold a feature of the reference architecture; needs qc init --full
   qc run [name]            drive one feature command headless; no name lists them
   qc install-hooks         point git at the kit's pre-commit hook
@@ -77,6 +79,10 @@ async function main() {
   if (command === "user-config") {
     const { runUserConfig } = await import("./user-config.mjs");
     process.exit(await runUserConfig(rest));
+  }
+  if (command === "setup") {
+    const { runSetup } = await import("./setup.mjs");
+    process.exit(await runSetup(rest));
   }
   if (command === "stack") {
     const { runStack } = await import("./stack.mjs");
