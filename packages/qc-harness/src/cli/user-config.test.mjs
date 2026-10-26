@@ -16,6 +16,7 @@ function fixture(t) {
   for (const dir of ["claude", "codex"]) mkdirSync(path.join(kitDir, dir), { recursive: true });
   writeFileSync(path.join(kitDir, "claude/settings.shared.json"), '{"model":"opus","enabledPlugins":{"kit@remote":true}}\n');
   writeFileSync(path.join(kitDir, "claude/statusline.js"), "console.log('status');\n");
+  writeFileSync(path.join(kitDir, "claude/CLAUDE.core.md"), "core\n");
   writeFileSync(path.join(kitDir, "codex/config.shared.toml"), 'model = "shared"\n[plugins."kit@remote"]\nenabled = true\n');
   const lines = [];
   return { root, kitDir, home: path.join(root, "home"), env: {}, log: (line) => lines.push(line), lines, now: new Date(2026, 0, 2, 3, 4, 5) };
@@ -232,10 +233,11 @@ test("CLI check returns drift, matching, and error exit codes", (t) => {
   assert.equal(run().status, 2);
 });
 
-test("package staging includes all three shared files and resolves them outside the checkout", async (t) => {
+test("package staging includes all shared files and resolves them outside the checkout", async (t) => {
   const f = fixture(t);
   const target = path.join(f.root, "node_modules/architecture-harness/user-config");
   packageUserConfig(f.kitDir, target);
+  assert.equal(readFileSync(path.join(target, "claude/CLAUDE.core.md"), "utf8"), "core\n");
   assert.equal(readFileSync(path.join(target, "claude/statusline.js"), "utf8"), "console.log('status');\n");
   assert.equal(readFileSync(path.join(target, "codex/config.shared.toml"), "utf8"), readFileSync(path.join(f.kitDir, "codex/config.shared.toml"), "utf8"));
   assert.equal(readFileSync(path.join(target, "claude/settings.shared.json"), "utf8"), readFileSync(path.join(f.kitDir, "claude/settings.shared.json"), "utf8"));
