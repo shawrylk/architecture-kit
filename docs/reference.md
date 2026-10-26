@@ -15,8 +15,10 @@ beside the check that enforces it — and every check ships a case that must fai
 | Package `architecture-harness` | `pnpm add -D` | gates, lint rules, the `qc` CLI, doc templates |
 
 The plugin's hooks call the package's CLI. Either half works alone: the package is an ordinary dev
-dependency. In a repository without a `qc.config.json`, the plugin's hooks do nothing, and each skill
-tells the agent that its rules do not apply.
+dependency. The plugin's hooks and kit skills apply only in repositories with a `qc.config.json`.
+The six global skills apply in every repository: `applying-engineering-standards`, `navigating-source-code`,
+`registering-work`, `reviewing-before-merge`, `writing-decision-final-specs`, and `writing-plain-english`.
+The `claude/CLAUDE.core.md` template names these global rules; `qc setup` copies it into your Claude rules.
 
 ## Install
 
@@ -209,18 +211,18 @@ Run `qc user-config apply` separately to merge the shared settings and copy the 
 | Claude budget | Set `modelSettings.<id>.autoCompactWindow` from `budgets.orchestrator.compactAt` for each selected model. |
 | Codex budget | Set `model_auto_compact_token_limit` in `~/.codex/config.toml` from `budgets.codex.compactAt`. |
 | Claude rules | Copy `claude/CLAUDE.core.md` from the kit's user configuration into the core markers in `~/.claude/CLAUDE.md`. |
-| Personal skills | Remove a personal folder only when its enabled architecture plugin supplies an identical `SKILL.md` and the folder holds no other files. |
+| Personal skills | Check only the six `GLOBAL_SKILLS`. Remove a folder only when its enabled plugin supplies identical text and the folder holds only `SKILL.md`. |
 
 The command preserves text outside the core markers.
 It uses `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when you set them.
 Each changed existing file gets a `<file>.bak-<yyyymmdd-hhmmss>` backup.
-The command writes settings with mode `0600` where the operating system supports file permissions.
+The command sets mode `0600` after each write, including existing files, where the operating system supports file permissions.
 A rerun preserves matching files, keeps their modification times, and creates no backups.
 
 | Flag | Behavior |
 | --- | --- |
 | `--dry-run` | Print `Would change` lines and leave every file and skill folder untouched. |
-| `--config <file>` | Read optional budgets from this file instead of `./qc.config.json`. Skip budgets when the file is absent. |
+| `--config <file>` | Read budgets from this file. Warn on stderr and skip budgets when the file is absent. |
 | `--model <id>` | Select a Claude model for its compaction window. Repeat the flag to select more models. |
 
 ```bash
@@ -229,6 +231,9 @@ npx qc setup --config ./qc.config.json --model claude-opus-5-5
 ```
 
 The command validates budgets, settings, and core markers before it writes files.
+An absent default `./qc.config.json` skips budgets without a warning.
+Other personal skill folders stay outside the setup checks.
+Changed personal copies stay in place and appear as steps for you.
 Each `Change <file>: <key>` line names a change.
 The command prints `Setup matches.` when every file and skill folder matches.
 
@@ -583,14 +588,16 @@ The command resolves the worktree path against the repository root and follows f
 1. It checks for a clean tree, an attached and unprotected branch, and a completed merge.
 2. It fetches `origin` and merges the base, leaving source conflicts for you to resolve.
 3. It renumbers the branch's migrations after the base's last migration and rewrites references.
-4. It commits the merge, runs `generated.command`, and commits the generated changes.
-5. It pushes the changed branch with `git push -u origin <branch>` through `qc gate-slot`.
+4. It commits the merge, runs `generated.command`, and commits generated changes, with a gate slot for each heavy command.
+5. It pushes the branch through a gate slot with a Git argument vector; the branch name never enters a shell.
 
 `--base <ref>` overrides `worktree.base`, which defaults to `origin/main`.
 `--no-push` completes the sync and skips the push.
-An up-to-date branch skips the push.
+A branch with no local commits ahead of its upstream skips generation and the push when it already contains the base.
+When the base is merged, a branch ahead of its upstream, or without one, runs the generator and pushes on a rerun.
 A source conflict leaves the merge in progress and skips the push.
-The command resolves conflicts in generated files before it runs the generator.
+Resolve the conflict, renumber the migrations, commit, and rerun `qc branch sync` to finish generation and the push.
+The command resolves generated conflicts only when `generated.command` exists; otherwise, it stops and lists the files for you.
 
 | Exit code | Meaning |
 | --- | --- |

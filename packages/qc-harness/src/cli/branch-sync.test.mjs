@@ -53,6 +53,8 @@ test("sync merges the base, renumbers its own migrations, and commits generated 
   assert.ok(said.includes("rename db/0002_mine.sql -> 0003_mine.sql"));
   assert.match(git(dir, "log", "-1", "--format=%b"), /Refs #5/);
   const head = git(dir, "rev-parse", "HEAD");
+  git(dir, "branch", "published", "HEAD");
+  git(dir, "branch", "--set-upstream-to=published");
   assert.deepEqual(await syncBranch(config(dir), dir, { say: quiet(said), run }), { code: 0, changed: false });
   assert.equal(git(dir, "rev-parse", "HEAD"), head);
   assert.ok(said.includes("OK  feat/5-mine already holds main"));
@@ -139,10 +141,96 @@ test("branch sync with --no-push skips the gate slot", async (t) => {
 test("branch sync skips the gate slot for an up-to-date branch", async (t) => {
   const dir = batch(t);
   git(dir, "merge", "--no-edit", "main");
+  git(dir, "branch", "published", "HEAD");
+  git(dir, "branch", "--set-upstream-to=published");
   const calls = [];
   const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
   assert.equal(await runBranch(config(dir), ["sync", dir], { say: quiet([]), run, runSlot }), 0);
   assert.deepEqual(calls, []);
+});
+
+test("branch sync pushes a branch containing a semicolon as one argument", async (t) => {
+  const dir = batch(t);
+  const remote = `${dir}-remote.git`;
+  t.after(() => rmSync(remote, { recursive: true, force: true }));
+  git(dir, "init", "--bare", "-q", remote);
+  git(dir, "remote", "add", "origin", remote);
+  const branch = process.platform === "win32" ? "feat/5-mine;&ver" : "feat/5-mine;echo>injected";
+  git(dir, "branch", "-m", branch);
+  assert.equal(await runBranch(config(dir), ["sync", dir], { say: quiet([]), run }), 0);
+  assert.equal(existsSync(path.join(dir, "injected")), false);
+  assert.equal(git(remote, "rev-parse", `refs/heads/${branch}`), git(dir, "rev-parse", "HEAD"));
+});
+
+test("a resolved source conflict reruns the generator and pushes once", async (t) => {
+  const dir = batch(t);
+  commitFile(dir, "a.txt", "mine\n");
+  git(dir, "switch", "-q", "main");
+  commitFile(dir, "a.txt", "theirs\n");
+  git(dir, "switch", "-q", "feat/5-mine");
+  assert.equal((await syncBranch(config(dir), dir, { say: quiet([]), run })).code, 1);
+  commitFile(dir, "a.txt", "resolved\n");
+  const calls = [];
+  let generated = 0;
+  const runSlot = (words, cwd) => { calls.push({ words, cwd }); return 0; };
+  assert.equal(await runBranch(config(dir), ["sync", dir], {
+    say: quiet([]), runSlot, run: (command, cwd) => { generated += 1; return run(command, cwd); },
+  }), 0);
+  assert.equal(generated, 1);
+  assert.equal(readFileSync(path.join(dir, "out.generated.txt"), "utf8"), "regenerated");
+  assert.deepEqual(calls, [{ words: ["git", "push", "-u", "origin", "feat/5-mine"], cwd: dir }]);
+});
+
+test("sync holds gate slots for the merge commit, generator, and generated commit", async (t) => {
+  const dir = batch(t);
+  const calls = [];
+  let held = false;
+  const withSlot = async (words, cwd, action) => {
+    calls.push({ words, cwd });
+    held = true;
+    try { return await action(); } finally { held = false; }
+  };
+  await syncBranch(config(dir), dir, {
+    say: quiet([]), withSlot,
+    run: (command, cwd) => { assert.equal(held, true); return run(command, cwd); },
+  });
+  assert.deepEqual(calls.map(({ words }) => words.slice(0, 3)), [
+    ["git", "commit", "-q"], ["node gen.mjs"], ["git", "commit", "-q"],
+  ]);
+  assert.ok(calls.every(({ cwd }) => cwd === dir));
+});
+
+test("a branch ahead of its upstream retries generation and a failed push", async (t) => {
+  const dir = batch(t);
+  git(dir, "branch", "published", "HEAD");
+  git(dir, "branch", "--set-upstream-to=published");
+  let generated = 0;
+  let pushed = 0;
+  const deps = {
+    say: quiet([]),
+    run: (command, cwd) => { generated += 1; return generated === 1 ? 1 : run(command, cwd); },
+    runSlot: () => { pushed += 1; return pushed === 1 ? 7 : 0; },
+  };
+  assert.equal(await runBranch(config(dir), ["sync", dir], deps), 1);
+  assert.equal(pushed, 0);
+  assert.equal(await runBranch(config(dir), ["sync", dir], deps), 7);
+  assert.equal(await runBranch(config(dir), ["sync", dir], deps), 0);
+  assert.equal(generated, 3);
+  assert.equal(pushed, 2);
+});
+
+test("a generated conflict without a generator stays unresolved and lists the file", async (t) => {
+  const dir = batch(t, true);
+  commitFile(dir, "out.generated.txt", "mine\n");
+  git(dir, "switch", "-q", "main");
+  commitFile(dir, "out.generated.txt", "theirs\n");
+  git(dir, "switch", "-q", "feat/5-mine");
+  const said = [];
+  assert.equal((await syncBranch(config(dir, null), dir, { say: quiet(said), run })).code, 1);
+  assert.match(said.join("\n"), /generated\.command/);
+  assert.ok(said.includes("  out.generated.txt"));
+  assert.equal(git(dir, "diff", "--name-only", "--diff-filter=U"), "out.generated.txt");
+  assert.ok(existsSync(path.join(dir, ".git", "MERGE_HEAD")));
 });
 
 test("branch sync returns one after a conflict and skips the gate slot", async (t) => {

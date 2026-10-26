@@ -32,8 +32,6 @@ manually instead.
 - Re-run the review after a fix that changes behaviour.
 - Where the repository ships its own review skill, such as `/review-code`, that satisfies the same
   bar. Run one review, not two.
-- **Keep this bar local.** Do not add it to a shared rules file or propose it as a repository rule.
-  Each developer runs their own workflow, and this one is yours.
 
 **The one exemption (once resumed):** a pull request you neither wrote nor merge, such as one you
 only approve.

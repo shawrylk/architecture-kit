@@ -7,7 +7,7 @@ import { GLOBAL_SKILLS } from "./global-skills.mjs";
 const PLUGIN = fileURLToPath(new URL("../../../", import.meta.url));
 const EDIT_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit"];
 
-test("every skill applies only where qc.config.json exists, in its description and in its body", () => {
+test("every kit skill applies only where qc.config.json exists, in its description and in its body", () => {
   const skills = readdirSync(`${PLUGIN}skills`);
   assert.ok(skills.length > 0);
   for (const skill of skills.filter((name) => !GLOBAL_SKILLS.includes(name))) {
