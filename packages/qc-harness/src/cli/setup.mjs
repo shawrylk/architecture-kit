@@ -74,7 +74,7 @@ export async function runSetup(args, options = {}) {
     if (budgets.orchestrator !== null && !values.model?.length) {
       steps.push("Run `qc setup --model <id>` to set the Claude compaction window");
     }
-    for (const kept of skills.kept) steps.push(`Check ${kept.name}: ${kept.reason}`);
+    for (const kept of skills.kept) steps.push(`Check ${path.join(claudeDir, "skills", kept.name)}: ${kept.reason}`);
 
     if (!values["dry-run"]) {
       const now = options.now ?? new Date();

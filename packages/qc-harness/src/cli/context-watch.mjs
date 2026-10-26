@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // The context-watch trigger reminds the main session to compact at a clean break.
 
-import { mkdirSync, readFileSync, rmdirSync } from "node:fs";
+import { mkdirSync, readFileSync, rmdirSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,8 +38,15 @@ export function decide(call, { tmp = os.tmpdir() } = {}) {
   try {
     mkdirSync(lock);
   } catch (error) {
-    if (error.code === "EEXIST") return null;
-    throw error;
+    if (error.code !== "EEXIST") throw error;
+    if (Date.now() - statSync(lock).mtimeMs <= 30_000) return null;
+    rmdirSync(lock);
+    try {
+      mkdirSync(lock);
+    } catch (retryError) {
+      if (retryError.code === "EEXIST") return null;
+      throw retryError;
+    }
   }
   let kept = -1;
   try {
@@ -79,6 +86,10 @@ if (isEntryPoint) {
   } catch {
     // Invalid hook input has no session to notify.
   }
-  const result = call ? decide(call) : null;
-  if (result) process.stdout.write(JSON.stringify(result));
+  try {
+    const result = call ? decide(call) : null;
+    if (result) process.stdout.write(JSON.stringify(result));
+  } catch (error) {
+    process.stderr.write(`context-watch: ${String(error.message ?? error).replace(/[\r\n]+/g, " ")}\n`);
+  }
 }

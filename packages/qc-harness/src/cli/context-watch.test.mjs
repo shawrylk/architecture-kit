@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs, { appendFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { decide, START, STEP, TELL_USER } from "./context-watch.mjs";
 
 function fixture(t, sessionId = "s") {
@@ -101,6 +103,55 @@ test("overlapping hooks note the same threshold once", (t) => {
   assert.equal(entered, true);
   assert.equal(nested, null);
 });
+
+test("a lock older than 30 seconds expires and the next call takes it", (t) => {
+  const f = fixture(t);
+  const lock = `${f.state}.lock`;
+  mkdirSync(lock, { recursive: true });
+  const old = new Date(Date.now() - 31_000);
+  utimesSync(lock, old, old);
+  assert.ok(f.at(210_000));
+  assert.deepEqual(JSON.parse(readFileSync(f.state, "utf8")), { step: 0 });
+  assert.equal(fs.existsSync(lock), false);
+  assert.equal(f.at(210_000), null);
+});
+
+test("a lock at most 30 seconds old stays held", (t) => {
+  const f = fixture(t);
+  const lock = `${f.state}.lock`;
+  mkdirSync(lock, { recursive: true });
+  const modified = statSync(lock).mtimeMs;
+  t.mock.method(Date, "now", () => modified + 30_000);
+  assert.equal(f.at(210_000), null);
+  assert.equal(fs.existsSync(lock), true);
+  assert.equal(fs.existsSync(f.state), false);
+});
+
+for (const operation of ["mkdirSync", "rmdirSync"]) {
+  test(`the entry point reports a ${operation} lock error and exits zero without a reminder`, (t) => {
+    const f = fixture(t);
+    f.at(210_000);
+    rmSync(f.state);
+    const preload = `import fs from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      const original = fs.${operation};
+      fs.${operation} = (file, ...args) => {
+        if (String(file).endsWith(".lock")) throw new Error("lock failed\\nsecond line");
+        return original(file, ...args);
+      };
+      syncBuiltinESMExports();`;
+    const result = spawnSync(process.execPath, [
+      "--import", `data:text/javascript,${encodeURIComponent(preload)}`,
+      fileURLToPath(new URL("./context-watch.mjs", import.meta.url)),
+    ], {
+      input: JSON.stringify(f.call), encoding: "utf8",
+      env: { ...process.env, TMPDIR: f.tmp, TMP: f.tmp, TEMP: f.tmp },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /^context-watch: lock failed second line\r?\n$/);
+  });
+}
 
 test("a lower step above compactAt preserves the threshold already noted", (t) => {
   const f = fixture(t);
