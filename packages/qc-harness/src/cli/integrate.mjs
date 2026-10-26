@@ -62,6 +62,21 @@ const conflictReport = (branch, files) =>
     "Resolve them, run `qc migrations renumber --onto HEAD --branch MERGE_HEAD`, commit, and run qc integrate again.",
   ].join("\n");
 
+/** Branch: derive the pull request base from a local or remote branch ref. */
+function pullRequestBase(root, ref) {
+  if (typeof ref === "string") {
+    const local = ref.replace(/^refs\/heads\//, "");
+    if (tryGit(root, ["show-ref", "--verify", "--quiet", `refs/heads/${local}`]).ok) return local;
+    const remoteRef = ref.replace(/^refs\/remotes\//, "");
+    const remote = lines(git(root, ["remote"])).find((name) => remoteRef.startsWith(`${name}/`));
+    if (remote && tryGit(root, ["show-ref", "--verify", "--quiet", `refs/remotes/${remoteRef}`]).ok) {
+      const branch = remoteRef.slice(remote.length + 1);
+      if (tryGit(root, ["check-ref-format", "--branch", branch]).ok) return branch;
+    }
+  }
+  throw new Error(`the pull request base must name a branch, got ${JSON.stringify(ref)}`);
+}
+
 /** `qc integrate`. @returns the exit code */
 export async function runIntegrate(config, argv, { say = (line) => console.log(line), run = runShell, gh = runGh } = {}) {
   let options;
@@ -82,6 +97,9 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
     if (git(root, ["status", "--porcelain"]).trim() !== "") throw new Error("the working tree has changes: commit or stash them first");
     tryGit(root, ["fetch", "--quiet", "origin"]);
     const base = options.from ?? config.worktree?.base ?? "origin/main";
+    const prBase = options.pr
+      ? pullRequestBase(root, options.from && /^[0-9a-f]{7,64}$/i.test(options.from) ? config.integrate?.base ?? "main" : base)
+      : null;
     if (git(root, ["branch", "--show-current"]).trim() !== name) {
       if (tryGit(root, ["rev-parse", "-q", "--verify", `refs/heads/${name}`]).ok) git(root, ["switch", "-q", name]);
       else git(root, ["switch", "-q", "-c", name, base]);
@@ -100,7 +118,7 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
         say("pr     exists");
       } else {
         const result = gh([
-          "pr", "create", "--draft", "--head", name, "--base", base.replace(/^origin\//, ""),
+          "pr", "create", "--draft", "--head", name, "--base", prBase,
           "--title", `${options.type ?? "feat"}: integrate the batch for #${options.issue}`, "--body", `Refs #${options.issue}`,
         ], { cwd: root });
         if (result === null) throw new Error("gh pr create failed");
@@ -133,7 +151,10 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
       ensurePullRequest();
     }
 
+    const email = git(root, ["config", "user.email"]).trim();
     for (const branch of options.branches) {
+      const others = [...new Set(lines(git(root, ["log", "--format=%ae", `${base}..${branch}`, "--"])))].filter((author) => author !== email);
+      if (others.length > 0) throw new Error(`refuse branch ${branch}: authors differ from local git config user.email ${email}: ${others.join(", ")}`);
       if (tryGit(root, ["merge-base", "--is-ancestor", branch, "HEAD"]).ok) {
         say(`skip   ${branch}: already merged`);
         continue;

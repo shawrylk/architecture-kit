@@ -305,7 +305,7 @@ export const defaults = {
   },
 
   // Push settled output in merge batches so each push triggers CI.
-  integrate: { ciEvery: 3, push: true, branchPattern: "^[a-z]+/[0-9]+-integration", review: true },
+  integrate: { ciEvery: 3, push: true, branchPattern: "^[a-z]+/[0-9]+-integration$", review: true },
 
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
