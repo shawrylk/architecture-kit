@@ -3,7 +3,7 @@
 // APPROVED review of `swarm.review.merge` for that sha, or a head inside the direct lane of `swarm.direct`.
 // After the call it records the merge and its issues.
 // A merge that names another repository than the checkout's `origin` is that repository's own, so it passes.
-// With `swarm.dispatch` off at the PR base, the merge needs no review. Raw API merges always need a head pin.
+// With `swarm.dispatch` off at the PR base, the merge needs no review, including a raw API merge.
 
 import { fileURLToPath } from "node:url";
 import { PARSERS } from "./bash-command-guard.mjs";
@@ -79,6 +79,28 @@ function prBaseOf(merge, cwd, gh, timeoutMs) {
   } catch {
     return null;
   }
+}
+
+/** The fragment that reads one merge's PR base and workflow within the shared deadline. */
+function policyOf(merge, root, cwd, gh, deadline) {
+  const left = deadline - Date.now();
+  const pr = left > 0 ? prBaseOf(merge, cwd, gh, left) : null;
+  if (!pr) throw new Error("gh cannot read the base branch of the PR within the time budget of the lane");
+  const git = (dir, ...args) => {
+    const remaining = deadline - Date.now();
+    return remaining > 0 ? gitOutWithin(remaining, dir, ...args) : null;
+  };
+  git.late = () => Date.now() >= deadline;
+  return { pr, workflow: workflowAt(root, { baseOid: pr.oid, git }) };
+}
+
+/** The fragment that names the PR of a REST merge endpoint; null when the endpoint cannot name one. */
+function apiPrOf({ endpoint, env }) {
+  const match = /^(?:https?:\/\/([^/]+)\/(?:api\/v3\/)?)?\/?(?:repos\/([^/]+\/[^/]+)\/)?pulls\/(\d+)\/merge\/?(?:\?.*)?$/.exec(endpoint);
+  if (!match || /[{}]/.test(endpoint)) return null;
+  const { GH_REPO, ...settings } = env;
+  if (match[1]) settings.GH_HOST = match[1] === "api.github.com" ? "github.com" : match[1];
+  return { selector: match[3], repo: match[2] ?? GH_REPO ?? null, env: settings };
 }
 
 /**
@@ -194,9 +216,16 @@ export function decide(call, { gh = runGh } = {}) {
     if (!workflow) return null;
   }
   if (event === "PreToolUse") {
-    const [found] = ghApiMerges(command, parse, { cwd: call.cwd ?? process.cwd() });
-    if (found) {
+    for (const found of ghApiMerges(command, parse, { cwd })) {
       const use = "Run `gh pr merge <n> --match-head-commit <sha>` with the head an APPROVED review named.";
+      const merge = apiPrOf(found);
+      if (merge) {
+        try {
+          if (!policyOf(merge, root, cwd, gh, deadline).workflow) continue;
+        } catch (error) {
+          return deny(`Merge guard: the base policy cannot be read (${error.message}). ${use}`);
+        }
+      }
       return deny(
         found.unreadable === undefined
           ? `Merge guard: \`gh api ${found.endpoint}\` merges with no review check and no head pin. ${use}`
@@ -211,15 +240,9 @@ export function decide(call, { gh = runGh } = {}) {
     const notes = [];
     for (const merge of own) {
       try {
-        const left = deadline - Date.now();
-        const pr = left > 0 ? prBaseOf(merge, cwd, gh, left) : null;
-        if (!pr) return deny("Merge guard: gh cannot read the base branch of the PR within the time budget of the lane.");
-        const git = (dir, ...args) => {
-          const remaining = deadline - Date.now();
-          return remaining > 0 ? gitOutWithin(remaining, dir, ...args) : null;
-        };
-        git.late = () => Date.now() >= deadline;
-        workflow = workflowAt(root, { baseOid: pr.oid, git });
+        const policy = policyOf(merge, root, cwd, gh, deadline);
+        const { pr } = policy;
+        workflow = policy.workflow;
         if (!workflow) continue;
         const records = readLedger(workflow.ledger);
         const result = mergeVerdict([merge], records, workflow.review.merge, laneOf(workflow, records, pr, deadline));

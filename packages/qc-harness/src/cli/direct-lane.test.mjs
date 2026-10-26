@@ -226,8 +226,8 @@ test("a base that sets reviewPaths holds a merge to its review, though the check
 test("a base with no qc.config.json closes the lane", (t) => {
   const root = repo(t, undefined, null);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
-  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /git cannot read qc\.config\.json at the PR base/);
-  assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /git cannot read qc\.config\.json at origin\/main/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /qc\.config\.json is absent at the PR base/);
+  assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /qc\.config\.json is absent at origin\/main/);
 });
 
 test("a base config that is not JSON, or holds a wrong swarm or swarm.direct, closes the lane and names the cause", (t) => {

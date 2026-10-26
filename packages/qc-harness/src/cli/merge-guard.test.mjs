@@ -68,7 +68,7 @@ test("with swarm.dispatch off, a merge is not judged, and the merge is recorded 
   const ws = workspace(t);
   const { gh, calls } = fakeGh(MERGED);
   assert.equal(decide(shell(ws.off, "gh pr merge 60")), null);
-  assert.match(denied(decide(shell(ws.off, "gh api -X PUT repos/o/r/pulls/60/merge"))) ?? "", /gh pr merge/);
+  assert.equal(decide(shell(ws.off, "gh api -X PUT repos/o/r/pulls/60/merge")), null);
   assert.equal(decide(shell(ws.off, "gh pr merge 60", "PostToolUse"), { gh }), null);
   assert.equal(calls.length, 1);
   const records = readLedger(ws.ledgerOf(ws.off));
@@ -131,6 +131,36 @@ test("a gh api call to a PR's merge endpoint is refused outright, even after an 
     assert.match(denied(decide(shell(ws.on, command, "PreToolUse", tool))) ?? "", /gh pr merge <n> --match-head-commit <sha>/, command);
   }
   assert.equal(decide(shell(ws.on, "gh api repos/o/r/pulls/60/comments")), null);
+});
+
+test("an API merge reads the endpoint PR's base and settings before enforcing dispatch", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: {} });
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  const { gh, calls } = fakeGh(prView(base));
+  const command = "GH_CONFIG_DIR=account gh api --hostname ghe.example.com -X PUT repos/other/project/pulls/23/merge";
+  assert.equal(decide(shell(dir, command), { gh }), null);
+  assert.deepEqual(calls[0].args, ["pr", "view", "23", "-R", "other/project", "--json", "baseRefName,baseRefOid"]);
+  assert.deepEqual(calls[0].options.env, { GH_CONFIG_DIR: "account", GH_HOST: "ghe.example.com" });
+});
+
+test("an API merge passes when the base has no config and denies an unreadable PR or base", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  const command = shell(dir, "gh api -X PUT https://api.github.com/repos/o/r/pulls/23/merge");
+  const { gh, calls } = fakeGh(prView(base));
+  assert.equal(decide(command, { gh }), null);
+  assert.deepEqual(calls[0].args.slice(0, 5), ["pr", "view", "23", "-R", "o/r"]);
+  assert.equal(calls[0].options.env.GH_HOST, "github.com");
+  assert.match(denied(decide(command, { gh: () => null })) ?? "", /gh cannot read the base branch/);
+  assert.match(denied(decide(command, { gh: fakeGh(prView("f".repeat(40))).gh })) ?? "", /base commit.*not in this repository/);
+});
+
+test("every API merge in a command reads its own base policy", (t) => {
+  const { dir, base } = laneRepo(t, { swarm: { dispatch: {} } });
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: {} }));
+  gitIn(dir, "commit", "-q", "-am", "dispatch off");
+  const off = gitIn(dir, "rev-parse", "HEAD");
+  const gh = fakeGh((args) => prView(args[2] === "23" ? off : base)).gh;
+  assert.match(denied(decide(shell(dir, "gh api repos/o/r/pulls/23/merge; gh api repos/o/r/pulls/24/merge"), { gh })) ?? "", /gh pr merge/);
 });
 
 test("a merge inside a nested shell is judged too", (t) => {
@@ -445,8 +475,15 @@ test("a head that changes qc.config.json stays out of the direct lane", (t) => {
   assert.match(reason, /does not apply: qc\.config\.json changes on the branch, so it runs the subagent workflow/);
 });
 
-test("a base that holds no qc.config.json blocks the merge policy check", (t) => {
+test("a base that holds no qc.config.json leaves the merge guard off", (t) => {
   const { dir, head, base } = laneRepo(t, { swarm: { dispatch: {} } }, { tracked: false });
+  assert.equal(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(prView(base)).gh }), null);
+});
+
+test("a failed read of qc.config.json at the base denies the merge", (t) => {
+  const { dir, head, base } = laneRepo(t);
+  const blob = gitIn(dir, "rev-parse", `${base}:qc.config.json`);
+  rmSync(path.join(dir, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
   const reason = denied(decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(prView(base)).gh })) ?? "";
   assert.match(reason, /git cannot read qc\.config\.json at the PR base/);
 });

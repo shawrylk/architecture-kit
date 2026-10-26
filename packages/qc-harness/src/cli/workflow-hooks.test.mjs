@@ -69,9 +69,15 @@ test("workflow scripts stay silent without swarm.dispatch, and the merge guard d
     assert.equal(result.status, 0, `${script}: ${result.stderr}`);
     assert.equal(result.stdout, "", script);
   }
+  const callerEnv = { ...process.env, GH_REPO: "inherited/project", GH_HOST: "inherited.invalid" };
+  const childEnv = { ...callerEnv, TEMP: base, TMP: base, TMPDIR: base };
+  delete childEnv.GH_REPO;
+  delete childEnv.GH_HOST;
+  assert.equal(childEnv.GH_REPO, undefined);
+  assert.equal(childEnv.GH_HOST, undefined);
   const merge = spawnSync(process.execPath, [path.join(CLI, "merge-guard.mjs")], {
     input: JSON.stringify({ session_id: "s", cwd: base, hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "gh pr merge 1" } }),
-    env: { ...process.env, TEMP: base, TMP: base, TMPDIR: base },
+    env: childEnv,
     encoding: "utf8",
   });
   assert.equal(merge.status, 0, merge.stderr);

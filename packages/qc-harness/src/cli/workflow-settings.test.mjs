@@ -38,19 +38,44 @@ test("workflowAt reads the policy at the PR commit even when the checkout has no
   const calls = [];
   const git = (root, ...args) => {
     calls.push({ root, args });
+    if (args[0] === "ls-tree") return "100644 blob config\tqc.config.json";
     return args[0] === "show" ? JSON.stringify({ swarm: { dispatch: {}, direct: false } }) : "";
   };
   const workflow = workflowAt(dirs[0], { baseOid, git });
   assert.equal(workflow.review.merge, "branch");
   assert.equal(workflow.direct, null);
-  assert.deepEqual(calls.map(({ args }) => args), [["cat-file", "-e", `${baseOid}^{commit}`], ["show", `${baseOid}:qc.config.json`]]);
+  assert.deepEqual(calls.map(({ args }) => args), [["cat-file", "-e", `${baseOid}^{commit}`], ["ls-tree", baseOid, "--", "qc.config.json"], ["show", `${baseOid}:qc.config.json`]]);
   assert.throws(() => workflowAt(dirs[0], { baseOid: "main", git }), /no base commit/);
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
+});
+
+test("a failed or late config listing keeps the base policy closed", (t) => {
+  const { dirs } = folders(t, [{ swarm: { dispatch: {} } }]);
+  for (const late of [false, true]) {
+    const git = (root, ...args) => args[0] === "ls-tree" && !late ? null : "";
+    git.late = () => late;
+    assert.throws(() => workflowAt(dirs[0], { baseOid: "a".repeat(40), git }), late ? /ran past.*budget/ : /git cannot read qc\.config\.json/);
+  }
+});
+
+test("a config content read that finishes late keeps the base policy closed", (t) => {
+  const { dirs } = folders(t, [{ swarm: { dispatch: {} } }]);
+  let late = false;
+  const git = (root, ...args) => {
+    if (args[0] === "ls-tree") return "100644 blob config\tqc.config.json";
+    if (args[0] === "show") {
+      late = true;
+      return JSON.stringify({ swarm: {} });
+    }
+    return "";
+  };
+  git.late = () => late;
+  assert.throws(() => workflowAt(dirs[0], { baseOid: "a".repeat(40), git }), /ran past.*budget/);
 });
 
 test("the checkout can close the direct lane while the PR base keeps its review policy", (t) => {
   const { dirs } = folders(t, [{ swarm: { direct: false } }, { swarm: { direct: { maxLines: 0 } } }]);
-  const git = (root, ...args) => args[0] === "show" ? JSON.stringify({ swarm: { dispatch: {} } }) : "";
+  const git = (root, ...args) => args[0] === "show" ? JSON.stringify({ swarm: { dispatch: {} } }) : args[0] === "ls-tree" ? "100644 blob config\tqc.config.json" : "";
   for (const dir of dirs) {
     const workflow = workflowAt(dir, { baseOid: "a".repeat(40), git });
     assert.equal(workflow.review.merge, "branch");
