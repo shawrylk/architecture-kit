@@ -125,6 +125,25 @@ test("the planner definition asks for the PLAN: line and the estimate line", () 
   const text = readFileSync(PLANNER, "utf8");
   assert.match(text, /`PLAN: <absolute path of the plan>`/);
   assert.match(text, /`\*\*Estimate:\*\* <n> tool calls`/);
+  assert.match(text, /swarm\.review\.riskPaths/);
+  assert.match(text, /swarm\.review\.cases/);
+});
+
+test("the planner hook forwards configured risk paths and acceptance cases", (t) => {
+  const ws = workspace(t);
+  const review = { riskPaths: ["*.mjs"], cases: { "*.mjs": ["loading", "error"] } };
+  writeFileSync(path.join(ws.on, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, review } }));
+  const file = path.join(ws.plans, "good.md");
+  const message = `PLAN: ${file}`;
+  const reason = denied(decide(handback(ws.on, message), ws.tmp));
+  assert.match(reason ?? "", /Task 1 missing \*\*Risk:\*\*/);
+  assert.match(reason ?? "", /Task 1 missing cases.*loading, error/);
+  assert.equal(decide(stop(ws.on, message), ws.tmp)?.decision, "block");
+  writeFileSync(file, GOOD.replace("**Estimate:**", "**Risk:** Writes fail; errors appear; revert the change.\n**Estimate:**").replace("failing test", "loading and error test"));
+  assert.equal(decide(handback(ws.on, message), ws.tmp), null);
+  writeFileSync(path.join(ws.on, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, review: { riskPaths: [] } } }));
+  writeFileSync(file, GOOD.replace("a.mjs", "schemas/api.json"));
+  assert.equal(decide(handback(ws.on, message), ws.tmp), null);
 });
 
 test("the hook process is silent in a checkout without the checks", (t) => {

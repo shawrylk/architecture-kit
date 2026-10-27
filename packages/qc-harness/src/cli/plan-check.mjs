@@ -4,6 +4,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { reviewDefaults } from "../config.mjs";
+import { pathMatcher } from "../glob.mjs";
 import { reviewSettings } from "./workflow-settings.mjs";
 
 const TASK_HEADING = /^###[ \t]+Task[ \t]+(\d+)[ \t]*:[ \t]*(.*)$/;
@@ -12,6 +13,7 @@ const FILE_LINE = /^[ \t]*[-*][ \t]+(?:Create|Modify|Test|Delete|Rename):[ \t]*\
 const STEP_LINE = /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+\*\*(.+?)\*\*/;
 const ESTIMATE_LINE = /^[ \t]*\*\*Estimate:\*\*[ \t]*(\d+)(?:[ \t]*(?:-|–|—|to)[ \t]*(\d+))?/i;
 const FENCE = /^[ \t]*(`{3,}|~{3,})/;
+const RISK_LINE = /^[ \t]*\*\*Risk:\*\*[ \t]*\S/i;
 const GIT_COMMIT = /\bgit[ \t]+commit\b/;
 const TEST_WORD = /\btests?\b/i;
 const COMMIT_WORD = /\bcommit\b/i;
@@ -26,8 +28,8 @@ const NO_TEST_SPELLING = "`Test: none — <reason>`";
 
 const tidy = (word) => word.replace(/^[(["']+/, "").replace(/[)\]"',;.]+$/, "").replace(/:\d+(?:-\d+)?$/, "");
 
-/** Every path a Create, Modify, Test, Delete, or Rename line names that is not a document. Fails closed. */
-function sourceFilesOf(line) {
+/** The fragment that reads every path a Create, Modify, Test, Delete, or Rename line names. */
+function filesOf(line) {
   const rest = line.replace(/^[^:]*:/, "");
   const found = [/^\s*`([^`\s]+)`/.exec(rest)?.[1]];
   for (const [, span] of rest.matchAll(/`([^`\s]+)`/g)) found.push(span);
@@ -36,7 +38,7 @@ function sourceFilesOf(line) {
   const paths = found.filter((word) => word).map(tidy).filter((word) => word !== "" && !NOT_A_PATH.test(word));
   const first = found[0] ? tidy(found[0]) : null;
   const isPath = (word) => word === first || named(word);
-  return [...new Set(paths.filter(isPath).filter((word) => !DOC_FILE.test(word.split(/[\\/]/).pop())))];
+  return [...new Set(paths.filter(isPath).map((word) => word.replace(/\\/g, "/")))];
 }
 
 /** The tasks of a plan, with their file lines, step titles, commit evidence, and estimate. Fenced code is not structure. */
@@ -44,9 +46,11 @@ export function parsePlan(markdown) {
   const tasks = [];
   let task = null;
   let fence = null;
+  let testStep = null;
   markdown.split(/\r?\n/).forEach((line, index) => {
     const marker = FENCE.exec(line)?.[1];
     if (fence) {
+      if (task && testStep && !marker) testStep.push(line);
       if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = null;
       else if (task && GIT_COMMIT.test(line)) task.commitCommand = true;
       return;
@@ -57,15 +61,19 @@ export function parsePlan(markdown) {
     }
     const heading = TASK_HEADING.exec(line);
     if (heading) {
+      testStep = null;
       task = {
         number: Number(heading[1]),
         title: heading[2].trim(),
         line: index + 1,
         files: 0,
         steps: [],
+        testSteps: [],
         commitCommand: false,
         estimate: null,
         sourceFiles: [],
+        filePaths: [],
+        risk: false,
         noTest: null,
       };
       tasks.push(task);
@@ -73,6 +81,7 @@ export function parsePlan(markdown) {
     }
     if (SECTION_END.test(line)) {
       task = null;
+      testStep = null;
       return;
     }
     if (!task) return;
@@ -82,10 +91,19 @@ export function parsePlan(markdown) {
       task.noTest = { reason, words: reason === "" ? 0 : reason.split(/\s+/).length };
       return;
     }
-    if (PATH_LINE.test(line)) task.sourceFiles.push(...sourceFilesOf(line));
+    if (PATH_LINE.test(line)) {
+      const files = filesOf(line);
+      task.filePaths.push(...files);
+      task.sourceFiles.push(...files.filter((file) => !DOC_FILE.test(file.split("/").pop())));
+    }
+    if (RISK_LINE.test(line)) task.risk = true;
     if (FILE_LINE.test(line)) task.files += 1;
     const step = STEP_LINE.exec(line)?.[1];
-    if (step) task.steps.push(step);
+    if (step) {
+      task.steps.push(step);
+      testStep = TEST_WORD.test(step) ? [line] : null;
+      if (testStep) task.testSteps.push(testStep);
+    } else if (testStep && !RISK_LINE.test(line)) testStep.push(line);
     const estimate = ESTIMATE_LINE.exec(line);
     if (estimate) task.estimate = Number(estimate[2] ?? estimate[1]);
   });
@@ -93,12 +111,26 @@ export function parsePlan(markdown) {
 }
 
 /** @returns each way the plan breaks the format, one entry per task and problem. */
-export function checkPlan(markdown, { maxTaskCalls = reviewDefaults.maxTaskCalls } = {}) {
+export function checkPlan(markdown, { maxTaskCalls = reviewDefaults.maxTaskCalls, riskPaths = reviewDefaults.riskPaths, cases = reviewDefaults.cases } = {}) {
   const tasks = parsePlan(markdown);
   if (tasks.length === 0) return [{ task: null, detail: "the plan has no `### Task N:` heading" }];
   const problems = [];
+  const risky = pathMatcher(riskPaths);
+  const caseRules = Object.entries(cases).map(([glob, words]) => ({
+    matches: pathMatcher([glob]),
+    words: words.map((word) => ({ word, pattern: new RegExp(`(?<!\\w)${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\w)`, "i") })),
+  }));
   for (const task of tasks) {
     const add = (detail) => problems.push({ task: task.number, detail });
+    if (task.filePaths.some(risky) && !task.risk) add("missing **Risk:** line: name the failure condition, how it shows, and how to reverse it");
+    const missing = new Set();
+    for (const rule of caseRules) {
+      if (!task.filePaths.some(rule.matches)) continue;
+      for (const { word, pattern } of rule.words) {
+        if (!task.testSteps.some((step) => pattern.test(step.join("\n")))) missing.add(word);
+      }
+    }
+    if (missing.size) add(`missing cases in the test step: ${[...missing].join(", ")}`);
     if (task.files === 0) add("names no file: list each as `- Create:`, `- Modify:` or `- Test:` with its path");
     if (task.noTest) {
       if (task.noTest.words < NO_TEST_WORDS) {
@@ -133,19 +165,17 @@ export function runPlanCheck(config, [file] = []) {
     console.error(`FAIL  plan-check  ${file}: cannot read it (${error.message})`);
     return 1;
   }
-  let maxTaskCalls;
+  let settings;
   try {
-    maxTaskCalls = reviewSettings(config.swarm)?.maxTaskCalls ?? config.swarm?.review?.maxTaskCalls ?? reviewDefaults.maxTaskCalls;
+    settings = reviewSettings(config.swarm) ?? config.swarm?.review ?? {};
   } catch (error) {
     console.error(error.message);
     return 1;
   }
-  const problems = checkPlan(markdown, { maxTaskCalls });
-  for (const problem of problems) {
+  const problems = checkPlan(markdown, settings);
+  for (const problem of problems.slice(0, 3)) {
     console.error(`FAIL  plan-check  ${problem.task === null ? file : `Task ${problem.task}`}: ${problem.detail}`);
   }
   if (problems.length > 0) return 1;
-  const count = parsePlan(markdown).length;
-  console.log(`OK  plan-check  ${file}: ${count} task${count === 1 ? "" : "s"}`);
   return 0;
 }
