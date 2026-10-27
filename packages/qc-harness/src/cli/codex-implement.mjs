@@ -205,8 +205,7 @@ const promptFor = (settings, codex) => {
   const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
   const rules = lessonRules(settings.worktree, load(settings.worktree).lessons);
   const lessons = rules.length ? `\n\nCI lesson rules (newest first):\n${rules.join("\n")}` : "";
-  const hold = branch && holdRefusal(settings.worktree, branch) ? "\nAn agent never releases a branch hold. Wait for the operator." : "";
-  return `${preamble}\n\n${brief}${lessons}${hold}${continuationNote(settings.progress)}`;
+  return `${preamble}\n\n${brief}${lessons}${continuationNote(settings.progress)}`;
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */

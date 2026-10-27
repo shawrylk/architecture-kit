@@ -57,6 +57,7 @@ test("readRequests carries explicit system tool-list snapshots to following requ
   ]);
   assert.deepEqual(readRequests(file).map((request) => request.tools), [["Read"], ["Read", "Skill"]]);
 });
+
 test("hook timings read explicit attachment durations, deduplicate ids, and ignore other durations", (t) => {
   const base = folder(t);
   const hook = { type: "attachment", uuid: "h1", attachment: {

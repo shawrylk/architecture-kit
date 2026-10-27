@@ -786,6 +786,7 @@ The reason defaults to `operator pause` when you omit `--reason`.
 The command confirms: "The kit is paused. Run `qc resume` to lift the pause."
 The command writes `qc/pause` in the Git common folder, so every linked worktree shares the pause.
 Run `qc pause --status` to print the state and reason. Run `qc resume` to remove the pause.
+A branch hold tells the agent to wait for the operator to run `qc resume --branch <branch>`.
 Both commands work even when `qc.config.json` contains invalid configuration.
 
 The pause blocks `qc codex-implement`, `qc integrate`, `qc branch sync`, `qc worktree remove`, and merges through the merge guard.
@@ -979,8 +980,8 @@ A failed log fetch records nothing, writes one line to stderr, and preserves exi
 Use `qc ci-failures --run <id>` to record a run manually.
 A green later head on the same branch resolves its open records.
 The pre-push hook reruns open test files for the remote branch before `qc check`, with `lessons.rerun` (default `node --test`).
-It strips runner checkout prefixes and skips unresolved files with one stderr line per file.
-A passing rerun prints nothing. A failure prints at most four lines with test names and the command for full output.
+It strips runner checkout prefixes and skips unresolved or unsafe paths, with all skips in one stderr line.
+A passing rerun prints only the skip summary, when present. A failure prints at most four lines, including skips, test names, and the command for full output.
 Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
 
 With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.

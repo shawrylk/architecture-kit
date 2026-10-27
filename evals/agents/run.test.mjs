@@ -1,11 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { skillActivationOf } from "./run.mjs";
 import * as runner from "./run.mjs";
-import { spawnSync } from "node:child_process";
 
 test("skill activation requires an assistant Skill call naming the exact expected skill", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-skill-eval-"));
@@ -15,16 +14,15 @@ test("skill activation requires an assistant Skill call naming the exact expecte
   const event = (name, skill, type = "assistant") => ({ type, message: {
     content: [{ type: "tool_use", name, input: { skill } }],
   } });
-  assert.equal(skillActivationOf(transcript, expected), false);
+  assert.equal(runner.skillActivationOf(transcript, expected), false);
   for (const record of [event("Read", expected), event("Skill", "other"), event("Skill", expected, "user"),
     event("Skill", `${expected}-extra`), { type: "assistant", message: { content: expected } }]) {
     writeFileSync(transcript, `broken\n${JSON.stringify(record)}\n`);
-    assert.equal(skillActivationOf(transcript, expected), false);
+    assert.equal(runner.skillActivationOf(transcript, expected), false);
   }
   writeFileSync(transcript, `broken\n${JSON.stringify(event("Skill", expected))}\n`);
-  assert.equal(skillActivationOf(transcript, expected), true);
+  assert.equal(runner.skillActivationOf(transcript, expected), true);
 });
-
 
 test("fixture setup commits through an empty local hook folder before it binds agent hooks", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-eval-hooks-"));
@@ -65,7 +63,10 @@ test("run fails when a commit hook refuses the fixture commit", (t) => {
   writeFileSync(path.join(hooks, "pre-commit"), "#!/bin/sh\necho fixture-refused >&2\nexit 1\n", { mode: 0o755 });
   git("config", "core.hooksPath", hooks.replaceAll("\\", "/"));
   assert.equal(typeof runner.run, "function");
-  assert.throws(() => runner.run("git", ["-c", "user.name=eval", "-c", "user.email=eval@example.com", "commit", "--allow-empty", "-qm", "chore: fixture"], dir), /fixture-refused/);
+  assert.throws(() => runner.run("git", ["-c", "user.name=eval", "-c", "user.email=eval@example.com", "commit", "--allow-empty", "-qm", "chore: fixture"], dir, { check: true }), /fixture-refused/);
+  const result = runner.run("git", ["-c", "user.name=eval", "-c", "user.email=eval@example.com", "commit", "--allow-empty", "-qm", "chore: measured refusal"], dir);
+  assert.equal(result.code, 1);
+  assert.match(result.output, /fixture-refused/);
 });
 
 test("the package test script runs the offline eval unit tests", () => {

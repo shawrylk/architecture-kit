@@ -430,3 +430,21 @@ test("a file is a path with a separator or a known extension; a URL, a version, 
   assert.equal(countFiles("docs/a.md, `packages/x/y.json`, (hooks/hooks.json)."), 3);
   assert.equal(countFiles("README.md and README.md"), 1);
 });
+
+
+test("a detached HEAD skips branch holds when the ledger contains CI failures", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const { appendRecord, ledgerFileOf } = await import("./ledger.mjs");
+  const { holdBranch } = await import("./pause.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "ci-detached-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10 }));
+  const git = (...args) => execFileSync("git", ["-C", root, ...args]);
+  git("init", "-q", "-b", "main");
+  git("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "init");
+  holdBranch(root, "main", "other branch");
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "detached", branch: "main", test: "failed" });
+  git("checkout", "--detach", "-q");
+  assert.deepEqual(briefCheck({ prompt: "", dirs: [root], review: offAll }), { refusal: null, note: null });
+});

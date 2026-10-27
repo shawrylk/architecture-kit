@@ -68,7 +68,7 @@ const expectedSkillOf = (task) => {
 export function run(cmd, cmdArgs, cwd, options = {}) {
   const result = spawnSync(cmd, cmdArgs, { cwd, encoding: "utf8", shell: options.shell ?? false, env: options.env ?? process.env, maxBuffer: 1 << 26 });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-  if (cmd === "git" && cmdArgs.includes("commit") && result.status !== 0) {
+  if (options.check && result.status !== 0) {
     throw new Error(`git commit failed: ${output || result.error?.message || result.status}`);
   }
   return { code: result.status ?? 1, output };
@@ -140,7 +140,7 @@ export function prepare(dir, deps) {
   mkdirSync(emptyHooks);
   git("config", "core.hooksPath", emptyHooks.replaceAll("\\", "/"));
   git("add", "-A");
-  git("commit", "-q", "-m", "chore: initial commit");
+  run("git", ["commit", "-q", "-m", "chore: initial commit"], repo, { check: true });
   // Agent hooks bind after the fixture commit; setup uses an empty local hook folder.
   if (args.arm === "kit") git("config", "core.hooksPath", ".githooks");
   else git("config", "core.hooksPath", ".git/hooks");

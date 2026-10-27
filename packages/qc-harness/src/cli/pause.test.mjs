@@ -28,6 +28,7 @@ test("branch holds share the common Git directory and resume works from a nested
   holdBranch(root, "fix/ci", "three failed heads");
   assert.equal(readFileSync(path.join(root, ".git", "qc", "holds", "fix-ci"), "utf8"), "three failed heads\n");
   assert.match(holdRefusal(linked, "fix/ci"), /Operator:/);
+  assert.match(holdRefusal(linked, "fix/ci"), /Wait for the operator to run `qc resume --branch fix\/ci`\./);
   assert.match(holdRefusal(nested, "fix/ci"), /three failed heads/);
   assert.equal(holdRefusal(root, "another"), null);
   assert.equal(runResume(nested, ["--branch", "fix/ci"], { say: () => {} }), 0);

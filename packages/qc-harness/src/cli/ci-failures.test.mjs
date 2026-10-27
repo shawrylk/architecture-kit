@@ -307,14 +307,46 @@ test("rerun captures passing output and caps failures at four lines", (t) => {
   assert.match(fail.stderr, /node --test.*tests\/a.test.mjs/);
 });
 
-test("rerun refuses unsafe existing paths and skips paths that cannot resolve", (t) => {
+test("rerun skips unsafe existing paths and paths that cannot resolve", (t) => {
   const root = fixture(t);
   writeFileSync(path.join(root, "bad;name.test.mjs"), "");
   appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "unsafe", branch: "unsafe", file: "bad;name.test.mjs", test: "unsafe" });
-  assert.equal(rerunFailures(root, "unsafe", { rerun: "node --test" }, { warn: () => {}, run: () => assert.fail("unsafe") }), 1);
+  assert.equal(rerunFailures(root, "unsafe", { rerun: "node --test" }, { warn: () => {}, run: () => assert.fail("unsafe") }), 0);
   writeFileSync(path.join(root, "plain"), "");
   appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "unresolved", branch: "unresolved", file: "plain/a.test.mjs", test: "unresolved" });
   const warnings = [];
   assert.equal(rerunFailures(root, "unresolved", { rerun: "node --test" }, { warn: (s) => warnings.push(s), run: () => assert.fail("unresolved") }), 0);
   assert.equal(warnings.length, 1);
+});
+
+
+test("rerun preserves folders named a in Linux and relative paths", (t) => {
+  const root = fixture(t);
+  mkdirSync(path.join(root, "src/a/b"), { recursive: true });
+  writeFileSync(path.join(root, "src/a/b/c.test.mjs"), "");
+  for (const [i, file] of ["/home/runner/work/r/r/src/a/b/c.test.mjs", "file:///home/runner/work/r/r/src/a/b/c.test.mjs", "src/a/b/c.test.mjs"].entries()) {
+    appendRecord(ledgerFileOf(root), { type: "ci-failure", id: `nested-${i}`, branch: "nested", file, test: "nested" });
+  }
+  const calls = [];
+  assert.equal(rerunFailures(root, "nested", { rerun: "node --test" }, {
+    warn: () => assert.fail("existing file must run"), run: (command) => { calls.push(command); return { status: 0 }; },
+  }), 0);
+  assert.deepEqual(calls, ['node --test "src/a/b/c.test.mjs"']);
+});
+
+test("rerun folds all skips into one line and keeps failed output within four lines", (t) => {
+  const root = fixture(t);
+  writeFileSync(path.join(root, "a.test.mjs"), "");
+  for (const [i, file] of ["missing1.test.mjs", "missing2.test.mjs", "a.test.mjs"].entries()) {
+    appendRecord(ledgerFileOf(root), { type: "ci-failure", id: `cap-${i}`, branch: "cap", file, test: `failure ${i}` });
+  }
+  for (const status of [0, 1]) {
+    const warnings = [];
+    assert.equal(rerunFailures(root, "cap", { rerun: "node --test" }, {
+      warn: (s) => warnings.push(s), run: () => ({ status }),
+    }), status);
+    assert.equal(warnings.filter((s) => /skip/.test(s)).length, 1);
+    assert.match(warnings[0], /missing1.*missing2/);
+    assert.ok(warnings.join("\n").split(/\r?\n/).length <= (status ? 4 : 1), warnings.join("\n"));
+  }
 });

@@ -1488,3 +1488,10 @@ test("a detached HEAD starts without a branch hold even with a CI ledger", async
     return { status: 0 };
   } }), 0);
 });
+
+
+test("prompt construction leaves branch holds to the dispatch check", () => {
+  const source = readFileSync(new URL("./codex-implement.mjs", import.meta.url), "utf8");
+  const prompt = source.slice(source.indexOf("const promptFor ="), source.indexOf("function spawnRun"));
+  assert.doesNotMatch(prompt, /holdRefusal|agent never releases/i);
+});

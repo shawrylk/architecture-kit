@@ -416,10 +416,13 @@ test("a gh that answers null writes a stderr line and is not an event", async ()
 
 
 test("the watch helper isolates its ledger and holds in a temporary checkout", async () => {
-  await watch(["--run", `ci.yml@main@${RUN_HEAD}`], { run: async (argv, options) => {
+  let calls = 0;
+  await watch(["--run", `ci.yml@main@${RUN_HEAD}`], { gh: () => JSON.stringify({ workflow_runs: [{ status: "completed", conclusion: "success", head_sha: RUN_HEAD }] }), run: async (argv, options) => {
+    calls += 1;
     assert.ok(options.cwd);
     assert.notEqual(options.cwd, process.cwd());
     assert.match(readFileSync(path.join(options.cwd, ".git/HEAD"), "utf8"), /^ref:/);
     return runWatch(argv, { ...options, gh: () => JSON.stringify({ workflow_runs: [{ status: "completed", conclusion: "success", head_sha: RUN_HEAD }] }) });
   } });
+  assert.equal(calls, 1, "the helper must call the supplied run function");
 });

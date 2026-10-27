@@ -20,8 +20,8 @@ export function openFailures(root, branch) {
 }
 
 function testFile(location) {
-  const file = location.replace(/:\d+(?::\d+)?$/, "").replaceAll("\\", "/").replace(/^file:\/\//, "").replace(/\/{2,}/g, "/");
-  return file.replace(/^(?:.*?\/a\/([^/]+)\/(?:\1\/)?|(?:\/home\/runner\/work|\/Users\/runner\/work|\/__w)\/[^/]+\/[^/]+\/)/, "");
+  const file = location.replace(/:\d+(?::\d+)?$/, "").replaceAll("\\", "/").replace(/^file:\/\//, "").replace(/^\/([A-Za-z]:\/)/, "$1").replace(/\/{2,}/g, "/");
+  return file.replace(/^(?:[A-Za-z]:\/a\/([^/]+)\/(?:\1\/)?|(?:\/home\/runner\/work|\/Users\/runner\/work|\/__w)\/[^/]+\/[^/]+\/)/, "");
 }
 
 export function parseFailedLog(log) {
@@ -186,28 +186,31 @@ export function lessonRules(root, lessons) {
 export function rerunFailures(root, branch, lessons, { run = (command, options) => spawnSync(command, { ...options, shell: true, stdio: "pipe", encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true }), warn = console.error } = {}) {
   const failures = openFailures(root, branch);
   const files = [];
+  const skipped = [];
   try {
     for (const file of new Set(failures.map((r) => r.file).filter(Boolean).map(testFile))) {
       let resolved;
       try {
         resolved = realpathSync(path.resolve(root, file));
       } catch {
-        warn(`ci-failures: skip unresolved test file ${JSON.stringify(file)}`);
+        skipped.push(file);
         continue;
       }
       const relative = path.relative(realpathSync(root), resolved);
       if (!/^[\w./ @+-]+$/.test(file) || path.isAbsolute(file) || relative.startsWith("..") || path.isAbsolute(relative)) {
-        throw new Error(`unsafe test file ${JSON.stringify(file)}`);
+        skipped.push(file);
+        continue;
       }
       files.push(file);
     }
+    if (skipped.length) warn(`ci-failures: skip ${skipped.length} test files: ${skipped.map((file) => JSON.stringify(file)).join(", ")}`);
     if (!files.length) return 0;
     const command = `${lessons.rerun} ${files.map((file) => `"${file}"`).join(" ")}`;
     const result = run(command, { cwd: root });
     if (result.status === 0) return 0;
     const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
     const names = [...output.matchAll(/^\s*(?:not ok \d+ - |[\u2716\u00d7] )(.+)/gmu)].map((match) => match[1]);
-    for (const name of [...new Set(names.length ? names : failures.map((r) => r.test))].slice(0, 3)) {
+    for (const name of [...new Set(names.length ? names : failures.map((r) => r.test))].slice(0, skipped.length ? 2 : 3)) {
       warn(`ci-failures: ${String(name).replace(/[\r\n]+/g, " ")}`);
     }
     warn(`Run for full output: ${command}`);

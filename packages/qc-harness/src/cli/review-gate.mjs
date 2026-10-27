@@ -212,7 +212,7 @@ export function briefCheck({ prompt, dirs, review, exists = existsSync, read = (
     const ledger = root && ledgerFileOf(root);
     if (!ledger || !readLedger(ledger).some((r) => r.type === "ci-failure")) continue;
     branch = currentBranch(root);
-    const hold = holdRefusal(root, branch);
+    const hold = branch ? holdRefusal(root, branch) : null;
     if (hold) return refuse(hold);
     if (openFailures(root, branch).length) ciRoot = root;
     break;

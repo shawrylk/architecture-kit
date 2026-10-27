@@ -25,7 +25,7 @@ export function holdRefusal(root, branch) {
     if (error.code === "ENOENT") return null;
     throw error;
   }
-  return `Operator: branch ${branch} is on hold: ${reason}. Run \`qc resume --branch ${branch}\` to release it.`;
+  return `Operator: branch ${branch} is on hold: ${reason}. Wait for the operator to run \`qc resume --branch ${branch}\`.`;
 }
 
 function pauseFile(root) {

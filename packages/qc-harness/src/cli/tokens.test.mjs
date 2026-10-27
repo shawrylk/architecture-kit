@@ -334,7 +334,7 @@ test("qc tokens prints a table with a footer that names the rates", (t) => {
   assert.equal(lines.filter((line) => line.startsWith("collapse:")).length, 0);
 });
 
-test("qc tokens prints one collapse line per agent only when it has data", (t) => {
+test("qc tokens prints one collapse summary line only when it has data", (t) => {
   const { dir, project } = fakeSession(t);
   const files = sessionFiles({ claudeDir: dir, project, session: "s1" });
   const requests = [req("cold", 0, 0, 998), ...[1, 2, 3].map((n) => req(`warm${n}`, n, 800, 198)),
@@ -355,7 +355,7 @@ test("qc tokens with no session to read says so and exits 1", (t) => {
   assert.match(errors.join("\n"), /no session/);
 });
 
-test("qc tokens prints one observed latency line per hook, and omits absent data", (t) => {
+test("qc tokens prints one hook latency summary line, and omits absent data", (t) => {
   const { dir, project } = fakeSession(t);
   const files = sessionFiles({ claudeDir: dir, project, session: "s1" });
   const lines = [];
