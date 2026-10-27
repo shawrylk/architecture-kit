@@ -15,7 +15,7 @@ const KEY = "swarm.review";
 const MERGE_KINDS = ["branch", "task"];
 const SWITCH_KEYS = ["oneBranchReview", "requireGreen", "requireBase", "productDecisions"];
 const LIMIT_KEYS = ["roundFindings", "roundFiles"];
-const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", "promotion", ...SWITCH_KEYS, ...LIMIT_KEYS];
+const REVIEW_KEYS = ["merge", "maxTaskCalls", "riskPaths", "cases", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", "promotion", ...SWITCH_KEYS, ...LIMIT_KEYS];
 const STATE_FILE = "state.json";
 
 const isNameList = (value) => Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "");
@@ -50,6 +50,11 @@ export function reviewSettings(swarm = {}) {
   if (!MERGE_KINDS.includes(mergeKind)) throw wrong("merge", mergeKind, `one of ${MERGE_KINDS.join(", ")}`);
   if (!Number.isInteger(maxTaskCalls) || maxTaskCalls < 1) throw wrong("maxTaskCalls", maxTaskCalls, "a positive whole number");
   if (!isNameList(controllerPaths)) throw wrong("controllerPaths", controllerPaths, "a list of globs");
+  if (!isNameList(merged.riskPaths)) throw wrong("riskPaths", merged.riskPaths, "a list of globs");
+  if (merged.cases === null || typeof merged.cases !== "object" || Array.isArray(merged.cases)) throw wrong("cases", merged.cases, "a map of globs to case-word lists");
+  for (const [glob, words] of Object.entries(merged.cases)) {
+    if (!glob.trim() || !isNameList(words) || words.some((word) => !word.trim())) throw wrong("cases", merged.cases, "a map of non-empty globs to non-empty case words");
+  }
   for (const kind of MERGE_KINDS) {
     if (!isNameList(reviewerTypes?.[kind])) throw wrong(`reviewerTypes.${kind}`, reviewerTypes?.[kind], "a list of agent types");
   }
@@ -66,7 +71,7 @@ export function reviewSettings(swarm = {}) {
     if (!Number.isInteger(merged[key]) || merged[key] < 0) throw wrong(key, merged[key], "a whole number, 0 or more");
   }
   const enforcement = Object.fromEntries([...SWITCH_KEYS, ...LIMIT_KEYS].map((key) => [key, merged[key]]));
-  return { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, promotion, ...enforcement, implementerTypes: dispatch.implementerTypes };
+  return { merge: mergeKind, maxTaskCalls, riskPaths: merged.riskPaths, cases: merged.cases, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, promotion, ...enforcement, implementerTypes: dispatch.implementerTypes };
 }
 
 /** The workflow branch reads the PR base through `git`, or the checkout when `git` is absent; null while dispatch is off. */

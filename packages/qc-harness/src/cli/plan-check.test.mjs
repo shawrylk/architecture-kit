@@ -6,6 +6,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkPlan, parsePlan } from "./plan-check.mjs";
+import { reviewDefaults } from "../config.mjs";
+import { reviewSettings } from "./workflow-settings.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const FENCE = "`".repeat(3);
@@ -66,12 +68,85 @@ test("qc plan-check exits 0 on a good plan and 1 on a bad one, reading the budge
   writeFileSync(path.join(dir, "bad.md"), plan(task(1, { estimate: 20 })));
   const good = spawnSync(process.execPath, [QC, "plan-check", "good.md"], { cwd: dir, encoding: "utf8" });
   assert.equal(good.status, 0, good.stderr);
-  assert.match(good.stdout, /OK {2}plan-check {2}good\.md: 1 task/);
+  assert.equal(good.stdout, "");
   const bad = spawnSync(process.execPath, [QC, "plan-check", "bad.md"], { cwd: dir, encoding: "utf8" });
   assert.equal(bad.status, 1);
   assert.match(bad.stderr, /FAIL {2}plan-check {2}Task 1: estimates 20 tool calls, over swarm\.review\.maxTaskCalls \(10\)/);
   const missing = spawnSync(process.execPath, [QC, "plan-check", "none.md"], { cwd: dir, encoding: "utf8" });
   assert.equal(missing.status, 1);
+});
+
+test("risky paths require a non-empty Risk line on their own task", () => {
+  assert.deepEqual(reviewDefaults.riskPaths, ["**/migrations/**", "schemas/**"]);
+  for (const file of ["migrations/001.sql", "db/migrations/001.sql", "schemas/api.yaml", "schemas\\api.json"]) {
+    const risky = task(2, { fileLines: [`- Modify: \`${file}\``] });
+    const problems = checkPlan(plan(task(1, { extra: ["**Risk:** A write fails; logs show it; revert the migration."] }), risky));
+    assert.equal(problems.length, 1, file);
+    assert.equal(problems[0].task, 2);
+    assert.match(problems[0].detail, /missing.*\*\*Risk:\*\*/);
+    assert.deepEqual(checkPlan(plan(risky), { riskPaths: [] }), []);
+    assert.deepEqual(checkPlan(plan(risky.replace("**Files:**", "**Risk:** A write fails; logs show it; revert the migration.\n**Files:**"))), []);
+    for (const extra of [["**Risk:**   "], [FENCE, "**Risk:** A write fails; logs show it; revert.", FENCE]]) {
+      assert.equal(checkPlan(plan(task(1, { fileLines: [`- Modify: \`${file}\``], extra }))).length, 1);
+    }
+  }
+  assert.deepEqual(checkPlan(plan(task(1))), []);
+  assert.equal(checkPlan(plan(task(1)), { riskPaths: ["src/**"] }).length, 1);
+});
+
+test("review settings accept riskPaths and reject malformed glob lists", () => {
+  assert.deepEqual(reviewSettings({ dispatch: {}, review: { riskPaths: [] } }).riskPaths, []);
+  assert.deepEqual(reviewSettings({ dispatch: {} }).riskPaths, reviewDefaults.riskPaths);
+  for (const riskPaths of [null, false, "schemas/**", [1], [""]]) {
+    assert.throws(() => reviewSettings({ dispatch: {}, review: { riskPaths } }), /riskPaths/);
+  }
+});
+
+test("configured acceptance cases match whole words anywhere in a task's test step", () => {
+  assert.deepEqual(reviewDefaults.cases, {});
+  const cases = { "src/**": ["loading", "error", "empty", "success"] };
+  const complete = task(1, { extra: ["Verify LOADING, Error, empty, and success."] });
+  assert.deepEqual(checkPlan(plan(complete), { cases }), []);
+  assert.deepEqual(checkPlan(plan(task(1, { extra: [FENCE + "js", "test('loading, error, empty, success', run)", FENCE] })), { cases }), []);
+  const missing = checkPlan(plan(task(2, { extra: ["Test unloading, errors, nonempty, and successful."] })), { cases });
+  assert.equal(missing.length, 1);
+  assert.equal(missing[0].task, 2);
+  assert.match(missing[0].detail, /missing.*test step.*loading, error, empty, success/);
+  assert.deepEqual(checkPlan(plan(task(1))), []);
+  assert.deepEqual(checkPlan(plan(task(1)), { cases: { "ui/**": ["loading"] } }), []);
+  const outside = task(1).replace("**Files:**", "loading error empty success\n**Files:**") + "- [ ] **Commit: loading error empty success**\n";
+  assert.equal(checkPlan(plan(outside), { cases }).length, 1);
+  assert.equal(checkPlan(plan(complete, task(2)), { cases }).length, 1, "cases stay within their task");
+  const overlap = { "src/**": ["loading"], "**/*.mjs": ["error"] };
+  assert.match(checkPlan(plan(task(1, { extra: ["loading"] })), { cases: overlap })[0].detail, /error/);
+  assert.deepEqual(checkPlan(plan(task(1, { extra: ["Test c++ and a.b"] })), { cases: { "src/**": ["c++", "a.b"] } }), []);
+});
+
+test("review settings accept case maps and reject malformed case lists", () => {
+  const cases = { "ui/**": ["loading", "error", "empty", "success"] };
+  assert.deepEqual(reviewSettings({ dispatch: {}, review: { cases } }).cases, cases);
+  assert.deepEqual(reviewSettings({ dispatch: {} }).cases, {});
+  for (const cases of [null, [], false, "ui/**", { "": ["error"] }, { "ui/**": "error" }, { "ui/**": [1] }, { "ui/**": [""] }]) {
+    assert.throws(() => reviewSettings({ dispatch: {}, review: { cases } }), /cases/);
+  }
+});
+
+test("the CLI reads risk and case configuration and bounds refusals", (t) => {
+  const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-plan-safety-")));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const review = { riskPaths: ["src/**"], cases: { "src/**": ["loading", "error"] } };
+  writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, review } }));
+  writeFileSync(path.join(dir, "plan.md"), plan(task(4)));
+  const bad = spawnSync(process.execPath, [QC, "plan-check", "plan.md"], { cwd: dir, encoding: "utf8" });
+  assert.equal(bad.status, 1);
+  assert.equal(bad.stdout, "");
+  assert.match(bad.stderr, /Task 4: missing \*\*Risk:\*\*/);
+  assert.match(bad.stderr, /Task 4: missing.*test step.*loading, error/);
+  assert.ok(bad.stderr.trim().split("\n").length <= 3);
+  writeFileSync(path.join(dir, "plan.md"), plan(task(4, { extra: ["Check loading and error.", "**Risk:** Writes fail; errors appear; revert the change."] })));
+  const good = spawnSync(process.execPath, [QC, "plan-check", "plan.md"], { cwd: dir, encoding: "utf8" });
+  assert.equal(good.status, 0, good.stderr);
+  assert.equal(good.stdout + good.stderr, "");
 });
 
 const DOC_FILES = ["- Modify: `README.md` (the table)", "- Modify: `packages/pkg/package.json` (`version` bump)", "- Modify: `CHANGELOG.md`"];

@@ -16,4 +16,6 @@ You write one implementation plan; you do not implement it. Load and follow the 
 - Never edit, commit, or switch branches in the repository. Write only the plan file the dispatch names.
 - Never dispatch a subagent.
 - Give each task an `**Estimate:** <n> tool calls` line. A hook runs `qc plan-check` on the plan and refuses a report whose plan fails it.
+- For files matching `swarm.review.riskPaths`, add one `**Risk:**` line: the failure condition, how it shows, and how to reverse it.
+- For files matching `swarm.review.cases`, name every configured case word in the task's test step.
 - The first line of your final message is `PLAN: <absolute path of the plan>`. Then give one line per task with its estimated tool calls, and each question the spec does not answer with your recommended answer.

@@ -632,6 +632,8 @@ export const reviewDefaults = {
   merge: "branch",
   // The largest tool-call estimate one plan task may carry.
   maxTaskCalls: 35,
+  riskPaths: ["**/migrations/**", "schemas/**"],
+  cases: {},
   // Globs, relative to a checkout of this repository, that the main session may edit.
   controllerPaths: ["docs/**", "*.md", "qc.config.json", "**/.claude/**"],
   // The agent types whose stop records a verdict of each kind.

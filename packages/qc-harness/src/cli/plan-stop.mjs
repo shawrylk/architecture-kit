@@ -24,7 +24,7 @@ const block = (reason) => ({ decision: "block", reason });
 export const planPathOf = (text) => PLAN_LINE.exec(String(text))?.[1]?.replace(QUOTES, "") ?? null;
 
 /** @returns what the planner must fix before its report goes through; empty when the plan passes. */
-export function planProblems(text, cwd, maxTaskCalls) {
+export function planProblems(text, cwd, maxTaskCalls, { riskPaths, cases } = {}) {
   const named = planPathOf(text);
   if (!named) return ["a line that starts `PLAN:` with the plan's absolute path"];
   const file = path.resolve(cwd, nativePath(named));
@@ -34,7 +34,7 @@ export function planProblems(text, cwd, maxTaskCalls) {
   } catch {
     return [`a plan at ${file}, which cannot be read`];
   }
-  return checkPlan(markdown, { maxTaskCalls }).map((problem) => (problem.task === null ? problem.detail : `Task ${problem.task} ${problem.detail}`));
+  return checkPlan(markdown, { maxTaskCalls, riskPaths, cases }).slice(0, 3).map((problem) => (problem.task === null ? problem.detail : `Task ${problem.task} ${problem.detail}`));
 }
 
 const refusal = (problems) => `Plan check: fix these, then send the report again. ${problems.map((problem, i) => `${i + 1}) ${problem}.`).join(" ")}`;
@@ -67,7 +67,7 @@ export function decide(call, tmp = os.tmpdir()) {
   }
   const text = event === "PreToolUse" ? String(call.tool_input?.message ?? "") : reportOf(call, tmp);
   const cwd = call.cwd ?? process.cwd();
-  const problems = planProblems(text, cwd, workflow.review.maxTaskCalls);
+  const problems = planProblems(text, cwd, workflow.review.maxTaskCalls, workflow.review);
   if (problems.length > 0) {
     if (event === "PreToolUse") return deny(refusal(problems));
     return call.stop_hook_active === true ? held(problems) : block(refusal(problems));

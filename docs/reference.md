@@ -1002,7 +1002,7 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names and that the direct lane does not cover. A raw API merge, REST or GraphQL, reads the base policy of its PR. It passes with `swarm.dispatch` off at the base. It denies with dispatch on, or when the guard cannot read the PR or its base. Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes. This applies in every checkout, with `swarm.dispatch` on or off. A query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A `gh pr merge` that names a repository other than `origin` passes with a note. It can name the repository with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
 | Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
 | Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths`, unless the direct lane covers it |
-| Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
+| Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a task missing files, a test step, a commit step, a required risk line, or configured cases; an estimate over `maxTaskCalls` |
 | One branch review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an `sdd-branch-reviewer` dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch, or one whose sha no branch verdict on that branch names. Write the last head a branch review named, so the review reads only the increment. Key `oneBranchReview` |
 | Code-review skill | `PreToolUse` on `Skill`, `skill-guard.mjs` | a model call to a skill that `codeReviewSkills` names, bare or after a `plugin:` prefix. Dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review`, which never reaches this hook |
 | Green head | `PreToolUse` on `Agent` | a reviewer dispatch while CI is red or pending, including unfinished workflows and missing required checks. With `requireGreen: "not-red"`, pending CI passes with a note. An unreadable CI state passes with a note. An empty check list counts as unknown only when no workflow or required check is pending. Key `requireGreen` |
@@ -1069,11 +1069,27 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 |---|---|---|
 | `merge` | `"branch"` | the review kind whose APPROVED verdict lets a merge run; `"task"` fits a one-task PR |
 | `maxTaskCalls` | `35` | the largest estimate one plan task may carry |
+| `riskPaths` | `["**/migrations/**", "schemas/**"]` | globs whose matching tasks need a non-empty `**Risk:**` line; `[]` turns the check off |
+| `cases` | `{}` | map each glob to case words required in a matching task's test step; an empty map turns the check off |
 | `controllerPaths` | `["docs/**", "*.md", "qc.config.json", "**/.claude/**"]` | the globs the main session may edit; a path outside every checkout of the repository always passes |
 | `reviewerTypes` | `{ task: [...], branch: [...] }`, the plugin's two reviewers, bare and scoped | the agent types whose stop records a verdict of each kind |
 | `plannerTypes` | the plugin's planner, bare and scoped | the agent types whose report runs the plan check |
 
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
+
+For each task whose files match `riskPaths`, write one `**Risk:**` line.
+Name the failure condition, how it shows, and how to reverse it on that line.
+The check requires a non-empty line; you judge whether its content covers those points.
+File matching includes document and configuration paths, such as `schemas/api.yaml`.
+
+For a UI data view, set `swarm.review.cases` to `{"frontend/**/*.tsx": ["loading", "error", "empty", "success"]}`.
+Every matching task's test step must name each word, in its title, body, or code.
+Matching ignores case and requires a whole word: `ERROR` matches `error`, and `errors` does not.
+When multiple globs match, the task needs all their case words.
+
+A passing `qc plan-check` prints nothing.
+A refusal prints at most three lines, each naming the task and its missing requirement.
+Fix those requirements and run the check again to see any further problems.
 
 #### A fix on a red head, and reviews in parallel
 
