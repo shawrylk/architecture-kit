@@ -134,7 +134,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - Keep the session checkpoint at `<git common dir>/qc/checkpoints/<session_id>.md`; `SessionStart` names its absolute path.
 - Use `## Goal` for the user's words and `## Rules` for the user's standing constraints.
 - Use `## Tasks` for each open item's state and `## Next` for the next action.
-- Keep at most 80 non-blank lines; update the file before each dispatch, at each clean break, and before compaction.
+- Keep at most 60 non-blank lines; update the file before each dispatch, at each clean break, and before compaction.
 - Treat the checkpoint as the source of truth for open work after compact or resume.
 - Cap every subagent reply: "a `VERDICT` line and at most 25 lines". The subagent writes its full output to a scratchpad file.
 - Wait with one background `qc watch` command, then wait for its notification. It blocks in a shell, so the wait costs no model tokens, and its exit is the event:
@@ -178,7 +178,9 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - Set `lessons.file` to choose the file; the default is `docs/ci-lessons.md`.
 - Use a `## <test name>` heading with `Symptom:` (error and OS), `Cause:`, and `Rule:` on separate lines.
 - Write one imperative rule, or `Rule: none: a flake that passed on a rerun`.
-- Codex prompts include the newest 40 `Rule:` lines. Claude implementers read the same file.
+- Codex prompts include at most 20 `Rule:` lines, newest first, within 2,000 characters including separators. Claude implementers read the same file.
+- Drop exact duplicates after trimming and rules whose text starts with `none:`. Stop at either cap; leave an overflowing rule out whole.
+- CI lessons and checkpoint checks pass silently; each refusal uses at most four lines.
 - The pre-push hook reruns open records' test files with `lessons.rerun`, default `node --test`, before `qc check`.
 - Rerun a known flake once with `gh run rerun <run id> --failed`.
 - A runner or Docker failure that comes back, or a runner that stays offline, needs the user. Never change the CI routing, and never skip CI.

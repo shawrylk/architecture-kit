@@ -9,6 +9,7 @@ import { DONE_MARKER, enabledPlugins, parseArgs, runCodexImplement } from "./cod
 import { readLimit, writeLimit } from "./codex-limit.mjs";
 import { recordRun } from "./ci-failures.mjs";
 import { holdBranch } from "./pause.mjs";
+import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const VALID_BRIEF = "# Brief\nPaths: src/example.mjs\n\n## Product decisions\n- Use the local rules.\n\n## Task\n1. Do task one.\n";
@@ -41,6 +42,16 @@ function setup(t, { progress = "" } = {}) {
 }
 
 const quiet = () => {};
+
+test("a CI refusal prints at most four lines including the runner exit", async (t) => {
+  const f = setup(t);
+  const branch = readFileSync(path.join(f.worktree, ".git", "HEAD"), "utf8").trim().replace("ref: refs/heads/", "");
+  appendRecord(ledgerFileOf(f.worktree), { type: "ci-failure", id: "multi", branch, head: "aaaaaaa", test: "first\nsecond\nthird\nfourth\nfifth" });
+  const output = [];
+  assert.equal(await runCodexImplement(f.argv, { say: (s) => output.push(s), out: (s) => output.push(s), run: async () => assert.fail("must refuse") }), 1);
+  assert.match(output.join("\n"), /first/);
+  assert.ok(output.join("\n").split(/\r?\n/).length <= 4);
+});
 
 test("open CI failures require the named test and cause before Codex starts", async (t) => {
   const f = setup(t);

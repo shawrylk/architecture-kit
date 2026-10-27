@@ -555,7 +555,7 @@ The file lives at `<git common dir>/qc/checkpoints/<session_id>.md`, so linked w
 `SessionStart` prints its absolute path.
 Use `## Goal` for the user's words and `## Rules` for the user's standing constraints.
 Use `## Tasks` for each open item's state and `## Next` for the next action.
-The file permits at most 80 non-blank lines.
+The file permits at most 60 non-blank lines.
 The dispatch guard refuses a missing, unreadable, malformed, or stale checkpoint before it claims an implementer slot.
 The refusal names the path, the problem, and all four headings in at most four lines.
 `checkpoint.maxAgeMinutes` defaults to `30`; `0` disables only the age check.
@@ -564,7 +564,7 @@ Agents in one assistant message use the first dispatch time for the age check wh
 Each dispatch still checks the file's presence and shape.
 
 On `compact` or `resume`, the checkpoint hook loads the file as the source of truth for open work.
-It prints the first 80 lines, within 8,000 characters, and names both caps when it truncates the output.
+It prints at most 60 lines within 4,000 characters, including the header and the note that names both caps on truncation.
 A missing file prints its path and the rule to write it; a read error prints a note.
 The hook always allows the session to start.
 
@@ -872,7 +872,10 @@ While the worktree's branch has open CI records, the brief needs `## CI failures
 The Codex runner and implementer dispatch share this check. The Codex runner exits `1` and names missing tests.
 Two failing heads require `## Diagnosis` with `Root cause:` and `Evidence:` from the log and the code.
 Green branches keep the usual brief requirements.
-Each prompt includes the newest 40 `Rule:` lines from `lessons.file`, default `docs/ci-lessons.md`.
+Each prompt includes at most 20 `Rule:` lines from `lessons.file`, default `docs/ci-lessons.md`, newest first, within 2,000 characters including separators.
+Drop exact duplicates after trimming and rules whose text starts with `none:`.
+Stop at either cap; leave an overflowing rule out whole.
+CI lessons and checkpoint checks pass silently; each refusal uses at most four lines.
 
 The overrides apply to the runner's `codex exec` call only, so your interactive Codex sessions keep their plugins and skills:
 

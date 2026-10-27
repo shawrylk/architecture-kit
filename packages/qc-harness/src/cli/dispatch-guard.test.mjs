@@ -231,6 +231,17 @@ test("a slot with no stop expires after slotMinutes", (t) => {
   assert.equal(decide(agentCall(ws.on, implementer), ws.tmp, Date.now() + 61 * 60_000), null);
 });
 
+test("a valid checkpoint passes silently through the dispatch CLI", (t) => {
+  const ws = workspace(t);
+  const result = spawnSync(process.execPath, [GUARD], {
+    input: JSON.stringify(agentCall(ws.off, { model: "gpt-6.1-sol", prompt: "p" })),
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+});
+
 test("checkpoint refusal applies with dispatch on or off and names the path, problem, and headings", (t) => {
   const ws = workspace(t);
   for (const root of [ws.on, ws.off]) {
@@ -245,8 +256,8 @@ test("checkpoint refusal applies with dispatch on or off and names the path, pro
     assert.equal(decide({ ...call, agent_id: "worker" }, ws.tmp), null);
     writeFileSync(file, "## Goal\n");
     assert.match(reasonOf(decide(call, ws.tmp)), /heading/);
-    writeFileSync(file, "## Goal\n## Rules\n## Tasks\n## Next\n" + "task\n".repeat(77));
-    assert.match(reasonOf(decide(call, ws.tmp)), /80/);
+    writeFileSync(file, "## Goal\n## Rules\n## Tasks\n## Next\n" + "task\n".repeat(57));
+    assert.match(reasonOf(decide(call, ws.tmp)), /60/);
     writeFileSync(file, "## Goal\n## Rules\n## Tasks\n## Next\n");
     const old = new Date(Date.now() - 31 * 60_000);
     utimesSync(file, old, old);

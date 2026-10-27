@@ -27,14 +27,14 @@ test("checkpoint path belongs to the common Git directory and contains the sessi
   assert.notEqual(checkpointPathOf(root, "session-2"), file);
 });
 
-test("shape requires exact headings and at most 80 nonblank lines", () => {
+test("shape requires exact headings and at most 60 nonblank lines", () => {
   assert.equal(checkpointProblem(text), null);
   for (const heading of ["Goal", "Rules", "Tasks", "Next"]) {
     assert.match(checkpointProblem(text.replace(`## ${heading}`, `### ${heading}`)), /heading/);
   }
   assert.equal(checkpointProblem(text + "\n".repeat(90)), null);
-  assert.equal(checkpointProblem(text + "task\n".repeat(72)), null);
-  assert.match(checkpointProblem(text + "task\n".repeat(73)), /80/);
+  assert.equal(checkpointProblem(text + "task\n".repeat(52)), null);
+  assert.match(checkpointProblem(text + "task\n".repeat(53)), /60/);
 });
 
 test("reader reports missing files, invalid shape, and age from modification time", (t) => {
@@ -60,6 +60,7 @@ test("SessionStart names the absolute checkpoint path even with dispatch off", (
   assert.ok(output.additionalContext.includes(file));
   for (const heading of ["## Goal", "## Rules", "## Tasks", "## Next"]) assert.ok(output.additionalContext.includes(heading));
   assert.match(output.additionalContext, /write/i);
+  assert.match(output.additionalContext, /60 non-blank lines/);
   assert.equal(decide({ ...call, agent_id: "worker" }), null);
   assert.equal(decide({ ...call, hook_event_name: "PreToolUse" }), null);
   assert.equal(decide({ ...call, cwd: os.tmpdir() }), null);
@@ -85,13 +86,14 @@ test("restoration caps lines and characters and reports read errors without bloc
   const call = { cwd: root, session_id: "session-1", hook_event_name: "SessionStart", source: "compact" };
   writeFileSync(file, Array.from({ length: 90 }, (_, n) => `line-${n}`).join("\n"));
   let note = decide(call).hookSpecificOutput.additionalContext;
-  assert.match(note, /line-79/);
-  assert.doesNotMatch(note, /line-80/);
-  assert.match(note, /80 lines.*8,000 characters/);
+  assert.ok(note.split(/\r?\n/).length <= 60);
+  assert.match(note, /line-57/);
+  assert.doesNotMatch(note, /line-58/);
+  assert.match(note, /60 lines.*4,000 characters/);
   writeFileSync(file, "x".repeat(9000));
   note = decide(call).hookSpecificOutput.additionalContext;
-  assert.ok(note.length <= 8000);
-  assert.match(note, /80 lines.*8,000 characters/);
+  assert.ok(note.length <= 4000);
+  assert.match(note, /60 lines.*4,000 characters/);
   rmSync(file);
   mkdirSync(file);
   note = decide(call).hookSpecificOutput.additionalContext;
@@ -113,6 +115,19 @@ test("both orchestrator skills use the session checkpoint and its fixed headings
     assert.ok(source.includes("<git common dir>/qc/checkpoints/<session_id>.md"), skill);
     for (const heading of ["## Goal", "## Rules", "## Tasks", "## Next"]) assert.ok(source.includes(heading), `${skill}: ${heading}`);
     assert.doesNotMatch(source, /`checkpoint\.md` in the scratchpad/);
-    assert.match(source, /80 non-blank lines/);
+    assert.match(source, /60 non-blank lines/);
   }
+});
+
+test("the reference and Codex skill document the prompt rule caps and filters", () => {
+  for (const file of ["docs/reference.md", "skills/codex/SKILL.md"]) {
+    const source = readFileSync(new URL(`../../../../${file}`, import.meta.url), "utf8");
+    assert.match(source, /20 `Rule:` lines/);
+    assert.match(source, /2,000 characters/);
+    assert.match(source, /duplicates after trimming/);
+    assert.match(source, /starts with `none:`/);
+  }
+  const reference = readFileSync(new URL("../../../../docs/reference.md", import.meta.url), "utf8");
+  assert.match(reference, /60 non-blank lines/);
+  assert.match(reference, /60 lines.*4,000 characters/);
 });

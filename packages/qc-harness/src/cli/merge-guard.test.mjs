@@ -47,6 +47,17 @@ const shell = (cwd, command, hook_event_name = "PreToolUse", tool_name = "Bash")
 const denied = (output) => output?.hookSpecificOutput?.permissionDecisionReason ?? null;
 const verdict = (kind, value, sha = SHA) => ({ type: "verdict", kind, verdict: value, sha, branch: "feat/62-x" });
 
+test("a lesson refusal prints at most four lines with multiline test names", (t) => {
+  const { off, ledgerOf } = workspace(t);
+  const branch = "feat/ci";
+  appendRecord(ledgerOf(off), { type: "ci-failure", id: "multi", branch, head: "aaaaaaa", test: "first\nsecond\nthird\nfourth\nfifth" });
+  resolveFailures(off, branch, "bbbbbbb");
+  const gh = fakeGh(prView(bases.get(off), "main", branch)).gh;
+  const reason = denied(decide(shell(off, `gh pr merge 60 --match-head-commit ${bases.get(off)}`), { gh }));
+  assert.match(reason, /lesson.*first/i);
+  assert.ok(reason.split(/\r?\n/).length <= 4);
+});
+
 test("merge requires lessons for resolved failures at the pinned head even with dispatch off", (t) => {
   const { off } = workspace(t);
   const branch = "feat/ci";

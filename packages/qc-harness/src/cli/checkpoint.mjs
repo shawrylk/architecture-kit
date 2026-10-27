@@ -27,7 +27,7 @@ export function checkpointProblem(text) {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const missing = HEADINGS.filter((heading) => !lines.includes(heading));
   if (missing.length) return `missing heading: ${missing.join(", ")}`;
-  return lines.length > 80 ? "exceeds 80 non-blank lines" : null;
+  return lines.length > 60 ? "exceeds 60 non-blank lines" : null;
 }
 
 export function readCheckpoint(file, { maxAgeMinutes = 30, now = Date.now() } = {}) {
@@ -93,7 +93,7 @@ export function checkpointRefusal(call, now = Date.now()) {
 }
 
 export function checkpointNote(file) {
-  return `Checkpoint: ${file}\nWrite and update this file before dispatch and compaction. Use ${HEADINGS.join(", ")}; keep at most 80 non-blank lines.`;
+  return `Checkpoint: ${file}\nWrite and update this file before dispatch and compaction. Use ${HEADINGS.join(", ")}; keep at most 60 non-blank lines.`;
 }
 
 export function decide(call) {
@@ -109,11 +109,11 @@ export function decide(call) {
     const checkpoint = readCheckpoint(file, { maxAgeMinutes: 0 });
     if (checkpoint.text === null) return context(`${note}\nCheckpoint: ${checkpoint.problem}.`);
     const header = `Checkpoint ${file} is the source of truth for open work.\n`;
-    const cap = "\nCheckpoint print capped at 80 lines and 8,000 characters. Read the file for the rest.";
+    const cap = "\nCheckpoint print capped at 60 lines and 4,000 characters. Read the file for the rest.";
     const lines = checkpoint.text.split(/\r?\n/);
-    const preview = lines.slice(0, 80).join("\n");
-    const truncated = lines.length > 80 || header.length + preview.length > 8000;
-    return context(header + (truncated ? preview.slice(0, Math.max(0, 8000 - header.length - cap.length)) + cap : preview));
+    const preview = lines.slice(0, 59).join("\n");
+    const truncated = lines.length > 59 || header.length + preview.length > 4000;
+    return context(header + (truncated ? lines.slice(0, 58).join("\n").slice(0, Math.max(0, 4000 - header.length - cap.length)) + cap : preview));
   } catch (error) {
     return context(`Checkpoint${file ? ` ${file}` : ""}: cannot read (${String(error.message).replace(/[\r\n]+/g, " ")}).`);
   }

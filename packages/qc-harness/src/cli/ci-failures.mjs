@@ -126,7 +126,7 @@ export function ciBriefRefusal(root, branch, brief) {
     const next = body.slice(start + name.length, end).split(/\n(?=#{1,3}\s)/)[0];
     return !/^[ \t]*Cause:[ \t]*\S/m.test(next);
   });
-  if (missing.length) return `The brief needs ## CI failures with each failed test and a Cause: line: ${missing.join(", ")}`;
+  if (missing.length) return `The brief needs ## CI failures with each failed test and a Cause: line: ${missing.join(", ").replace(/[\r\n]+/g, " ")}`;
   if (failures.some((r) => repeatCount(root, branch, r) >= 2)) {
     const diagnosis = section(brief, "Diagnosis");
     if (!/^[ \t]*Root cause:[ \t]*\S/im.test(diagnosis) || !/^[ \t]*Evidence:[ \t]*\S/im.test(diagnosis)) {
@@ -157,7 +157,7 @@ export function lessonRefusal(root, branch, text) {
     const body = section(text ?? "", name);
     return ["Symptom", "Cause", "Rule"].some((field) => !new RegExp(`^${field}:[ \\t]*\\S`, "m").test(body));
   });
-  return missing.length ? `Merge guard: write a lesson with Symptom:, Cause:, and Rule: for: ${missing.join(", ")}` : null;
+  return missing.length ? `Merge guard: write a lesson with Symptom:, Cause:, and Rule: for: ${missing.join(", ").replace(/[\r\n]+/g, " ")}` : null;
 }
 
 export function lessonRules(root, lessons) {
@@ -168,7 +168,19 @@ export function lessonRules(root, lessons) {
     if (error.code === "ENOENT") return [];
     throw error;
   }
-  return text.split(/\r?\n/).filter((line) => /^Rule:\s*\S/.test(line)).reverse().slice(0, 40);
+  const rules = [];
+  const seen = new Set();
+  let length = 0;
+  for (const line of text.split(/\r?\n/).reverse()) {
+    const rule = line.trim();
+    if (!/^Rule:\s*\S/.test(rule) || /^Rule:\s*none:/.test(rule) || seen.has(rule)) continue;
+    const size = rule.length + (rules.length ? 1 : 0);
+    if (rules.length === 20 || length + size > 2000) break;
+    rules.push(rule);
+    seen.add(rule);
+    length += size;
+  }
+  return rules;
 }
 
 export function rerunFailures(root, branch, lessons, { run = (command, options) => spawnSync(command, { ...options, shell: true, stdio: "inherit", windowsHide: true }), warn = console.error } = {}) {
@@ -190,7 +202,7 @@ export function rerunFailures(root, branch, lessons, { run = (command, options) 
   }
 }
 
-export function runCiFailures(root, argv, { gh = (args) => readGh(args, root), say = console.log, warn = console.error } = {}) {
+export function runCiFailures(root, argv, { gh = (args) => readGh(args, root), warn = console.error } = {}) {
   if (argv[0] === "--rerun" && (argv.length === 1 || (argv.length === 3 && argv[1] === "--branch" && argv[2]))) {
     try {
       const branch = argv[2] ?? currentBranch(root);
@@ -211,7 +223,6 @@ export function runCiFailures(root, argv, { gh = (args) => readGh(args, root), s
     if (!run.headBranch || !run.headSha) throw new Error("run has no branch or head");
     if (run.conclusion === "success") resolveFailures(root, run.headBranch, run.headSha, argv[1]);
     else if (recordRun(root, { id: argv[1], branch: run.headBranch, head: run.headSha }, { gh, warn }) === null) return 1;
-    say(`CI records updated for ${run.headBranch}`);
     return 0;
   } catch (error) {
     warn(`ci-failures: gh failed: ${String(error.message).split(/\r?\n/)[0]}`);

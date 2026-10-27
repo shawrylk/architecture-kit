@@ -300,7 +300,10 @@ test("the dispatch brief checks CI failures even with the optional brief checks 
   const call = { prompt: `Brief: ${file}`, dirs: [root], review: offAll };
   assert.match(briefCheck(call).refusal, /cleanup retries/);
   writeFileSync(file, "## CI failures\n### cleanup retries\nCause: open handle\n");
-  assert.equal(briefCheck(call).refusal, null);
+  assert.deepEqual(briefCheck(call), { refusal: null, note: null });
+  const { appendRecord, ledgerFileOf } = await import("./ledger.mjs");
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "multi", branch: "fix/ci", head: "aaaaaaa", test: "first\nsecond\nthird\nfourth\nfifth" });
+  assert.ok(briefCheck(call).refusal.split(/\r?\n/).length <= 4);
 });
 
 test("a brief with a Product decisions heading passes, with no note when it is under the limits", () => {

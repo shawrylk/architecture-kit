@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { recordRun, openFailures, resolveFailures, ciBriefRefusal, lessonRefusal, lessonRules, rerunFailures, runCiFailures, parseFailedLog } from "./ci-failures.mjs";
 import { holdRefusal, runResume } from "./pause.mjs";
-import { ledgerFileOf, readLedger } from "./ledger.mjs";
+import { appendRecord, ledgerFileOf, readLedger } from "./ledger.mjs";
 import { runWatch } from "./watch.mjs";
 
 const tap = `test (windows-latest)\tRun tests\t2026-01-01T00:00:00Z not ok 1 - cleanup retries
@@ -106,7 +106,7 @@ test("repeat heads require diagnosis, third heads hold only that branch, and res
   assert.equal(holdRefusal(root, "feat/test"), null);
 });
 
-test("resolved tests require complete lesson entries and rules feed forward newest first, capped at forty", (t) => {
+test("resolved tests require complete lesson entries and rules feed forward newest first, capped at twenty", (t) => {
   const root = fixture(t);
   recordRun(root, { id: 1, branch: "feat/test", head: "aaaaaaa" }, { gh: () => tap });
   assert.equal(lessonRefusal(root, "feat/test", ""), null);
@@ -118,9 +118,28 @@ test("resolved tests require complete lesson entries and rules feed forward newe
   mkdirSync(path.join(root, "docs"));
   writeFileSync(path.join(root, "docs", "ci-lessons.md"), Array.from({ length: 45 }, (_, i) => `## test ${i}\nRule: Apply rule ${i}.\n`).join("\n"));
   const rules = lessonRules(root, { file: "docs/ci-lessons.md" });
-  assert.equal(rules.length, 40);
+  assert.equal(rules.length, 20);
   assert.equal(rules[0], "Rule: Apply rule 44.");
-  assert.equal(rules.at(-1), "Rule: Apply rule 5.");
+  assert.equal(rules.at(-1), "Rule: Apply rule 25.");
+});
+
+test("prompt rules trim duplicates and skip none declarations before applying the caps", (t) => {
+  const root = fixture(t);
+  writeFileSync(path.join(root, "lessons.md"), "Rule: Older\nRule: Same\n Rule: Same  \nRule: none: no lesson\nRule: Same\nRule: Newest\n");
+  assert.deepEqual(lessonRules(root, { file: "lessons.md" }), ["Rule: Newest", "Rule: Same", "Rule: Older"]);
+});
+
+test("prompt rules count separators in the character cap and leave overflowing rules whole", (t) => {
+  const root = fixture(t);
+  const newest = `Rule: ${"x".repeat(1994)}`;
+  writeFileSync(path.join(root, "lessons.md"), `Rule: Older\n${newest}\n`);
+  assert.deepEqual(lessonRules(root, { file: "lessons.md" }), [newest]);
+  writeFileSync(path.join(root, "lessons.md"), `Rule: Older\n${newest}x\n`);
+  assert.deepEqual(lessonRules(root, { file: "lessons.md" }), []);
+  writeFileSync(path.join(root, "lessons.md"), `Rule: ${"a".repeat(992)}\nRule: ${"b".repeat(995)}\n`);
+  const rules = lessonRules(root, { file: "lessons.md" });
+  assert.equal(rules.length, 2);
+  assert.equal(rules.join("\n").length, 2000);
 });
 
 test("rerun appends unique open test files, honors configuration, and propagates failures", (t) => {
@@ -152,6 +171,8 @@ test("the command table exposes ci-failures and reruns a green branch without gh
   assert.match(help.stdout, /qc ci-failures --run <id>/);
   const result = spawnSync(process.execPath, [qc, "ci-failures", "--rerun", "--branch", "green"], { cwd: root, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
 });
 
 test("manual recording reads run metadata with a fake gh", (t) => {
@@ -164,6 +185,26 @@ test("manual recording reads run metadata with a fake gh", (t) => {
   assert.equal(runCiFailures(root, ["--run", "42"], { gh, say: () => {} }), 0);
   assert.equal(openFailures(root, "feat/test").length, 1);
   assert.deepEqual(calls[0], ["run", "view", "42", "--json", "headBranch,headSha,conclusion"]);
+});
+
+test("CI commands pass silently and refusals fit four lines", (t) => {
+  const root = fixture(t);
+  const output = [];
+  const options = { say: (s) => output.push(s), warn: (s) => output.push(s), gh: () => JSON.stringify({ headBranch: "feat/test", headSha: "bbbbbbb", conclusion: "success" }) };
+  assert.equal(runCiFailures(root, ["--run", "42"], options), 0);
+  assert.deepEqual(output, []);
+  assert.equal(runCiFailures(root, ["--rerun", "--branch", "green"], options), 0);
+  assert.deepEqual(output, []);
+  assert.equal(runCiFailures(root, [], options), 1);
+  assert.ok(output.join("\n").split(/\r?\n/).length <= 4);
+});
+
+test("CI brief and lesson refusals keep multiline test names within four lines", (t) => {
+  const root = fixture(t);
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "multiline", branch: "feat/test", head: "aaaaaaa", test: "first\nsecond\nthird\nfourth\nfifth" });
+  assert.ok(ciBriefRefusal(root, "feat/test", "").split(/\r?\n/).length <= 4);
+  resolveFailures(root, "feat/test", "bbbbbbb");
+  assert.ok(lessonRefusal(root, "feat/test", "").split(/\r?\n/).length <= 4);
 });
 
 test("recorded Linux TAP normalizes the checkout prefix and preserves the first multiline error", () => {
