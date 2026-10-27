@@ -11,7 +11,7 @@ import { latestVerdictFor, shaMatches } from "./ledger.mjs";
 
 const KEY = "swarm.direct";
 const DEFAULTS = { ...directDefaults, reviewPaths: [".mcp.json", "**/.claude/**", ".github/workflows/**", "hooks/**"] };
-const DIRECT_KEYS = Object.keys(directDefaults);
+const DIRECT_KEYS = Object.keys(DEFAULTS);
 const KINDS = ["task", "branch"];
 const GITLINK_MODE = "160000";
 const SNIFF_BYTES = 8_000;

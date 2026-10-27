@@ -94,6 +94,54 @@ test("risky paths require a non-empty Risk line on their own task", () => {
   assert.equal(checkPlan(plan(task(1)), { riskPaths: ["src/**"] }).length, 1);
 });
 
+test("a bulleted Risk line satisfies the task risk requirement", () => {
+  const risky = task(1, { fileLines: ["- Modify: `schemas/api.json`"], extra: ["- **Risk:** Writes fail; errors appear; revert the change."] });
+  assert.deepEqual(checkPlan(plan(risky)), []);
+  assert.equal(checkPlan(plan(risky.replace("Writes fail; errors appear; revert the change.", "  "))).length, 1);
+});
+
+test("the CLI caps five problems at three lines and checks open question sources", (t) => {
+  const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-plan-cap-")));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(path.join(dir, "qc.config.json"), "{}");
+  const badTask = (n) => task(n, { fileLines: ["- Modify: `schemas/api.json`"], commit: false });
+  const bad = plan(badTask(1), badTask(2)) + "\n## Open questions\n- Which store?\n";
+  assert.equal(checkPlan(bad).length, 4);
+  writeFileSync(path.join(dir, "plan.md"), bad);
+  const run = () => spawnSync(process.execPath, [QC, "plan-check", "plan.md"], { cwd: dir, encoding: "utf8" });
+  const capped = run();
+  assert.equal(capped.status, 1);
+  assert.equal(capped.stdout, "");
+  assert.equal(capped.stderr.trim().split(/\r?\n/).length, 3);
+  for (const source of ["", " Source: step:2", " Source: the user at 10:30"]) {
+    writeFileSync(path.join(dir, "plan.md"), plan(task(1)) + `\n## Open questions\nThe spec leaves a question open.\n- Which storage engine should this service use?${source}\n`);
+    const result = run();
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /"Which storage engine should this service".*Source:/);
+  }
+  for (const source of ["storage.mjs:12", "src/storage:12", "C:/repo/storage.mjs:12", "https://example.com/storage"]) {
+    writeFileSync(path.join(dir, "plan.md"), plan(task(1)) + `\n## Open questions\nThe spec leaves a question open.\n- Which store? Source: ${source}\n`);
+    const result = run();
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout + result.stderr, "");
+  }
+});
+
+test("the CLI validates review settings with dispatch off and reports one line", (t) => {
+  const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-plan-config-")));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(path.join(dir, "plan.md"), plan(task(1)));
+  for (const review of [{ cases: { "src/**": "loading" } }, { riskPaths: "src/**" }, { maxTaskCalls: "many" }, { cases: null }]) {
+    writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { review } }));
+    const result = spawnSync(process.execPath, [QC, "plan-check", "plan.md"], { cwd: dir, encoding: "utf8" });
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.equal(result.stderr.trim().split(/\r?\n/).length, 1, result.stderr);
+    assert.match(result.stderr, /swarm\.review\./);
+    assert.doesNotMatch(result.stderr, /TypeError| at /);
+  }
+});
+
 test("review settings accept riskPaths and reject malformed glob lists", () => {
   assert.deepEqual(reviewSettings({ dispatch: {}, review: { riskPaths: [] } }).riskPaths, []);
   assert.deepEqual(reviewSettings({ dispatch: {} }).riskPaths, reviewDefaults.riskPaths);

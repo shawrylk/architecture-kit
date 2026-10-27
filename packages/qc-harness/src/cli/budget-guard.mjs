@@ -15,7 +15,7 @@ import { contextSettings, contextVerdict, estimateOf, handbackStamp } from "./co
 import { dispatchSettings } from "./dispatch.mjs";
 import { budgetRoleOf, orchestratorVerdict, roleBudgetVerdict } from "./role-budget.mjs";
 import { agentTranscriptOf, contextOf, firstPromptOf, firstUsage, lastUsage } from "./transcript-usage.mjs";
-import { checkpointPathOf } from "./checkpoint.mjs";
+import { checkpointNameOf } from "./checkpoint.mjs";
 
 const HANDBACK = "SubagentHandback";
 
@@ -60,7 +60,7 @@ function orchestratorOutput(call, tmp) {
     const state = readState(file);
     const note = orchestratorVerdict({ tokens, compactAt: budget.compactAt, count, state });
     writeState(file, state);
-    return note ? context(`${note} Update the checkpoint now: ${checkpointPathOf(root, session)}.`) : null;
+    return note ? context(`${note} Update the checkpoint now: ${checkpointNameOf(root, session)}.`) : null;
   } catch {
     return null;
   }

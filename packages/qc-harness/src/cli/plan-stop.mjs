@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendRecord } from "./ledger.mjs";
-import { checkPlan } from "./plan-check.mjs";
+import { checkPlan, questionProblems } from "./plan-check.mjs";
 import { dropReport, keepReport, reportOf } from "./report-stash.mjs";
 import { nativePath } from "./workflow-place.mjs";
 import { workflowOf } from "./workflow-settings.mjs";
@@ -22,39 +22,6 @@ const block = (reason) => ({ decision: "block", reason });
 
 /** The path on a report's `PLAN:` line, or null. */
 export const planPathOf = (text) => PLAN_LINE.exec(String(text))?.[1]?.replace(QUOTES, "") ?? null;
-
-/** A branch that refuses open questions without their own source pointer. */
-function questionProblems(markdown) {
-  const questions = [];
-  let depth = null;
-  let question = "";
-  let fence = null;
-  const finish = () => { if (question.trim()) questions.push(question.trim()); question = ""; };
-  for (const line of markdown.split(/\r?\n/)) {
-    const marker = /^[ \t]*(`{3,}|~{3,})/.exec(line)?.[1];
-    if (fence) {
-      if (marker?.[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = null;
-      continue;
-    }
-    if (marker) { fence = marker; continue; }
-    const heading = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
-    if (heading && depth !== null && heading[1].length <= depth) { finish(); depth = null; }
-    if (heading && /^Open questions\b/i.test(heading[2])) { depth = heading[1].length; continue; }
-    if (depth === null) continue;
-    if (heading || line.trim() === "" || /^(?:[-*+]|\d+[.)])[ \t]+/.test(line)) finish();
-    question += `${line}\n`;
-  }
-  finish();
-  return questions.filter((entry) => !/^(?:[-*+]\s*)?(?:none|no open questions)[.!]?$/i.test(entry))
-    .filter((entry) => {
-      const source = /\bSource:\*{0,2}[ \t]*([^\n]+)/i.exec(entry)?.[1];
-      if (!source) return true;
-      if (/(?:^|[\s`(])(?:[A-Za-z]:[\\/])?[\w./\\-]+:[1-9]\d*\b/.test(source)) return false;
-      return ![...source.matchAll(/https?:\/\/[^\s`<>)]+/g)].some(([url]) => {
-        try { return /[a-z0-9]/i.test(new URL(url).hostname); } catch { return false; }
-      });
-    }).map(() => "each open question needs its own Source: with a file:line or URL");
-}
 
 /** @returns what the planner must fix before its report goes through; empty when the plan passes. */
 export function planProblems(text, cwd, maxTaskCalls, { riskPaths, cases } = {}) {

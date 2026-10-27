@@ -270,6 +270,18 @@ test("checkpoint refusal applies with dispatch on or off and names the path, pro
   assert.equal(existsSync(ws.slots), false);
 });
 
+test("an invalid Git pointer keeps the checkpoint guard on", (t) => {
+  const ws = workspace(t);
+  const root = path.join(ws.tmp, "broken");
+  mkdirSync(root);
+  writeFileSync(path.join(root, ".git"), "invalid pointer");
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  const output = decide(agentCall(root, { prompt: "p" }), ws.tmp);
+  assert.match(reasonOf(output), /the session checkpoint/);
+  assert.match(reasonOf(output), /cannot resolve/);
+  assert.doesNotMatch(JSON.stringify(output), /guard is off/);
+});
+
 test("agents in one assistant message share the first dispatch age check", (t) => {
   const ws = workspace(t);
   const transcript = path.join(ws.tmp, "main.jsonl");

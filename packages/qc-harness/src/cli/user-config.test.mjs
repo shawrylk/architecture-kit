@@ -22,8 +22,11 @@ function fixture(t) {
   return { root, kitDir, home: path.join(root, "home"), env: {}, log: (line) => lines.push(line), lines, now: new Date(2026, 0, 2, 3, 4, 5) };
 }
 
-const SECRET_READ_DENIES = [".env", ".env.local", ".env.*.local", ".env.production", "*.pem", "*.key", "id_rsa*", "id_ed25519*"]
-  .map((pattern) => `Read(**/${pattern})`);
+const SECRET_READ_DENIES = [
+  ...[".env", ".env.local", ".env.*.local", ".env.production", "*.pem", "*.key", "id_rsa*", "id_ed25519*"]
+    .map((pattern) => `Read(**/${pattern})`),
+  "Read(~/.ssh/**)",
+];
 
 test("shared permissions deny secret reads in every folder while examples stay readable", () => {
   const shared = readFileSync(new URL("../../../../user-config/claude/settings.shared.json", import.meta.url), "utf8");

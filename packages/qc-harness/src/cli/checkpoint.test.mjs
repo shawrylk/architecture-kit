@@ -80,6 +80,18 @@ test("compact and resume restore the checkpoint as the source of truth", (t) => 
   assert.ok(!decide({ ...call, source: "startup" }).hookSpecificOutput.additionalContext.includes("Keep my tasks"));
 });
 
+test("restoration keeps 60 non-blank lines with blank separators", (t) => {
+  const { root, file } = workspace(t);
+  writeFileSync(path.join(root, "qc.config.json"), "{}");
+  const full = text.replace("## Next", "step\n".repeat(52) + "## Next");
+  assert.equal(checkpointProblem(full), null);
+  writeFileSync(file, full.replaceAll("\n", "\n\n"));
+  const note = decide({ cwd: root, session_id: "session-1", hook_event_name: "SessionStart", source: "compact" }).hookSpecificOutput.additionalContext;
+  assert.ok(note.endsWith("Build it"));
+  assert.doesNotMatch(note, /capped/);
+  assert.ok(note.split(/\r?\n/).length <= 60);
+});
+
 test("restoration caps lines and characters and reports read errors without blocking", (t) => {
   const { root, file } = workspace(t);
   writeFileSync(path.join(root, "qc.config.json"), "{}");

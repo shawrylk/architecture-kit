@@ -12,7 +12,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { dispatchSettings } from "./dispatch.mjs";
 import { contextOf, lastUsage } from "./transcript-usage.mjs";
-import { checkpointPathOf } from "./checkpoint.mjs";
+import { checkpointNameOf, checkpointSettingsAt } from "./checkpoint.mjs";
 
 export const START = defaults.budgets.orchestrator.compactAt;
 export const STEP = 50_000;
@@ -79,10 +79,14 @@ export function decide(call, { tmp = os.tmpdir() } = {}) {
   }
   if (step <= kept) return null;
   const k = Math.round(tokens / 1000);
+  const cwd = call.cwd ?? process.cwd();
+  const checkpoint = checkpointSettingsAt(cwd)
+    ? ` Update the checkpoint now: ${checkpointNameOf(cwd, call.session_id)}.`
+    : "";
   const result = {
     hookSpecificOutput: {
       hookEventName: call.hook_event_name,
-      additionalContext: `Context is about ${k}K tokens. At the next clean break (a task, review, or merge just finished, nothing mid-fix), update the resume notes and ask the user to run /compact before you continue. Update the checkpoint now: ${checkpointPathOf(call.cwd ?? process.cwd(), call.session_id) ?? "the session checkpoint"}.`,
+      additionalContext: `Context is about ${k}K tokens. At the next clean break (a task, review, or merge just finished, nothing mid-fix), update the resume notes and ask the user to run /compact before you continue.${checkpoint}`,
     },
   };
   if (tokens >= TELL_USER) result.systemMessage = `Context ${k}K tokens: Claude will ask you to /compact at the next clean break.`;
