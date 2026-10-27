@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { decide } from "./dispatch-guard.mjs";
+import { checkpointPathOf } from "./checkpoint.mjs";
 import { runtimeTagOf } from "./dispatch-route.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { judgeTask, recordDispatch } from "./task-gate.mjs";
@@ -40,6 +41,9 @@ function workspace(t, config = { swarm: { dispatch: {} } }) {
   git(main, "worktree", "add", "-q", "-b", "feat/1-x", linked);
   const tmp = path.join(base, "tmp");
   mkdirSync(tmp);
+  const checkpoint = checkpointPathOf(main, "s");
+  mkdirSync(path.dirname(checkpoint), { recursive: true });
+  writeFileSync(checkpoint, "## Goal\nTest the review gate.\n## Rules\nKeep the gate checks on.\n## Tasks\nDispatch the review.\n## Next\nCheck the result.\n");
   return { base, main, origin, linked, tmp, ledger: path.join(main, ".git", "qc", "ledger.jsonl") };
 }
 

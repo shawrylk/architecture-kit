@@ -226,12 +226,16 @@ test("a swarm.direct section that does not parse names the key and leaves the re
 });
 
 test("the direct lane note says when a merge needs a review", (t) => {
-  const [none, some, every] = checkouts(t, [
+  const [defaults, none, some, every] = checkouts(t, [
     { swarm: { dispatch: {} } },
+    { swarm: { dispatch: {}, direct: { reviewPaths: [] } } },
     { swarm: { dispatch: {}, direct: { reviewPaths: ["src/**", "api/**"] } } },
     { swarm: { dispatch: {}, direct: { reviewPaths: ["**"] } } },
   ]);
   const noteOf = (dir) => decide(start(dir, "startup")).hookSpecificOutput.additionalContext;
+  const defaultNote = noteOf(defaults);
+  assert.match(defaultNote, /--match-head-commit <sha>`\. A merge needs one APPROVED review of the head \(sdd-reviewer\) when a changed path matches swarm\.direct\.reviewPaths\./);
+  assert.doesNotMatch(defaultNote, /no review/);
   assert.match(noteOf(none), /--match-head-commit <sha>` and no review\./);
   const partial = noteOf(some);
   assert.match(partial, /--match-head-commit <sha>`\. A merge needs one APPROVED review of the head \(sdd-reviewer\) when a changed path matches swarm\.direct\.reviewPaths\./);

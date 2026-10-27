@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { decide as dispatchDecide } from "./dispatch-guard.mjs";
+import { checkpointPathOf } from "./checkpoint.mjs";
 import { runtimeTagOf } from "./dispatch-route.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { gitOut } from "./git-read.mjs";
@@ -37,6 +38,9 @@ function workspace(t) {
   git(main, "worktree", "add", "-q", "-b", "feat/1-x", linked);
   const tmp = path.join(base, "tmp");
   mkdirSync(tmp);
+  const checkpoint = checkpointPathOf(main, "s");
+  mkdirSync(path.dirname(checkpoint), { recursive: true });
+  writeFileSync(checkpoint, "## Goal\nTest the task gate.\n## Rules\nKeep the gate checks on.\n## Tasks\nDispatch the task.\n## Next\nCheck the result.\n");
   return { main, off, linked, tmp, ledger: path.join(main, ".git", "qc", "ledger.jsonl") };
 }
 
