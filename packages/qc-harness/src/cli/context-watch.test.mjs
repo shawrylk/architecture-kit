@@ -60,6 +60,14 @@ test("a disabled orchestrator budget keeps the watch silent", (t) => {
   assert.equal(fs.existsSync(f.state), false);
 });
 
+test("compaction reminder tells the session to update its checkpoint now", (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.tmp, "qc.config.json"), "{}");
+  const note = f.at(400_000).hookSpecificOutput.additionalContext;
+  assert.match(note, /Update the checkpoint now/);
+  assert.ok(note.includes(path.join(f.tmp, ".git", "qc", "checkpoints", "s.md")));
+});
+
 test("state changes use an atomic replacement", (t) => {
   const f = fixture(t);
   f.at(400_000);
@@ -312,7 +320,7 @@ test("speaks once per rising step and resets after compaction", (t) => {
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext:
-        "Context is about 210K tokens. At the next clean break (a task, review, or merge just finished, nothing mid-fix), update the resume notes and ask the user to run /compact before you continue.",
+        `Context is about 210K tokens. At the next clean break (a task, review, or merge just finished, nothing mid-fix), update the resume notes and ask the user to run /compact before you continue. Update the checkpoint now: ${path.join(f.tmp, ".git", "qc", "checkpoints", "s.md")}.`,
     },
   });
   assert.equal(f.at(210_000), null);

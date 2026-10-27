@@ -25,7 +25,8 @@ export const CODEX_LINE =
   "load the `architecture:codex` skill before the first dispatch. " +
   "On exit 2 (a Codex limit), dispatch the same brief to an architecture:sdd-implementer (sonnet). " +
   "Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other; " +
-  "the guard refuses a codex dispatch while `qc codex status` shows a limit and requires `Runtime: claude <reason>` for an implementer dispatch while Codex is free.";
+  "the guard refuses a codex dispatch while `qc codex status` shows a limit and requires `Runtime: claude <reason>` for an implementer dispatch while Codex is free. " +
+  "Update the session checkpoint named by SessionStart before each dispatch and compaction; it is the source of truth for open work.";
 
 /** The note a Codex implementer gets in place of the controller note, with `QC_ROLE=implementer`. */
 export const WORKER_NOTE =

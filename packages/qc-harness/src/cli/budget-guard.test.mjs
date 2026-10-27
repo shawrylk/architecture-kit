@@ -139,6 +139,8 @@ test("the orchestrator gets the compaction note on its 5th call and not on the 4
   assert.equal(output.permissionDecision, undefined);
   assert.equal(countOf(ws, "orchestrator"), 5);
   assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 5);
+  assert.match(output.additionalContext, /Update the checkpoint now/);
+  assert.match(output.additionalContext, /qc[\\/]checkpoints[\\/]/);
 });
 
 test("the note repeats only after 20 more calls", (t) => {

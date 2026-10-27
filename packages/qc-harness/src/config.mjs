@@ -9,6 +9,7 @@ import path from "node:path";
 export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
+  checkpoint: { maxAgeMinutes: 30 },
   post: { aiLabel: true },
   ci: { requiredChecks: [] },
   lessons: { file: "docs/ci-lessons.md", rerun: "node --test" },
@@ -692,6 +693,10 @@ export function load(root = process.cwd()) {
   if (!isPlainObject(config.lessons)) throw new TypeError("lessons must be an object");
   for (const key of ["file", "rerun"]) {
     if (typeof config.lessons[key] !== "string" || !config.lessons[key].trim()) throw new TypeError(`lessons.${key} must be a non-empty string`);
+  }
+  if (Object.hasOwn(user, "checkpoint") && !isPlainObject(user.checkpoint)) throw new TypeError("checkpoint must be an object");
+  if (!Number.isFinite(config.checkpoint.maxAgeMinutes) || config.checkpoint.maxAgeMinutes < 0) {
+    throw new TypeError("checkpoint.maxAgeMinutes must be a non-negative number");
   }
   if (!isPlainObject(config.merge)) throw new TypeError("merge must be an object");
   if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
