@@ -103,7 +103,7 @@ test("open questions need their own Source with a file line or URL before hand-b
     "- Which store? Source: storage.mjs:0. Recommend SQLite.",
     "- Which store? Source: https://. Recommend SQLite.",
     "- Which store? Source: storage.mjs:12. Recommend SQLite.\n- Which region? Recommend EU.",
-    "Which store? Source: storage.mjs:12. Recommend SQLite.\n\nWhich region? Recommend EU.",
+    "Which store?\nSource: storage.mjs:12. Recommend SQLite.\n\nWhich region?",
   ]) {
     writeFileSync(file, `${GOOD}\n## Open questions\n${question}\n`);
     assert.match(denied(decide(handback(ws.on, message), ws.tmp)) ?? "", /Source:/);
@@ -118,6 +118,40 @@ test("open questions need their own Source with a file line or URL before hand-b
   ]) {
     writeFileSync(file, `${GOOD}\n## Open questions\n${question}\n## Product decisions\n- Use SQLite.\n`);
     assert.equal(decide(handback(ws.on, message), ws.tmp), null, question);
+  }
+});
+
+test("question refusals quote six words and reject times and step numbers as sources", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.plans, "questions.md");
+  for (const source of ["the user at 10:30", "step:2"]) {
+    writeFileSync(file, `${GOOD}\n## Open questions\n- Which storage engine should this service use? Source: ${source}\n`);
+    const reason = denied(decide(handback(ws.on, `PLAN: ${file}`), ws.tmp));
+    assert.match(reason ?? "", /"Which storage engine should this service"/);
+    assert.match(reason ?? "", /Source:/);
+  }
+});
+
+test("open question introductions pass while bare questions still need a source", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.plans, "questions.md");
+  const intro = "The spec leaves two questions open.";
+  writeFileSync(file, `${GOOD}\n## Open questions\n${intro}\n- Which store? Source: storage.mjs:12\n`);
+  assert.equal(decide(handback(ws.on, `PLAN: ${file}`), ws.tmp), null);
+  writeFileSync(file, `${GOOD}\n## Open questions\n${intro}\nWhich region should the storage service use?\n`);
+  assert.match(denied(decide(handback(ws.on, `PLAN: ${file}`), ws.tmp)) ?? "", /"Which region should the storage service"/);
+});
+
+test("the hook caps five plan and question problems at three", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.plans, "many.md");
+  const bad = GOOD.replace("a.mjs", "schemas/api.json").replace("- [ ] **Step 2: Commit**", "");
+  writeFileSync(file, `${bad}\n${bad.replace("Task 1:", "Task 2:")}\n## Open questions\n- Which store?\n`);
+  const message = `PLAN: ${file}`;
+  for (const reason of [denied(decide(handback(ws.on, message), ws.tmp)), decide(stop(ws.on, message), ws.tmp)?.reason]) {
+    assert.deepEqual(reason.match(/\d\)/g), ["1)", "2)", "3)"]);
+    assert.match(reason, /Task 1 missing \*\*Risk:\*\*/);
+    assert.match(reason, /Task 2 missing \*\*Risk:\*\*/);
   }
 });
 

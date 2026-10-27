@@ -669,8 +669,6 @@ export const directDefaults = {
   maxFiles: 2,
   // Globs a direct fix may not touch. A change to one of these runs the subagent workflow.
   excludes: ["schemas/**", "**/migrations/**"],
-  // Globs a direct fix may touch only with one APPROVED review of its head, of either kind.
-  reviewPaths: [],
 };
 
 function isPlainObject(value) {

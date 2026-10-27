@@ -13,7 +13,7 @@ const FILE_LINE = /^[ \t]*[-*][ \t]+(?:Create|Modify|Test|Delete|Rename):[ \t]*\
 const STEP_LINE = /^[ \t]*[-*][ \t]+\[[ xX]\][ \t]+\*\*(.+?)\*\*/;
 const ESTIMATE_LINE = /^[ \t]*\*\*Estimate:\*\*[ \t]*(\d+)(?:[ \t]*(?:-|–|—|to)[ \t]*(\d+))?/i;
 const FENCE = /^[ \t]*(`{3,}|~{3,})/;
-const RISK_LINE = /^[ \t]*\*\*Risk:\*\*[ \t]*\S/i;
+const RISK_LINE = /^[ \t]*(?:[-*+][ \t]+)?\*\*Risk:\*\*[ \t]*\S/i;
 const GIT_COMMIT = /\bgit[ \t]+commit\b/;
 const TEST_WORD = /\btests?\b/i;
 const COMMIT_WORD = /\bcommit\b/i;
@@ -152,6 +152,44 @@ export function checkPlan(markdown, { maxTaskCalls = reviewDefaults.maxTaskCalls
   return problems;
 }
 
+/** A branch that refuses open questions without their own source pointer. */
+export function questionProblems(markdown) {
+  const questions = [];
+  let depth = null;
+  let question = "";
+  let fence = null;
+  const finish = () => { if (question.trim()) questions.push(question.trim()); question = ""; };
+  for (const line of markdown.split(/\r?\n/)) {
+    const marker = /^[ \t]*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (marker?.[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = null;
+      continue;
+    }
+    if (marker) { fence = marker; continue; }
+    const heading = /^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
+    if (heading && depth !== null && heading[1].length <= depth) { finish(); depth = null; }
+    if (heading && /^Open questions\b/i.test(heading[2])) { depth = heading[1].length; continue; }
+    if (depth === null) continue;
+    const listed = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/.exec(line);
+    if (heading || line.trim() === "") { finish(); continue; }
+    if (listed || line.trim().endsWith("?")) finish();
+    if (listed || question || line.trim().endsWith("?")) question += `${listed ? line.slice(listed[0].length) : line}\n`;
+  }
+  finish();
+  return questions.filter((entry) => !/^(?:[-*+]\s*)?(?:none|no open questions)[.!]?$/i.test(entry))
+    .filter((entry) => {
+      const source = /\bSource:\*{0,2}[ \t]*([^\n]+)/i.exec(entry)?.[1];
+      if (!source) return true;
+      if (/(?:^|[\s`(])(?:[A-Za-z]:[\\/])?[\w./\\-]*[./\\][\w./\\-]*:[1-9]\d*\b/.test(source)) return false;
+      return ![...source.matchAll(/https?:\/\/[^\s`<>)]+/g)].some(([url]) => {
+        try { return /[a-z0-9]/i.test(new URL(url).hostname); } catch { return false; }
+      });
+    }).map((entry) => {
+      const words = entry.split(/(?<=\?)\s|\n/)[0].trim().split(/\s+/).slice(0, 6).join(" ");
+      return `question ${JSON.stringify(words)} needs its own Source: with a file:line or URL`;
+    });
+}
+
 /** `qc plan-check <plan.md>`. @returns the exit code */
 export function runPlanCheck(config, [file] = []) {
   if (!file) {
@@ -167,12 +205,12 @@ export function runPlanCheck(config, [file] = []) {
   }
   let settings;
   try {
-    settings = reviewSettings(config.swarm) ?? config.swarm?.review ?? {};
+    settings = reviewSettings(config.swarm) ?? reviewSettings({ ...config.swarm, dispatch: {} });
   } catch (error) {
     console.error(error.message);
     return 1;
   }
-  const problems = checkPlan(markdown, settings);
+  const problems = [...checkPlan(markdown, settings), ...questionProblems(markdown).map((detail) => ({ task: null, detail }))];
   for (const problem of problems.slice(0, 3)) {
     console.error(`FAIL  plan-check  ${problem.task === null ? file : `Task ${problem.task}`}: ${problem.detail}`);
   }

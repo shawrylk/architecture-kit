@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathMatcher } from "../glob.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { checkpointPathOf } from "./checkpoint.mjs";
 import { editLane, sizeLine } from "./direct-lane.mjs";
 import { pathKey } from "./git-read.mjs";
 import { commonDirOf } from "./ledger.mjs";
@@ -40,6 +41,12 @@ export function decide(call, platform = process.platform) {
   }
   if (!workflow) return null;
   const file = path.resolve(cwd, target);
+  try {
+    const checkpoint = checkpointPathOf(cwd, call.session_id);
+    if (checkpoint && pathKey(file) === pathKey(checkpoint)) return null;
+  } catch {
+    // An unresolved checkpoint grants no edit exception.
+  }
   const fileRoot = checkoutRootOf(path.dirname(file));
   if (!fileRoot || !sameRepository(fileRoot, workflow.root)) return null;
   const rel = path.relative(fileRoot, file).replaceAll("\\", "/");

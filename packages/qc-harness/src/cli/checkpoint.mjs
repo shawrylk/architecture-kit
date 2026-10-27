@@ -23,6 +23,15 @@ export function checkpointPathOf(cwd, sessionId) {
   return path.join(git, "qc", "checkpoints", `${session}.md`);
 }
 
+/** The fragment that names a checkpoint even when its Git path cannot resolve. */
+export function checkpointNameOf(cwd, sessionId) {
+  try {
+    return checkpointPathOf(cwd, sessionId) ?? "the session checkpoint";
+  } catch {
+    return "the session checkpoint";
+  }
+}
+
 export function checkpointProblem(text) {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const missing = HEADINGS.filter((heading) => !lines.includes(heading));
@@ -79,7 +88,10 @@ export function checkpointRefusal(call, now = Date.now()) {
   const cwd = call.cwd ?? process.cwd();
   const settings = checkpointSettingsAt(cwd);
   if (!settings) return null;
-  const file = checkpointPathOf(cwd, call.session_id);
+  const file = checkpointNameOf(cwd, call.session_id);
+  if (file === "the session checkpoint") {
+    return `Checkpoint: ${file}\ncannot resolve its path. Restore the Git pointer before dispatch.\nRequired headings: ${HEADINGS.join(", ")}.`;
+  }
   const message = dispatchMessageOf(call);
   const stateFile = `${file}.dispatch.json`;
   const state = message ? readState(stateFile) : {};
@@ -108,11 +120,11 @@ export function decide(call) {
     if (call.source !== "compact" && call.source !== "resume") return context(note);
     const checkpoint = readCheckpoint(file, { maxAgeMinutes: 0 });
     if (checkpoint.text === null) return context(`${note}\nCheckpoint: ${checkpoint.problem}.`);
-    const header = `Checkpoint ${file} is the source of truth for open work.\n`;
+    const lines = checkpoint.text.split(/\r?\n/).filter((line) => line.trim());
+    const header = `Checkpoint ${file} is the source of truth for open work.${lines.length === 60 ? " " : "\n"}`;
     const cap = "\nCheckpoint print capped at 60 lines and 4,000 characters. Read the file for the rest.";
-    const lines = checkpoint.text.split(/\r?\n/);
-    const preview = lines.slice(0, 59).join("\n");
-    const truncated = lines.length > 59 || header.length + preview.length > 4000;
+    const preview = lines.slice(0, 60).join("\n");
+    const truncated = lines.length > 60 || header.length + preview.length > 4000;
     return context(header + (truncated ? lines.slice(0, 58).join("\n").slice(0, Math.max(0, 4000 - header.length - cap.length)) + cap : preview));
   } catch (error) {
     return context(`Checkpoint${file ? ` ${file}` : ""}: cannot read (${String(error.message).replace(/[\r\n]+/g, " ")}).`);

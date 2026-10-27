@@ -5,8 +5,16 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaults, load, merge, requiredHooks } from "./config.mjs";
+import { defaults, directDefaults, load, merge, requiredHooks } from "./config.mjs";
 import { rules } from "./eslint/index.mjs";
+import { directSettings } from "./cli/direct-lane.mjs";
+
+test("the direct lane owns its review path default and accepts replacements", () => {
+  assert.equal(Object.hasOwn(directDefaults, "reviewPaths"), false);
+  assert.deepEqual(directSettings({}).reviewPaths, [".mcp.json", "**/.claude/**", ".github/workflows/**", "hooks/**"]);
+  assert.deepEqual(directSettings({ direct: { reviewPaths: [] } }).reviewPaths, []);
+  assert.deepEqual(directSettings({ direct: { reviewPaths: ["local/**"] } }).reviewPaths, ["local/**"]);
+});
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 

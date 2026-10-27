@@ -180,7 +180,8 @@ Claude shares `cleanupPeriodDays`, `syncClaudeAiPlugins`, `env`, `permissions`, 
 It also shares `awaySummaryEnabled`, `autoUpdatesChannel`, `tui`, `skipWorkflowUsageWarning`, `theme`, `autoCompactEnabled`, `autoContinueAtUsageLimit`, `agentPushNotifEnabled`, and `skipAutoPermissionPrompt`.
 Only `CLAUDE_CODE_DISABLE_MOUSE` and `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP` are shared under `env`.
 `defaultMode` and `deny` are shared under `permissions`; shared deny rules extend your local deny list.
-The shared rules deny `Read` of `.env`, `.env.local`, `.env.*.local`, `.env.production`, `*.pem`, `*.key`, `id_rsa*`, and `id_ed25519*` in every folder.
+The shared rules deny `Read` of `.env`, `.env.local`, `.env.*.local`, `.env.production`, `*.pem`, `*.key`, `id_rsa*`, and `id_ed25519*` beneath the working directory.
+They also deny `Read` of every file in `~/.ssh`.
 `.env.example` stays readable. Shell reads still need the operating system sandbox.
 The `statusLine.command` stays `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.js"`.
 The status line needs a Nerd Font for its powerline glyphs.
@@ -558,6 +559,7 @@ Use `## Tasks` for each open item's state and `## Next` for the next action.
 The file permits at most 60 non-blank lines.
 The dispatch guard refuses a missing, unreadable, malformed, or stale checkpoint before it claims an implementer slot.
 The refusal names the path, the problem, and all four headings in at most four lines.
+If the checkpoint path cannot resolve, the guard names "the session checkpoint" and still refuses dispatch.
 `checkpoint.maxAgeMinutes` defaults to `30`; `0` disables only the age check.
 The age comes from the file's modification time.
 Agents in one assistant message use the first dispatch time for the age check when the transcript identifies the message.
@@ -565,6 +567,7 @@ Each dispatch still checks the file's presence and shape.
 
 On `compact` or `resume`, the checkpoint hook loads the file as the source of truth for open work.
 It prints at most 60 lines within 4,000 characters, including the header and the note that names both caps on truncation.
+It drops blank lines before applying the line cap.
 A missing file prints its path and the rule to write it; a read error prints a note.
 The hook always allows the session to start.
 
@@ -983,7 +986,8 @@ Compaction below `compactAt` resets the thresholds.
 A null orchestrator budget turns the context watch off.
 The watch shows the user a line from 300K tokens when it reaches a threshold.
 With `swarm.dispatch` on, the budget guard owns the compaction reminder, and the context watch stays silent.
-Both reminders tell the main session to update its checkpoint now and name its absolute path.
+Both reminders tell the main session to update its checkpoint now when the repository has checkpoint settings.
+They name its absolute path, or "the session checkpoint" when the path cannot resolve.
 The checkpoint keeps the goal, standing rules, open tasks, and next action across compaction.
 
 A `TaskStop` frees the implementer slot of the agent it stopped, since that agent sends no
@@ -1071,8 +1075,8 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line or continues the newest stop's hand-off. The ledger records the reason or the note. A resume through `SendMessage` passes |
 | Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names and that the direct lane does not cover. A raw API merge, REST or GraphQL, reads the base policy of its PR. It passes with `swarm.dispatch` off at the base. It denies with dispatch on, or when the guard cannot read the PR or its base. Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes. This applies in every checkout, with `swarm.dispatch` on or off. A query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A `gh pr merge` that names a repository other than `origin` passes with a note. It can name the repository with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
 | Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
-| Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths`, unless the direct lane covers it |
-| Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a task missing files, a test step, a commit step, a required risk line, or configured cases; an estimate over `maxTaskCalls` |
+| Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths`, unless the direct lane covers it or the target is the session's own checkpoint |
+| Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a task missing files, a test step, a commit step, a required risk line, or configured cases; an estimate over `maxTaskCalls`; an open question missing its own `Source:` with a path containing a dot or slash before `:line`, or a URL |
 | One branch review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an `sdd-branch-reviewer` dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch, or one whose sha no branch verdict on that branch names. Write the last head a branch review named, so the review reads only the increment. Key `oneBranchReview` |
 | Code-review skill | `PreToolUse` on `Skill`, `skill-guard.mjs` | a model call to a skill that `codeReviewSkills` names, bare or after a `plugin:` prefix. Dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review`, which never reaches this hook |
 | Green head | `PreToolUse` on `Agent` | a reviewer dispatch while CI is red or pending, including unfinished workflows and missing required checks. With `requireGreen: "not-red"`, pending CI passes with a note. An unreadable CI state passes with a note. An empty check list counts as unknown only when no workflow or required check is pending. Key `requireGreen` |
@@ -1154,6 +1158,7 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
 
 For each task whose files match `riskPaths`, write one `**Risk:**` line.
+The line can start with a list marker, such as `- **Risk:**`.
 Name the failure condition, how it shows, and how to reverse it on that line.
 The check requires a non-empty line; you judge whether its content covers those points.
 File matching includes document and configuration paths, such as `schemas/api.yaml`.
@@ -1164,7 +1169,8 @@ Matching ignores case and requires a whole word: `ERROR` matches `error`, and `e
 When multiple globs match, the task needs all their case words.
 
 A passing `qc plan-check` prints nothing.
-A refusal prints at most three lines, each naming the task and its missing requirement.
+A refusal prints at most three lines, each naming the task or quoting the question's first six words and its missing requirement.
+An unlisted line under `## Open questions` that ends without `?` is an introduction.
 Fix those requirements and run the check again to see any further problems.
 
 #### A fix on a red head, and reviews in parallel
