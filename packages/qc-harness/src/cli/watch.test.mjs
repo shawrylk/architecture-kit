@@ -63,11 +63,20 @@ function stubGh(answers) {
 const rollup = (head, ...checks) => JSON.stringify({ headRefOid: head, statusCheckRollup: checks });
 const check = (name, status, conclusion = "") => ({ __typename: "CheckRun", name, status, conclusion });
 
-async function watch(argv, { gh, time = fakeClock(), cwd, requiredChecks = cwd === undefined ? [] : undefined } = {}) {
+async function watch(argv, { gh, time = fakeClock(), cwd, requiredChecks = cwd === undefined ? [] : undefined, run = runWatch } = {}) {
   const lines = [];
   const warnings = [];
-  const code = await runWatch(argv, { gh, requiredChecks, cwd, say: (line) => lines.push(line), warn: (line) => warnings.push(line), now: time.now, sleep: time.sleep });
-  return { code, lines, warnings, time };
+  const temporary = cwd === undefined ? mkdtempSync(path.join(os.tmpdir(), "qc-watch-checkout-")) : null;
+  try {
+    if (temporary) {
+      const initialized = spawnSync("git", ["init", "-q", temporary], { encoding: "utf8" });
+      assert.equal(initialized.status, 0, initialized.stderr);
+    }
+    const code = await run(argv, { gh, requiredChecks, cwd: cwd ?? temporary, say: (line) => lines.push(line), warn: (line) => warnings.push(line), now: time.now, sleep: time.sleep });
+    return { code, lines, warnings, time };
+  } finally {
+    if (temporary) rmSync(temporary, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 }
 
 test("parseWatchArgs reads repeated flags and the defaults", () => {
@@ -403,4 +412,17 @@ test("a gh that answers null writes a stderr line and is not an event", async ()
   const { code, warnings } = await watch(["--pr", "7", "--max", "2"], { gh: () => null });
   assert.equal(code, 4);
   assert.ok(warnings.length >= 1 && warnings.every((line) => line.startsWith("watch: gh failed: ")));
+});
+
+
+test("the watch helper isolates its ledger and holds in a temporary checkout", async () => {
+  let calls = 0;
+  await watch(["--run", `ci.yml@main@${RUN_HEAD}`], { gh: () => JSON.stringify({ workflow_runs: [{ status: "completed", conclusion: "success", head_sha: RUN_HEAD }] }), run: async (argv, options) => {
+    calls += 1;
+    assert.ok(options.cwd);
+    assert.notEqual(options.cwd, process.cwd());
+    assert.match(readFileSync(path.join(options.cwd, ".git/HEAD"), "utf8"), /^ref:/);
+    return runWatch(argv, { ...options, gh: () => JSON.stringify({ workflow_runs: [{ status: "completed", conclusion: "success", head_sha: RUN_HEAD }] }) });
+  } });
+  assert.equal(calls, 1, "the helper must call the supplied run function");
 });

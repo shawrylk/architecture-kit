@@ -131,7 +131,11 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 ## Keep the context lean
 
-- Keep a `checkpoint.md` in the scratchpad. Update it at each clean break: the head, the CI state, the open agents, and each decision.
+- Keep the session checkpoint at `<git common dir>/qc/checkpoints/<session_id>.md`; `SessionStart` names its absolute path.
+- Use `## Goal` for the user's words and `## Rules` for the user's standing constraints.
+- Use `## Tasks` for each open item's state and `## Next` for the next action.
+- Keep at most 60 non-blank lines; update the file before each dispatch, at each clean break, and before compaction.
+- Treat the checkpoint as the source of truth for open work after compact or resume.
 - Cap every subagent reply: "a `VERDICT` line and at most 25 lines". The subagent writes its full output to a scratchpad file.
 - Wait with one background `qc watch` command, then wait for its notification. It blocks in a shell, so the wait costs no model tokens, and its exit is the event:
 
@@ -165,7 +169,19 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 ## CI failures
 
-- Read the failed step and the assertion before you act. Fetch the log of a job with `gh api repos/<owner>/<repo>/actions/jobs/<job id>/logs`.
+- Read the failed step and the assertion before you act. Fetch the failed log with `gh run view <run id> --log-failed`.
+- `qc watch` records failed tests in the shared ledger. Use `qc ci-failures --run <run id>` to record a run manually.
+- While the branch has open records, name each test and its `Cause:` under `## CI failures` in the brief.
+- Two failing heads require `## Diagnosis` with `Root cause:` and `Evidence:` from the log and the code.
+- Three failing heads hold that branch. Wait for the operator to run `qc resume --branch <branch>`; an agent never releases it.
+- A green later head resolves the records. Write each resolved test's lesson before the merge.
+- Set `lessons.file` to choose the file; the default is `docs/ci-lessons.md`.
+- Use a `## <test name>` heading with `Symptom:` (error and OS), `Cause:`, and `Rule:` on separate lines.
+- Write one imperative rule, or `Rule: none: a flake that passed on a rerun`.
+- Codex prompts include at most 20 `Rule:` lines, newest first, within 2,000 characters including separators. Claude implementers read the same file.
+- Drop exact duplicates after trimming and rules whose text starts with `none:`. Stop at either cap; leave an overflowing rule out whole.
+- CI lessons and checkpoint checks pass silently; each refusal uses at most four lines.
+- The pre-push hook reruns open records' test files with `lessons.rerun`, default `node --test`, before `qc check`.
 - Rerun a known flake once with `gh run rerun <run id> --failed`.
 - A runner or Docker failure that comes back, or a runner that stays offline, needs the user. Never change the CI routing, and never skip CI.
 - A real failure is a Codex brief. A Claude implementer for a CI fix carries the prompt line `Fix: ci`, which needs known-red CI on the current head. A review fix carries `Fix: review`, which needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop. The newest stop needs no review if the prompt continues its `HANDOFF:`.

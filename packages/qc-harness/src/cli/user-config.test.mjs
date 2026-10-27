@@ -22,6 +22,41 @@ function fixture(t) {
   return { root, kitDir, home: path.join(root, "home"), env: {}, log: (line) => lines.push(line), lines, now: new Date(2026, 0, 2, 3, 4, 5) };
 }
 
+const SECRET_READ_DENIES = [
+  ...[".env", ".env.local", ".env.*.local", ".env.production", "*.pem", "*.key", "id_rsa*", "id_ed25519*"]
+    .map((pattern) => `Read(**/${pattern})`),
+  "Read(~/.ssh/**)",
+];
+
+test("shared permissions deny secret reads in the working directory and ~/.ssh while examples stay readable", () => {
+  const shared = readFileSync(new URL("../../../../user-config/claude/settings.shared.json", import.meta.url), "utf8");
+  assert.deepEqual(JSON.parse(shared).permissions.deny, SECRET_READ_DENIES);
+  const local = { permissions: { allow: ["Read(**/.env.example)"], deny: ["Bash(rm *)"] } };
+  const merged = mergeClaudeSettings(JSON.stringify(local), shared);
+  const permissions = JSON.parse(merged.text).permissions;
+  assert.deepEqual(permissions.deny, ["Bash(rm *)", ...SECRET_READ_DENIES]);
+  assert.deepEqual(permissions.allow, local.permissions.allow);
+  assert.ok(merged.changed.includes("permissions.deny"));
+  assert.deepEqual(mergeClaudeSettings(merged.text, shared).changed, []);
+});
+
+test("user-config check reports secret deny drift and becomes silent after apply", async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.kitDir, "claude/settings.shared.json"), JSON.stringify({ permissions: { deny: SECRET_READ_DENIES } }));
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  const file = configPaths(f.home, f.env).claude;
+  const settings = JSON.parse(readFileSync(file, "utf8"));
+  settings.permissions.deny.pop();
+  writeFileSync(file, JSON.stringify(settings));
+  f.lines.length = 0;
+  assert.equal(await runUserConfig(["check"], f), 1);
+  assert.match(f.lines.join("\n"), /permissions.deny/);
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  f.lines.length = 0;
+  assert.equal(await runUserConfig(["check"], f), 0);
+  assert.deepEqual(f.lines, []);
+});
+
 test("JSON merges listed plugin and marketplace keys, preserving local keys and omitted shared keys", () => {
   const local = { model: "old", effortLevel: "high", local: 7, enabledPlugins: { local: true, kit: false }, extraKnownMarketplaces: { local: {} } };
   const shared = { model: "opus", local: 9, enabledPlugins: { kit: true }, extraKnownMarketplaces: { remote: { source: { source: "github", repo: "a/b" } } } };

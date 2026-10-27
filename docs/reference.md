@@ -179,7 +179,10 @@ Review the captured diff before committing it.
 Claude shares `cleanupPeriodDays`, `syncClaudeAiPlugins`, `env`, `permissions`, `model`, `skillOverrides`, `statusLine`, `enabledPlugins`, `extraKnownMarketplaces`, `effortLevel`, and `modelSettings`.
 It also shares `awaySummaryEnabled`, `autoUpdatesChannel`, `tui`, `skipWorkflowUsageWarning`, `theme`, `autoCompactEnabled`, `autoContinueAtUsageLimit`, `agentPushNotifEnabled`, and `skipAutoPermissionPrompt`.
 Only `CLAUDE_CODE_DISABLE_MOUSE` and `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP` are shared under `env`.
-Only `defaultMode` is shared under `permissions`.
+`defaultMode` and `deny` are shared under `permissions`; shared deny rules extend your local deny list.
+The shared rules deny `Read` of `.env`, `.env.local`, `.env.*.local`, `.env.production`, `*.pem`, `*.key`, `id_rsa*`, and `id_ed25519*` beneath the working directory.
+They also deny `Read` of every file in `~/.ssh`.
+`.env.example` stays readable. Shell reads still need the operating system sandbox.
 The `statusLine.command` stays `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.js"`.
 The status line needs a Nerd Font for its powerline glyphs.
 
@@ -546,7 +549,27 @@ default:
 { "swarm": { "dispatch": {} } }
 ```
 
-A repository without the section sees no change.
+A repository without the section keeps the checkpoint check described below; the other dispatch checks stay off.
+
+Every repository with `qc.config.json` requires a main-session checkpoint before an `Agent` dispatch, regardless of `swarm.dispatch`.
+The file lives at `<git common dir>/qc/checkpoints/<session_id>.md`, so linked worktrees share the path for one session.
+`SessionStart` prints its absolute path.
+Use `## Goal` for the user's words and `## Rules` for the user's standing constraints.
+Use `## Tasks` for each open item's state and `## Next` for the next action.
+The file permits at most 60 non-blank lines.
+The dispatch guard refuses a missing, unreadable, malformed, or stale checkpoint before it claims an implementer slot.
+The refusal names the path, the problem, and all four headings in at most four lines.
+If the checkpoint path cannot resolve, the guard names "the session checkpoint" and still refuses dispatch.
+`checkpoint.maxAgeMinutes` defaults to `30`; `0` disables only the age check.
+The age comes from the file's modification time.
+Agents in one assistant message use the first dispatch time for the age check when the transcript identifies the message.
+Each dispatch still checks the file's presence and shape.
+
+On `compact` or `resume`, the checkpoint hook loads the file as the source of truth for open work.
+After the header line, it prints at most 60 lines, within 4,000 characters in total. On truncation, it prints 58 lines and a note that names both caps.
+It drops blank lines before applying the line cap.
+A missing file prints its path and the rule to write it; a read error prints a note.
+The hook always allows the session to start.
 
 A `PreToolUse` hook on the `Agent` tool refuses four kinds of dispatch, and each refusal names its
 fix:
@@ -623,6 +646,27 @@ The `1h` column prices the same requests at the one-hour cache lifetime. A negat
 `subagentPromptCacheTtl: "1h"` in your settings would have cost less. The plugin's agents set no
 `experimental.cacheTtl`: in the measured sessions the one-hour lifetime cost more for all four types,
 and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are API list prices.
+
+One `collapse:` summary line lists each agent's first request below 20% cache reads after three consecutive warm requests.
+A warm request reads at least 20% of its prompt from cache.
+The prompt includes fresh input, cache reads, and cache writes.
+The line names the request id, call number, and likely cause when the model or explicit tool list changes.
+Absent evidence gives `likely=unknown`; tool calls alone do not establish a changed tool list.
+
+One `hook:` summary line lists each hook's observed calls, total, average, and maximum duration in milliseconds.
+The reader uses explicit `attachment.durationMs` with `hookName` and `hookEvent`, including cancelled hooks.
+It ignores session durations and estimates no missing timings.
+Each diagnostic prints only when data exists; JSON includes `collapses` and `hooks` only when their data exists.
+
+#### Evaluate skill activation
+
+The manual agent eval includes `skill-activation`, which asks for a cart guide with and without the kit.
+Its grader requires an assistant `Skill` call naming `architecture:writing-plain-english` in the run transcript.
+Text that mentions the skill earns no activation credit.
+The `noop` and `reference` controls prove failure and success with synthetic transcripts.
+The package test script runs the offline grader tests in CI; the eval itself never runs in CI.
+Fixture setup uses an empty local hook folder before its initial commit, then binds the agent hooks.
+A failed commit stops the run. See [Agent eval](../evals/agents/README.md) for the commands and result fields.
 
 #### Share the machine between agents
 
@@ -721,6 +765,11 @@ The report lists the implementer before the reviewer and omits roles whose budge
 The cost roles `reviewer` and `branch-reviewer` both count as `reviewer`.
 The latest cost record replaces older records from a resumed agent.
 The report skips and counts cost records without `endContext`.
+Each cost record stores the task's `Estimate:` value, or `null` when the task has no estimate.
+Estimate accuracy rows show the median ratio of actual tool calls to positive estimates, separately for each cost role.
+They use the latest record per agent and include records without context figures.
+After five measured tasks in one role, a median above `1.5` advises raising `maxTaskCalls`; a median below `0.5` advises lowering it.
+Fewer tasks and ratios from `0.5` through `1.5` produce no estimate advice.
 An invalid budget prints one error line and exits with code `1`.
 The orchestrator and Codex leave no cost record, so the report says so in one line.
 
@@ -737,6 +786,7 @@ The reason defaults to `operator pause` when you omit `--reason`.
 The command confirms: "The kit is paused. Run `qc resume` to lift the pause."
 The command writes `qc/pause` in the Git common folder, so every linked worktree shares the pause.
 Run `qc pause --status` to print the state and reason. Run `qc resume` to remove the pause.
+A branch hold tells the agent to wait for the operator to run `qc resume --branch <branch>`.
 Both commands work even when `qc.config.json` contains invalid configuration.
 
 The pause blocks `qc codex-implement`, `qc integrate`, `qc branch sync`, `qc worktree remove`, and merges through the merge guard.
@@ -754,6 +804,12 @@ An agent never resumes the kit or removes the hold label itself.
 `merge` must be an object. `merge.holdLabel` must be a non-empty string without surrounding whitespace.
 Missing labels or another page of labels refuse the merge. A full CLI page also refuses because more labels might exist.
 Keep the pull request body check for "no merge is authorized"; the label adds a separate hold.
+
+A test that fails on three distinct heads in a row holds its branch.
+The hold lives at `<git common dir>/qc/holds/<branch with / as ->` and leaves other branches available.
+Only the operator's `qc resume --branch <branch>` removes it. An agent never releases the hold.
+`qc resume` without a branch clears the global pause and preserves branch holds.
+The Codex runner and `qc watch --run` exit `5` for a held branch.
 
 #### Run an implementer on Codex
 
@@ -816,7 +872,16 @@ The runner validates the worktree's brief and Codex settings before launch:
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
 | `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
-| Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, and `Exit criteria` |
+| Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, `Exit criteria`, `CI failures`, and `Diagnosis` |
+
+While the worktree's branch has open CI records, the brief needs `## CI failures` with every test and its `Cause:`.
+The Codex runner and implementer dispatch share this check. The Codex runner exits `1` and names missing tests.
+Two failing heads require `## Diagnosis` with `Root cause:` and `Evidence:` from the log and the code.
+Green branches keep the usual brief requirements.
+Each prompt includes at most 20 `Rule:` lines from `lessons.file`, default `docs/ci-lessons.md`, newest first, within 2,000 characters including separators.
+Drop exact duplicates after trimming and rules whose text starts with `none:`.
+Stop at either cap; leave an overflowing rule out whole.
+CI lessons and checkpoint checks pass silently; each refusal uses at most four lines.
 
 The overrides apply to the runner's `codex exec` call only, so your interactive Codex sessions keep their plugins and skills:
 
@@ -908,6 +973,17 @@ The watch reads this configuration at the git top level of the current folder, o
 An unreadable configuration writes one warning to stderr and uses an empty list.
 A commit status never counts as a required check, even when its context matches the configured name.
 
+On a failed run, the watch fetches `gh run view <id> --log-failed` with a 20-second timeout and a 64 MB buffer.
+It records the branch, head, OS, test file, test name, and first error line in the shared workflow ledger.
+Unknown output records the job name and first error line instead.
+A failed log fetch records nothing, writes one line to stderr, and preserves exit `5`.
+Use `qc ci-failures --run <id>` to record a run manually.
+A green later head on the same branch resolves its open records.
+The pre-push hook reruns open test files for the remote branch before `qc check`, with `lessons.rerun` (default `node --test`).
+It strips runner checkout prefixes and skips unresolved or unsafe paths, with all skips in one stderr line.
+A passing rerun prints only the skip summary, when present. A failure prints at most four lines, including skips, test names, and the command for full output.
+Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
+
 With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
 The context watch speaks only to the main session, in every repository where `swarm.dispatch` is off.
 It starts at `budgets.orchestrator.compactAt` (default `200000`) and notes each threshold once, in steps of 50K tokens.
@@ -915,6 +991,9 @@ Compaction below `compactAt` resets the thresholds.
 A null orchestrator budget turns the context watch off.
 The watch shows the user a line from 300K tokens when it reaches a threshold.
 With `swarm.dispatch` on, the budget guard owns the compaction reminder, and the context watch stays silent.
+Both reminders tell the main session to update its checkpoint now when the repository has checkpoint settings.
+They name its absolute path, or "the session checkpoint" when the path cannot resolve.
+The checkpoint keeps the goal, standing rules, open tasks, and next action across compaction.
 
 A `TaskStop` frees the implementer slot of the agent it stopped, since that agent sends no
 `SubagentStop`. A session `startup` or `resume` frees every slot of the session. A subagent may not
@@ -1001,8 +1080,8 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Fix round | the same | a new implementer on a branch whose latest verdict is CHANGES_REQUIRED, unless the prompt has a `NO-RESUME: <reason>` line or continues the newest stop's hand-off. The ledger records the reason or the note. A resume through `SendMessage` passes |
 | Merge guard | `PreToolUse` on `Bash` and `PowerShell` | a `gh pr merge` with no `--match-head-commit <sha>`, or with a sha that no APPROVED review of the `merge` kind names and that the direct lane does not cover. A raw API merge, REST or GraphQL, reads the base policy of its PR. It passes with `swarm.dispatch` off at the base. It denies with dispatch on, or when the guard cannot read the PR or its base. Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes. This applies in every checkout, with `swarm.dispatch` on or off. A query file the guard cannot read fails closed. A `gh api` call to a `repos/` path is not searched for the mutation. A `gh pr merge` that names a repository other than `origin` passes with a note. It can name the repository with `-R`, `--repo`, a PR URL, or `GH_REPO`. After the merge, `PostToolUse` and `PostToolUseFailure` record the PR and each issue it names. Only `Refs`, `Closes`, `Fixes`, and `Resolves` lines in the PR body name issues to update |
 | Issue update | `Stop` | the end of a turn while a PR this session merged names an open issue with no comment since the merge. A pending `--auto` merge resolves at the stop |
-| Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths`, unless the direct lane covers it |
-| Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a plan with a task that names no file, has no test step or no commit step, or estimates more than `maxTaskCalls` |
+| Controller | `PreToolUse` on `Write`, `Edit`, `MultiEdit`, and `NotebookEdit` | a main-session edit in a checkout of the repository outside `controllerPaths`, unless the direct lane covers it or the target is the session's own checkpoint |
+| Plan check | `PreToolUse` on `SubagentHandback` and `SubagentStop` of a planner, and `qc plan-check <plan.md>` | a task missing files, a test step, a commit step, a required risk line, or configured cases; an estimate over `maxTaskCalls`; an open question missing its own `Source:` with a path containing a dot or slash before `:line`, or a URL |
 | One branch review | `PreToolUse` on `Agent`, inside `dispatch-guard.mjs` | an `sdd-branch-reviewer` dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch, or one whose sha no branch verdict on that branch names. Write the last head a branch review named, so the review reads only the increment. Key `oneBranchReview` |
 | Code-review skill | `PreToolUse` on `Skill`, `skill-guard.mjs` | a model call to a skill that `codeReviewSkills` names, bare or after a `plugin:` prefix. Dispatch `sdd-branch-reviewer`, or ask the user to type `/code-review`, which never reaches this hook |
 | Green head | `PreToolUse` on `Agent` | a reviewer dispatch while CI is red or pending, including unfinished workflows and missing required checks. With `requireGreen: "not-red"`, pending CI passes with a note. An unreadable CI state passes with a note. An empty check list counts as unknown only when no workflow or required check is pending. Key `requireGreen` |
@@ -1011,6 +1090,12 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Round size | the same | nothing: it warns on an implementer brief with more numbered findings (lines that start `1. `) than `roundFindings`, or more distinct file paths than `roundFiles`. Split the round in parallel on disjoint paths, with sub-branches in separate worktrees. `0` turns a limit off |
 | Cost record | `SubagentStop`, `cost-stop.mjs` | nothing: it appends a `cost` record with the agent's tokens by kind, its tool calls, its role, and the branch and head of its dispatch. A transcript that does not read records nothing. `qc ledger --cost [branch]` totals them per branch and per role |
 | Typecheck retry | `Stop`, `hooks/stop-gate.sh` | nothing: the gate exits at once when the checkout matches the fingerprint stored after the last fully green run (the `HEAD` sha, the status, and the content of every changed or untracked file, kept per checkout root in the temp folder; any difference or error runs the full gate). Otherwise the gate runs the root `typecheck` script when `package.json` has one, else `tsc -b --pretty false`, and runs ESLint with a cache in `node_modules/.cache/eslint-stop-gate`. When the typecheck fails and every `error TS` line is `TS2307`, the gate runs it once more and judges the second run, because a concurrent `pnpm install` causes that error |
+
+The merge guard also checks branch holds and resolved CI failures, even with workflow dispatch off.
+Each resolved test needs a `## <test name>` entry in `lessons.file`, default `docs/ci-lessons.md`.
+The entry needs `Symptom:` (the error and OS), `Cause:`, and `Rule:` on separate lines.
+Write one imperative rule, or `Rule: none: a flake that passed on a rerun`.
+The guard reads the lesson from the pinned merge head and the lessons path from the PR base policy.
 
 The `swarm.review` keys that these rows name:
 
@@ -1069,11 +1154,32 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 |---|---|---|
 | `merge` | `"branch"` | the review kind whose APPROVED verdict lets a merge run; `"task"` fits a one-task PR |
 | `maxTaskCalls` | `35` | the largest estimate one plan task may carry |
+| `riskPaths` | `["**/migrations/**", "schemas/**"]` | globs whose matching tasks need a non-empty `**Risk:**` line; `[]` turns the check off |
+| `cases` | `{}` | map each glob to case words required in a matching task's test step; an empty map turns the check off |
 | `controllerPaths` | `["docs/**", "*.md", "qc.config.json", "**/.claude/**"]` | the globs the main session may edit; a path outside every checkout of the repository always passes |
 | `reviewerTypes` | `{ task: [...], branch: [...] }`, the plugin's two reviewers, bare and scoped | the agent types whose stop records a verdict of each kind |
 | `plannerTypes` | the plugin's planner, bare and scoped | the agent types whose report runs the plan check |
 
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
+
+For each task whose files match `riskPaths`, write one `**Risk:**` line.
+The line can start with a list marker, such as `- **Risk:**`.
+Name the failure condition, how it shows, and how to reverse it on that line.
+The check requires a non-empty line; you judge whether its content covers those points.
+File matching includes document and configuration paths, such as `schemas/api.yaml`.
+
+For a UI data view, set `swarm.review.cases` to `{"frontend/**/*.tsx": ["loading", "error", "empty", "success"]}`.
+Every matching task's test step must name each word, in its title, body, or code.
+Matching ignores case and requires a whole word: `ERROR` matches `error`, and `errors` does not.
+When multiple globs match, the task needs all their case words.
+
+A passing `qc plan-check` prints nothing.
+A refusal prints at most three lines, each naming the task or quoting the question's first six words and its missing requirement.
+A line with a list marker starts a question.
+A line that contains `?` starts a question only when none is open, and an indented line inside an open question continues it.
+So `Which region? Recommend EU.` is a question, and a wrapped question whose continuation ends with `?` counts once.
+Before any question, an unlisted line that contains no `?` is an introduction.
+Fix those requirements and run the check again to see any further problems.
 
 #### A fix on a red head, and reviews in parallel
 
@@ -1175,7 +1281,7 @@ Each refusal names the reason the lane does not apply.
 | `maxLines` | `20` | the most changed lines, added plus deleted |
 | `maxFiles` | `2` | the most changed files |
 | `excludes` | `["schemas/**", "**/migrations/**"]` | globs a direct fix may not touch |
-| `reviewPaths` | `[]` | globs a direct fix may touch only with one APPROVED review of its head, of either kind. The merge guard names that review in its note |
+| `reviewPaths` | `[".mcp.json", "**/.claude/**", ".github/workflows/**", "hooks/**"]` | globs a direct fix may touch only with one APPROVED review of its head, of either kind. The merge guard names that review in its note |
 
 The keys go under `swarm.direct`. A list replaces its default.
 

@@ -52,7 +52,7 @@
   ],
   "scripts": {
     "prepack": "node src/cli/user-config-package.mjs",
-    "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\"",
+    "test": "node src/eslint/rules.test.mjs && node --test \"src/**/*.test.mjs\" ../../evals/agents/run.test.mjs",
     "test:browser": "node --test \"src/**/*.browser-test.mjs\""
   },
   "peerDependencies": {

@@ -4,7 +4,7 @@
 import { readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { agentTypeOf, contextOf, readRequests } from "./transcript-usage.mjs";
+import { agentTypeOf, contextOf, readHookTimings, readRequests } from "./transcript-usage.mjs";
 
 export const RATES = { read: 0.1, write5m: 1.25, write1h: 2 };
 const FIVE_MINUTES = 5 * 60_000;
@@ -15,6 +15,28 @@ const readOf = (usage) => usage.cache_read_input_tokens ?? 0;
 const writeOf = (usage) => usage.cache_creation_input_tokens ?? 0;
 const write1hOf = (usage) => usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
 const inputOf = (usage) => usage.input_tokens ?? 0;
+
+/** Branch: the first cache collapse after three consecutive warm requests of one agent. */
+export function firstCollapseOf(requests) {
+  let warm = 0;
+  for (const [index, request] of requests.entries()) {
+    const prompt = contextOf(request.usage);
+    if (prompt === 0) continue;
+    if (readOf(request.usage) / prompt >= 0.2) {
+      warm += 1;
+      continue;
+    }
+    if (warm >= 3) {
+      const previous = requests[index - 1];
+      const causes = [];
+      if (previous.model && request.model && previous.model !== request.model) causes.push("model change");
+      if (previous.tools && request.tools && JSON.stringify(previous.tools) !== JSON.stringify(request.tools)) causes.push("tool-list change");
+      return { request: request.id ?? `#${index + 1}`, call: index + 1, cause: causes.join(" and ") || "unknown" };
+    }
+    warm = 0;
+  }
+  return null;
+}
 
 function median(values) {
   if (values.length === 0) return 0;
@@ -119,6 +141,10 @@ const SUMMED = ["agents", "calls", "read", "write5m", "write1h", "input", "outpu
 
 /** Per-type statistics of one session, `main` first and then by tokens read, and their total. */
 export function summarizeSession({ main = [], agents = [] }, rates = RATES) {
+  const collapses = [{ type: MAIN, id: MAIN, requests: main }, ...agents].flatMap((agent, index) => {
+    const collapse = firstCollapseOf(agent.requests);
+    return collapse ? [{ agent: agent.id ?? `agent-${index}`, type: agent.type, ...collapse }] : [];
+  });
   const byType = new Map();
   const statsOf = (type) => byType.get(type) ?? byType.set(type, emptyStats(type)).get(type);
   if (main.length > 0) addAgent(statsOf(MAIN), main, rates);
@@ -134,7 +160,7 @@ export function summarizeSession({ main = [], agents = [] }, rates = RATES) {
     sum.maxContext = Math.max(sum.maxContext, stats.maxContext);
   }
   // The types' own credits are already in their cost1h, so the total takes none of its own.
-  return { types, total: finish(sum, rates, 0) };
+  return { types, total: finish(sum, rates, 0), ...(collapses.length ? { collapses } : {}) };
 }
 
 const UNKNOWN = "unknown";
@@ -244,8 +270,20 @@ export function runTokens(config, args = [], out = console.log, err = console.er
   }
   const report = summarizeSession({
     main: files.main ? readRequests(files.main) : [],
-    agents: files.agents.map((file) => ({ type: agentTypeOf(file) ?? UNKNOWN, requests: readRequests(file) })),
+    agents: files.agents.map((file) => ({ id: path.basename(file, ".jsonl"), type: agentTypeOf(file) ?? UNKNOWN, requests: readRequests(file) })),
   });
+  const hooks = new Map();
+  for (const file of [files.main, ...files.agents].filter(Boolean)) {
+    for (const { hook, event, durationMs } of readHookTimings(file)) {
+      const key = JSON.stringify([hook, event]);
+      const stats = hooks.get(key) ?? { hook, event, calls: 0, totalMs: 0, maxMs: 0 };
+      stats.calls += 1;
+      stats.totalMs += durationMs;
+      stats.maxMs = Math.max(stats.maxMs, durationMs);
+      hooks.set(key, stats);
+    }
+  }
+  if (hooks.size > 0) report.hooks = [...hooks.values()];
   if (options.json) {
     out(JSON.stringify({ session: files.id, ...report }, null, 2));
     return 0;
@@ -254,5 +292,7 @@ export function runTokens(config, args = [], out = console.log, err = console.er
   out(row(COLUMNS.map(([name]) => name)));
   for (const stats of [...report.types, report.total]) out(row(COLUMNS.map(([, , cell]) => cell(stats))));
   for (const text of FOOTER) out(text);
+  if (report.collapses) out(`collapse: ${report.collapses.map((collapse) => `${collapse.agent} (${collapse.type}) request=${collapse.request} call=${collapse.call} likely=${collapse.cause}`).join("; ")}`);
+  if (hooks.size) out(`hook: ${[...hooks.values()].map((hook) => `${hook.hook} event=${hook.event} calls=${hook.calls} total=${hook.totalMs}ms avg=${Math.round(hook.totalMs / hook.calls)}ms max=${hook.maxMs}ms`).join("; ")}`);
   return 0;
 }

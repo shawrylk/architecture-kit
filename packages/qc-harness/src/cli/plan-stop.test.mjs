@@ -93,10 +93,94 @@ test("a planner stop with no hand-back is judged on its last message", (t) => {
   assert.equal(decide(stop(ws.on, `PLAN: ${path.join(ws.plans, "good.md")}`), ws.tmp), null);
 });
 
+test("open questions need their own Source with a file line or URL before hand-back and stop", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.plans, "questions.md");
+  const message = `PLAN: ${file}`;
+  for (const question of [
+    "- Which store? Recommend SQLite.",
+    "- Which store? Source: storage.mjs. Recommend SQLite.",
+    "- Which store? Source: storage.mjs:0. Recommend SQLite.",
+    "- Which store? Source: https://. Recommend SQLite.",
+    "- Which store? Source: storage.mjs:12. Recommend SQLite.\n- Which region? Recommend EU.",
+    "Which store?\nSource: storage.mjs:12. Recommend SQLite.\n\nWhich region?",
+    "Which region? Recommend EU.",
+  ]) {
+    writeFileSync(file, `${GOOD}\n## Open questions\n${question}\n`);
+    assert.match(denied(decide(handback(ws.on, message), ws.tmp)) ?? "", /Source:/);
+    assert.match(decide(stop(ws.on, message), ws.tmp)?.reason ?? "", /Source:/);
+    assert.equal(existsSync(ws.ledger), false);
+  }
+  for (const question of [
+    "- Which store? Recommend SQLite. Source: `storage.mjs:12`.",
+    "1. Which store? Recommend SQLite. **Source:** https://example.com/storage",
+    "- Which store?\n  Recommend SQLite.\n  Source: C:/repo/storage.mjs:12",
+    "- Which store should hold the cache,\n  given the expected load?\n  Source: src/a.mjs:1",
+    "- Which store? Recommend SQLite.\n  Does it need WAL?\n  Source: src/a.mjs:1",
+    "- None.",
+  ]) {
+    writeFileSync(file, `${GOOD}\n## Open questions\n${question}\n## Product decisions\n- Use SQLite.\n`);
+    assert.equal(decide(handback(ws.on, message), ws.tmp), null, question);
+  }
+});
+
+test("question refusals quote six words and reject times and step numbers as sources", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.plans, "questions.md");
+  for (const source of ["the user at 10:30", "step:2"]) {
+    writeFileSync(file, `${GOOD}\n## Open questions\n- Which storage engine should this service use? Source: ${source}\n`);
+    const reason = denied(decide(handback(ws.on, `PLAN: ${file}`), ws.tmp));
+    assert.match(reason ?? "", /"Which storage engine should this service"/);
+    assert.match(reason ?? "", /Source:/);
+  }
+});
+
+test("open question introductions pass while bare questions still need a source", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.plans, "questions.md");
+  const intro = "The spec leaves two questions open.";
+  writeFileSync(file, `${GOOD}\n## Open questions\n${intro}\n- Which store? Source: storage.mjs:12\n`);
+  assert.equal(decide(handback(ws.on, `PLAN: ${file}`), ws.tmp), null);
+  writeFileSync(file, `${GOOD}\n## Open questions\n${intro}\nWhich region should the storage service use?\n`);
+  assert.match(denied(decide(handback(ws.on, `PLAN: ${file}`), ws.tmp)) ?? "", /"Which region should the storage service"/);
+});
+
+test("the hook caps five plan and question problems at three", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.plans, "many.md");
+  const bad = GOOD.replace("a.mjs", "schemas/api.json").replace("- [ ] **Step 2: Commit**", "");
+  writeFileSync(file, `${bad}\n${bad.replace("Task 1:", "Task 2:")}\n## Open questions\n- Which store?\n`);
+  const message = `PLAN: ${file}`;
+  for (const reason of [denied(decide(handback(ws.on, message), ws.tmp)), decide(stop(ws.on, message), ws.tmp)?.reason]) {
+    assert.deepEqual(reason.match(/\d\)/g), ["1)", "2)", "3)"]);
+    assert.match(reason, /Task 1 missing \*\*Risk:\*\*/);
+    assert.match(reason, /Task 2 missing \*\*Risk:\*\*/);
+  }
+});
+
 test("the planner definition asks for the PLAN: line and the estimate line", () => {
   const text = readFileSync(PLANNER, "utf8");
   assert.match(text, /`PLAN: <absolute path of the plan>`/);
   assert.match(text, /`\*\*Estimate:\*\* <n> tool calls`/);
+  assert.match(text, /swarm\.review\.riskPaths/);
+  assert.match(text, /swarm\.review\.cases/);
+});
+
+test("the planner hook forwards configured risk paths and acceptance cases", (t) => {
+  const ws = workspace(t);
+  const review = { riskPaths: ["*.mjs"], cases: { "*.mjs": ["loading", "error"] } };
+  writeFileSync(path.join(ws.on, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, review } }));
+  const file = path.join(ws.plans, "good.md");
+  const message = `PLAN: ${file}`;
+  const reason = denied(decide(handback(ws.on, message), ws.tmp));
+  assert.match(reason ?? "", /Task 1 missing \*\*Risk:\*\*/);
+  assert.match(reason ?? "", /Task 1 missing cases.*loading, error/);
+  assert.equal(decide(stop(ws.on, message), ws.tmp)?.decision, "block");
+  writeFileSync(file, GOOD.replace("**Estimate:**", "**Risk:** Writes fail; errors appear; revert the change.\n**Estimate:**").replace("failing test", "loading and error test"));
+  assert.equal(decide(handback(ws.on, message), ws.tmp), null);
+  writeFileSync(path.join(ws.on, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, review: { riskPaths: [] } } }));
+  writeFileSync(file, GOOD.replace("a.mjs", "schemas/api.json"));
+  assert.equal(decide(handback(ws.on, message), ws.tmp), null);
 });
 
 test("the hook process is silent in a checkout without the checks", (t) => {

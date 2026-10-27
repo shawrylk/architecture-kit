@@ -7,6 +7,9 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DONE_MARKER, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
 import { readLimit, writeLimit } from "./codex-limit.mjs";
+import { recordRun } from "./ci-failures.mjs";
+import { holdBranch } from "./pause.mjs";
+import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const VALID_BRIEF = "# Brief\nPaths: src/example.mjs\n\n## Product decisions\n- Use the local rules.\n\n## Task\n1. Do task one.\n";
@@ -39,6 +42,46 @@ function setup(t, { progress = "" } = {}) {
 }
 
 const quiet = () => {};
+
+test("a CI refusal prints at most four lines including the runner exit", async (t) => {
+  const f = setup(t);
+  const branch = readFileSync(path.join(f.worktree, ".git", "HEAD"), "utf8").trim().replace("ref: refs/heads/", "");
+  appendRecord(ledgerFileOf(f.worktree), { type: "ci-failure", id: "multi", branch, head: "aaaaaaa", test: "first\nsecond\nthird\nfourth\nfifth" });
+  const output = [];
+  assert.equal(await runCodexImplement(f.argv, { say: (s) => output.push(s), out: (s) => output.push(s), run: async () => assert.fail("must refuse") }), 1);
+  assert.match(output.join("\n"), /first/);
+  assert.ok(output.join("\n").split(/\r?\n/).length <= 4);
+});
+
+test("open CI failures require the named test and cause before Codex starts", async (t) => {
+  const f = setup(t);
+  const branch = readFileSync(path.join(f.worktree, ".git", "HEAD"), "utf8").trim().replace("ref: refs/heads/", "");
+  recordRun(f.worktree, { id: 1, branch, head: "aaaaaaa" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  const messages = [];
+  assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => assert.fail("must refuse") }), 1);
+  assert.match(messages.join("\n"), /cleanup retries/);
+  holdBranch(f.worktree, branch, "repeat");
+  assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => assert.fail("held") }), 5);
+});
+
+test("a diagnosed CI brief starts and includes lesson rules in the prompt", async (t) => {
+  const f = setup(t);
+  const branch = readFileSync(path.join(f.worktree, ".git", "HEAD"), "utf8").trim().replace("ref: refs/heads/", "");
+  recordRun(f.worktree, { id: 1, branch, head: "aaaaaaa" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  recordRun(f.worktree, { id: 2, branch, head: "bbbbbbb" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  writeFileSync(f.brief, `${VALID_BRIEF}\n## CI failures\n### cleanup retries\nCause: open handle\n\n## Diagnosis\nRoot cause: the handle stays open\nEvidence: the log shows EBUSY; the cleanup code retains the handle.\n`);
+  writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ lessons: { file: "LESSONS.md" } }));
+  writeFileSync(path.join(f.worktree, "LESSONS.md"), "## cleanup\nRule: Retry Windows cleanup.\n");
+  assert.equal(await runCodexImplement(f.argv, {
+    say: quiet, out: quiet,
+    run: async ({ input }) => {
+      assert.match(input, /Rule: Retry Windows cleanup\./);
+      assert.doesNotMatch(input, /agent never releases/i);
+      writeFileSync(f.progress, `${DONE_MARKER}\n`);
+      return { status: 0 };
+    },
+  }), 0);
+});
 
 test("an operator pause stops the first run with exit 5", async (t) => {
   const fixture = setup(t);
@@ -1425,4 +1468,30 @@ test("the CLI prints `exit 1` as the last stdout line after a usage error", () =
   const result = spawnSync(process.execPath, [QC, "codex-implement"], { encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.equal(result.stdout.trimEnd().split("\n").at(-1), "exit 1");
+});
+
+
+test("a detached HEAD starts without a branch hold even with a CI ledger", async (t) => {
+  const f = setup(t);
+  const git = (...args) => {
+    const result = spawnSync("git", ["-C", f.worktree, ...args], { env: f.gitEnv, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git("config", "core.hooksPath", ".git/hooks");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "--allow-empty", "-qm", "chore: fixture");
+  git("checkout", "--detach", "-q");
+  appendRecord(ledgerFileOf(f.worktree), { type: "ci-failure", id: "other", branch: "main", head: "aaaaaaa", test: "other" });
+  holdBranch(f.worktree, "main", "other branch");
+  assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async ({ input }) => {
+    assert.doesNotMatch(input, /agent never releases/i);
+    writeFileSync(f.progress, `${DONE_MARKER}\n`);
+    return { status: 0 };
+  } }), 0);
+});
+
+
+test("prompt construction leaves branch holds to the dispatch check", () => {
+  const source = readFileSync(new URL("./codex-implement.mjs", import.meta.url), "utf8");
+  const prompt = source.slice(source.indexOf("const promptFor ="), source.indexOf("function spawnRun"));
+  assert.doesNotMatch(prompt, /holdRefusal|agent never releases/i);
 });

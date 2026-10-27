@@ -42,7 +42,7 @@ const edit = (root, rel, input) =>
   editLane({ root, base: BASE, protectedBranches: ["main"], rel, toolName: "Edit", input });
 
 test("the settings fill their defaults, accept false, and name a wrong key", () => {
-  assert.deepEqual(directSettings({}), directDefaults);
+  assert.deepEqual(directSettings({}), { ...directDefaults, reviewPaths: [".mcp.json", "**/.claude/**", ".github/workflows/**", "hooks/**"] });
   assert.equal(directSettings({ direct: false }), null);
   assert.equal(directSettings({ direct: { maxLines: 5 } }).maxLines, 5);
   assert.throws(() => directSettings({ direct: { maxLines: 0 } }), /swarm\.direct\.maxLines/);
@@ -125,6 +125,23 @@ test("a head that touches a review path needs one APPROVED review of either kind
   assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /src\/a\.ts matches swarm\.direct\.reviewPaths/);
   const approved = [{ type: "verdict", kind: "task", verdict: "APPROVED", sha }];
   assert.equal(mergeLane({ root, baseOid: oidOf(root), sha, records: approved }).problem, null);
+});
+
+for (const file of [".mcp.json", ".claude/settings.json", "nested/.claude/agents/a.md", ".github/workflows/ci.yml", "hooks/check.mjs"]) {
+  test(`the default review paths require approval for ${file}`, (t) => {
+    const root = repo(t);
+    const sha = commit(root, file, "trust config\n");
+    const input = { root, baseOid: oidOf(root), sha };
+    assert.match(mergeLane({ ...input, records: [] }).problem, /matches swarm\.direct\.reviewPaths/);
+    assert.equal(mergeLane({ ...input, records: [{ type: "verdict", kind: "branch", verdict: "APPROVED", sha }] }).problem, null);
+  });
+}
+
+test("repository review paths replace the defaults, including an empty list", (t) => {
+  assert.deepEqual(directSettings({ direct: { reviewPaths: ["src/**"] } }).reviewPaths, ["src/**"]);
+  const root = repo(t, { dispatch: {}, direct: { reviewPaths: [] } });
+  const sha = commit(root, ".mcp.json", "{}\n");
+  assert.equal(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, null);
 });
 
 test("a commit after a review that asked for changes stays out of the lane until a review approves it", (t) => {

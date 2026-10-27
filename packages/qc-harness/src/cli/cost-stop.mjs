@@ -4,6 +4,7 @@
 
 import os from "node:os";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { estimateOf } from "./context-signal.mjs";
 import { pathKey } from "./git-read.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { roleOf } from "./report-stop.mjs";
@@ -77,6 +78,7 @@ function record(call, tmp) {
     endContext: contextOf(requests.at(-1).usage),
     peakContext: Math.max(...requests.map((request) => contextOf(request.usage))),
     toolCalls: toolCallsIn(transcript),
+    estimate: estimateOf(text),
     branch: dispatch?.branch ?? null,
     head: dispatch?.head ?? null,
   });

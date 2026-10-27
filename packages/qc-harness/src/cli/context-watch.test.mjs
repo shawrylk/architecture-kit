@@ -60,6 +60,31 @@ test("a disabled orchestrator budget keeps the watch silent", (t) => {
   assert.equal(fs.existsSync(f.state), false);
 });
 
+test("compaction reminder tells the session to update its checkpoint now", (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.tmp, "qc.config.json"), "{}");
+  const note = f.at(400_000).hookSpecificOutput.additionalContext;
+  assert.match(note, /Update the checkpoint now/);
+  assert.ok(note.includes(path.join(f.tmp, ".git", "qc", "checkpoints", "s.md")));
+});
+
+test("without checkpoint settings the reminder omits the checkpoint", (t) => {
+  const f = fixture(t);
+  const note = f.at(400_000).hookSpecificOutput.additionalContext;
+  assert.match(note, /compact/);
+  assert.doesNotMatch(note, /checkpoint/i);
+});
+
+test("an invalid Git pointer preserves the compaction reminder", (t) => {
+  const f = fixture(t);
+  fs.rmdirSync(path.join(f.tmp, ".git"));
+  writeFileSync(path.join(f.tmp, ".git"), "invalid pointer");
+  writeFileSync(path.join(f.tmp, "qc.config.json"), "{}");
+  const note = f.at(400_000).hookSpecificOutput.additionalContext;
+  assert.match(note, /compact/);
+  assert.match(note, /Update the checkpoint now: the session checkpoint/);
+});
+
 test("state changes use an atomic replacement", (t) => {
   const f = fixture(t);
   f.at(400_000);

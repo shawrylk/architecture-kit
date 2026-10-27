@@ -7,6 +7,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { decide as decideMerge, mergeVerdict, namedIssues } from "./merge-guard.mjs";
+import { recordRun, resolveFailures } from "./ci-failures.mjs";
+import { holdBranch } from "./pause.mjs";
 
 const HOOK = fileURLToPath(new URL("./merge-guard.mjs", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -44,6 +46,41 @@ const shell = (cwd, command, hook_event_name = "PreToolUse", tool_name = "Bash")
 });
 const denied = (output) => output?.hookSpecificOutput?.permissionDecisionReason ?? null;
 const verdict = (kind, value, sha = SHA) => ({ type: "verdict", kind, verdict: value, sha, branch: "feat/62-x" });
+
+test("a lesson refusal prints at most four lines with multiline test names", (t) => {
+  const { off, ledgerOf } = workspace(t);
+  const branch = "feat/ci";
+  appendRecord(ledgerOf(off), { type: "ci-failure", id: "multi", branch, head: "aaaaaaa", test: "first\nsecond\nthird\nfourth\nfifth" });
+  resolveFailures(off, branch, "bbbbbbb");
+  const gh = fakeGh(prView(bases.get(off), "main", branch)).gh;
+  const reason = denied(decide(shell(off, `gh pr merge 60 --match-head-commit ${bases.get(off)}`), { gh }));
+  assert.match(reason, /lesson.*first/i);
+  assert.ok(reason.split(/\r?\n/).length <= 4);
+});
+
+test("merge requires lessons for resolved failures at the pinned head even with dispatch off", (t) => {
+  const { off } = workspace(t);
+  const branch = "feat/ci";
+  recordRun(off, { id: 1, branch, head: "aaaaaaa" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  resolveFailures(off, branch, "bbbbbbb");
+  const gh = fakeGh(prView(bases.get(off), "main", branch)).gh;
+  assert.match(denied(decide(shell(off, `gh pr merge 60 --match-head-commit ${bases.get(off)}`), { gh })), /lesson.*cleanup retries/i);
+  assert.match(denied(decide(shell(off, "gh api -X PUT repos/o/r/pulls/60/merge"), { gh })), /lesson.*cleanup retries/i);
+  const graphql = (args) => JSON.stringify({ data: { node: {
+    number: 60, baseRefName: "main", baseRefOid: bases.get(off), repository: { nameWithOwner: "o/r" },
+    labels: { nodes: [], pageInfo: { hasNextPage: false } },
+    ...(args.join(" ").includes("headRefName isCrossRepository") ? { headRefName: branch, isCrossRepository: false } : {}),
+  } } });
+  assert.match(denied(decide(shell(off, `gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: "PR_60"}) { clientMutationId } }'`), { gh: graphql })), /lesson.*cleanup retries/i);
+  mkdirSync(path.join(off, "docs"));
+  writeFileSync(path.join(off, "docs", "ci-lessons.md"), "## cleanup retries\nSymptom: EBUSY on Windows\nCause: open handle\nRule: Retry cleanup.\n");
+  execFileSync("git", ["add", "."], { cwd: off });
+  execFileSync("git", ["commit", "-qm", "lesson"], { cwd: off });
+  const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: off, encoding: "utf8" }).trim();
+  assert.equal(decide(shell(off, `gh pr merge 60 --match-head-commit ${sha}`), { gh }), null);
+  holdBranch(off, branch, "repeat");
+  assert.match(denied(decide(shell(off, `gh pr merge 60 --match-head-commit ${sha}`), { gh })), /Operator:.*qc resume --branch/);
+});
 
 test("an operator pause refuses manual and reviewed merges with dispatch on or off", (t) => {
   const ws = workspace(t);

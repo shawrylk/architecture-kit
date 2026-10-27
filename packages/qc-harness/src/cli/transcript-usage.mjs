@@ -6,6 +6,7 @@ import path from "node:path";
 
 export const WINDOW_BYTES = 256 * 1024;
 const SYNTHETIC = "<synthetic>";
+const toolNamesOf = (tools) => tools.map((tool) => typeof tool === "string" ? tool : tool?.name).filter((name) => typeof name === "string");
 
 /** The input tokens one request sent: fresh input, cache reads, and cache writes. */
 export const contextOf = (usage) =>
@@ -23,7 +24,9 @@ export function requestOf(line) {
   const message = record?.message;
   if (record?.type !== "assistant" || !message?.usage || message.model === SYNTHETIC) return null;
   const at = Date.parse(record.timestamp ?? "");
-  return { id: message.id ?? record.requestId ?? null, model: message.model ?? null, at: Number.isNaN(at) ? null : at, usage: message.usage };
+  const tools = message.tools ?? record.tools;
+  return { id: message.id ?? record.requestId ?? null, model: message.model ?? null, at: Number.isNaN(at) ? null : at, usage: message.usage,
+    ...(Array.isArray(tools) ? { tools: toolNamesOf(tools) } : {}) };
 }
 
 /** Every request of a transcript, in order, once per id. @returns [] for a file that does not read */
@@ -36,16 +39,53 @@ export function readRequests(file) {
   }
   const seen = new Set();
   const requests = [];
+  let tools;
   for (const line of text.split(/\r?\n/)) {
+    if (line.includes('"tools"')) {
+      try {
+        const record = JSON.parse(line);
+        if (record?.type === "system" && Array.isArray(record.tools)) tools = toolNamesOf(record.tools);
+      } catch {
+        // A partial record provides no tool-list evidence.
+      }
+    }
     const request = requestOf(line);
     if (!request) continue;
     if (request.id !== null) {
       if (seen.has(request.id)) continue;
       seen.add(request.id);
     }
-    requests.push(request);
+    if (request.tools) tools = request.tools;
+    requests.push(tools ? { ...request, tools } : request);
   }
   return requests;
+}
+
+/** Pipeline: explicit hook attachment timings, including cancelled hooks, once per record id. */
+export function readHookTimings(file) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  const seen = new Set();
+  const timings = [];
+  for (const line of text.split(/\r?\n/)) {
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const hook = record?.attachment;
+    if (record?.type !== "attachment" || typeof hook?.type !== "string" || !hook.type.startsWith("hook_") || typeof hook.hookName !== "string"
+      || !hook.hookName || !Number.isFinite(hook.durationMs) || hook.durationMs < 0) continue;
+    if (record.uuid && seen.has(record.uuid)) continue;
+    if (record.uuid) seen.add(record.uuid);
+    timings.push({ hook: hook.hookName, event: hook.hookEvent ?? "unknown", durationMs: hook.durationMs });
+  }
+  return timings;
 }
 
 /** The whole lines of one window at the head or the tail of a file, or [] when it does not read. */

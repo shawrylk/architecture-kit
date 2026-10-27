@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { decide } from "./dispatch-guard.mjs";
 import { limitFileOf, writeLimit } from "./codex-limit.mjs";
 import { runtimeTagOf } from "./dispatch-route.mjs";
+import { checkpointPathOf } from "./checkpoint.mjs";
 
 const GUARD = fileURLToPath(new URL("./dispatch-guard.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
@@ -34,6 +35,11 @@ function workspace(t, dispatch = { maxPromptChars: 300 }) {
   const identity = ["-c", "user.name=qc", "-c", "user.email=qc@example.com", "-c", "commit.gpgsign=false"];
   execFileSync("git", [...identity, "commit", "-q", "--allow-empty", "-m", "init"], { cwd: on, stdio: "pipe" });
   writeFileSync(path.join(off, "qc.config.json"), JSON.stringify({ swarm: { toolCallBudget: 50 } }));
+  for (const root of [on, off]) {
+    const file = checkpointPathOf(root, "session-aaaa");
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, "## Goal\n## Rules\n## Tasks\n## Next\n");
+  }
   return { on, off, plain, tmp, slots: path.join(tmp, "architecture-kit", "dispatch") };
 }
 
@@ -220,7 +226,76 @@ test("a slot with no stop expires after slotMinutes", (t) => {
   const ws = workspace(t);
   decide(agentCall(ws.on, implementer), ws.tmp);
   assert.notEqual(reasonOf(decide(agentCall(ws.on, implementer), ws.tmp)), null);
+  const future = new Date(Date.now() + 61 * 60_000);
+  utimesSync(checkpointPathOf(ws.on, "session-aaaa"), future, future);
   assert.equal(decide(agentCall(ws.on, implementer), ws.tmp, Date.now() + 61 * 60_000), null);
+});
+
+test("a valid checkpoint passes silently through the dispatch CLI", (t) => {
+  const ws = workspace(t);
+  const result = spawnSync(process.execPath, [GUARD], {
+    input: JSON.stringify(agentCall(ws.off, { model: "gpt-6.1-sol", prompt: "p" })),
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+});
+
+test("checkpoint refusal applies with dispatch on or off and names the path, problem, and headings", (t) => {
+  const ws = workspace(t);
+  for (const root of [ws.on, ws.off]) {
+    const file = checkpointPathOf(root, "session-aaaa");
+    rmSync(file);
+    const call = agentCall(root, { model: "gpt-6.1-sol", prompt: "p" });
+    const reason = reasonOf(decide(call, ws.tmp));
+    assert.ok(reason?.includes(file), reason);
+    assert.match(reason, /missing/);
+    assert.ok(reason.split("\n").length <= 4);
+    for (const heading of ["## Goal", "## Rules", "## Tasks", "## Next"]) assert.ok(reason.includes(heading));
+    assert.equal(decide({ ...call, agent_id: "worker" }, ws.tmp), null);
+    writeFileSync(file, "## Goal\n");
+    assert.match(reasonOf(decide(call, ws.tmp)), /heading/);
+    writeFileSync(file, "## Goal\n## Rules\n## Tasks\n## Next\n" + "task\n".repeat(57));
+    assert.match(reasonOf(decide(call, ws.tmp)), /60/);
+    writeFileSync(file, "## Goal\n## Rules\n## Tasks\n## Next\n");
+    const old = new Date(Date.now() - 31 * 60_000);
+    utimesSync(file, old, old);
+    assert.match(reasonOf(decide(call, ws.tmp)), /older than 30/);
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ checkpoint: { maxAgeMinutes: 0 } }));
+    assert.equal(decide(call, ws.tmp), null);
+    rmSync(file);
+    assert.match(reasonOf(decide(call, ws.tmp)), /missing/);
+  }
+  assert.equal(existsSync(ws.slots), false);
+});
+
+test("an invalid Git pointer keeps the checkpoint guard on", (t) => {
+  const ws = workspace(t);
+  const root = path.join(ws.tmp, "broken");
+  mkdirSync(root);
+  writeFileSync(path.join(root, ".git"), "invalid pointer");
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  const output = decide(agentCall(root, { prompt: "p" }), ws.tmp);
+  assert.match(reasonOf(output), /the session checkpoint/);
+  assert.match(reasonOf(output), /cannot resolve/);
+  assert.doesNotMatch(JSON.stringify(output), /guard is off/);
+});
+
+test("agents in one assistant message share the first dispatch age check", (t) => {
+  const ws = workspace(t);
+  const transcript = path.join(ws.tmp, "main.jsonl");
+  const message = (id, tools) => JSON.stringify({ type: "assistant", message: { id, content: tools.map((id) => ({ type: "tool_use", id })) } }) + "\n";
+  writeFileSync(transcript, message("batch-1", ["a", "b"]));
+  const file = checkpointPathOf(ws.off, "session-aaaa");
+  const now = Date.now();
+  const old = new Date(now - 29 * 60_000);
+  utimesSync(file, old, old);
+  const call = agentCall(ws.off, { prompt: "p" }, { transcript_path: transcript });
+  assert.equal(decide({ ...call, tool_use_id: "a" }, ws.tmp, now), null);
+  assert.equal(decide({ ...call, tool_use_id: "b" }, ws.tmp, now + 2 * 60_000), null);
+  writeFileSync(transcript, message("batch-2", ["c"]));
+  assert.match(reasonOf(decide({ ...call, tool_use_id: "c" }, ws.tmp, now + 2 * 60_000)), /older/);
 });
 
 test("a resumed implementer holds the slot again", (t) => {

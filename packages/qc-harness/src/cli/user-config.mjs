@@ -54,7 +54,7 @@ function sharedClaude(text) {
   const source = objectOf(text);
   const shared = Object.fromEntries(CLAUDE_KEYS.filter((key) => Object.hasOwn(source, key)).map((key) => [key, source[key]]));
   if (shared.env) shared.env = Object.fromEntries(ENV_KEYS.filter((key) => Object.hasOwn(shared.env, key)).map((key) => [key, shared.env[key]]));
-  if (shared.permissions) shared.permissions = Object.fromEntries(["defaultMode"].filter((key) => Object.hasOwn(shared.permissions, key)).map((key) => [key, shared.permissions[key]]));
+  if (shared.permissions) shared.permissions = Object.fromEntries(["defaultMode", "deny"].filter((key) => Object.hasOwn(shared.permissions, key)).map((key) => [key, shared.permissions[key]]));
   if (shared.statusLine) shared.statusLine = { type: "command", command: STATUS_COMMAND };
   const local = new Set(["skills-dir"]);
   if (shared.extraKnownMarketplaces) {
@@ -77,7 +77,8 @@ export function mergeClaudeSettings(local, shared) {
       const before = target[key] ?? {};
       const merged = { ...before };
       for (const [name, entry] of Object.entries(value)) {
-        if (!isDeepStrictEqual(before[name], entry)) { changed.push(`${key}.${name}`); Object.defineProperty(merged, name, { value: entry, enumerable: true, writable: true, configurable: true }); }
+        const next = key === "permissions" && name === "deny" ? [...new Set([...(before[name] ?? []), ...entry])] : entry;
+        if (!isDeepStrictEqual(before[name], next)) { changed.push(`${key}.${name}`); Object.defineProperty(merged, name, { value: next, enumerable: true, writable: true, configurable: true }); }
       }
       target[key] = merged;
     } else if (!isDeepStrictEqual(target[key], value)) { changed.push(key); target[key] = value; }
@@ -146,7 +147,6 @@ export async function runUserConfig(args, options = {}) {
       for (const plan of changes) writeFileSync(plan.target, plan.text, { mode: 0o600 });
     }
     const drift = plans.some((plan) => plan.changed.length);
-    if (!drift) log("Shared user configuration matches.");
     return verb === "check" && drift ? 1 : 0;
   } catch (error) {
     (options.log ?? console.error)(`qc user-config: ${error.message}`);

@@ -9,6 +9,26 @@ export function percentile(values, p) {
 
 const size = (n) => `${Math.round(n / 1000)}K`;
 
+/** A pipeline that reports estimate accuracy by cost role, without mixing reviewer samples. */
+function estimateRows(costs, budgets) {
+  const roles = new Map();
+  for (const record of costs) {
+    const budgetRole = record.role === "branch-reviewer" ? "reviewer" : record.role;
+    if (budgets[budgetRole] === null || !Number.isFinite(record.estimate) || record.estimate <= 0 ||
+        !Number.isFinite(record.toolCalls) || record.toolCalls < 0) continue;
+    const ratios = roles.get(record.role) ?? [];
+    ratios.push(record.toolCalls / record.estimate);
+    roles.set(record.role, ratios);
+  }
+  return [...roles].map(([role, ratios]) => {
+    ratios.sort((a, b) => a - b);
+    const middle = Math.floor(ratios.length / 2);
+    const median = ratios.length % 2 ? ratios[middle] : (ratios[middle - 1] + ratios[middle]) / 2;
+    const advice = ratios.length < 5 ? "" : median > 1.5 ? "; raise maxTaskCalls" : median < 0.5 ? "; lower maxTaskCalls" : "";
+    return `${role}: estimate accuracy tasks ${ratios.length}  median actual/estimate ${median.toFixed(2)}x${advice}`;
+  });
+}
+
 export function budgetReport(records, budgets) {
   const costs = latestCosts(records);
   const withContext = costs.filter((record) => Number.isFinite(record.endContext));
@@ -37,6 +57,7 @@ export function budgetReport(records, budgets) {
   }
   const skipped = costs.length - withContext.length;
   if (skipped > 0) lines.push(`skipped ${skipped} cost records with no context figure`);
+  lines.push(...estimateRows(costs, budgets));
   lines.push("orchestrator and Codex: no cost record.");
   return lines;
 }

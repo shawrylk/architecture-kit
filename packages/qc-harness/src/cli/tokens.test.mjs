@@ -3,10 +3,11 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, 
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { RATES, claudeDirOf, costsOf, projectKeyOf, runTokens, sessionFiles, summarizeSession } from "./tokens.mjs";
+import { RATES, claudeDirOf, costsOf, firstCollapseOf, projectKeyOf, runTokens, sessionFiles, summarizeSession } from "./tokens.mjs";
 import { readRequests } from "./transcript-usage.mjs";
 
 const MINUTE = 60_000;
+
 const req = (id, minute, read, write, { input = 2, model = "m", w1h = 0 } = {}) => ({
   id,
   model,
@@ -18,6 +19,24 @@ const req = (id, minute, read, write, { input = 2, model = "m", w1h = 0 } = {}) 
     cache_creation: { ephemeral_5m_input_tokens: write - w1h, ephemeral_1h_input_tokens: w1h },
     output_tokens: 5,
   },
+});
+
+test("collapse names the first request below 20 percent after three warm requests", () => {
+  const warm = [1, 2, 3].map((n) => req(`w${n}`, n, 800, 198));
+  assert.equal(firstCollapseOf(warm), null);
+  assert.equal(firstCollapseOf([...warm.slice(0, 2), req("early", 3, 0, 998)]), null);
+  assert.equal(firstCollapseOf([...warm, req("edge", 4, 200, 798)]), null);
+  assert.deepEqual(firstCollapseOf([...warm, req("drop", 4, 199, 799), req("later", 5, 0, 998)]),
+    { request: "drop", call: 4, cause: "unknown" });
+  assert.deepEqual(firstCollapseOf([...warm, req("changed", 4, 0, 998, { model: "other" })]),
+    { request: "changed", call: 4, cause: "model change" });
+  assert.equal(firstCollapseOf([...warm, req("empty", 4, 0, 0, { input: 0 })]), null);
+});
+
+test("collapse identifies changed tool lists only when both requests record them", () => {
+  const warm = [1, 2, 3].map((n) => ({ ...req(`w${n}`, n, 800, 198), tools: ["Read"] }));
+  assert.deepEqual(firstCollapseOf([...warm, { ...req("tools", 4, 0, 998), tools: ["Read", "Skill"] }]),
+    { request: "tools", call: 4, cause: "tool-list change" });
 });
 
 test("with no gap past five minutes, the one-hour lifetime only raises the write price", () => {
@@ -312,6 +331,21 @@ test("qc tokens prints a table with a footer that names the rates", (t) => {
   assert.match(text, /total/);
   assert.match(text, /API list prices/);
   assert.match(text, /subagentPromptCacheTtl/);
+  assert.equal(lines.filter((line) => line.startsWith("collapse:")).length, 0);
+});
+
+test("qc tokens prints one collapse summary line only when it has data", (t) => {
+  const { dir, project } = fakeSession(t);
+  const files = sessionFiles({ claudeDir: dir, project, session: "s1" });
+  const requests = [req("cold", 0, 0, 998), ...[1, 2, 3].map((n) => req(`warm${n}`, n, 800, 198)),
+    req("rebuild", 4, 0, 998, { model: "other" }), req("later", 5, 0, 998)];
+  writeFileSync(files.main, requests.map(({ id, model, usage }) => JSON.stringify({ type: "assistant", message: { id, model, usage } })).join("\n"));
+  const lines = [];
+  runTokens({ root: project }, ["--claude-dir", dir, "--session", "s1"], (line) => lines.push(line));
+  assert.deepEqual(lines.filter((line) => line.startsWith("collapse:")),
+    ["collapse: main (main) request=rebuild call=5 likely=model change"]);
+  const separated = summarizeSession({ agents: requests.map((request) => ({ type: "same", requests: [request] })) });
+  assert.equal(Object.hasOwn(separated, "collapses"), false);
 });
 
 test("qc tokens with no session to read says so and exits 1", (t) => {
@@ -319,4 +353,54 @@ test("qc tokens with no session to read says so and exits 1", (t) => {
   const errors = [];
   assert.equal(runTokens({ root: path.join(dir, "none") }, ["--claude-dir", dir], () => {}, (text) => errors.push(text)), 1);
   assert.match(errors.join("\n"), /no session/);
+});
+
+test("qc tokens prints one hook latency summary line, and omits absent data", (t) => {
+  const { dir, project } = fakeSession(t);
+  const files = sessionFiles({ claudeDir: dir, project, session: "s1" });
+  const lines = [];
+  const args = ["--claude-dir", dir, "--session", "s1"];
+  runTokens({ root: project }, args, (line) => lines.push(line));
+  assert.equal(lines.filter((line) => line.startsWith("hook:")).length, 0);
+  for (const [file, durationMs] of [[files.main, 12], [files.agents[0], 20]]) {
+    writeFileSync(file, JSON.stringify({ type: "attachment", attachment: {
+      type: "hook_cancelled", hookName: "SessionStart:startup", hookEvent: "SessionStart", durationMs,
+    } }));
+  }
+  lines.length = 0;
+  runTokens({ root: project }, args, (line) => lines.push(line));
+  assert.deepEqual(lines.filter((line) => line.startsWith("hook:")),
+    ["hook: SessionStart:startup event=SessionStart calls=2 total=32ms avg=16ms max=20ms"]);
+  lines.length = 0;
+  runTokens({ root: project }, [...args, "--json"], (line) => lines.push(line));
+  assert.deepEqual(JSON.parse(lines.join("\n")).hooks,
+    [{ hook: "SessionStart:startup", event: "SessionStart", calls: 2, totalMs: 32, maxMs: 20 }]);
+});
+
+
+test("qc tokens caps summaries across agents and hooks and omits empty JSON diagnostics", (t) => {
+  const { dir, project } = fakeSession(t);
+  const files = sessionFiles({ claudeDir: dir, project, session: "s1" });
+  const args = ["--claude-dir", dir, "--session", "s1"];
+  const lines = [];
+  runTokens({ root: project }, [...args, "--json"], (line) => lines.push(line));
+  const empty = JSON.parse(lines.join("\n"));
+
+  for (const [i, file] of [files.main, ...files.agents].entries()) {
+    const requests = [...[1, 2, 3].map((n) => req(`warm${n}`, n, 800, 198)), req("drop", 4, 0, 998)];
+    writeFileSync(file, [...requests.map(({ id, model, usage }) => ({ type: "assistant", message: { id, model, usage } })),
+      { type: "attachment", attachment: { type: "hook_success", hookName: `hook-${i}`, hookEvent: "Start", durationMs: i + 1 } },
+    ].map((record) => JSON.stringify(record)).join("\n"));
+  }
+  lines.length = 0;
+  runTokens({ root: project }, args, (line) => lines.push(line));
+  assert.equal(lines.filter((line) => line.startsWith("collapse:")).length, 1);
+  assert.equal(lines.filter((line) => line.startsWith("hook:")).length, 1);
+  lines.length = 0;
+  runTokens({ root: project }, [...args, "--json"], (line) => lines.push(line));
+  const report = JSON.parse(lines.join("\n"));
+  assert.equal(report.collapses.length, 1 + files.agents.length);
+  assert.equal(report.hooks.length, 1 + files.agents.length);
+  assert.equal(Object.hasOwn(empty, "collapses"), false);
+  assert.equal(Object.hasOwn(empty, "hooks"), false);
 });

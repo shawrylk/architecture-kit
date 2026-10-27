@@ -9,8 +9,10 @@ import path from "node:path";
 export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
+  checkpoint: { maxAgeMinutes: 30 },
   post: { aiLabel: true },
   ci: { requiredChecks: [] },
+  lessons: { file: "docs/ci-lessons.md", rerun: "node --test" },
   guard: { protectedPaths: [".github/workflows/**", ".husky/**", ".githooks/**", "qc.config.json", ".claude/settings*.json"] },
   // Where features live. Every structural gate walks these.
   featureRoots: ["backend/src/features", "frontend/src/features"],
@@ -278,7 +280,7 @@ export const defaults = {
     dispatch: null,
     // Read only while `dispatch` is on. `reviewDefaults` fills each key it omits.
     review: null,
-    // Read only while `dispatch` is on, and on by default then. `false` turns it off; `directDefaults` fills each key it omits.
+    // Read only while `dispatch` is on, and on by default then. `false` turns it off; `directDefaults` fills each key it omits, except `reviewPaths`, which `direct-lane.mjs` defaults.
     direct: null,
   },
 
@@ -632,6 +634,8 @@ export const reviewDefaults = {
   merge: "branch",
   // The largest tool-call estimate one plan task may carry.
   maxTaskCalls: 35,
+  riskPaths: ["**/migrations/**", "schemas/**"],
+  cases: {},
   // Globs, relative to a checkout of this repository, that the main session may edit.
   controllerPaths: ["docs/**", "*.md", "qc.config.json", "**/.claude/**"],
   // The agent types whose stop records a verdict of each kind.
@@ -665,8 +669,6 @@ export const directDefaults = {
   maxFiles: 2,
   // Globs a direct fix may not touch. A change to one of these runs the subagent workflow.
   excludes: ["schemas/**", "**/migrations/**"],
-  // Globs a direct fix may touch only with one APPROVED review of its head, of either kind.
-  reviewPaths: [],
 };
 
 function isPlainObject(value) {
@@ -688,6 +690,14 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.lessons)) throw new TypeError("lessons must be an object");
+  for (const key of ["file", "rerun"]) {
+    if (typeof config.lessons[key] !== "string" || !config.lessons[key].trim()) throw new TypeError(`lessons.${key} must be a non-empty string`);
+  }
+  if (Object.hasOwn(user, "checkpoint") && !isPlainObject(user.checkpoint)) throw new TypeError("checkpoint must be an object");
+  if (!Number.isFinite(config.checkpoint.maxAgeMinutes) || config.checkpoint.maxAgeMinutes < 0) {
+    throw new TypeError("checkpoint.maxAgeMinutes must be a non-negative number");
+  }
   if (!isPlainObject(config.merge)) throw new TypeError("merge must be an object");
   if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
     throw new TypeError("merge.holdLabel must be a non-empty string without surrounding whitespace");

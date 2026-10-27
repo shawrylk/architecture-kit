@@ -5,10 +5,49 @@ import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaults, load, merge, requiredHooks } from "./config.mjs";
+import { defaults, directDefaults, load, merge, requiredHooks } from "./config.mjs";
 import { rules } from "./eslint/index.mjs";
+import { directSettings } from "./cli/direct-lane.mjs";
+
+test("the direct lane owns its review path default and accepts replacements", () => {
+  assert.equal(Object.hasOwn(directDefaults, "reviewPaths"), false);
+  assert.deepEqual(directSettings({}).reviewPaths, [".mcp.json", "**/.claude/**", ".github/workflows/**", "hooks/**"]);
+  assert.deepEqual(directSettings({ direct: { reviewPaths: [] } }).reviewPaths, []);
+  assert.deepEqual(directSettings({ direct: { reviewPaths: ["local/**"] } }).reviewPaths, ["local/**"]);
+});
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+test("lessons settings default and validate the file and rerun command", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-lessons-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10 }));
+  assert.deepEqual(load(root).lessons, { file: "docs/ci-lessons.md", rerun: "node --test" });
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ lessons: { file: "LESSONS.md", rerun: "pnpm test" } }));
+  assert.deepEqual(load(root).lessons, { file: "LESSONS.md", rerun: "pnpm test" });
+  for (const lessons of [null, [], { file: "" }, { rerun: " " }, { file: 1 }, { rerun: false }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ lessons }));
+    assert.throws(() => load(root), /lessons/);
+  }
+});
+
+test("checkpoint defaults to 30 minutes and accepts zero or a positive age", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-checkpoint-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(load(root).checkpoint, { maxAgeMinutes: 30 });
+  for (const maxAgeMinutes of [0, 1, 12.5, 60]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ checkpoint: { maxAgeMinutes } }));
+    assert.equal(load(root).checkpoint.maxAgeMinutes, maxAgeMinutes);
+  }
+});
+
+test("checkpoint rejects malformed configuration", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-checkpoint-invalid-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const checkpoint of [null, false, [], "off", { maxAgeMinutes: null }, { maxAgeMinutes: -1 }, { maxAgeMinutes: "30" }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ checkpoint }));
+    assert.throws(() => load(root), /checkpoint/);
+  }
+});
 
 test("post.aiLabel defaults on and accepts an explicit boolean", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-post-config-"));

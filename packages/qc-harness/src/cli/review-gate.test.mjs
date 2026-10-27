@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import path from "node:path";
 import { reviewDefaults } from "../config.mjs";
 import { ciState as readCiState } from "./ci-state.mjs";
 import {
@@ -285,6 +286,26 @@ const briefCheckOf = (text, over = {}) =>
   briefCheck({ prompt: "Read it.\nBrief: /plans/brief.md\nReport: /plans/report.md", dirs: ["/w"], review, exists: onBrief, read: () => text, ...over });
 const offAll = { ...review, productDecisions: false, roundFindings: 0, roundFiles: 0 };
 
+test("the dispatch brief checks CI failures even with the optional brief checks off", async (t) => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const { recordRun } = await import("./ci-failures.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "ci-brief-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10 }));
+  execFileSync("git", ["init", "-q", "-b", "fix/ci", root]);
+  recordRun(root, { id: 1, branch: "fix/ci", head: "aaaaaaa" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  const file = path.join(root, "brief.md");
+  writeFileSync(file, "## Product decisions\nnone\n");
+  const call = { prompt: `Brief: ${file}`, dirs: [root], review: offAll };
+  assert.match(briefCheck(call).refusal, /cleanup retries/);
+  writeFileSync(file, "## CI failures\n### cleanup retries\nCause: open handle\n");
+  assert.deepEqual(briefCheck(call), { refusal: null, note: null });
+  const { appendRecord, ledgerFileOf } = await import("./ledger.mjs");
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "multi", branch: "fix/ci", head: "aaaaaaa", test: "first\nsecond\nthird\nfourth\nfifth" });
+  assert.ok(briefCheck(call).refusal.split(/\r?\n/).length <= 4);
+});
+
 test("a brief with a Product decisions heading passes, with no note when it is under the limits", () => {
   assert.deepEqual(briefCheckOf(brief("# Brief", "## Product decisions", "None.", "1. one", `Files: ${files(3)}`)), { refusal: null, note: null });
   assert.equal(briefCheckOf("## product decisions  \nNone.").refusal, null);
@@ -408,4 +429,22 @@ test("a file is a path with a separator or a known extension; a URL, a version, 
   assert.equal(countFiles("see https://github.com/o/r/issues/1 and e.g. v0.20.4, i.e. the 1.5x speed"), 0);
   assert.equal(countFiles("docs/a.md, `packages/x/y.json`, (hooks/hooks.json)."), 3);
   assert.equal(countFiles("README.md and README.md"), 1);
+});
+
+
+test("a detached HEAD skips branch holds when the ledger contains CI failures", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const { appendRecord, ledgerFileOf } = await import("./ledger.mjs");
+  const { holdBranch } = await import("./pause.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "ci-detached-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10 }));
+  const git = (...args) => execFileSync("git", ["-C", root, ...args]);
+  git("init", "-q", "-b", "main");
+  git("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "init");
+  holdBranch(root, "main", "other branch");
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "detached", branch: "main", test: "failed" });
+  git("checkout", "--detach", "-q");
+  assert.deepEqual(briefCheck({ prompt: "", dirs: [root], review: offAll }), { refusal: null, note: null });
 });

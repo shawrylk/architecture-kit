@@ -16,6 +16,9 @@ while read -r _local_ref local_oid _remote_ref remote_oid; do
     *[!0]*)
       carries_commits=yes
       npx qc commit-guard --push "$local_oid" "$remote_oid" </dev/null || exit 4
+      case "$_remote_ref" in
+        refs/heads/*) npx qc ci-failures --rerun --branch "${_remote_ref#refs/heads/}" </dev/null ;;
+      esac
       ;;
   esac
 done
@@ -24,4 +27,7 @@ if [ -n "$named" ] && [ -z "$carries_commits" ]; then
   exit 0
 fi
 
+if [ -z "$named" ]; then
+  npx qc ci-failures --rerun </dev/null
+fi
 npx qc check

@@ -20,6 +20,33 @@ const cost = (endContext, index, extra = {}) => ({
 });
 const records = () => contexts.map((context, index) => cost(context, index));
 
+const estimates = (ratios, role = "implementer") => ratios.map((ratio, index) =>
+  cost(undefined, `${role}-${index}`, { role, estimate: 20, toolCalls: ratio * 20 }));
+const accuracy = (records) => budgetReport(records, budgets).filter((line) => line.includes("estimate accuracy"));
+
+test("estimate accuracy uses the median actual to estimate ratio and advises only with five tasks", () => {
+  assert.match(accuracy(estimates([2, 2, 2, 2]))[0], /tasks 4.*2\.00x$/);
+  assert.match(accuracy(estimates([2, 2, 2, 2, 0]))[0], /tasks 5.*2\.00x; raise maxTaskCalls/);
+  assert.match(accuracy(estimates([0.4, 0.4, 0.4, 0.4, 10]))[0], /0\.40x; lower maxTaskCalls/);
+  for (const ratio of [0.5, 1, 1.5]) assert.doesNotMatch(accuracy(estimates(Array(5).fill(ratio)))[0], /maxTaskCalls/);
+  assert.match(accuracy(estimates([0, 0, 0, 2, 2, 2]))[0], /1\.00x$/);
+});
+
+test("estimate accuracy keeps roles separate and ignores invalid or missing estimates and actual counts", () => {
+  const lines = accuracy([...estimates([2, 2, 2, 2]), ...estimates([2, 2, 2, 2], "reviewer"), ...estimates([2], "branch-reviewer")]);
+  assert.equal(lines.length, 3);
+  assert.ok(lines.every((line) => !line.includes("maxTaskCalls")));
+  const invalid = [null, undefined, 0, -1, "20", Infinity, NaN].map((estimate, i) => cost(20_000, i, { estimate, toolCalls: 10 }));
+  for (const [i, toolCalls] of [undefined, null, -1, "10", Infinity, NaN].entries()) invalid.push(cost(20_000, `actual-${i}`, { estimate: 20, toolCalls }));
+  assert.deepEqual(accuracy(invalid), []);
+});
+
+test("estimate accuracy takes only the latest cost of a resumed agent", () => {
+  const samples = estimates([2, 2, 2, 2, 2]);
+  const replacement = { ...samples[0], estimate: null };
+  assert.match(accuracy([...samples, replacement])[0], /tasks 4.*2\.00x$/);
+});
+
 test("percentile uses the nearest rank without changing the input", () => {
   const values = [...contexts].reverse();
   assert.equal(percentile(values, 50), 80_000);

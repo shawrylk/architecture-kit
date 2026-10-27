@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+
 import {
   agentTranscriptOf,
   agentTypeOf,
@@ -11,6 +12,7 @@ import {
   firstUsage,
   lastUsage,
   readRequests,
+  readHookTimings,
   requestOf,
   subagentTranscriptOf,
   toolCallsIn,
@@ -40,6 +42,37 @@ function write(file, records) {
   writeFileSync(file, `${records.map((r) => (typeof r === "string" ? r : JSON.stringify(r))).join("\n")}\n`);
   return file;
 }
+
+test("requestOf retains an explicit tool list without retaining message text", () => {
+  const record = { type: "assistant", message: { id: "tools", model: "m", usage: { input_tokens: 1 },
+    tools: [{ name: "Read" }, { name: "Skill" }], content: "private" } };
+  assert.deepEqual(requestOf(JSON.stringify(record)).tools, ["Read", "Skill"]);
+});
+
+test("readRequests carries explicit system tool-list snapshots to following requests", (t) => {
+  const base = folder(t);
+  const file = write(path.join(base, "tools.jsonl"), [
+    { type: "system", subtype: "init", tools: ["Read"] }, assistant("one", usage(800)),
+    { type: "system", tools: ["Read", "Skill"] }, assistant("two", usage(0, 1000)),
+  ]);
+  assert.deepEqual(readRequests(file).map((request) => request.tools), [["Read"], ["Read", "Skill"]]);
+});
+
+test("hook timings read explicit attachment durations, deduplicate ids, and ignore other durations", (t) => {
+  const base = folder(t);
+  const hook = { type: "attachment", uuid: "h1", attachment: {
+    type: "hook_cancelled", hookName: "SessionStart:startup", hookEvent: "SessionStart", durationMs: 12,
+  } };
+  const file = write(path.join(base, "hooks.jsonl"), [hook, hook, "broken", { type: "system", durationMs: 400 },
+    { ...hook, uuid: "invalid-type", attachment: { ...hook.attachment, type: 42 } },
+    { ...hook, uuid: "bad", attachment: { ...hook.attachment, durationMs: -1 } },
+    { ...hook, uuid: "h2", attachment: { ...hook.attachment, type: "hook_success", durationMs: 0 } }]);
+  assert.deepEqual(readHookTimings(file), [
+    { hook: "SessionStart:startup", event: "SessionStart", durationMs: 12 },
+    { hook: "SessionStart:startup", event: "SessionStart", durationMs: 0 },
+  ]);
+  assert.deepEqual(readHookTimings(path.join(base, "absent")), []);
+});
 
 test("contextOf adds fresh input, cache reads, and cache writes, and a missing usage is zero", () => {
   assert.equal(contextOf(usage(100, 20, 3)), 123);

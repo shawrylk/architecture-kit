@@ -139,6 +139,22 @@ test("the orchestrator gets the compaction note on its 5th call and not on the 4
   assert.equal(output.permissionDecision, undefined);
   assert.equal(countOf(ws, "orchestrator"), 5);
   assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 5);
+  assert.match(output.additionalContext, /Update the checkpoint now/);
+  assert.match(output.additionalContext, /qc[\\/]checkpoints[\\/]/);
+});
+
+test("an invalid Git pointer preserves the orchestrator reminder", (t) => {
+  const ws = workspace(t, { dispatch: {} });
+  const call = mainCall(ws);
+  call.cwd = path.join(ws.tmp, "broken");
+  mkdirSync(call.cwd);
+  writeFileSync(path.join(call.cwd, ".git"), "invalid pointer");
+  writeFileSync(path.join(call.cwd, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
+  for (let count = 1; count < 5; count++) assert.equal(runGuard(ws, call), null);
+  const note = noteOf(runGuard(ws, call));
+  assert.match(note, /Run \/compact/);
+  assert.match(note, /Update the checkpoint now: the session checkpoint/);
+  assert.equal(stateOf(ws, "orchestrator").budgetFiredAt, 5);
 });
 
 test("the note repeats only after 20 more calls", (t) => {

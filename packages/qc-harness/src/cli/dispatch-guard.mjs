@@ -10,6 +10,7 @@ import { codexModelOf, routeRefusal, tagRefusal } from "./dispatch-route.mjs";
 import { limitFileOf, readLimit } from "./codex-limit.mjs";
 import { claimSlot, clearSlots, reclaimSlot, releaseHolder, releaseSlot, slotDirOf } from "./dispatch-slot.mjs";
 import { judgeTask, recordDispatch } from "./task-gate.mjs";
+import { checkpointRefusal } from "./checkpoint.mjs";
 
 const output = (fields) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", ...fields } });
 const deny = (reason) => output({ permissionDecision: "deny", permissionDecisionReason: reason });
@@ -65,6 +66,8 @@ export function decide(call, tmp = os.tmpdir(), now = Date.now(), reads = {}) {
 
   let settings;
   try {
+    const checkpoint = checkpointRefusal(call, now);
+    if (checkpoint) return deny(checkpoint);
     settings = dispatchSettingsAt(call.cwd ?? process.cwd());
   } catch (error) {
     // A config typo must not stop every dispatch; the session sees the error and reports it.

@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
-import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -10,6 +10,28 @@ import { hookDrift } from "./git-hooks.mjs";
 
 const TEMPLATES = fileURLToPath(new URL("../../templates/githooks/", import.meta.url));
 const REQUIRED = { "pre-commit": ["qc work-order-check"], "pre-push": ["qc check"] };
+
+test("pre-push reruns each pushed branch before qc check and stops on failure", (t) => {
+  const r = repo(t);
+  const script = readFileSync(path.join(TEMPLATES, "pre-push"), "utf8");
+  const bin = path.join(r.root, "bin");
+  mkdirSync(bin);
+  writeFileSync(path.join(bin, "npx"), '#!/bin/sh\necho "$*" >> "$CI_CALLS"\ncase "$*" in *ci-failures*) exit "${CI_RERUN_STATUS:-0}";; esac\n', { mode: 0o755 });
+  const hook = path.join(r.root, "pre-push");
+  writeFileSync(hook, script);
+  const bash = process.platform === "win32" ? "C:/Program Files/Git/bin/bash.exe" : "bash";
+  const calls = path.join(r.root, "calls.txt");
+  const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CI_CALLS: calls, CI_RERUN_STATUS: "9" };
+  const input = `refs/heads/feat/ci ${"a".repeat(40)} refs/heads/feat/ci ${"0".repeat(40)}\n`;
+  const failed = spawnSync(bash, [hook], { cwd: r.root, env, input, encoding: "utf8" });
+  assert.equal(failed.status, 9, failed.stderr);
+  assert.match(readFileSync(calls, "utf8"), /qc ci-failures --rerun --branch feat\/ci/);
+  assert.doesNotMatch(readFileSync(calls, "utf8"), /qc check/);
+  writeFileSync(calls, "");
+  const passed = spawnSync(bash, [hook], { cwd: r.root, env: { ...env, CI_RERUN_STATUS: "0" }, input, encoding: "utf8" });
+  assert.equal(passed.status, 0, passed.stderr);
+  assert.match(readFileSync(calls, "utf8"), /ci-failures[\s\S]*qc check/);
+});
 
 function repo(t) {
   const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-git-hooks-")));
