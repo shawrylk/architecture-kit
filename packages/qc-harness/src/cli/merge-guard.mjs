@@ -19,7 +19,8 @@ import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
 import { integrationLane } from "./integration-lane.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
 import { promotionBranchName } from "./promotion-branch.mjs";
-import { pauseRefusal } from "./pause.mjs";
+import { pauseRefusal, holdRefusal } from "./pause.mjs";
+import { lessonRefusal, resolvedFailures } from "./ci-failures.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
 
@@ -87,7 +88,7 @@ export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict
 /** The PR base selects its review policy; its head identifies a promotion. Missing base details keep the guard closed. */
 function prBaseOf(merge, cwd, gh, timeoutMs) {
   const args = merge.nodeId
-    ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner} labels(first:100){nodes{name} pageInfo{hasNextPage}}}}}", "-f", `id=${merge.nodeId}`]
+    ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner} labels(first:100){nodes{name} pageInfo{hasNextPage}} headRefName isCrossRepository}}}", "-f", `id=${merge.nodeId}`]
     : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"];
   try {
     const answer = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
@@ -132,6 +133,16 @@ function policyOf(merge, root, cwd, gh, deadline) {
   }
   if (pr.labels.some((label) => label.name.toLowerCase() === holdLabel.trim().toLowerCase())) {
     throw new HoldRefusal(`PR label "${holdLabel}" holds this merge. Wait for the operator to remove the label.`);
+  }
+  const lessons = { ...defaults.lessons, ...settings.config?.lessons };
+  if (pr.head && pr.sameRepository) {
+    const hold = holdRefusal(root, pr.head);
+    if (hold) throw new HoldRefusal(hold);
+    if (resolvedFailures(root, pr.head).length) {
+      const text = /^[0-9a-f]{7,40}$/i.test(merge.sha ?? "") ? git(root, "show", `${merge.sha}:${lessons.file}`) : null;
+      const refusal = lessonRefusal(root, pr.head, text);
+      if (refusal) throw new HoldRefusal(refusal.replace(/^Merge guard: /, ""));
+    }
   }
   return { pr, workflow: workflowAt(root, { baseOid: pr.oid, git }) };
 }

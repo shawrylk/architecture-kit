@@ -34,6 +34,8 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
+  qc ci-failures --run <id> | --rerun [--branch <branch>]
+                           record a failed run, or rerun the open test files before a push
   qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
@@ -74,7 +76,7 @@ const USAGE = `qc — architecture gates
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
   qc pause [--reason <text>] | qc pause --status
                            pause branch changes and merges across all worktrees, or print the pause state
-  qc resume                clear the operator pause
+  qc resume [--branch <branch>] clear the operator pause, or release one branch's CI hold
   qc doctor                the hooks and the lockfile must run the same harness
   qc config                print the resolved configuration
 
@@ -109,6 +111,11 @@ async function main() {
   if (command === "pause" || command === "resume") {
     const { runPause, runResume } = await import("./pause.mjs");
     process.exitCode = (command === "pause" ? runPause : runResume)(process.cwd(), rest);
+    return;
+  }
+  if (command === "ci-failures") {
+    const { runCiFailures } = await import("./ci-failures.mjs");
+    process.exitCode = runCiFailures(process.cwd(), rest);
     return;
   }
   // A broken qc.config.json must not keep a lease in place, so the lease runs before the load.

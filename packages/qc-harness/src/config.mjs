@@ -11,6 +11,7 @@ export const CONFIG_FILE = "qc.config.json";
 export const defaults = {
   post: { aiLabel: true },
   ci: { requiredChecks: [] },
+  lessons: { file: "docs/ci-lessons.md", rerun: "node --test" },
   guard: { protectedPaths: [".github/workflows/**", ".husky/**", ".githooks/**", "qc.config.json", ".claude/settings*.json"] },
   // Where features live. Every structural gate walks these.
   featureRoots: ["backend/src/features", "frontend/src/features"],
@@ -688,6 +689,10 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.lessons)) throw new TypeError("lessons must be an object");
+  for (const key of ["file", "rerun"]) {
+    if (typeof config.lessons[key] !== "string" || !config.lessons[key].trim()) throw new TypeError(`lessons.${key} must be a non-empty string`);
+  }
   if (!isPlainObject(config.merge)) throw new TypeError("merge must be an object");
   if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
     throw new TypeError("merge.holdLabel must be a non-empty string without surrounding whitespace");
