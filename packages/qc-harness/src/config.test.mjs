@@ -10,6 +10,18 @@ import { rules } from "./eslint/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+test("lessons settings default and validate the file and rerun command", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-lessons-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10 }));
+  assert.deepEqual(load(root).lessons, { file: "docs/ci-lessons.md", rerun: "node --test" });
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ lessons: { file: "LESSONS.md", rerun: "pnpm test" } }));
+  assert.deepEqual(load(root).lessons, { file: "LESSONS.md", rerun: "pnpm test" });
+  for (const lessons of [null, [], { file: "" }, { rerun: " " }, { file: 1 }, { rerun: false }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ lessons }));
+    assert.throws(() => load(root), /lessons/);
+  }
+});
+
 test("post.aiLabel defaults on and accepts an explicit boolean", (t) => {
   const root = mkdtempSync(path.join(tmpdir(), "qc-post-config-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));

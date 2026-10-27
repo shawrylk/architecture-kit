@@ -165,7 +165,17 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 ## CI failures
 
-- Read the failed step and the assertion before you act. Fetch the log of a job with `gh api repos/<owner>/<repo>/actions/jobs/<job id>/logs`.
+- Read the failed step and the assertion before you act. Fetch the failed log with `gh run view <run id> --log-failed`.
+- `qc watch` records failed tests in the shared ledger. Use `qc ci-failures --run <run id>` to record a run manually.
+- While the branch has open records, name each test and its `Cause:` under `## CI failures` in the brief.
+- Two failing heads require `## Diagnosis` with `Root cause:` and `Evidence:` from the log and the code.
+- Three failing heads hold that branch. Wait for the operator to run `qc resume --branch <branch>`; an agent never releases it.
+- A green later head resolves the records. Write each resolved test's lesson before the merge.
+- Set `lessons.file` to choose the file; the default is `docs/ci-lessons.md`.
+- Use a `## <test name>` heading with `Symptom:` (error and OS), `Cause:`, and `Rule:` on separate lines.
+- Write one imperative rule, or `Rule: none: a flake that passed on a rerun`.
+- Codex prompts include the newest 40 `Rule:` lines. Claude implementers read the same file.
+- The pre-push hook reruns open records' test files with `lessons.rerun`, default `node --test`, before `qc check`.
 - Rerun a known flake once with `gh run rerun <run id> --failed`.
 - A runner or Docker failure that comes back, or a runner that stays offline, needs the user. Never change the CI routing, and never skip CI.
 - A real failure is a Codex brief. A Claude implementer for a CI fix carries the prompt line `Fix: ci`, which needs known-red CI on the current head. A review fix carries `Fix: review`, which needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop. The newest stop needs no review if the prompt continues its `HANDOFF:`.

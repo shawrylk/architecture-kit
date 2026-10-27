@@ -755,6 +755,12 @@ An agent never resumes the kit or removes the hold label itself.
 Missing labels or another page of labels refuse the merge. A full CLI page also refuses because more labels might exist.
 Keep the pull request body check for "no merge is authorized"; the label adds a separate hold.
 
+A test that fails on three distinct heads in a row holds its branch.
+The hold lives at `<git common dir>/qc/holds/<branch with / as ->` and leaves other branches available.
+Only the operator's `qc resume --branch <branch>` removes it. An agent never releases the hold.
+`qc resume` without a branch clears the global pause and preserves branch holds.
+The Codex runner and `qc watch --run` exit `5` for a held branch.
+
 #### Run an implementer on Codex
 
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.
@@ -816,7 +822,13 @@ The runner validates the worktree's brief and Codex settings before launch:
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
 | `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
-| Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, and `Exit criteria` |
+| Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, `Exit criteria`, `CI failures`, and `Diagnosis` |
+
+While the worktree's branch has open CI records, the brief needs `## CI failures` with every test and its `Cause:`.
+The Codex runner and implementer dispatch share this check. The Codex runner exits `1` and names missing tests.
+Two failing heads require `## Diagnosis` with `Root cause:` and `Evidence:` from the log and the code.
+Green branches keep the usual brief requirements.
+Each prompt includes the newest 40 `Rule:` lines from `lessons.file`, default `docs/ci-lessons.md`.
 
 The overrides apply to the runner's `codex exec` call only, so your interactive Codex sessions keep their plugins and skills:
 
@@ -907,6 +919,15 @@ The default is an empty list. A missing required check stays pending.
 The watch reads this configuration at the git top level of the current folder, only without `--repo`.
 An unreadable configuration writes one warning to stderr and uses an empty list.
 A commit status never counts as a required check, even when its context matches the configured name.
+
+On a failed run, the watch fetches `gh run view <id> --log-failed` with a 20-second timeout.
+It records the branch, head, OS, test file, test name, and first error line in the shared workflow ledger.
+Unknown output records the job name and first error line instead.
+A failed log fetch records nothing, writes one line to stderr, and preserves exit `5`.
+Use `qc ci-failures --run <id>` to record a run manually.
+A green later head on the same branch resolves its open records.
+The pre-push hook runs their test files before `qc check`, with `lessons.rerun` (default `node --test`).
+Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
 
 With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
 The context watch speaks only to the main session, in every repository where `swarm.dispatch` is off.
@@ -1011,6 +1032,12 @@ prints them. Each check does nothing when `swarm.dispatch` is off in the reposit
 | Round size | the same | nothing: it warns on an implementer brief with more numbered findings (lines that start `1. `) than `roundFindings`, or more distinct file paths than `roundFiles`. Split the round in parallel on disjoint paths, with sub-branches in separate worktrees. `0` turns a limit off |
 | Cost record | `SubagentStop`, `cost-stop.mjs` | nothing: it appends a `cost` record with the agent's tokens by kind, its tool calls, its role, and the branch and head of its dispatch. A transcript that does not read records nothing. `qc ledger --cost [branch]` totals them per branch and per role |
 | Typecheck retry | `Stop`, `hooks/stop-gate.sh` | nothing: the gate exits at once when the checkout matches the fingerprint stored after the last fully green run (the `HEAD` sha, the status, and the content of every changed or untracked file, kept per checkout root in the temp folder; any difference or error runs the full gate). Otherwise the gate runs the root `typecheck` script when `package.json` has one, else `tsc -b --pretty false`, and runs ESLint with a cache in `node_modules/.cache/eslint-stop-gate`. When the typecheck fails and every `error TS` line is `TS2307`, the gate runs it once more and judges the second run, because a concurrent `pnpm install` causes that error |
+
+The merge guard also checks branch holds and resolved CI failures, even with workflow dispatch off.
+Each resolved test needs a `## <test name>` entry in `lessons.file`, default `docs/ci-lessons.md`.
+The entry needs `Symptom:` (the error and OS), `Cause:`, and `Rule:` on separate lines.
+Write one imperative rule, or `Rule: none: a flake that passed on a rerun`.
+The guard reads the lesson from the pinned merge head and the lessons path from the PR base policy.
 
 The `swarm.review` keys that these rows name:
 

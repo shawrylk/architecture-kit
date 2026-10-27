@@ -7,6 +7,8 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DONE_MARKER, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
 import { readLimit, writeLimit } from "./codex-limit.mjs";
+import { recordRun } from "./ci-failures.mjs";
+import { holdBranch } from "./pause.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const VALID_BRIEF = "# Brief\nPaths: src/example.mjs\n\n## Product decisions\n- Use the local rules.\n\n## Task\n1. Do task one.\n";
@@ -39,6 +41,36 @@ function setup(t, { progress = "" } = {}) {
 }
 
 const quiet = () => {};
+
+test("open CI failures require the named test and cause before Codex starts", async (t) => {
+  const f = setup(t);
+  const branch = readFileSync(path.join(f.worktree, ".git", "HEAD"), "utf8").trim().replace("ref: refs/heads/", "");
+  recordRun(f.worktree, { id: 1, branch, head: "aaaaaaa" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  const messages = [];
+  assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => assert.fail("must refuse") }), 1);
+  assert.match(messages.join("\n"), /cleanup retries/);
+  holdBranch(f.worktree, branch, "repeat");
+  assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => assert.fail("held") }), 5);
+});
+
+test("a diagnosed CI brief starts and includes lesson rules in the prompt", async (t) => {
+  const f = setup(t);
+  const branch = readFileSync(path.join(f.worktree, ".git", "HEAD"), "utf8").trim().replace("ref: refs/heads/", "");
+  recordRun(f.worktree, { id: 1, branch, head: "aaaaaaa" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  recordRun(f.worktree, { id: 2, branch, head: "bbbbbbb" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  writeFileSync(f.brief, `${VALID_BRIEF}\n## CI failures\n### cleanup retries\nCause: open handle\n\n## Diagnosis\nRoot cause: the handle stays open\nEvidence: the log shows EBUSY; the cleanup code retains the handle.\n`);
+  writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ lessons: { file: "LESSONS.md" } }));
+  writeFileSync(path.join(f.worktree, "LESSONS.md"), "## cleanup\nRule: Retry Windows cleanup.\n");
+  assert.equal(await runCodexImplement(f.argv, {
+    say: quiet, out: quiet,
+    run: async ({ input }) => {
+      assert.match(input, /Rule: Retry Windows cleanup\./);
+      assert.match(input, /agent never releases/i);
+      writeFileSync(f.progress, `${DONE_MARKER}\n`);
+      return { status: 0 };
+    },
+  }), 0);
+});
 
 test("an operator pause stops the first run with exit 5", async (t) => {
   const fixture = setup(t);

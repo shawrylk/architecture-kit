@@ -1,6 +1,32 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { commonDirOf } from "./ledger.mjs";
+import { checkoutRootOf } from "./checkout-root.mjs";
+
+function holdFile(root, branch) {
+  if (!branch || branch === "." || branch === ".." || /[\\\x00-\x1f]/.test(branch)) throw new Error("invalid branch for CI hold");
+  const common = commonDirOf(checkoutRootOf(root) ?? root);
+  if (!common) throw new Error("CI hold needs a Git checkout");
+  return path.join(common, "qc", "holds", branch.replaceAll("/", "-"));
+}
+
+export function holdBranch(root, branch, reason) {
+  const file = holdFile(root, branch);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, `${reason}\n`);
+}
+
+export function holdRefusal(root, branch) {
+  let reason;
+  try {
+    reason = readFileSync(holdFile(root, branch), "utf8").trim();
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  return `Operator: branch ${branch} is on hold: ${reason}. Run \`qc resume --branch ${branch}\` to release it.`;
+}
 
 function pauseFile(root) {
   const common = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
@@ -52,12 +78,12 @@ export function runPause(root, argv, { say = console.log } = {}) {
 
 /** Trigger: clear the operator pause. */
 export function runResume(root, argv, { say = console.log } = {}) {
-  if (argv.length !== 0) {
-    say("usage: qc resume");
+  if (argv.length !== 0 && (argv.length !== 2 || argv[0] !== "--branch" || !argv[1])) {
+    say("usage: qc resume [--branch <branch>]");
     return 2;
   }
   try {
-    rmSync(pauseFile(root), { force: true });
+    rmSync(argv.length ? holdFile(root, argv[1]) : pauseFile(root), { force: true });
     say("running");
     return 0;
   } catch (error) {

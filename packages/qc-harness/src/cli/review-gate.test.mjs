@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import path from "node:path";
 import { reviewDefaults } from "../config.mjs";
 import { ciState as readCiState } from "./ci-state.mjs";
 import {
@@ -284,6 +285,23 @@ const onBrief = (file) => file.replaceAll("\\", "/").endsWith("/plans/brief.md")
 const briefCheckOf = (text, over = {}) =>
   briefCheck({ prompt: "Read it.\nBrief: /plans/brief.md\nReport: /plans/report.md", dirs: ["/w"], review, exists: onBrief, read: () => text, ...over });
 const offAll = { ...review, productDecisions: false, roundFindings: 0, roundFiles: 0 };
+
+test("the dispatch brief checks CI failures even with the optional brief checks off", async (t) => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const { recordRun } = await import("./ci-failures.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "ci-brief-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10 }));
+  execFileSync("git", ["init", "-q", "-b", "fix/ci", root]);
+  recordRun(root, { id: 1, branch: "fix/ci", head: "aaaaaaa" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  const file = path.join(root, "brief.md");
+  writeFileSync(file, "## Product decisions\nnone\n");
+  const call = { prompt: `Brief: ${file}`, dirs: [root], review: offAll };
+  assert.match(briefCheck(call).refusal, /cleanup retries/);
+  writeFileSync(file, "## CI failures\n### cleanup retries\nCause: open handle\n");
+  assert.equal(briefCheck(call).refusal, null);
+});
 
 test("a brief with a Product decisions heading passes, with no note when it is under the limits", () => {
   assert.deepEqual(briefCheckOf(brief("# Brief", "## Product decisions", "None.", "1. one", `Files: ${files(3)}`)), { refusal: null, note: null });

@@ -4,7 +4,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { gitOutWithin, isAncestor, remoteTip } from "./git-read.mjs";
-import { shaMatches } from "./ledger.mjs";
+import { shaMatches, ledgerFileOf, readLedger } from "./ledger.mjs";
+import { ciBriefRefusal, currentBranch, openFailures } from "./ci-failures.mjs";
+import { holdRefusal } from "./pause.mjs";
+import { checkoutRootOf } from "./checkout-root.mjs";
 import { commitLookup, nativePath } from "./workflow-place.mjs";
 
 // Every read of a reviewer dispatch is capped, so the whole guard ends inside the Agent hook's 30 second limit.
@@ -202,10 +205,24 @@ function briefOf(prompt, dirs, exists, read) {
  * @returns `{ refusal, note }`
  */
 export function briefCheck({ prompt, dirs, review, exists = existsSync, read = (file) => readFileSync(file, "utf8") }) {
-  if (!review.productDecisions && review.roundFindings <= 0 && review.roundFiles <= 0) return pass();
+  let ciRoot;
+  let branch;
+  for (const dir of [...dirs].reverse()) {
+    const root = checkoutRootOf(dir);
+    const ledger = root && ledgerFileOf(root);
+    if (!ledger || !readLedger(ledger).some((r) => r.type === "ci-failure")) continue;
+    branch = currentBranch(root);
+    const hold = holdRefusal(root, branch);
+    if (hold) return refuse(hold);
+    if (openFailures(root, branch).length) ciRoot = root;
+    break;
+  }
+  if (!ciRoot && !review.productDecisions && review.roundFindings <= 0 && review.roundFiles <= 0) return pass();
   const brief = briefOf(prompt, dirs, exists, read);
   if (brief.refusal) return refuse(brief.refusal);
   const { text, source } = brief;
+  const ciRefusal = ciRoot && ciBriefRefusal(ciRoot, branch, text);
+  if (ciRefusal) return refuse(`Task gate: ${ciRefusal}`);
   const decisions = review.productDecisions ? productDecisionsOf(text) : undefined;
   if (decisions === null) {
     return refuse(

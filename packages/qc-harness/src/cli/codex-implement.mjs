@@ -11,7 +11,8 @@ import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, parsePollMinutes, waitForCodexReset } from "./codex-reset.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { checkRunCommits, findingName, guardRefs, protectedAllow } from "./commit-guard.mjs";
-import { pauseRefusal } from "./pause.mjs";
+import { pauseRefusal, holdRefusal } from "./pause.mjs";
+import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -82,7 +83,7 @@ export function parseArgs(argv) {
 const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").trimEnd().split(/\r?\n/).at(-1).trim() === DONE_MARKER;
 
 const FIXED_PREAMBLE = "The brief carries every rule. Load no skill. Write no `Grammar:` line.";
-const FIXED_HEADINGS = new Set(["Product decisions", "Run shape", "Commit", "Exit criteria"]);
+const FIXED_HEADINGS = new Set(["Product decisions", "Run shape", "Commit", "Exit criteria", "CI failures", "Diagnosis"]);
 
 const LEAN_RULES = [
   "Lean rules for every session. They cut repeated reading and helper agents. Never drop a security, tenant, data, or correctness check that this brief asks for.",
@@ -198,8 +199,12 @@ function codexLimitsOf(worktree) {
 const promptFor = (settings, codex) => {
   const brief = readFileSync(settings.brief, "utf8");
   validateBrief(brief, codex);
+  const refusal = ciBriefRefusal(settings.worktree, currentBranch(settings.worktree), brief);
+  if (refusal) throw new Error(refusal);
   const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
-  return `${preamble}\n\n${brief}${continuationNote(settings.progress)}`;
+  const rules = lessonRules(settings.worktree, load(settings.worktree).lessons);
+  const lessons = rules.length ? `\n\nCI lesson rules (newest first):\n${rules.join("\n")}` : "";
+  return `${preamble}\n\n${brief}${lessons}\nAn agent never releases a branch hold. Wait for the operator.${continuationNote(settings.progress)}`;
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
@@ -284,7 +289,7 @@ async function runJob(argv, {
   for (let count = 1; count <= settings.maxRuns; count += 1) {
     if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
     try {
-      const refusal = pauseRefusal(settings.worktree);
+      const refusal = pauseRefusal(settings.worktree) ?? holdRefusal(settings.worktree, currentBranch(settings.worktree));
       if (refusal) return finish(say, refusal, 5);
     } catch (error) {
       return finish(say, `cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`, 5);
