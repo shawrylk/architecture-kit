@@ -10,6 +10,7 @@ import { branchesAt, gitOut, gitOutWithin } from "./git-read.mjs";
 import { latestVerdictFor, shaMatches } from "./ledger.mjs";
 
 const KEY = "swarm.direct";
+const DEFAULTS = { ...directDefaults, reviewPaths: [".mcp.json", "**/.claude/**", ".github/workflows/**", "hooks/**"] };
 const DIRECT_KEYS = Object.keys(directDefaults);
 const KINDS = ["task", "branch"];
 const GITLINK_MODE = "160000";
@@ -34,7 +35,7 @@ export function directSettings(swarm = {}) {
   }
   const unknown = Object.keys(raw).find((key) => !DIRECT_KEYS.includes(key));
   if (unknown !== undefined) throw new Error(`${KEY}.${unknown} in qc.config.json is not a direct lane setting; the keys are ${DIRECT_KEYS.join(", ")}`);
-  const settings = merge(directDefaults, raw);
+  const settings = merge(DEFAULTS, raw);
   for (const key of ["maxLines", "maxFiles"]) if (!isCount(settings[key])) throw wrong(key, settings[key], "a positive whole number");
   for (const key of ["excludes", "reviewPaths"]) if (!isGlobList(settings[key])) throw wrong(key, settings[key], "a list of globs");
   return settings;

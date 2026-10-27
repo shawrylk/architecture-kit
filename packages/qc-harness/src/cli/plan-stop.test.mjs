@@ -93,6 +93,34 @@ test("a planner stop with no hand-back is judged on its last message", (t) => {
   assert.equal(decide(stop(ws.on, `PLAN: ${path.join(ws.plans, "good.md")}`), ws.tmp), null);
 });
 
+test("open questions need their own Source with a file line or URL before hand-back and stop", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.plans, "questions.md");
+  const message = `PLAN: ${file}`;
+  for (const question of [
+    "- Which store? Recommend SQLite.",
+    "- Which store? Source: storage.mjs. Recommend SQLite.",
+    "- Which store? Source: storage.mjs:0. Recommend SQLite.",
+    "- Which store? Source: https://. Recommend SQLite.",
+    "- Which store? Source: storage.mjs:12. Recommend SQLite.\n- Which region? Recommend EU.",
+    "Which store? Source: storage.mjs:12. Recommend SQLite.\n\nWhich region? Recommend EU.",
+  ]) {
+    writeFileSync(file, `${GOOD}\n## Open questions\n${question}\n`);
+    assert.match(denied(decide(handback(ws.on, message), ws.tmp)) ?? "", /Source:/);
+    assert.match(decide(stop(ws.on, message), ws.tmp)?.reason ?? "", /Source:/);
+    assert.equal(existsSync(ws.ledger), false);
+  }
+  for (const question of [
+    "- Which store? Recommend SQLite. Source: `storage.mjs:12`.",
+    "1. Which store? Recommend SQLite. **Source:** https://example.com/storage",
+    "- Which store?\n  Recommend SQLite.\n  Source: C:/repo/storage.mjs:12",
+    "- None.",
+  ]) {
+    writeFileSync(file, `${GOOD}\n## Open questions\n${question}\n## Product decisions\n- Use SQLite.\n`);
+    assert.equal(decide(handback(ws.on, message), ws.tmp), null, question);
+  }
+});
+
 test("the planner definition asks for the PLAN: line and the estimate line", () => {
   const text = readFileSync(PLANNER, "utf8");
   assert.match(text, /`PLAN: <absolute path of the plan>`/);
