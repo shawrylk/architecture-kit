@@ -199,12 +199,14 @@ function codexLimitsOf(worktree) {
 const promptFor = (settings, codex) => {
   const brief = readFileSync(settings.brief, "utf8");
   validateBrief(brief, codex);
-  const refusal = ciBriefRefusal(settings.worktree, currentBranch(settings.worktree), brief);
+  const branch = currentBranch(settings.worktree);
+  const refusal = ciBriefRefusal(settings.worktree, branch, brief);
   if (refusal) throw new Error(refusal);
   const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
   const rules = lessonRules(settings.worktree, load(settings.worktree).lessons);
   const lessons = rules.length ? `\n\nCI lesson rules (newest first):\n${rules.join("\n")}` : "";
-  return `${preamble}\n\n${brief}${lessons}\nAn agent never releases a branch hold. Wait for the operator.${continuationNote(settings.progress)}`;
+  const hold = branch && holdRefusal(settings.worktree, branch) ? "\nAn agent never releases a branch hold. Wait for the operator." : "";
+  return `${preamble}\n\n${brief}${lessons}${hold}${continuationNote(settings.progress)}`;
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
@@ -289,7 +291,8 @@ async function runJob(argv, {
   for (let count = 1; count <= settings.maxRuns; count += 1) {
     if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
     try {
-      const refusal = pauseRefusal(settings.worktree) ?? holdRefusal(settings.worktree, currentBranch(settings.worktree));
+      const branch = currentBranch(settings.worktree);
+      const refusal = pauseRefusal(settings.worktree) ?? (branch ? holdRefusal(settings.worktree, branch) : null);
       if (refusal) return finish(say, refusal, 5);
     } catch (error) {
       return finish(say, `cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`, 5);

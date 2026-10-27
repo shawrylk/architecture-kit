@@ -14,8 +14,8 @@ You implement exactly one task of a plan. The dispatch prompt names your task br
 - Step 0 of a fix round: merge `origin/<base>` into the branch, resolve any conflict, and run the tests, before you touch a finding.
 - Work test first: write the failing test, watch it fail, write the code, watch it pass.
 - Read the `Rule:` lines in `lessons.file` from `qc.config.json`, default `docs/ci-lessons.md`, before implementation.
-- For open CI failures, require each test and its `Cause:` under `## CI failures` in the brief.
-- After two failing heads, require `## Diagnosis` with `Root cause:` and `Evidence:` from the log and the code.
+- For open CI failures, read each test and its `Cause:` under `## CI failures` in the brief.
+- After two failing heads, read `## Diagnosis` with `Root cause:` and `Evidence:` from the log and the code.
 - After a green later head, write each resolved test's lesson with `Symptom:`, `Cause:`, and `Rule:` before the merge.
 - A third failing head holds the branch. An agent never releases it; wait for the operator's `qc resume --branch <branch>`.
 - Stay inside the paths the brief names. If you need another path, stop and say so in your report.

@@ -65,9 +65,13 @@ const expectedSkillOf = (task) => {
   return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).skill : null;
 };
 
-function run(cmd, cmdArgs, cwd, options = {}) {
+export function run(cmd, cmdArgs, cwd, options = {}) {
   const result = spawnSync(cmd, cmdArgs, { cwd, encoding: "utf8", shell: options.shell ?? false, env: options.env ?? process.env, maxBuffer: 1 << 26 });
-  return { code: result.status ?? 1, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+  const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+  if (cmd === "git" && cmdArgs.includes("commit") && result.status !== 0) {
+    throw new Error(`git commit failed: ${output || result.error?.message || result.status}`);
+  }
+  return { code: result.status ?? 1, output };
 }
 
 // One install of the fixture's dev dependencies, shared by every run through links.
@@ -120,7 +124,7 @@ function adopt(repo) {
   return init.output;
 }
 
-function prepare(dir, deps) {
+export function prepare(dir, deps) {
   const repo = path.join(dir, "repo");
   rmSync(dir, { recursive: true, force: true });
   cpSync(path.join(here, "fixture"), repo, { recursive: true });
@@ -132,9 +136,12 @@ function prepare(dir, deps) {
   git("config", "user.email", "eval@example.com");
   git("config", "user.name", "eval");
   git("config", "core.autocrlf", "false");
+  const emptyHooks = path.join(repo, ".git", "fixture-hooks");
+  mkdirSync(emptyHooks);
+  git("config", "core.hooksPath", emptyHooks.replaceAll("\\", "/"));
   git("add", "-A");
   git("commit", "-q", "-m", "chore: initial commit");
-  // The hooks bind only after the first commit, so the starting tree needs no green pass.
+  // Agent hooks bind after the fixture commit; setup uses an empty local hook folder.
   if (args.arm === "kit") git("config", "core.hooksPath", ".githooks");
   else git("config", "core.hooksPath", ".git/hooks");
   return { repo, adoption };

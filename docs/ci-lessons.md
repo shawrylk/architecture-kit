@@ -2,7 +2,7 @@
 
 Each entry names a failed test and preserves its symptom, cause, and rule.
 Add resolved failures before the merge. Keep the fields on separate lines.
-The prompt reads `Rule:` lines from the bottom of this file, at most 40.
+The prompt reads `Rule:` lines from the bottom of this file, at most 20 rules and 2,000 characters.
 
 ## headed auth accepts the named target and saves a valid session
 

@@ -160,7 +160,7 @@ export function summarizeSession({ main = [], agents = [] }, rates = RATES) {
     sum.maxContext = Math.max(sum.maxContext, stats.maxContext);
   }
   // The types' own credits are already in their cost1h, so the total takes none of its own.
-  return { types, total: finish(sum, rates, 0), collapses };
+  return { types, total: finish(sum, rates, 0), ...(collapses.length ? { collapses } : {}) };
 }
 
 const UNKNOWN = "unknown";
@@ -292,7 +292,7 @@ export function runTokens(config, args = [], out = console.log, err = console.er
   out(row(COLUMNS.map(([name]) => name)));
   for (const stats of [...report.types, report.total]) out(row(COLUMNS.map(([, , cell]) => cell(stats))));
   for (const text of FOOTER) out(text);
-  for (const collapse of report.collapses) out(`collapse: ${collapse.agent} (${collapse.type}) request=${collapse.request} call=${collapse.call} likely=${collapse.cause}`);
-  for (const hook of hooks.values()) out(`hook: ${hook.hook} event=${hook.event} calls=${hook.calls} total=${hook.totalMs}ms avg=${Math.round(hook.totalMs / hook.calls)}ms max=${hook.maxMs}ms`);
+  if (report.collapses) out(`collapse: ${report.collapses.map((collapse) => `${collapse.agent} (${collapse.type}) request=${collapse.request} call=${collapse.call} likely=${collapse.cause}`).join("; ")}`);
+  if (hooks.size) out(`hook: ${[...hooks.values()].map((hook) => `${hook.hook} event=${hook.event} calls=${hook.calls} total=${hook.totalMs}ms avg=${Math.round(hook.totalMs / hook.calls)}ms max=${hook.maxMs}ms`).join("; ")}`);
   return 0;
 }

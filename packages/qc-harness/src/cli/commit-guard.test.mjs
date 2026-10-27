@@ -760,6 +760,15 @@ test("the pre-push template guards each nondeleted range before the full check",
     "qc ci-failures --rerun --branch b",
     "qc check",
   ]);
+  for (const localRef of ["HEAD", "refs/heads/local"]) {
+    result = invoke(`${localRef} ${local} refs/heads/destination ${remote}\n`);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [
+      `qc commit-guard --push ${local} ${remote}`,
+      "qc ci-failures --rerun --branch destination",
+      "qc check",
+    ]);
+  }
   result = invoke(`refs/heads/a ${local} refs/heads/a ${remote}\n`, "4");
   assert.equal(result.status, 4, result.stderr);
   assert.ok(!readFileSync(log, "utf8").includes("qc check"));

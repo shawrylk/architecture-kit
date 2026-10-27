@@ -76,7 +76,7 @@ test("a diagnosed CI brief starts and includes lesson rules in the prompt", asyn
     say: quiet, out: quiet,
     run: async ({ input }) => {
       assert.match(input, /Rule: Retry Windows cleanup\./);
-      assert.match(input, /agent never releases/i);
+      assert.doesNotMatch(input, /agent never releases/i);
       writeFileSync(f.progress, `${DONE_MARKER}\n`);
       return { status: 0 };
     },
@@ -1468,4 +1468,23 @@ test("the CLI prints `exit 1` as the last stdout line after a usage error", () =
   const result = spawnSync(process.execPath, [QC, "codex-implement"], { encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.equal(result.stdout.trimEnd().split("\n").at(-1), "exit 1");
+});
+
+
+test("a detached HEAD starts without a branch hold even with a CI ledger", async (t) => {
+  const f = setup(t);
+  const git = (...args) => {
+    const result = spawnSync("git", ["-C", f.worktree, ...args], { env: f.gitEnv, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git("config", "core.hooksPath", ".git/hooks");
+  git("-c", "user.name=fixture", "-c", "user.email=fixture@example.com", "commit", "--allow-empty", "-qm", "chore: fixture");
+  git("checkout", "--detach", "-q");
+  appendRecord(ledgerFileOf(f.worktree), { type: "ci-failure", id: "other", branch: "main", head: "aaaaaaa", test: "other" });
+  holdBranch(f.worktree, "main", "other branch");
+  assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async ({ input }) => {
+    assert.doesNotMatch(input, /agent never releases/i);
+    writeFileSync(f.progress, `${DONE_MARKER}\n`);
+    return { status: 0 };
+  } }), 0);
 });

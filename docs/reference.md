@@ -644,16 +644,16 @@ The `1h` column prices the same requests at the one-hour cache lifetime. A negat
 `experimental.cacheTtl`: in the measured sessions the one-hour lifetime cost more for all four types,
 and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are API list prices.
 
-Each `collapse:` line names an agent's first request below 20% cache reads after three consecutive warm requests.
+One `collapse:` summary line lists each agent's first request below 20% cache reads after three consecutive warm requests.
 A warm request reads at least 20% of its prompt from cache.
 The prompt includes fresh input, cache reads, and cache writes.
 The line names the request id, call number, and likely cause when the model or explicit tool list changes.
 Absent evidence gives `likely=unknown`; tool calls alone do not establish a changed tool list.
 
-Each `hook:` line reports a hook's observed calls, total, average, and maximum duration in milliseconds.
+One `hook:` summary line lists each hook's observed calls, total, average, and maximum duration in milliseconds.
 The reader uses explicit `attachment.durationMs` with `hookName` and `hookEvent`, including cancelled hooks.
 It ignores session durations and estimates no missing timings.
-Both diagnostics print only when data exists; JSON adds `collapses` and, when present, `hooks`.
+Each diagnostic prints only when data exists; JSON includes `collapses` and `hooks` only when their data exists.
 
 #### Evaluate skill activation
 
@@ -661,7 +661,9 @@ The manual agent eval includes `skill-activation`, which asks for a cart guide w
 Its grader requires an assistant `Skill` call naming `architecture:writing-plain-english` in the run transcript.
 Text that mentions the skill earns no activation credit.
 The `noop` and `reference` controls prove failure and success with synthetic transcripts.
-This eval never runs in CI. See [Agent eval](../evals/agents/README.md) for the commands and result fields.
+The package test script runs the offline grader tests in CI; the eval itself never runs in CI.
+Fixture setup uses an empty local hook folder before its initial commit, then binds the agent hooks.
+A failed commit stops the run. See [Agent eval](../evals/agents/README.md) for the commands and result fields.
 
 #### Share the machine between agents
 
@@ -967,13 +969,15 @@ The watch reads this configuration at the git top level of the current folder, o
 An unreadable configuration writes one warning to stderr and uses an empty list.
 A commit status never counts as a required check, even when its context matches the configured name.
 
-On a failed run, the watch fetches `gh run view <id> --log-failed` with a 20-second timeout.
+On a failed run, the watch fetches `gh run view <id> --log-failed` with a 20-second timeout and a 64 MB buffer.
 It records the branch, head, OS, test file, test name, and first error line in the shared workflow ledger.
 Unknown output records the job name and first error line instead.
 A failed log fetch records nothing, writes one line to stderr, and preserves exit `5`.
 Use `qc ci-failures --run <id>` to record a run manually.
 A green later head on the same branch resolves its open records.
-The pre-push hook runs their test files before `qc check`, with `lessons.rerun` (default `node --test`).
+The pre-push hook reruns open test files for the remote branch before `qc check`, with `lessons.rerun` (default `node --test`).
+It strips runner checkout prefixes and skips unresolved files with one stderr line per file.
+A passing rerun prints nothing. A failure prints at most four lines with test names and the command for full output.
 Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
 
 With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.

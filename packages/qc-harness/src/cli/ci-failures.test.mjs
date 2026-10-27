@@ -259,3 +259,62 @@ test("an older green run cannot resolve a newer failure, and a manual log error 
   assert.equal(runCiFailures(root, ["--run", "40"], { gh, say: () => {}, warn: (s) => warnings.push(s) }), 1);
   assert.deepEqual(warnings, ["ci-failures: gh failed: log unavailable"]);
 });
+
+
+test("rerun skips unresolved files and normalizes runner prefixes before resolution", (t) => {
+  const root = fixture(t);
+  mkdirSync(path.join(root, "tests"));
+  writeFileSync(path.join(root, "tests/a.test.mjs"), "");
+  const prefixes = ["/home/runner/work/r/r/", "/__w/r/r/", "D:\\a\\r\\r\\"];
+  for (const [i, prefix] of prefixes.entries()) {
+    appendRecord(ledgerFileOf(root), { type: "ci-failure", id: `prefix-${i}`, branch: "prefix", file: `${prefix}tests/a.test.mjs`, test: "a" });
+  }
+  const warnings = [];
+  const calls = [];
+  assert.equal(rerunFailures(root, "prefix", { rerun: "node --test" }, {
+    warn: (s) => warnings.push(s), run: (command) => { calls.push(command); return { status: 0 }; },
+  }), 0);
+  assert.deepEqual(calls, ['node --test "tests/a.test.mjs"']);
+  assert.deepEqual(warnings, []);
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "missing", branch: "missing", file: "tests/old.test.mjs", test: "old" });
+  assert.equal(rerunFailures(root, "missing", { rerun: "node --test" }, {
+    warn: (s) => warnings.push(s), run: () => assert.fail("missing files must be skipped"),
+  }), 0);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0].split(/\r?\n/).length, 1);
+  assert.match(warnings[0], /skip.*tests\/old.test.mjs/);
+});
+
+test("rerun captures passing output and caps failures at four lines", (t) => {
+  const root = fixture(t);
+  mkdirSync(path.join(root, "tests"));
+  const file = path.join(root, "tests/a.test.mjs");
+  writeFileSync(file, 'import test from "node:test"; test("passes", () => {});');
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "output", branch: "main", file: "tests/a.test.mjs", test: "recorded failure" });
+  const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_TEST_CONTEXT"));
+  const invoke = () => spawnSync(process.execPath, [qc, "ci-failures", "--rerun", "--branch", "main"], { cwd: root, encoding: "utf8", env });
+  const pass = invoke();
+  assert.equal(pass.status, 0, pass.stderr);
+  assert.equal(pass.stdout, "");
+  assert.equal(pass.stderr, "");
+  writeFileSync(file, 'import test from "node:test"; for (let i=0; i<8; i++) test(`failed ${i}`, () => { throw new Error("detail"); });');
+  const fail = invoke();
+  assert.equal(fail.status, 1);
+  assert.equal(fail.stdout, "");
+  assert.ok(fail.stderr.trim().split(/\r?\n/).length <= 4, fail.stderr);
+  assert.match(fail.stderr, /failed 0/);
+  assert.match(fail.stderr, /node --test.*tests\/a.test.mjs/);
+});
+
+test("rerun refuses unsafe existing paths and skips paths that cannot resolve", (t) => {
+  const root = fixture(t);
+  writeFileSync(path.join(root, "bad;name.test.mjs"), "");
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "unsafe", branch: "unsafe", file: "bad;name.test.mjs", test: "unsafe" });
+  assert.equal(rerunFailures(root, "unsafe", { rerun: "node --test" }, { warn: () => {}, run: () => assert.fail("unsafe") }), 1);
+  writeFileSync(path.join(root, "plain"), "");
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "unresolved", branch: "unresolved", file: "plain/a.test.mjs", test: "unresolved" });
+  const warnings = [];
+  assert.equal(rerunFailures(root, "unresolved", { rerun: "node --test" }, { warn: (s) => warnings.push(s), run: () => assert.fail("unresolved") }), 0);
+  assert.equal(warnings.length, 1);
+});

@@ -40,6 +40,7 @@ export function runGhResult(args, { cwd = process.cwd(), env = {}, timeoutMs = G
   return spawnSync("gh", args, {
     cwd,
     encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
     windowsHide: true,
     timeout: timeoutMs,
     env: { ...process.env, ...expandHome(env) },
