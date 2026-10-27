@@ -546,7 +546,25 @@ default:
 { "swarm": { "dispatch": {} } }
 ```
 
-A repository without the section sees no change.
+A repository without the section keeps the checkpoint check described below; the other dispatch checks stay off.
+
+Every repository with `qc.config.json` requires a main-session checkpoint before an `Agent` dispatch, regardless of `swarm.dispatch`.
+The file lives at `<git common dir>/qc/checkpoints/<session_id>.md`, so linked worktrees share the path for one session.
+`SessionStart` prints its absolute path.
+Use `## Goal` for the user's words and `## Rules` for the user's standing constraints.
+Use `## Tasks` for each open item's state and `## Next` for the next action.
+The file permits at most 80 non-blank lines.
+The dispatch guard refuses a missing, unreadable, malformed, or stale checkpoint before it claims an implementer slot.
+The refusal names the path, the problem, and all four headings in at most four lines.
+`checkpoint.maxAgeMinutes` defaults to `30`; `0` disables only the age check.
+The age comes from the file's modification time.
+Agents in one assistant message use the first dispatch time for the age check when the transcript identifies the message.
+Each dispatch still checks the file's presence and shape.
+
+On `compact` or `resume`, the checkpoint hook loads the file as the source of truth for open work.
+It prints the first 80 lines, within 8,000 characters, and names both caps when it truncates the output.
+A missing file prints its path and the rule to write it; a read error prints a note.
+The hook always allows the session to start.
 
 A `PreToolUse` hook on the `Agent` tool refuses four kinds of dispatch, and each refusal names its
 fix:
@@ -915,6 +933,8 @@ Compaction below `compactAt` resets the thresholds.
 A null orchestrator budget turns the context watch off.
 The watch shows the user a line from 300K tokens when it reaches a threshold.
 With `swarm.dispatch` on, the budget guard owns the compaction reminder, and the context watch stays silent.
+Both reminders tell the main session to update its checkpoint now and name its absolute path.
+The checkpoint keeps the goal, standing rules, open tasks, and next action across compaction.
 
 A `TaskStop` frees the implementer slot of the agent it stopped, since that agent sends no
 `SubagentStop`. A session `startup` or `resume` frees every slot of the session. A subagent may not

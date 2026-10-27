@@ -27,6 +27,12 @@ stop reading: none of its rules apply.
 
 ## Dispatch
 
+- Keep the session checkpoint at `<git common dir>/qc/checkpoints/<session_id>.md`; `SessionStart` names its absolute path.
+- Use `## Goal` for the user's words and `## Rules` for the user's standing constraints.
+- Use `## Tasks` for each open item's state and `## Next` for the next action.
+- Keep at most 80 non-blank lines; update the file before each dispatch, at each clean break, and before compaction.
+- Treat the checkpoint as the source of truth for open work after compact or resume.
+
 Run feature units one at a time unless their paths are provably disjoint. Before each dispatch,
 confirm the tree is green: a red tree mid-dispatch is usually another unit still running, and the
 answer is to wait, not to edit.

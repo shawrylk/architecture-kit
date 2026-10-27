@@ -19,6 +19,12 @@ test("CODEX_LINE names the runtime tags, Runtime line, and qc codex status", () 
   }
 });
 
+test("the orchestrator note requires the SessionStart checkpoint before dispatch and compaction", () => {
+  assert.match(CODEX_LINE, /checkpoint named by SessionStart/);
+  assert.match(CODEX_LINE, /before each dispatch and compaction/);
+  assert.match(CODEX_LINE, /source of truth for open work/);
+});
+
 const NOTE = fileURLToPath(new URL("./dispatch-reminder.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
 

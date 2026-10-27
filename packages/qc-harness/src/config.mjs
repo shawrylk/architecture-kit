@@ -9,6 +9,7 @@ import path from "node:path";
 export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
+  checkpoint: { maxAgeMinutes: 30 },
   post: { aiLabel: true },
   ci: { requiredChecks: [] },
   guard: { protectedPaths: [".github/workflows/**", ".husky/**", ".githooks/**", "qc.config.json", ".claude/settings*.json"] },
@@ -688,6 +689,10 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (Object.hasOwn(user, "checkpoint") && !isPlainObject(user.checkpoint)) throw new TypeError("checkpoint must be an object");
+  if (!Number.isFinite(config.checkpoint.maxAgeMinutes) || config.checkpoint.maxAgeMinutes < 0) {
+    throw new TypeError("checkpoint.maxAgeMinutes must be a non-negative number");
+  }
   if (!isPlainObject(config.merge)) throw new TypeError("merge must be an object");
   if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
     throw new TypeError("merge.holdLabel must be a non-empty string without surrounding whitespace");
