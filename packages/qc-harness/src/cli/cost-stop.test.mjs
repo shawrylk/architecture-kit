@@ -83,6 +83,15 @@ test("the cost record carries endContext and peakContext", (t) => {
   assert.equal(record.peakContext, 90_000);
 });
 
+test("cost records carry the task Estimate value, or null when absent", (t) => {
+  const ws = workspace(t);
+  for (const [index, text, estimate] of [[0, "Estimate: 25 tool calls", 25], [1, "**Estimate:** 30 tool calls", 30], [2, "No estimate.", null]]) {
+    const file = transcript(ws, `estimate-${index}`, text);
+    assert.equal(decide(stop(ws, file, "sdd-implementer", { agent_id: `estimate-${index}` }), ws.tmp), null);
+    assert.equal(costs(ws).at(-1).estimate, estimate);
+  }
+});
+
 test("a subagent stop records its tokens once per request, its tool calls, and the branch and head of its dispatch", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledger, { type: "dispatch", session: "s", agentType: "sdd-implementer", task: true, worktree: ws.repo, branch: "feat/1-x", head: ws.head });
@@ -106,6 +115,7 @@ test("a subagent stop records its tokens once per request, its tool calls, and t
       endContext: 3005,
       peakContext: 3005,
       toolCalls: 4,
+      estimate: null,
       branch: "feat/1-x",
       head: ws.head,
     },

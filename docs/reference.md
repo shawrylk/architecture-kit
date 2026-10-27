@@ -179,7 +179,9 @@ Review the captured diff before committing it.
 Claude shares `cleanupPeriodDays`, `syncClaudeAiPlugins`, `env`, `permissions`, `model`, `skillOverrides`, `statusLine`, `enabledPlugins`, `extraKnownMarketplaces`, `effortLevel`, and `modelSettings`.
 It also shares `awaySummaryEnabled`, `autoUpdatesChannel`, `tui`, `skipWorkflowUsageWarning`, `theme`, `autoCompactEnabled`, `autoContinueAtUsageLimit`, `agentPushNotifEnabled`, and `skipAutoPermissionPrompt`.
 Only `CLAUDE_CODE_DISABLE_MOUSE` and `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP` are shared under `env`.
-Only `defaultMode` is shared under `permissions`.
+`defaultMode` and `deny` are shared under `permissions`; shared deny rules extend your local deny list.
+The shared rules deny `Read` of `.env`, `.env.local`, `.env.*.local`, `.env.production`, `*.pem`, `*.key`, `id_rsa*`, and `id_ed25519*` in every folder.
+`.env.example` stays readable. Shell reads still need the operating system sandbox.
 The `statusLine.command` stays `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.js"`.
 The status line needs a Nerd Font for its powerline glyphs.
 
@@ -721,6 +723,11 @@ The report lists the implementer before the reviewer and omits roles whose budge
 The cost roles `reviewer` and `branch-reviewer` both count as `reviewer`.
 The latest cost record replaces older records from a resumed agent.
 The report skips and counts cost records without `endContext`.
+Each cost record stores the task's `Estimate:` value, or `null` when the task has no estimate.
+Estimate accuracy rows show the median ratio of actual tool calls to positive estimates, separately for each cost role.
+They use the latest record per agent and include records without context figures.
+After five measured tasks in one role, a median above `1.5` advises raising `maxTaskCalls`; a median below `0.5` advises lowering it.
+Fewer tasks and ratios from `0.5` through `1.5` produce no estimate advice.
 An invalid budget prints one error line and exits with code `1`.
 The orchestrator and Codex leave no cost record, so the report says so in one line.
 
@@ -1175,7 +1182,7 @@ Each refusal names the reason the lane does not apply.
 | `maxLines` | `20` | the most changed lines, added plus deleted |
 | `maxFiles` | `2` | the most changed files |
 | `excludes` | `["schemas/**", "**/migrations/**"]` | globs a direct fix may not touch |
-| `reviewPaths` | `[]` | globs a direct fix may touch only with one APPROVED review of its head, of either kind. The merge guard names that review in its note |
+| `reviewPaths` | `[".mcp.json", "**/.claude/**", ".github/workflows/**", "hooks/**"]` | globs a direct fix may touch only with one APPROVED review of its head, of either kind. The merge guard names that review in its note |
 
 The keys go under `swarm.direct`. A list replaces its default.
 
