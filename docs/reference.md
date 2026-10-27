@@ -1175,7 +1175,10 @@ When multiple globs match, the task needs all their case words.
 
 A passing `qc plan-check` prints nothing.
 A refusal prints at most three lines, each naming the task or quoting the question's first six words and its missing requirement.
-An unlisted line under `## Open questions` that ends without `?` is an introduction.
+A line with a list marker starts a question.
+A line that contains `?` starts a question only when none is open, and an indented line inside an open question continues it.
+So `Which region? Recommend EU.` is a question, and a wrapped question whose continuation ends with `?` counts once.
+Before any question, an unlisted line that contains no `?` is an introduction.
 Fix those requirements and run the check again to see any further problems.
 
 #### A fix on a red head, and reviews in parallel

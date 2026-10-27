@@ -104,6 +104,7 @@ test("open questions need their own Source with a file line or URL before hand-b
     "- Which store? Source: https://. Recommend SQLite.",
     "- Which store? Source: storage.mjs:12. Recommend SQLite.\n- Which region? Recommend EU.",
     "Which store?\nSource: storage.mjs:12. Recommend SQLite.\n\nWhich region?",
+    "Which region? Recommend EU.",
   ]) {
     writeFileSync(file, `${GOOD}\n## Open questions\n${question}\n`);
     assert.match(denied(decide(handback(ws.on, message), ws.tmp)) ?? "", /Source:/);
@@ -114,6 +115,8 @@ test("open questions need their own Source with a file line or URL before hand-b
     "- Which store? Recommend SQLite. Source: `storage.mjs:12`.",
     "1. Which store? Recommend SQLite. **Source:** https://example.com/storage",
     "- Which store?\n  Recommend SQLite.\n  Source: C:/repo/storage.mjs:12",
+    "- Which store should hold the cache,\n  given the expected load?\n  Source: src/a.mjs:1",
+    "- Which store? Recommend SQLite.\n  Does it need WAL?\n  Source: src/a.mjs:1",
     "- None.",
   ]) {
     writeFileSync(file, `${GOOD}\n## Open questions\n${question}\n## Product decisions\n- Use SQLite.\n`);

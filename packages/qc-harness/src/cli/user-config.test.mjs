@@ -28,7 +28,7 @@ const SECRET_READ_DENIES = [
   "Read(~/.ssh/**)",
 ];
 
-test("shared permissions deny secret reads in every folder while examples stay readable", () => {
+test("shared permissions deny secret reads in the working directory and ~/.ssh while examples stay readable", () => {
   const shared = readFileSync(new URL("../../../../user-config/claude/settings.shared.json", import.meta.url), "utf8");
   assert.deepEqual(JSON.parse(shared).permissions.deny, SECRET_READ_DENIES);
   const local = { permissions: { allow: ["Read(**/.env.example)"], deny: ["Bash(rm *)"] } };

@@ -172,8 +172,9 @@ export function questionProblems(markdown) {
     if (depth === null) continue;
     const listed = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/.exec(line);
     if (heading || line.trim() === "") { finish(); continue; }
-    if (listed || line.trim().endsWith("?")) finish();
-    if (listed || question || line.trim().endsWith("?")) question += `${listed ? line.slice(listed[0].length) : line}\n`;
+    const asks = line.includes("?");
+    if (listed || (asks && !question)) finish();
+    if (listed || question || asks) question += `${listed ? line.slice(listed[0].length) : line}\n`;
   }
   finish();
   return questions.filter((entry) => !/^(?:[-*+]\s*)?(?:none|no open questions)[.!]?$/i.test(entry))
