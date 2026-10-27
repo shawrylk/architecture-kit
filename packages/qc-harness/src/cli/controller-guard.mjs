@@ -2,6 +2,7 @@
 // The PreToolUse trigger that keeps the main session a controller while `swarm.dispatch` is on: it edits only `swarm.review.controllerPaths`,
 // or a small fix inside `swarm.direct`. It guards the edit tools; a shell write is only reported, by `bash-edit-guard.mjs`.
 
+import { lstatSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathMatcher } from "../glob.mjs";
@@ -20,6 +21,19 @@ const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", 
 function sameRepository(a, b) {
   const [left, right] = [commonDirOf(a), commonDirOf(b)];
   return left !== null && right !== null && pathKey(left) === pathKey(right);
+}
+
+/** The path as written, with no case on Windows. A real path would let a link carry the checkpoint exception to its target. */
+const lexicalKey = (file, platform) => (platform === "win32" ? path.resolve(file).toLowerCase() : path.resolve(file));
+
+/** True when `file` is a symlink. A file that does not exist yet is not one. */
+function isSymlink(file) {
+  try {
+    return lstatSync(file).isSymbolicLink();
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 /** True when `rel` matches a controller glob, with no case on Windows. */
@@ -43,7 +57,7 @@ export function decide(call, platform = process.platform) {
   const file = path.resolve(cwd, target);
   try {
     const checkpoint = checkpointPathOf(cwd, call.session_id);
-    if (checkpoint && pathKey(file) === pathKey(checkpoint)) return null;
+    if (checkpoint && lexicalKey(file, platform) === lexicalKey(checkpoint, platform) && !isSymlink(checkpoint)) return null;
   } catch {
     // An unresolved checkpoint grants no edit exception.
   }

@@ -121,7 +121,7 @@ export function decide(call) {
     const checkpoint = readCheckpoint(file, { maxAgeMinutes: 0 });
     if (checkpoint.text === null) return context(`${note}\nCheckpoint: ${checkpoint.problem}.`);
     const lines = checkpoint.text.split(/\r?\n/).filter((line) => line.trim());
-    const header = `Checkpoint ${file} is the source of truth for open work.${lines.length === 60 ? " " : "\n"}`;
+    const header = `Checkpoint ${file} is the source of truth for open work.\n`;
     const cap = "\nCheckpoint print capped at 60 lines and 4,000 characters. Read the file for the rest.";
     const preview = lines.slice(0, 60).join("\n");
     const truncated = lines.length > 60 || header.length + preview.length > 4000;

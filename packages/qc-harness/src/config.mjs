@@ -280,7 +280,7 @@ export const defaults = {
     dispatch: null,
     // Read only while `dispatch` is on. `reviewDefaults` fills each key it omits.
     review: null,
-    // Read only while `dispatch` is on, and on by default then. `false` turns it off; `directDefaults` fills each key it omits.
+    // Read only while `dispatch` is on, and on by default then. `false` turns it off; `directDefaults` fills each key it omits, except `reviewPaths`, which `direct-lane.mjs` defaults.
     direct: null,
   },
 
