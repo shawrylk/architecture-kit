@@ -566,7 +566,7 @@ Agents in one assistant message use the first dispatch time for the age check wh
 Each dispatch still checks the file's presence and shape.
 
 On `compact` or `resume`, the checkpoint hook loads the file as the source of truth for open work.
-It prints the header line and at most 60 checkpoint lines, within 4,000 characters in total. On truncation, it prints 58 lines and a note that names both caps.
+After the header line, it prints at most 60 lines, within 4,000 characters in total. On truncation, it prints 58 lines and a note that names both caps.
 It drops blank lines before applying the line cap.
 A missing file prints its path and the rule to write it; a read error prints a note.
 The hook always allows the session to start.
