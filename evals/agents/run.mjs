@@ -11,8 +11,10 @@ import { parseArgs } from "node:util";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const isWindows = process.platform === "win32";
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 const { values: args } = parseArgs({
+  args: isMain ? process.argv.slice(2) : [],
   options: {
     agent: { type: "string", default: "claude" },
     arm: { type: "string", default: "none" },
@@ -35,12 +37,33 @@ if (!["none", "kit"].includes(args.arm)) throw new Error(`--arm is none or kit, 
 if (args.arm === "kit" && !args.kit) throw new Error("--arm kit needs --kit <path to a kit checkout>");
 const kit = args.kit ? path.resolve(args.kit) : undefined;
 const label = args.label ?? args.arm;
-mkdirSync(args.work, { recursive: true });
+if (isMain) mkdirSync(args.work, { recursive: true });
 // The long form of the path: Claude Code refuses an edit under an 8.3 short name such as NGUYEN~1.
-args.work = realpathSync.native(args.work);
+if (isMain) args.work = realpathSync.native(args.work);
 const outPath = path.resolve(args.out ?? path.join(args.work, "results"));
-mkdirSync(outPath, { recursive: true });
-const out = realpathSync.native(outPath);
+if (isMain) mkdirSync(outPath, { recursive: true });
+const out = isMain ? realpathSync.native(outPath) : outPath;
+
+/** Branch: an assistant Skill call names the exact expected skill in the run transcript. */
+export function skillActivationOf(transcript, expected) {
+  if (!existsSync(transcript)) return false;
+  return readFileSync(transcript, "utf8").split(/\r?\n/).some((line) => {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    const content = event?.message?.content;
+    return event?.type === "assistant" && Array.isArray(content) && content.some((block) =>
+      block?.type === "tool_use" && block.name === "Skill" && block.input?.skill === expected);
+  });
+}
+
+const expectedSkillOf = (task) => {
+  const file = path.join(here, "tasks", task, "expected-skill.json");
+  return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")).skill : null;
+};
 
 function run(cmd, cmdArgs, cwd, options = {}) {
   const result = spawnSync(cmd, cmdArgs, { cwd, encoding: "utf8", shell: options.shell ?? false, env: options.env ?? process.env, maxBuffer: 1 << 26 });
@@ -110,7 +133,7 @@ function prepare(dir, deps) {
   git("config", "user.name", "eval");
   git("config", "core.autocrlf", "false");
   git("add", "-A");
-  git("commit", "-q", "--no-verify", "-m", "chore: initial commit");
+  git("commit", "-q", "-m", "chore: initial commit");
   // The hooks bind only after the first commit, so the starting tree needs no green pass.
   if (args.arm === "kit") git("config", "core.hooksPath", ".githooks");
   else git("config", "core.hooksPath", ".git/hooks");
@@ -134,7 +157,7 @@ function adoptionCost(repo) {
 
 function claudeArgs() {
   const list = ["-p", "--output-format", "stream-json", "--verbose", "--setting-sources", "project,local", "--no-session-persistence"];
-  list.push("--permission-mode", "acceptEdits", "--allowedTools", "Bash", "Read", "Edit", "Write", "Glob", "Grep", "--max-budget-usd", args.budget);
+  list.push("--permission-mode", "acceptEdits", "--allowedTools", "Bash", "Read", "Edit", "Write", "Glob", "Grep", "Skill", "--max-budget-usd", args.budget);
   if (args.model) list.push("--model", args.model);
   if (args.arm === "kit") list.push("--plugin-dir", kit);
   return list;
@@ -154,6 +177,10 @@ function codexArgs(repo) {
 function runAgent(repo, prompt, transcript, task) {
   if (args.agent === "noop") return { exitCode: 0, seconds: 0 };
   if (args.agent === "reference") {
+    const skill = expectedSkillOf(task);
+    if (skill) writeFileSync(transcript, `${JSON.stringify({ type: "assistant", message: {
+      content: [{ type: "tool_use", id: "reference-skill", name: "Skill", input: { skill } }],
+    } })}\n`);
     cpSync(path.join(here, "tasks", task, "solution"), path.join(repo, "src"), { recursive: true });
     run("git", ["add", "-A"], repo);
     run("git", ["commit", "-q", "-m", "fix: apply the reference solution"], repo);
@@ -231,7 +258,9 @@ function usageOf(transcript) {
 const NEUTRAL_LINT = readFileSync(path.join(here, "fixture", "eslint.config.mjs"), "utf8");
 
 // Graded after the run, with files the agent never saw: the hidden tests, tsc, and the plain lint config.
-function grade(repo, task) {
+function grade(repo, task, transcript) {
+  const expectedSkill = expectedSkillOf(task);
+  const skillActivated = expectedSkill ? skillActivationOf(transcript, expectedSkill) : null;
   const git = (...a) => run("git", a, repo).output.trim();
   const commits = Number(git("rev-list", "--count", "HEAD")) - 1;
   const dirty = git("status", "--porcelain").split("\n").filter(Boolean).length;
@@ -257,7 +286,8 @@ function grade(repo, task) {
   return {
     hiddenPass: hidden.pass,
     hiddenFail: hidden.fail,
-    solved: hidden.fail === 0 && hidden.pass > 0,
+    solved: hidden.fail === 0 && hidden.pass > 0 && skillActivated !== false,
+    ...(expectedSkill ? { expectedSkill, skillActivated } : {}),
     visibleFail: visible.fail,
     typecheck: tsc.code === 0,
     lint: lint.code === 0,
@@ -287,11 +317,12 @@ async function one(task, rep, deps) {
   console.log(`start ${path.basename(dir)}`);
   const agent = await runAgent(repo, prompt, transcript, task);
   const hookCommit = args.agent === "codex" ? commitForAgent(repo) : undefined;
-  const record = { label, agent: args.agent, arm: args.arm, task, rep, ...agent, ...usageOf(transcript), hookCommit, ...grade(repo, task), adoption: cost, initOutput: adoption.slice(0, 1000) };
+  const record = { label, agent: args.agent, arm: args.arm, task, rep, ...agent, ...usageOf(transcript), hookCommit, ...grade(repo, task, transcript), adoption: cost, initOutput: adoption.slice(0, 1000) };
   appendFileSync(path.join(out, "results.jsonl"), `${JSON.stringify(record)}\n`);
   console.log(`done  ${path.basename(dir)} solved=${record.solved} tsc=${record.typecheck} lint=${record.lint} ${record.seconds}s blocks=${record.hookBlocks} gitFails=${record.gitFails} outOfScope=${record.outOfScope.join(",")}`);
 }
 
+if (isMain) {
 const deps = ensureDeps();
 const jobs = args.tasks.split(",").flatMap((task) => Array.from({ length: Number(args.reps) }, (_, i) => [task, i + 1]));
 const pool = Array.from({ length: Number(args.parallel) }, async () => {
@@ -301,3 +332,4 @@ const pool = Array.from({ length: Number(args.parallel) }, async () => {
   }
 });
 await Promise.all(pool);
+}

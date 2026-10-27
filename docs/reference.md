@@ -624,6 +624,25 @@ The `1h` column prices the same requests at the one-hour cache lifetime. A negat
 `experimental.cacheTtl`: in the measured sessions the one-hour lifetime cost more for all four types,
 and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are API list prices.
 
+Each `collapse:` line names an agent's first request below 20% cache reads after three consecutive warm requests.
+A warm request reads at least 20% of its prompt from cache.
+The prompt includes fresh input, cache reads, and cache writes.
+The line names the request id, call number, and likely cause when the model or explicit tool list changes.
+Absent evidence gives `likely=unknown`; tool calls alone do not establish a changed tool list.
+
+Each `hook:` line reports a hook's observed calls, total, average, and maximum duration in milliseconds.
+The reader uses explicit `attachment.durationMs` with `hookName` and `hookEvent`, including cancelled hooks.
+It ignores session durations and estimates no missing timings.
+Both diagnostics print only when data exists; JSON adds `collapses` and, when present, `hooks`.
+
+#### Evaluate skill activation
+
+The manual agent eval includes `skill-activation`, which asks for a cart guide with and without the kit.
+Its grader requires an assistant `Skill` call naming `architecture:writing-plain-english` in the run transcript.
+Text that mentions the skill earns no activation credit.
+The `noop` and `reference` controls prove failure and success with synthetic transcripts.
+This eval never runs in CI. See [Agent eval](../evals/agents/README.md) for the commands and result fields.
+
 #### Share the machine between agents
 
 Several agents on one machine can each start a heavy run at once and stall it. Wrap each heavy
