@@ -170,11 +170,14 @@ export function questionProblems(markdown) {
     if (heading && depth !== null && heading[1].length <= depth) { finish(); depth = null; }
     if (heading && /^Open questions\b/i.test(heading[2])) { depth = heading[1].length; continue; }
     if (depth === null) continue;
-    const listed = /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/.exec(line);
+    const listed = /^(?:[-*+]|\d+[.)])[ \t]+/.exec(line);
     if (heading || line.trim() === "") { finish(); continue; }
+    if (!question && questions.length === 0 && line.trimEnd().endsWith(":")) continue;
     const asks = line.includes("?");
-    if (listed || (asks && !question)) finish();
-    if (listed || question || asks) question += `${listed ? line.slice(listed[0].length) : line}\n`;
+    const continues = question && /^(?:Source:|Recommendation:|Recommend\b)/.test(line);
+    const starts = listed || (!continues && !/^[ \t]/.test(line) && asks);
+    if (starts) finish();
+    if (starts || question) question += `${listed ? line.slice(listed[0].length) : line}\n`;
   }
   finish();
   return questions.filter((entry) => !/^(?:[-*+]\s*)?(?:none|no open questions)[.!]?$/i.test(entry))

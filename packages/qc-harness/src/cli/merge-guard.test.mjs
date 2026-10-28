@@ -82,6 +82,36 @@ test("merge requires lessons for resolved failures at the pinned head even with 
   assert.match(denied(decide(shell(off, `gh pr merge 60 --match-head-commit ${sha}`), { gh })), /Operator:.*qc resume --branch/);
 });
 
+test("merge requires each same-repository head lesson before the branch reaches the base", (t) => {
+  const { off, ledgerOf } = workspace(t);
+  const git = (...args) => execFileSync("git", args, { cwd: off, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git("remote", "add", "origin", "https://github.com/o/r.git");
+  const base = bases.get(off);
+  git("checkout", "-qb", "feat/ci");
+  git("commit", "--allow-empty", "-qm", "green head");
+  const head = git("rev-parse", "HEAD");
+  assert.equal(spawnSync("git", ["merge-base", "--is-ancestor", head, base], { cwd: off }).status, 1);
+  for (const [id, repository, branch, name] of [
+    ["first", "o/r", "feat/ci", "cleanup retries"],
+    ["second", "o/r", "feat/ci", "connection closes"],
+    ["fork", "fork/r", "feat/ci", "fork failure"],
+    ["other", "o/r", "feat/other", "other failure"],
+  ]) appendRecord(ledgerOf(off), { type: "ci-failure", id, repository, branch, head: base, test: name });
+  const gh = fakeGh(prView(base, "main", "feat/ci")).gh;
+  const call = (sha) => decide(shell(off, `gh pr merge 60 --match-head-commit ${sha}`), { gh });
+  assert.match(denied(call(head)), /lesson.*cleanup retries.*connection closes/i);
+  mkdirSync(path.join(off, "docs"));
+  const lesson = (name) => `## ${name}\nSymptom: failure\nCause: open handle\nRule: Close the handle.\n`;
+  writeFileSync(path.join(off, "docs", "ci-lessons.md"), lesson("cleanup retries"));
+  git("add", ".");
+  git("commit", "-qm", "first lesson");
+  assert.match(denied(call(git("rev-parse", "HEAD"))), /lesson.*connection closes/i);
+  writeFileSync(path.join(off, "docs", "ci-lessons.md"), lesson("cleanup retries") + lesson("connection closes"));
+  git("add", ".");
+  git("commit", "-qm", "each lesson");
+  assert.equal(call(git("rev-parse", "HEAD")), null);
+});
+
 test("an operator pause refuses manual and reviewed merges with dispatch on or off", (t) => {
   const ws = workspace(t);
   for (const dir of [ws.on, ws.off]) {

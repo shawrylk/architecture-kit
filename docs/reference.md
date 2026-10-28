@@ -619,7 +619,8 @@ Agents in one assistant message use the first dispatch time for the age check wh
 Each dispatch still checks the file's presence and shape.
 
 On `compact` or `resume`, the checkpoint hook loads the file as the source of truth for open work.
-After the header line, it prints at most 60 lines, within 4,000 characters in total. On truncation, it prints 58 lines and a note that names both caps.
+The checkpoint is keyed by the session id; `--fork-session` starts a new id with no checkpoint.
+After the header line, it prints at most 60 lines, within 4,000 characters in total. On truncation, it prints at most 58 lines and a note that names both caps.
 It drops blank lines before applying the line cap.
 A missing file prints its path and the rule to write it; a read error prints a note.
 The hook always allows the session to start.
@@ -703,8 +704,9 @@ and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are 
 One `collapse:` summary line lists each agent's first request below 20% cache reads after three consecutive warm requests.
 A warm request reads at least 20% of its prompt from cache.
 The prompt includes fresh input, cache reads, and cache writes.
-The line names the request id, call number, and likely cause when the model or explicit tool list changes.
-Absent evidence gives `likely=unknown`; tool calls alone do not establish a changed tool list.
+The line names the request id, call number, and `model change` when the model changes.
+A gap beyond the observed cache lifetime adds `cache expiry`: five minutes by default, or one hour after a one-hour write.
+Absent evidence gives `likely=unknown`.
 
 One `hook:` summary line lists each hook's observed calls, total, average, and maximum duration in milliseconds.
 The reader uses explicit `attachment.durationMs` with `hookName` and `hookEvent`, including cancelled hooks.
@@ -719,7 +721,9 @@ Text that mentions the skill earns no activation credit.
 The `noop` and `reference` controls prove failure and success with synthetic transcripts.
 The package test script runs the offline grader tests in CI; the eval itself never runs in CI.
 Fixture setup uses an empty local hook folder before its initial commit, then binds the agent hooks.
-A failed commit stops the run. See [Agent eval](../evals/agents/README.md) for the commands and result fields.
+A failed fixture commit stops the run. Agent runs record refused commit exit codes; reference runs discard the commit exit code.
+An agent refusal records `hookCommit.passed: false`.
+See [Agent eval](../evals/agents/README.md) for the commands and result fields.
 
 #### Share the machine between agents
 
@@ -1027,13 +1031,22 @@ An unreadable configuration writes one warning to stderr and uses an empty list.
 A commit status never counts as a required check, even when its context matches the configured name.
 
 On a failed run, the watch fetches `gh run view <id> --log-failed` with a 20-second timeout and a 64 MB buffer.
-It records the branch, head, OS, test file, test name, and first error line in the shared workflow ledger.
+It parses TAP and Node `spec` failures into the shared workflow ledger.
+Each record carries the repository as `owner/name`, branch, head, OS, test file, test name, and first error line.
+For fork runs, the repository comes from `head_repository.full_name`.
+A hold applies only when the record's repository matches the local `origin` repository.
 Unknown output records the job name and first error line instead.
 A failed log fetch records nothing, writes one line to stderr, and preserves exit `5`.
 Use `qc ci-failures --run <id>` to record a run manually.
-A green later head on the same branch resolves its open records.
+The command reads the run's head repository from the Actions API for both failures and resolutions.
+A green later head on the same branch and repository resolves its open records.
+Open records also require lessons when their branch merges into `worktree.base`.
+Before the merge, the merge guard requires lessons for every open record of the PR head branch in the same repository.
+A watch with an explicit repository still applies the local hold when it cannot read `origin`.
 The pre-push hook reruns open test files for the remote branch before `qc check`, with `lessons.rerun` (default `node --test`).
-It strips runner checkout prefixes and skips unresolved or unsafe paths, with all skips in one stderr line.
+It strips runner checkout prefixes and skips unresolved or unsafe paths, with skips in one stderr line of at most 200 characters.
+The summary names skipped paths and uses `1 test file` for one file.
+The fallback failure names include only tests from files that ran.
 A passing rerun prints only the skip summary, when present. A failure prints at most four lines, including skips, test names, and the command for full output.
 Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
 
@@ -1213,6 +1226,10 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 | `reviewerTypes` | `{ task: [...], branch: [...] }`, the plugin's two reviewers, bare and scoped | the agent types whose stop records a verdict of each kind |
 | `plannerTypes` | the plugin's planner, bare and scoped | the agent types whose report runs the plan check |
 
+The checkpoint exception requires the parent's real path to equal the expected checkpoint folder under the real Git common directory.
+A junction or symlink that redirects the checkpoint folder elsewhere is refused; a junction to the checkout still compares equal.
+The checkpoint file itself is refused when `lstat` identifies a symlink.
+
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
 
 For each task whose files match `riskPaths`, write one `**Risk:**` line.
@@ -1220,6 +1237,7 @@ The line can start with a list marker, such as `- **Risk:**`.
 Name the failure condition, how it shows, and how to reverse it on that line.
 The check requires a non-empty line; you judge whether its content covers those points.
 File matching includes document and configuration paths, such as `schemas/api.yaml`.
+Risk paths match with the case rule of the platform.
 
 For a UI data view, set `swarm.review.cases` to `{"frontend/**/*.tsx": ["loading", "error", "empty", "success"]}`.
 Every matching task's test step must name each word, in its title, body, or code.
@@ -1228,10 +1246,13 @@ When multiple globs match, the task needs all their case words.
 
 A passing `qc plan-check` prints nothing.
 A refusal prints at most three lines, each naming the task or quoting the question's first six words and its missing requirement.
-A line with a list marker starts a question.
-A line that contains `?` starts a question only when none is open, and an indented line inside an open question continues it.
-So `Which region? Recommend EU.` is a question, and a wrapped question whose continuation ends with `?` counts once.
-Before any question, an unlisted line that contains no `?` is an introduction.
+A list marker at the left margin starts a question and closes the open question.
+An unindented line that contains `?` also starts a question and closes the open question.
+An unindented line starting with `Source:`, `Recommendation:`, or `Recommend` continues the open question, even with `?`.
+An indented line, an indented list item, and an unindented line without `?` continue the open question.
+Before any question, a line ending with `:` is an introduction, even with `?`, such as `Answer these first (why?):`.
+An unlisted line without `?` before any question is also an introduction.
+Thus, `Recommendation:` and `Source:` sub-bullets belong to their question, while `Which region? Recommend EU.` starts a new question.
 Fix those requirements and run the check again to see any further problems.
 
 #### A fix on a red head, and reviews in parallel

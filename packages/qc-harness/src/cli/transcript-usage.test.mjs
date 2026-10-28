@@ -43,19 +43,20 @@ function write(file, records) {
   return file;
 }
 
-test("requestOf retains an explicit tool list without retaining message text", () => {
+test("requestOf discards tool lists and message text", () => {
   const record = { type: "assistant", message: { id: "tools", model: "m", usage: { input_tokens: 1 },
     tools: [{ name: "Read" }, { name: "Skill" }], content: "private" } };
-  assert.deepEqual(requestOf(JSON.stringify(record)).tools, ["Read", "Skill"]);
+  assert.equal(Object.hasOwn(requestOf(JSON.stringify(record)), "tools"), false);
+  assert.equal(Object.hasOwn(requestOf(JSON.stringify(record)), "content"), false);
 });
 
-test("readRequests carries explicit system tool-list snapshots to following requests", (t) => {
+test("readRequests ignores system tool-list snapshots", (t) => {
   const base = folder(t);
   const file = write(path.join(base, "tools.jsonl"), [
     { type: "system", subtype: "init", tools: ["Read"] }, assistant("one", usage(800)),
     { type: "system", tools: ["Read", "Skill"] }, assistant("two", usage(0, 1000)),
   ]);
-  assert.deepEqual(readRequests(file).map((request) => request.tools), [["Read"], ["Read", "Skill"]]);
+  assert.deepEqual(readRequests(file).map((request) => Object.hasOwn(request, "tools")), [false, false]);
 });
 
 test("hook timings read explicit attachment durations, deduplicate ids, and ignore other durations", (t) => {

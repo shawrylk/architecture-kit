@@ -16,12 +16,149 @@ test (windows-latest)\tRun tests\t2026-01-01T00:00:00Z   location: 'file:///D:/a
 test (windows-latest)\tRun tests\t2026-01-01T00:00:00Z   error: 'EBUSY: resource busy'
 test (windows-latest)\tRun tests\t2026-01-01T00:00:00Z   ...`;
 
+test("parses a Node spec reporter failure excerpt without duplicating its summary", () => {
+  const log = `✖ cleanup retries (1.1624ms)
+ℹ tests 1
+ℹ fail 1
+
+✖ failing tests:
+
+test at qc-205-spec.test.mjs:1:72
+✖ cleanup retries (1.1624ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+  1 !== 2
+
+      at TestContext.<anonymous> (file:///C:/Users/NGUYEN%7E1/AppData/Local/Temp/qc-205-spec.test.mjs:1:109)`;
+  const failures = parseFailedLog(log);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].test, "cleanup retries");
+  assert.equal(failures[0].file, "qc-205-spec.test.mjs");
+  assert.match(failures[0].error, /AssertionError.*Expected values/);
+});
+
 function fixture(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "ci-lessons-"));
   execFileSync("git", ["init", "-q", root]);
+  execFileSync("git", ["remote", "add", "origin", "https://github.com/local/repo.git"], { cwd: root });
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return root;
 }
+
+test("records the repository and holds only failures from the local origin", (t) => {
+  const root = fixture(t);
+  for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) {
+    recordRun(root, { id, branch: "main", head }, { repo: "fork/repo", gh: () => tap });
+  }
+  assert.equal(readLedger(ledgerFileOf(root))[0].repository, "fork/repo");
+  assert.equal(holdRefusal(root, "main"), null);
+  for (const [id, head] of [[4, "ddddddd"], [5, "eeeeeee"], [6, "fffffff"]]) {
+    recordRun(root, { id, branch: "main", head }, { gh: () => tap });
+  }
+  assert.equal(readLedger(ledgerFileOf(root)).at(-1).repository, "local/repo");
+  assert.ok(holdRefusal(root, "main"));
+});
+
+test("watch isolates fork and explicit repositories when recording and resolving", async (t) => {
+  const root = fixture(t);
+  recordRun(root, { id: 1, branch: "main", head: "aaaaaaa" }, { gh: () => tap });
+  for (const fork of [true, false]) {
+    const repository = fork ? "fork/repo" : "other/repo";
+    let conclusion = "failure";
+    let head = "bbbbbbb";
+    let id = 2;
+    const gh = (args) => {
+      if (args.includes("--log-failed")) return tap;
+      if (args.includes(".sha")) return head;
+      return JSON.stringify({ workflow_runs: [{ id, head_sha: head, head_branch: "main", status: "completed", conclusion,
+        ...(fork ? { head_repository: { full_name: repository }, repository: { full_name: "local/repo" } } : {}) }] });
+    };
+    const watch = () => runWatch(["--run", "ci.yml@main", ...(!fork ? ["--repo", repository] : [])], {
+      cwd: root, requiredChecks: [], gh, say: () => {}, warn: () => {},
+    });
+    for (const sha of ["bbbbbbb", "ccccccc", "ddddddd"]) {
+      head = sha;
+      id += 1;
+      assert.equal(await watch(), 5);
+    }
+    assert.equal(holdRefusal(root, "main"), null);
+    assert.equal(openFailures(root, "main", repository).length, 3);
+    conclusion = "success";
+    head = "eeeeeee";
+    id += 1;
+    assert.equal(await watch(), 0);
+    assert.equal(openFailures(root, "main", repository).length, 0);
+    assert.equal(openFailures(root, "main").length, 1);
+  }
+});
+
+test("a local branch hold leaves an explicit foreign repository watch available", async (t) => {
+  const root = fixture(t);
+  for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "main", head }, { gh: () => tap });
+  assert.ok(holdRefusal(root, "main"));
+  assert.equal(await runWatch(["--run", "ci.yml@main", "--repo", "other/repo"], { cwd: root, requiredChecks: [], say: () => {},
+    gh: (args) => args.includes(".sha") ? "ddddddd" : JSON.stringify({ workflow_runs: [{ id: 4, head_sha: "ddddddd", status: "completed", conclusion: "success" }] }),
+  }), 0);
+});
+
+test("an unreadable origin keeps the hold on an explicit repository watch", async (t) => {
+  const root = fixture(t);
+  for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "main", head }, { gh: () => tap });
+  execFileSync("git", ["remote", "remove", "origin"], { cwd: root });
+  assert.ok(holdRefusal(root, "main"));
+  const lines = [];
+  assert.equal(await runWatch(["--run", "ci.yml@main", "--repo", "local/repo"], {
+    cwd: root, requiredChecks: [], say: (line) => lines.push(line),
+    gh: () => assert.fail("the hold must apply before polling"),
+    now: () => 0, sleep: () => { throw new Error("the hold must apply before waiting"); },
+  }), 5);
+  assert.match(lines[0], /qc resume --branch/);
+});
+
+test("manual recording and resolution use the fork run's head repository", (t) => {
+  const root = fixture(t);
+  recordRun(root, { id: 1, branch: "main", head: "aaaaaaa" }, { gh: () => tap });
+  let conclusion = "failure";
+  let head = "bbbbbbb";
+  const gh = (args) => args.includes("--log-failed") ? tap : JSON.stringify({
+    head_branch: "main", head_sha: head, conclusion,
+    head_repository: { full_name: "fork/repo" }, repository: { full_name: "local/repo" },
+  });
+  for (const [id, sha] of [[2, "bbbbbbb"], [3, "ccccccc"], [4, "ddddddd"]]) {
+    head = sha;
+    assert.equal(runCiFailures(root, ["--run", String(id)], { gh, warn: () => {} }), 0);
+  }
+  assert.equal(openFailures(root, "main", "fork/repo").length, 3);
+  assert.equal(openFailures(root, "main").length, 1);
+  assert.equal(holdRefusal(root, "main"), null);
+  conclusion = "success";
+  head = "eeeeeee";
+  assert.equal(runCiFailures(root, ["--run", "5"], { gh }), 0);
+  assert.equal(openFailures(root, "main", "fork/repo").length, 0);
+  assert.equal(openFailures(root, "main").length, 1);
+});
+
+test("open failures require lessons when their branch merges into the base", (t) => {
+  const root = fixture(t);
+  const git = (...args) => execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", ...args], { cwd: root, encoding: "utf8" }).trim();
+  git("commit", "--allow-empty", "-qm", "base");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-qb", "feat/merged");
+  git("commit", "--allow-empty", "-qm", "branch");
+  recordRun(root, { id: 1, branch: "feat/merged", head: git("rev-parse", "HEAD") }, { gh: () => tap });
+  assert.equal(lessonRefusal(root, "feat/merged", ""), null);
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  assert.equal(openFailures(root, "feat/merged").length, 1);
+  assert.match(lessonRefusal(root, "feat/merged", ""), /cleanup retries/);
+  assert.equal(lessonRefusal(root, "feat/merged", "## cleanup retries\nSymptom: EBUSY\nCause: open handle\nRule: Close it.\n"), null);
+});
+
+test("foreign resolutions leave legacy local records open", (t) => {
+  const root = fixture(t);
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "legacy", branch: "main", head: "aaaaaaa", test: "legacy" });
+  resolveFailures(root, "main", "bbbbbbb", 2, "fork/repo");
+  assert.equal(openFailures(root, "main").length, 1);
+});
 
 test("records TAP failures once per run and resolves only on a later head of the same branch", (t) => {
   const root = fixture(t);
@@ -180,17 +317,17 @@ test("manual recording reads run metadata with a fake gh", (t) => {
   const calls = [];
   const gh = (args) => {
     calls.push(args);
-    return args.includes("--log-failed") ? tap : JSON.stringify({ headBranch: "feat/test", headSha: "aaaaaaa", conclusion: "failure" });
+    return args.includes("--log-failed") ? tap : JSON.stringify({ head_branch: "feat/test", head_repository: { full_name: "local/repo" }, head_sha: "aaaaaaa", conclusion: "failure" });
   };
   assert.equal(runCiFailures(root, ["--run", "42"], { gh, say: () => {} }), 0);
   assert.equal(openFailures(root, "feat/test").length, 1);
-  assert.deepEqual(calls[0], ["run", "view", "42", "--json", "headBranch,headSha,conclusion"]);
+  assert.deepEqual(calls[0], ["api", "repos/{owner}/{repo}/actions/runs/42"]);
 });
 
 test("CI commands pass silently and refusals fit four lines", (t) => {
   const root = fixture(t);
   const output = [];
-  const options = { say: (s) => output.push(s), warn: (s) => output.push(s), gh: () => JSON.stringify({ headBranch: "feat/test", headSha: "bbbbbbb", conclusion: "success" }) };
+  const options = { say: (s) => output.push(s), warn: (s) => output.push(s), gh: () => JSON.stringify({ head_branch: "feat/test", head_repository: { full_name: "local/repo" }, head_sha: "bbbbbbb", conclusion: "success" }) };
   assert.equal(runCiFailures(root, ["--run", "42"], options), 0);
   assert.deepEqual(output, []);
   assert.equal(runCiFailures(root, ["--rerun", "--branch", "green"], options), 0);
@@ -254,7 +391,7 @@ test("an older green run cannot resolve a newer failure, and a manual log error 
   const warnings = [];
   const gh = (args) => {
     if (args.includes("--log-failed")) throw new Error("log unavailable\nmore detail");
-    return JSON.stringify({ headBranch: "feat/test", headSha: "ddddddd", conclusion: "failure" });
+    return JSON.stringify({ head_branch: "feat/test", head_repository: { full_name: "local/repo" }, head_sha: "ddddddd", conclusion: "failure" });
   };
   assert.equal(runCiFailures(root, ["--run", "40"], { gh, say: () => {}, warn: (s) => warnings.push(s) }), 1);
   assert.deepEqual(warnings, ["ci-failures: gh failed: log unavailable"]);
@@ -311,7 +448,11 @@ test("rerun skips unsafe existing paths and paths that cannot resolve", (t) => {
   const root = fixture(t);
   writeFileSync(path.join(root, "bad;name.test.mjs"), "");
   appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "unsafe", branch: "unsafe", file: "bad;name.test.mjs", test: "unsafe" });
-  assert.equal(rerunFailures(root, "unsafe", { rerun: "node --test" }, { warn: () => {}, run: () => assert.fail("unsafe") }), 0);
+  const unsafeWarnings = [];
+  assert.equal(rerunFailures(root, "unsafe", { rerun: "node --test" }, { warn: (s) => unsafeWarnings.push(s), run: () => assert.fail("unsafe") }), 0);
+  assert.equal(unsafeWarnings.length, 1);
+  assert.match(unsafeWarnings[0], /skip 1 test file:.*bad;name\.test\.mjs/);
+  assert.ok(unsafeWarnings[0].length <= 200);
   writeFileSync(path.join(root, "plain"), "");
   appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "unresolved", branch: "unresolved", file: "plain/a.test.mjs", test: "unresolved" });
   const warnings = [];
@@ -348,5 +489,21 @@ test("rerun folds all skips into one line and keeps failed output within four li
     assert.equal(warnings.filter((s) => /skip/.test(s)).length, 1);
     assert.match(warnings[0], /missing1.*missing2/);
     assert.ok(warnings.join("\n").split(/\r?\n/).length <= (status ? 4 : 1), warnings.join("\n"));
+    if (status) {
+      assert.match(warnings[1], /failure 2/);
+      assert.doesNotMatch(warnings.slice(1).join("\n"), /failure [01]/);
+    }
   }
+});
+
+test("the skip line stays within 200 characters for many long paths", (t) => {
+  const root = fixture(t);
+  for (let i = 0; i < 10; i += 1) appendRecord(ledgerFileOf(root), {
+    type: "ci-failure", id: `long-${i}`, branch: "long", file: `${"x".repeat(100)}-${i}.test.mjs`, test: "missing",
+  });
+  const warnings = [];
+  assert.equal(rerunFailures(root, "long", { rerun: "node --test" }, { warn: (s) => warnings.push(s) }), 0);
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0].length <= 200);
+  assert.match(warnings[0], /skip 10 test files:/);
 });
