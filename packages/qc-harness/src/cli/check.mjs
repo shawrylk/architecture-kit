@@ -121,7 +121,7 @@ export async function runFullCheck(config, args = [], options = {}) {
       const quotedCli = `'${cli.replace(/'/g, "'\\''")}'`;
       const command = `if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else npm ci; fi && node ${quotedCli} check --full`;
       // A temporary view gives Linux its own dependencies without exporting Git variables into test fixtures.
-      const linuxView = "qc_tree=$(mktemp -d /tmp/qc-platform.XXXXXX) && trap 'rm -rf \"$qc_tree\"' EXIT && tar --exclude=.git --exclude=node_modules -cf \"$qc_tree/source.tar\" . && tar -xf \"$qc_tree/source.tar\" -C \"$qc_tree\" && rm \"$qc_tree/source.tar\" && printf 'gitdir: %s\\n' \"$QC_PLATFORM_GIT_DIR\" > \"$qc_tree/.git\" && cd \"$qc_tree\" && export QC_PLATFORM_LEG_PARENT=\"$qc_tree\" && ";
+      const linuxView = `qc_tree=$(mktemp -d /tmp/qc-platform.XXXXXX) && trap 'rm -rf "$qc_tree"' EXIT && git -c core.autocrlf=false -c core.eol=lf --git-dir="$QC_PLATFORM_GIT_DIR" archive --format=tar --output="$qc_tree/source.tar" '${head.replace(/'/g, "'\\''")}' && tar -xf "$qc_tree/source.tar" -C "$qc_tree" && rm "$qc_tree/source.tar" && printf 'gitdir: %s\\n' "$QC_PLATFORM_GIT_DIR" > "$qc_tree/.git" && cd "$qc_tree" && export QC_PLATFORM_LEG_PARENT="$qc_tree" && `;
       const common = path.resolve(config.root, git("rev-parse", "--git-common-dir"));
       const gitDir = path.resolve(config.root, git("rev-parse", "--absolute-git-dir"));
       if (docker.status === 0) {

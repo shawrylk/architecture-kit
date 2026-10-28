@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { runFullCheck } from "./check.mjs";
 
 function fixture(overrides = {}) {
@@ -47,7 +51,8 @@ test('Windows uses Docker and engines Node major for a Linux leg', async () => {
   assert.ok(calls[1][1].includes('type=bind,source=C:\\repo with space,target=/workspace'));
   assert.ok(calls[1][1].some((arg) => arg.startsWith('QC_PLATFORM_GIT_DIR=/qc-git')));
   assert.ok(calls[1][1].every((arg) => !arg.startsWith('GIT_DIR=') && !arg.startsWith('GIT_WORK_TREE=')));
-  assert.match(calls[1][1].at(-1), /mktemp -d.*tar --exclude=\.git --exclude=node_modules/);
+  assert.match(calls[1][1].at(-1), /mktemp -d.*git -c core.autocrlf=false -c core.eol=lf --git-dir="\$QC_PLATFORM_GIT_DIR" archive --format=tar --output="\$qc_tree\/source.tar" 'head'/);
+  assert.doesNotMatch(calls[1][1].at(-1), /tar --exclude/);
   assert.equal(records[0].os, 'linux');
 });
 test('Windows falls back to WSL when Docker is absent', async () => {
@@ -58,7 +63,39 @@ test('Windows falls back to WSL when Docker is absent', async () => {
   assert.ok(calls.at(-1)[1].includes('/mnt/c/repo'));
   assert.ok(calls.at(-1)[1].every((arg) => !arg.startsWith('GIT_DIR=') && !arg.startsWith('GIT_WORK_TREE=')));
   assert.doesNotMatch(calls.at(-1)[1].at(-1), /corepack enable/);
+  assert.match(calls.at(-1)[1].at(-1), /git -c core.autocrlf=false -c core.eol=lf --git-dir="\$QC_PLATFORM_GIT_DIR" archive --format=tar --output="\$qc_tree\/source.tar" 'head'/);
   assert.equal(records[0].os, 'linux');
+});
+
+test('the Linux view uses the pinned head bytes despite a CRLF checkout and later edits', async (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'qc-linux-bytes-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('init');
+  git('config', 'user.name', 'Fixture');
+  git('config', 'user.email', 'fixture@example.test');
+  git('config', 'core.autocrlf', 'true');
+  writeFileSync(path.join(root, 'source.sh'), 'echo stored\n');
+  git('add', 'source.sh');
+  git('commit', '-m', 'fixture');
+  rmSync(path.join(root, 'source.sh'));
+  git('checkout', '--', 'source.sh');
+  assert.equal(readFileSync(path.join(root, 'source.sh'), 'utf8'), 'echo stored\r\n');
+  const head = git('rev-parse', 'HEAD');
+  const { options, calls } = fixture({ git });
+  assert.equal(await runFullCheck({ root, check: {} }, ['--os', 'linux'], options), 0);
+  writeFileSync(path.join(root, 'source.sh'), 'echo edited\r\n');
+  writeFileSync(path.join(root, 'untracked.sh'), 'echo untracked\r\n');
+  git('add', 'source.sh');
+  git('commit', '-m', 'later fixture');
+  assert.notEqual(git('rev-parse', 'HEAD'), head);
+  const script = calls[1][1].at(-1).split('corepack enable && ')[0];
+  const bash = process.platform === 'win32' ? path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe') : 'sh';
+  assert.ok(process.platform !== 'win32' || existsSync(bash), 'Git Bash is required on Windows');
+  const result = spawnSync(bash, ['-xc', `${script}test "$(cat source.sh)" = 'echo stored' && test "$(wc -c < source.sh)" -eq 12 && test ! -e untracked.sh`], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, QC_PLATFORM_GIT_DIR: git('rev-parse', '--absolute-git-dir') },
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 test('failed Docker run produces no leg and does not retry in WSL', async () => {
   const { options, records, calls } = fixture();

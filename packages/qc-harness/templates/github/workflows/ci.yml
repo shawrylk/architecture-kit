@@ -5,7 +5,7 @@ on:
   # Edit this list if the repository uses another trunk branch.
   # A branch push with no pull request runs no CI.
   push:
-    branches: [main]
+    branches: [main, master]
   merge_group:
   workflow_dispatch:
     inputs:

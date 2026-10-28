@@ -10,7 +10,7 @@ const runs = () => parse(readFileSync(WORKFLOW, "utf8")).jobs.gates.steps.map((s
 test("the template runs on pull requests and trunk pushes, and cancels stale pull request runs", () => {
   const workflow = parse(readFileSync(WORKFLOW, "utf8"));
   assert.ok(Object.hasOwn(workflow.on, "pull_request"));
-  assert.deepEqual(workflow.on.push.branches, ["main"]);
+  assert.deepEqual(workflow.on.push.branches, ["main", "master"]);
   assert.ok(workflow.concurrency.group.includes("github.event.pull_request.number"));
   assert.equal(workflow.concurrency["cancel-in-progress"], "${{ github.event_name != 'merge_group' }}");
 });
@@ -20,7 +20,7 @@ const KIT_WORKFLOW = fileURLToPath(new URL("../../../../.github/workflows/ci.yml
 for (const [name, file] of [["template", WORKFLOW], ["kit", KIT_WORKFLOW]]) {
   test(`${name} skips drafts and starts CI when a draft becomes ready`, () => {
     const workflow = parse(readFileSync(file, "utf8"));
-    assert.deepEqual(workflow.on.push.branches, ["main"]);
+    assert.deepEqual(workflow.on.push.branches, name === "template" ? ["main", "master"] : ["main"]);
     assert.deepEqual(workflow.on.pull_request.types, ["opened", "synchronize", "reopened", "ready_for_review"]);
     assert.equal(workflow.jobs.gates.if, "${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}");
     assert.ok(workflow.concurrency.group.includes("github.event.pull_request.number"));

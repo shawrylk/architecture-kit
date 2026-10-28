@@ -19,7 +19,20 @@ test('uses new-file line numbers across multiple hunks and files', () => {
   assert.deepEqual(hits.map(({ file, line }) => [file, line]), [['first.js', 4], ['first.js', 15], ['second.js', 1]]);
 });
 test('flags renames, path case changes, and symlinks', () => {
-  assert.ok(riskHits('diff --git a/Foo b/foo\nrename from Foo\nrename to foo\n').some((hit) => hit.reason === 'path case change'));
-  assert.ok(riskHits('diff --git a/a b/b\nrename from a\nrename to b\n').some((hit) => hit.reason === 'rename'));
-  assert.ok(riskHits('diff --git a/link b/link\nnew file mode 120000\n').some((hit) => hit.reason === 'symlink'));
+  assert.ok(riskHits('diff --git a/Foo.js b/foo.js\nrename from Foo.js\nrename to foo.js\n').some((hit) => hit.reason === 'path case change'));
+  assert.ok(riskHits('diff --git a/a.js b/b.js\nrename from a.js\nrename to b.js\n').some((hit) => hit.reason === 'rename'));
+  assert.ok(riskHits('diff --git a/link.js b/link.js\nnew file mode 120000\n').some((hit) => hit.reason === 'symlink'));
+});
+
+test('ignores prose content, renames, case changes, and symlinks', () => {
+  for (const extension of ['md', 'mdx', 'txt', 'rst', 'adoc', 'html', 'svg', 'json', 'yaml', 'yml']) {
+    assert.deepEqual(riskHits(`diff --git a/Guide.${extension} b/guide.${extension}\nrename from Guide.${extension}\nrename to guide.${extension}\nnew file mode 120000\n+++ b/guide.${extension}\n@@ -0,0 +1 @@\n+listen(3000); "foo/bar"; "\\r\\n"; EPERM; process.platform\n`), []);
+  }
+});
+
+test('scans code files after a prose file', () => {
+  for (const extension of ['js', 'mjs', 'cjs', 'jsx', 'ts', 'mts', 'cts', 'tsx', 'sh', 'bash', 'ps1', 'py', 'go', 'rs', 'java', 'cs', 'c', 'cpp', 'rb', 'php']) {
+    const hits = riskHits(`+++ b/guide.md\n@@ -0,0 +1 @@\n+process.platform\n+++ b/code.${extension}\n@@ -0,0 +3 @@\n+EPERM\n`);
+    assert.deepEqual(hits, [{ file: `code.${extension}`, line: 3, reason: 'EPERM' }]);
+  }
 });
