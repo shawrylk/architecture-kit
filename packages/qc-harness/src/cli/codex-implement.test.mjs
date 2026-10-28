@@ -1490,8 +1490,22 @@ test("a detached HEAD starts without a branch hold even with a CI ledger", async
 });
 
 
+function promptSource(source) {
+  const start = source.indexOf("const promptFor =");
+  const end = source.indexOf("function spawnRun");
+  assert.ok(start >= 0, "promptFor marker must exist");
+  assert.ok(end > start, "spawnRun marker must follow promptFor");
+  return source.slice(start, end);
+}
+
+test("prompt source extraction rejects missing or reversed markers", () => {
+  assert.throws(() => promptSource("function spawnRun() {}"), /promptFor/);
+  assert.throws(() => promptSource("const promptFor = () => {}"), /spawnRun/);
+  assert.throws(() => promptSource("function spawnRun() {} const promptFor = () => {}"), /spawnRun/);
+});
+
 test("prompt construction leaves branch holds to the dispatch check", () => {
   const source = readFileSync(new URL("./codex-implement.mjs", import.meta.url), "utf8");
-  const prompt = source.slice(source.indexOf("const promptFor ="), source.indexOf("function spawnRun"));
+  const prompt = promptSource(source);
   assert.doesNotMatch(prompt, /holdRefusal|agent never releases/i);
 });

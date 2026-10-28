@@ -650,8 +650,9 @@ and a frontmatter value would outrank `ENABLE_PROMPT_CACHING_1H`. The rates are 
 One `collapse:` summary line lists each agent's first request below 20% cache reads after three consecutive warm requests.
 A warm request reads at least 20% of its prompt from cache.
 The prompt includes fresh input, cache reads, and cache writes.
-The line names the request id, call number, and likely cause when the model or explicit tool list changes.
-Absent evidence gives `likely=unknown`; tool calls alone do not establish a changed tool list.
+The line names the request id, call number, and `model change` when the model changes.
+A gap beyond the observed cache lifetime adds `cache expiry`: five minutes by default, or one hour after a one-hour write.
+Absent evidence gives `likely=unknown`.
 
 One `hook:` summary line lists each hook's observed calls, total, average, and maximum duration in milliseconds.
 The reader uses explicit `attachment.durationMs` with `hookName` and `hookEvent`, including cancelled hooks.
@@ -666,7 +667,9 @@ Text that mentions the skill earns no activation credit.
 The `noop` and `reference` controls prove failure and success with synthetic transcripts.
 The package test script runs the offline grader tests in CI; the eval itself never runs in CI.
 Fixture setup uses an empty local hook folder before its initial commit, then binds the agent hooks.
-A failed commit stops the run. See [Agent eval](../evals/agents/README.md) for the commands and result fields.
+A failed fixture commit stops the run; refused agent and reference commits record their exit codes.
+An agent refusal records `hookCommit.passed: false`.
+See [Agent eval](../evals/agents/README.md) for the commands and result fields.
 
 #### Share the machine between agents
 
@@ -974,13 +977,19 @@ An unreadable configuration writes one warning to stderr and uses an empty list.
 A commit status never counts as a required check, even when its context matches the configured name.
 
 On a failed run, the watch fetches `gh run view <id> --log-failed` with a 20-second timeout and a 64 MB buffer.
-It records the branch, head, OS, test file, test name, and first error line in the shared workflow ledger.
+It parses TAP and Node `spec` failures into the shared workflow ledger.
+Each record carries the repository as `owner/name`, branch, head, OS, test file, test name, and first error line.
+For fork runs, the repository comes from `head_repository.full_name`.
+A hold applies only when the record's repository matches the local `origin` repository.
 Unknown output records the job name and first error line instead.
 A failed log fetch records nothing, writes one line to stderr, and preserves exit `5`.
 Use `qc ci-failures --run <id>` to record a run manually.
-A green later head on the same branch resolves its open records.
+A green later head on the same branch and repository resolves its open records.
+Open records also require lessons when their branch merges into `worktree.base`.
 The pre-push hook reruns open test files for the remote branch before `qc check`, with `lessons.rerun` (default `node --test`).
-It strips runner checkout prefixes and skips unresolved or unsafe paths, with all skips in one stderr line.
+It strips runner checkout prefixes and skips unresolved or unsafe paths, with skips in one stderr line of at most 200 characters.
+The summary names skipped paths and uses `1 test file` for one file.
+The fallback failure names include only tests from files that ran.
 A passing rerun prints only the skip summary, when present. A failure prints at most four lines, including skips, test names, and the command for full output.
 Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
 
