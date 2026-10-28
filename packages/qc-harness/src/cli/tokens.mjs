@@ -19,10 +19,12 @@ const inputOf = (usage) => usage.input_tokens ?? 0;
 /** Branch: the first cache collapse after three consecutive warm requests of one agent. */
 export function firstCollapseOf(requests) {
   let warm = 0;
+  let ttl = FIVE_MINUTES;
   for (const [index, request] of requests.entries()) {
     const prompt = contextOf(request.usage);
     if (prompt === 0) continue;
     if (readOf(request.usage) / prompt >= 0.2) {
+      if (writeOf(request.usage) > 0) ttl = write1hOf(request.usage) > 0 ? ONE_HOUR : FIVE_MINUTES;
       warm += 1;
       continue;
     }
@@ -30,10 +32,11 @@ export function firstCollapseOf(requests) {
       const previous = requests[index - 1];
       const causes = [];
       if (previous.model && request.model && previous.model !== request.model) causes.push("model change");
-      if (previous.tools && request.tools && JSON.stringify(previous.tools) !== JSON.stringify(request.tools)) causes.push("tool-list change");
+      if (Number.isFinite(previous.at) && Number.isFinite(request.at) && request.at - previous.at > ttl) causes.push("cache expiry");
       return { request: request.id ?? `#${index + 1}`, call: index + 1, cause: causes.join(" and ") || "unknown" };
     }
     warm = 0;
+    if (writeOf(request.usage) > 0) ttl = write1hOf(request.usage) > 0 ? ONE_HOUR : FIVE_MINUTES;
   }
   return null;
 }

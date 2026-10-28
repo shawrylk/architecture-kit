@@ -33,10 +33,26 @@ test("collapse names the first request below 20 percent after three warm request
   assert.equal(firstCollapseOf([...warm, req("empty", 4, 0, 0, { input: 0 })]), null);
 });
 
-test("collapse identifies changed tool lists only when both requests record them", () => {
+test("collapse ignores tool lists", () => {
   const warm = [1, 2, 3].map((n) => ({ ...req(`w${n}`, n, 800, 198), tools: ["Read"] }));
   assert.deepEqual(firstCollapseOf([...warm, { ...req("tools", 4, 0, 998), tools: ["Read", "Skill"] }]),
-    { request: "tools", call: 4, cause: "tool-list change" });
+    { request: "tools", call: 4, cause: "unknown" });
+});
+
+test("collapse names cache expiry only after the observed cache lifetime", () => {
+  const warm = [1, 2, 3].map((n) => req(`w${n}`, n, 800, 198));
+  assert.equal(firstCollapseOf([...warm, req("expired", 9, 0, 998)]).cause, "cache expiry");
+  assert.equal(firstCollapseOf([...warm, req("edge", 8, 0, 998)]).cause, "unknown");
+  const hourly = warm.map((r) => ({ ...r, usage: { ...r.usage, cache_creation: { ephemeral_1h_input_tokens: 198 } } }));
+  assert.equal(firstCollapseOf([...hourly, req("warm1h", 9, 0, 998)]).cause, "unknown");
+  assert.equal(firstCollapseOf([...hourly, req("expired1h", 64, 0, 998)]).cause, "cache expiry");
+  assert.equal(firstCollapseOf([...warm, req("both", 9, 0, 998, { model: "other" })]).cause, "model change and cache expiry");
+});
+
+test("read-only warm requests preserve the last observed cache lifetime", () => {
+  const warm = [req("write", 1, 800, 198, { w1h: 198 }), req("read1", 2, 1000, 0), req("read2", 3, 1000, 0)];
+  assert.equal(firstCollapseOf([...warm, req("valid", 9, 0, 998)]).cause, "unknown");
+  assert.equal(firstCollapseOf([...warm, req("expired", 64, 0, 998)]).cause, "cache expiry");
 });
 
 test("with no gap past five minutes, the one-hour lifetime only raises the write price", () => {

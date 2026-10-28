@@ -8,6 +8,7 @@ import { checkVerdict, pendingCiReason } from "./check-verdict.mjs";
 import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { recordRun, resolveFailures } from "./ci-failures.mjs";
+import { originOf, repoOfSpelling } from "./git-read.mjs";
 import { holdRefusal } from "./pause.mjs";
 
 const DEFAULT_MAX_MINUTES = 55;
@@ -197,7 +198,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
   const context = { repo: parsed.repo, gh: read, now, requiredChecks };
   const root = checkoutRootOf(cwd);
   for (const { branch } of parsed.runs) {
-    const refusal = root && holdRefusal(root, branch);
+    const refusal = root && (!parsed.repo || repoOfSpelling(parsed.repo) === originOf(root)) && holdRefusal(root, branch);
     if (refusal) {
       say(refusal);
       return EXIT.FAILED;
@@ -219,8 +220,9 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
             const runs = event.runs ?? (event.prHead ? parseApiList(read(["api", `repos/${parsed.repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(event.prHead)}&per_page=100`, "--paginate", "--slurp"]), "workflow_runs") : []) ?? [];
             for (const run of runs) {
               if (!run.head_branch || !run.head_sha || run.head_sha !== event.detail) continue;
-              if (event.code === EXIT.PASSED) resolveFailures(root, run.head_branch, run.head_sha, run.id);
-              else if (checkVerdict(run) === "failed" && run.id) recordRun(root, { id: run.id, branch: run.head_branch, head: run.head_sha }, { gh, warn, repo: parsed.repo });
+              const repository = repoOfSpelling(run.head_repository?.full_name ?? run.repository?.full_name ?? parsed.repo ?? originOf(root) ?? "");
+              if (event.code === EXIT.PASSED) resolveFailures(root, run.head_branch, run.head_sha, run.id, repository);
+              else if (checkVerdict(run) === "failed" && run.id) recordRun(root, { id: run.id, branch: run.head_branch, head: run.head_sha, repository }, { gh, warn, repo: parsed.repo });
             }
           }
         } catch (error) {

@@ -50,7 +50,7 @@ test("fixture setup commits through an empty local hook folder before it binds a
   assert.match(localConfig, /hooksPath = \.git\/hooks/);
 });
 
-test("run fails when a commit hook refuses the fixture commit", (t) => {
+test("run throws for checked failures and returns unchecked commit refusals", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-eval-commit-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const git = (...args) => {
@@ -67,6 +67,25 @@ test("run fails when a commit hook refuses the fixture commit", (t) => {
   const result = runner.run("git", ["-c", "user.name=eval", "-c", "user.email=eval@example.com", "commit", "--allow-empty", "-qm", "chore: measured refusal"], dir);
   assert.equal(result.code, 1);
   assert.match(result.output, /fixture-refused/);
+  assert.throws(() => runner.run(process.execPath, ["-e", "process.exit(7)"], dir, { check: true }),
+    (error) => error.message.startsWith(`${process.execPath} failed:`));
+});
+
+test("prepare checks the fixture commit and propagates its refusal", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-eval-checked-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const deps = path.join(dir, "deps");
+  mkdirSync(path.join(deps, "node_modules/.bin"), { recursive: true });
+  const calls = [];
+  const run = (cmd, args, cwd, options) => {
+    calls.push({ cmd, args, cwd, options });
+    if (args[0] === "init") mkdirSync(path.join(cwd, ".git"));
+    if (args[0] === "commit" && options?.check) throw new Error("fixture-refused");
+    return { code: 0, output: "" };
+  };
+  assert.throws(() => runner.prepare(path.join(dir, "run"), deps, { run }), /fixture-refused/);
+  const commit = calls.find((call) => call.args[0] === "commit");
+  assert.equal(commit.options.check, true);
 });
 
 test("the package test script runs the offline eval unit tests", () => {
