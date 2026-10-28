@@ -92,6 +92,12 @@
         ]
       },
       {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/pr-guard.mjs\"", "timeout": 20 }
+        ]
+      },
+      {
         "matcher": "SubagentHandback",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/report-stop.mjs\"", "timeout": 30 },

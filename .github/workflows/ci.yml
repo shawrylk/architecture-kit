@@ -3,20 +3,30 @@ name: ci
 # A push to a pull request branch fires both events, which ran every gate twice.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push: { branches: [main] }
   merge_group:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Platform legs
+        type: choice
+        required: true
+        default: both
+        options: [linux, windows, both]
 
 # A superseded push stops; a merge queue entry never cancels, since its result is the merge.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   gates:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.os == 'linux' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && inputs.os == 'windows' && '["windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:

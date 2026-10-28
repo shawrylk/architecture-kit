@@ -159,6 +159,26 @@ The command exits 1 and prints missing platforms plus at most three `file:line` 
 A pass prints nothing.
 `readyProblems(root, head)` exports the same decision for callers.
 
+### pr-guard
+
+The Bash `PreToolUse` trigger applies in checkouts with `qc.config.json` and guards only the `origin` repository.
+Keep one draft pull request for each issue.
+Subagents push sub-branches; the controller runs `qc integrate`.
+The trigger refuses `gh pr create` from a subagent or without `--draft`.
+It reads issue numbers from `<type>/<n>-` branches and `Refs #<n>` or `Fixes #<n>` in the body.
+It refuses creation when an open pull request names the same issue or `gh` cannot list open pull requests.
+
+Run `qc ready-check` before `gh pr ready`.
+The trigger checks the pull request head with `readyProblems(root, head)`.
+A refusal names missing legs, commands for each leg, and at most three risk hits within two lines.
+Use `qc ci-preview --os linux` or `qc ci-preview --os windows` for the required legs.
+`gh pr ready --undo` passes.
+
+Both workflows skip draft pull requests and start checks on `ready_for_review`.
+Push checks run only on `main`; superseded runs cancel except in a merge queue.
+`workflow_dispatch` accepts `os` as `linux`, `windows`, or `both` to select the matrix legs.
+The template runs Linux on pull requests.
+
 ### Run the affected e2e specs before a push
 
 Set `check.e2e` in `qc.config.json` to your repository's command for the affected end-to-end (e2e) specs:
