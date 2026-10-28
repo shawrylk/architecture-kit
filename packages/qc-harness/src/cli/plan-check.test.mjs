@@ -5,11 +5,25 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { checkPlan, parsePlan } from "./plan-check.mjs";
+import { checkPlan, parsePlan, questionProblems } from "./plan-check.mjs";
 import { reviewDefaults } from "../config.mjs";
 import { reviewSettings } from "./workflow-settings.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
+
+test("an unindented follow-up question needs its own source", () => {
+  assert.deepEqual(questionProblems("## Open questions\nWhich store?\nSource: storage.mjs:12. Recommend SQLite.\nWhich region?"), [
+    'question "Which region?" needs its own Source: with a file:line or URL',
+  ]);
+});
+
+test("indented list items continue their question", () => {
+  assert.deepEqual(questionProblems("## Open questions\n- Which store?\n  - Recommendation: SQLite.\n  - Source: storage.mjs:12"), []);
+});
+
+test("a colon ends an introduction even when it contains a question mark", () => {
+  assert.deepEqual(questionProblems("## Open questions\nAnswer these first (why?):\n- Which store? Source: storage.mjs:12"), []);
+});
 const FENCE = "`".repeat(3);
 
 const task = (n, { files = true, fileLines = null, exempt = null, testStep = true, commit = true, estimate = null, extra = [] } = {}) =>

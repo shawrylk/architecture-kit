@@ -2,7 +2,7 @@
 // The PreToolUse trigger that keeps the main session a controller while `swarm.dispatch` is on: it edits only `swarm.review.controllerPaths`,
 // or a small fix inside `swarm.direct`. It guards the edit tools; a shell write is only reported, by `bash-edit-guard.mjs`.
 
-import { lstatSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathMatcher } from "../glob.mjs";
@@ -23,8 +23,18 @@ function sameRepository(a, b) {
   return left !== null && right !== null && pathKey(left) === pathKey(right);
 }
 
-/** The path as written, with no case on Windows. A real path would let a link carry the checkpoint exception to its target. */
+/** The path as written, with no case on Windows. */
 const lexicalKey = (file, platform) => (platform === "win32" ? path.resolve(file).toLowerCase() : path.resolve(file));
+
+/** The fragment that resolves existing folders and preserves missing path parts for the first checkpoint write. */
+function realFolder(folder) {
+  try {
+    return realpathSync.native(folder);
+  } catch (error) {
+    if (error.code !== "ENOENT" || isSymlink(folder)) throw error;
+    return path.join(realFolder(path.dirname(folder)), path.basename(folder));
+  }
+}
 
 /** True when `file` is a symlink. A file that does not exist yet is not one. */
 function isSymlink(file) {
@@ -57,7 +67,14 @@ export function decide(call, platform = process.platform) {
   const file = path.resolve(cwd, target);
   try {
     const checkpoint = checkpointPathOf(cwd, call.session_id);
-    if (checkpoint && lexicalKey(file, platform) === lexicalKey(checkpoint, platform) && !isSymlink(checkpoint)) return null;
+    if (checkpoint && lexicalKey(path.basename(file), platform) === lexicalKey(path.basename(checkpoint), platform)) {
+      const folder = path.dirname(checkpoint);
+      const git = path.dirname(path.dirname(folder));
+      const expected = lexicalKey(path.join(realFolder(git), "qc", "checkpoints"), platform);
+      if (lexicalKey(realFolder(folder), platform) === expected
+        && lexicalKey(realFolder(path.dirname(file)), platform) === expected
+        && !isSymlink(file)) return null;
+    }
   } catch {
     // An unresolved checkpoint grants no edit exception.
   }
