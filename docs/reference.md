@@ -126,6 +126,39 @@ Every gate reads one file list: `git ls-files --cached --others --exclude-standa
 `ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
 `qc decisions`. Outside a git work tree, the check walks the tree instead.
 
+### Record platform legs
+
+`qc check --full` runs the gates, the configured check commands, and the whole test suite from the repository's test script.
+A passing run records `{ type: "leg", os, head, source: "local" }` in the shared workflow ledger.
+The worktree must stay clean, and the head must stay the same throughout the run.
+
+On Windows, `qc check --full --os linux` runs the same check in Docker with the worktree mounted.
+The image uses the Node major from `package.json` under `engines.node`.
+The runner tests a temporary copy with Linux dependencies, so nested test fixtures receive their own Git context.
+When Docker is unavailable, the command uses WSL, which must supply that Node major and the package manager.
+A failed command records no passing leg.
+
+### Preview CI for the head
+
+`qc ci-preview --os both` dispatches `ci.yml` on the head's branch with the workflow input `os=both`.
+You can select `linux` or `windows` instead.
+The command waits for the dispatched run and records each successful platform with `source: "preview"`.
+Platform job names must contain `linux`, `ubuntu`, or `windows`.
+Every job for a platform must pass before that platform earns a leg.
+A reservation prevents a second preview for the same head and platform, including after a failed dispatch.
+The workflow must accept `workflow_dispatch` with the `os` input.
+
+### Check platform readiness
+
+`ready.platforms` defaults to `["linux"]`; this repository sets `["linux", "windows"]`.
+`qc ready-check` checks passing legs for the current head against the added lines of `git diff <check.base>...HEAD`.
+One passing leg suffices when the diff has no platform risk.
+A risk requires every platform in `ready.platforms` to pass.
+The scanner flags fixed ports, hard-coded path separators, path case changes, CRLF, symlinks, renames, `EPERM`, and `process.platform`.
+The command exits 1 and prints missing platforms plus at most three `file:line` hits in at most four lines.
+A pass prints nothing.
+`readyProblems(root, head)` exports the same decision for callers.
+
 ### Run the affected e2e specs before a push
 
 Set `check.e2e` in `qc.config.json` to your repository's command for the affected end-to-end (e2e) specs:
