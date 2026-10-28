@@ -566,7 +566,8 @@ Agents in one assistant message use the first dispatch time for the age check wh
 Each dispatch still checks the file's presence and shape.
 
 On `compact` or `resume`, the checkpoint hook loads the file as the source of truth for open work.
-After the header line, it prints at most 60 lines, within 4,000 characters in total. On truncation, it prints 58 lines and a note that names both caps.
+The checkpoint is keyed by the session id; `--fork-session` starts a new id with no checkpoint.
+After the header line, it prints at most 60 lines, within 4,000 characters in total. On truncation, it prints at most 58 lines and a note that names both caps.
 It drops blank lines before applying the line cap.
 A missing file prints its path and the rule to write it; a read error prints a note.
 The hook always allows the session to start.
@@ -1160,6 +1161,10 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 | `reviewerTypes` | `{ task: [...], branch: [...] }`, the plugin's two reviewers, bare and scoped | the agent types whose stop records a verdict of each kind |
 | `plannerTypes` | the plugin's planner, bare and scoped | the agent types whose report runs the plan check |
 
+The checkpoint exception requires the parent's real path to equal the expected checkpoint folder under the real Git common directory.
+A junction or symlink that redirects the checkpoint folder elsewhere is refused; a junction to the checkout still compares equal.
+The checkpoint file itself is refused when `lstat` identifies a symlink.
+
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
 
 For each task whose files match `riskPaths`, write one `**Risk:**` line.
@@ -1167,6 +1172,7 @@ The line can start with a list marker, such as `- **Risk:**`.
 Name the failure condition, how it shows, and how to reverse it on that line.
 The check requires a non-empty line; you judge whether its content covers those points.
 File matching includes document and configuration paths, such as `schemas/api.yaml`.
+Risk paths match with the case rule of the platform.
 
 For a UI data view, set `swarm.review.cases` to `{"frontend/**/*.tsx": ["loading", "error", "empty", "success"]}`.
 Every matching task's test step must name each word, in its title, body, or code.
@@ -1175,10 +1181,12 @@ When multiple globs match, the task needs all their case words.
 
 A passing `qc plan-check` prints nothing.
 A refusal prints at most three lines, each naming the task or quoting the question's first six words and its missing requirement.
-A line with a list marker starts a question.
-A line that contains `?` starts a question only when none is open, and an indented line inside an open question continues it.
-So `Which region? Recommend EU.` is a question, and a wrapped question whose continuation ends with `?` counts once.
-Before any question, an unlisted line that contains no `?` is an introduction.
+A list marker at the left margin starts a question and closes the open question.
+An unindented line that contains `?` also starts a question and closes the open question.
+An indented line, an indented list item, and an unindented line without `?` continue the open question.
+Before any question, a line ending with `:` is an introduction, even with `?`, such as `Answer these first (why?):`.
+An unlisted line without `?` before any question is also an introduction.
+Thus, `Recommendation:` and `Source:` sub-bullets belong to their question, while `Which region? Recommend EU.` starts a new question.
 Fix those requirements and run the check again to see any further problems.
 
 #### A fix on a red head, and reviews in parallel

@@ -54,6 +54,21 @@ test("a linked checkpoint folder does not let the session edit the folder it poi
     return;
   }
   assert.ok(denied(decide(edit(ws.main, path.join(src, "s.md"), "Write"))));
+  assert.ok(denied(decide(edit(ws.main, file, "Write"))));
+});
+
+test("checkpoint paths through a checkout junction compare equal", (t) => {
+  const ws = workspace(t);
+  const alias = path.join(path.dirname(ws.main), "alias");
+  symlinkSync(ws.main, alias, "junction");
+  for (const exists of [false, true]) {
+    if (exists) mkdirSync(path.dirname(checkpointPathOf(ws.main, "s")), { recursive: true });
+    for (const cwd of [ws.main, alias, ws.linked]) {
+      for (const from of [ws.main, alias, ws.linked]) {
+        assert.equal(decide(edit(cwd, checkpointPathOf(from, "s"), "Write")), null);
+      }
+    }
+  }
 });
 
 const HOOK = fileURLToPath(new URL("./controller-guard.mjs", import.meta.url));
