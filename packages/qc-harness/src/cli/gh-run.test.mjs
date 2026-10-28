@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -40,8 +41,9 @@ test("runGh answers null when gh fails or is missing", () => {
   assert.equal(runGh(["no-such-command-for-qc"]), null);
 });
 
-test("runGhResult returns stdout and stderr with the exit status", () => {
+test("runGhResult returns stdout and stderr with the exit status", (t) => {
   const success = runGhResult(["--version"]);
+  if (success.error?.code === "ENOENT") return t.skip("gh is not on PATH");
   assert.equal(success.status, 0);
   assert.match(success.stdout, /gh version/);
   assert.equal(success.stderr, "");
@@ -54,4 +56,17 @@ test("runGhResult preserves spawn errors", () => {
   const result = runGhResult(["--version"], { cwd: path.join(os.tmpdir(), "qc-gh-missing", "missing") });
   assert.equal(result.status, null);
   assert.equal(result.error.code, "ENOENT");
+});
+
+test("the real gh test skips with a reason when gh is absent from PATH", () => {
+  const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-gh-absent-"));
+  try {
+    const result = spawnSync(process.execPath, ["--test", "--test-reporter=tap", "--test-name-pattern=^runGhResult returns stdout", import.meta.filename], {
+      encoding: "utf8", env: { ...process.env, PATH: cwd, NODE_TEST_CONTEXT: undefined },
+    });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /# SKIP gh is not on PATH/);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

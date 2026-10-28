@@ -1,6 +1,7 @@
 {
   "//": "The kit is bound by the kit. A rule it ships and cannot itself satisfy is not a rule.",
   "featureRoots": [],
+  "ready": { "platforms": ["linux", "windows"] },
   "docs": {
     "root": "packages/qc-harness/templates/docs",
     "decisions": "packages/qc-harness/templates/docs/decisions.md",

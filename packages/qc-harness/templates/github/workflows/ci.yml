@@ -1,18 +1,36 @@
 name: ci
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   # Edit this list if the repository uses another trunk branch.
   # A branch push with no pull request runs no CI.
   push:
     branches: [main, master]
+  merge_group:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Platform legs
+        type: choice
+        required: true
+        default: both
+        options: [linux, windows, both]
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   gates:
-    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.os == 'windows' && '["windows-latest"]' || github.event_name == 'workflow_dispatch' && inputs.os == 'both' && '["ubuntu-latest","windows-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       # Full history: `qc lint` judges the lines since the merge base.
       - uses: actions/checkout@v5

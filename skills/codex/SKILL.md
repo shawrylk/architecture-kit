@@ -120,11 +120,15 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 ## Run a batch on one branch
 
+Keep one draft pull request for each issue.
+Subagents push sub-branches; the controller runs `qc integrate`.
+Run `qc ready-check` before `gh pr ready`.
+
 - Use a batch by default for three or more related tasks.
 - Give each task its own branch and brief. Each brief pushes the branch and opens no pull request.
 - The controller opens one draft pull request with `npx qc integrate --issue <n> --pr <branch>...`.
 - `qc integrate` names the branch `<type>/<n>-integration`. It renumbers migrations after each merge and regenerates files before each push.
-- The default `integrate.ciEvery: 3` pushes after every three merges and at the end. Each push starts CI on the draft pull request.
+- The default `integrate.ciEvery: 3` pushes after every three merges and at the end. Drafts skip CI; use `qc ci-preview` for platform legs.
 - Give each feature a `Scope: <name>` review on the integration head. Several scopes can share one head. Each reviewer needs green CI on that head.
 - Give each conflict resolution its own scope and a review after the merge. A fix brief resolves conflicts that need hand edits.
 - At the start of a long run, schedule a heartbeat: a recurring check every 20 to 30 minutes that reads the open agents and the CI state. A watcher that stops then never halts the run.

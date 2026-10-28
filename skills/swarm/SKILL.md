@@ -27,6 +27,10 @@ stop reading: none of its rules apply.
 
 ## Dispatch
 
+Keep one draft pull request for each issue.
+Subagents push sub-branches; the controller runs `qc integrate`.
+Run `qc ready-check` before `gh pr ready`.
+
 - Keep the session checkpoint at `<git common dir>/qc/checkpoints/<session_id>.md`; `SessionStart` names its absolute path.
 - Use `## Goal` for the user's words and `## Rules` for the user's standing constraints.
 - Use `## Tasks` for each open item's state and `## Next` for the next action.

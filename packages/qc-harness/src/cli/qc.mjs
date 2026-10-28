@@ -12,6 +12,11 @@ const USAGE = `qc — architecture gates
 
   qc check [file...] [--files-from <path|->] [--since-push]
                            every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
+  qc check --full [--os <linux|windows>]
+                           the gates and whole test suite; a clean pass records a platform leg
+  qc ci-preview [--os <linux|windows|both>]
+                           dispatch CI for this head and record passing platform legs
+  qc ready-check           print missing platform legs and up to three risk hits; silent on a pass
   qc e2e                   the repository's e2e command with the changed files
   qc lint [--staged] [--base <ref>] [file...]
                            ESLint on the changed lines only: a problem on an untouched line never fails
@@ -164,12 +169,27 @@ async function main() {
   }
 
   switch (command) {
+    case "ci-preview": {
+      const { runCiPreview } = await import("./ci-preview.mjs");
+      process.exitCode = await runCiPreview(config.root, rest);
+      return;
+    }
+    case "ready-check": {
+      const { runReadyCheck } = await import("./legs.mjs");
+      process.exitCode = runReadyCheck(config.root);
+      return;
+    }
     case "e2e": {
       const { runE2e } = await import("./e2e-affected.mjs");
       process.exitCode = await runE2e(config);
       return;
     }
     case "check": {
+      if (rest.includes("--full")) {
+        const { runFullCheck } = await import("./check.mjs");
+        process.exitCode = await runFullCheck(config, rest.filter((arg) => arg !== "--full"));
+        return;
+      }
       const sincePush = rest.includes("--since-push");
       const { files, listed } = await checkFiles(rest.filter((arg) => arg !== "--since-push"));
       // An empty list means nothing staged to check, not the full check.
