@@ -69,7 +69,7 @@ export function run(cmd, cmdArgs, cwd, options = {}) {
   const result = spawnSync(cmd, cmdArgs, { cwd, encoding: "utf8", shell: options.shell ?? false, env: options.env ?? process.env, maxBuffer: 1 << 26 });
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   if (options.check && result.status !== 0) {
-    throw new Error(`git commit failed: ${output || result.error?.message || result.status}`);
+    throw new Error(`${cmd} failed: ${output || result.error?.message || result.status}`);
   }
   return { code: result.status ?? 1, output };
 }
@@ -124,14 +124,14 @@ function adopt(repo) {
   return init.output;
 }
 
-export function prepare(dir, deps) {
+export function prepare(dir, deps, { run: execute = run } = {}) {
   const repo = path.join(dir, "repo");
   rmSync(dir, { recursive: true, force: true });
   cpSync(path.join(here, "fixture"), repo, { recursive: true });
   linkNodeModules(repo, deps);
   writeFileSync(path.join(repo, ".gitignore"), "node_modules/\n");
   const adoption = kit && args.arm === "kit" ? adopt(repo) : "";
-  const git = (...a) => run("git", a, repo);
+  const git = (...a) => execute("git", a, repo);
   git("init", "-q", "-b", "main");
   git("config", "user.email", "eval@example.com");
   git("config", "user.name", "eval");
@@ -140,7 +140,7 @@ export function prepare(dir, deps) {
   mkdirSync(emptyHooks);
   git("config", "core.hooksPath", emptyHooks.replaceAll("\\", "/"));
   git("add", "-A");
-  run("git", ["commit", "-q", "-m", "chore: initial commit"], repo, { check: true });
+  execute("git", ["commit", "-q", "-m", "chore: initial commit"], repo, { check: true });
   // Agent hooks bind after the fixture commit; setup uses an empty local hook folder.
   if (args.arm === "kit") git("config", "core.hooksPath", ".githooks");
   else git("config", "core.hooksPath", ".git/hooks");

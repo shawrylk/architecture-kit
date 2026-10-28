@@ -6,6 +6,7 @@ import { appendRecord, ledgerFileOf, readLedger, shaMatches } from "./ledger.mjs
 import { runGhResult } from "./gh-run.mjs";
 import { holdBranch, holdRefusal } from "./pause.mjs";
 import { load } from "../config.mjs";
+import { isAncestor, originOf, repoOfSpelling } from "./git-read.mjs";
 
 const sameHead = (a, b) => a === b || shaMatches(a, b);
 const recordsOf = (root) => {
@@ -13,10 +14,11 @@ const recordsOf = (root) => {
   return file ? readLedger(file) : [];
 };
 
-export function openFailures(root, branch) {
+export function openFailures(root, branch, repository = originOf(root)) {
   const records = recordsOf(root);
+  const origin = originOf(root);
   const resolved = new Set(records.filter((r) => r.type === "ci-resolution" && r.branch === branch).flatMap((r) => r.ids));
-  return records.filter((r) => r.type === "ci-failure" && r.branch === branch && !resolved.has(r.id));
+  return records.filter((r) => r.type === "ci-failure" && r.branch === branch && (r.repository ?? origin) === repository && !resolved.has(r.id));
 }
 
 function testFile(location) {
@@ -37,6 +39,13 @@ export function parseFailedLog(log) {
   for (const [job, lines] of jobs) {
     const os = /(?:windows|ubuntu|macos)-[\w.]+/i.exec(job)?.[0] ?? "unknown";
     const start = failures.length;
+    for (let i = 0; i < lines.length; i += 1) {
+      const location = /^\s*test at (.+:\d+(?::\d+)?)\s*$/.exec(lines[i]);
+      const match = /^\s*[✖×] (.+?) \([\d.]+m?s\)\s*$/.exec(lines[i + 1] ?? "");
+      if (!location || !match) continue;
+      const error = lines.slice(i + 2).find((line) => line.trim())?.trim() ?? match[1];
+      failures.push({ job, os, test: match[1], file: testFile(location[1]), error });
+    }
     for (let i = 0; i < lines.length; i += 1) {
       const match = /^\s*not ok \d+ - (.+)/.exec(lines[i]);
       if (!match) continue;
@@ -65,7 +74,7 @@ function readGh(args, root) {
   return result.stdout;
 }
 
-export function recordRun(root, { id, branch, head }, { gh = (args) => readGh(args, root), warn = console.error, repo } = {}) {
+export function recordRun(root, { id, branch, head, repository }, { gh = (args) => readGh(args, root), warn = console.error, repo } = {}) {
   const file = ledgerFileOf(root);
   if (!file) return [];
   let log;
@@ -77,15 +86,16 @@ export function recordRun(root, { id, branch, head }, { gh = (args) => readGh(ar
     return null;
   }
   const records = recordsOf(root);
+  repository = repoOfSpelling(repository ?? repo ?? originOf(root) ?? "");
   const added = [];
   for (const failure of parseFailedLog(log)) {
-    const key = JSON.stringify([String(id), branch, head, failure.job, failure.file, failure.test]);
+    const key = JSON.stringify([repository, String(id), branch, head, failure.job, failure.file, failure.test]);
     if (records.some((r) => r.type === "ci-failure" && r.id === key)) continue;
-    const record = { type: "ci-failure", id: key, run: String(id), branch, head, ...failure };
+    const record = { type: "ci-failure", id: key, run: String(id), repository, branch, head, ...failure };
     appendRecord(file, record);
     added.push(record);
   }
-  if (added.some((failure) => repeatCount(root, branch, failure) >= 3)) holdBranch(root, branch, "the same CI test failed on three heads in a row");
+  if (repository && repository === originOf(root) && added.some((failure) => repeatCount(root, branch, failure) >= 3)) holdBranch(root, branch, "the same CI test failed on three heads in a row");
   return added;
 }
 
@@ -93,7 +103,7 @@ const identity = (r) => JSON.stringify([r.test, r.file, r.os]);
 
 export function repeatCount(root, branch, failure) {
   const heads = new Map();
-  for (const record of openFailures(root, branch)) {
+  for (const record of openFailures(root, branch, failure.repository ?? originOf(root))) {
     const head = [...heads.keys()].find((head) => sameHead(head, record.head)) ?? record.head;
     if (!heads.has(head)) heads.set(head, new Set());
     heads.get(head).add(identity(record));
@@ -136,24 +146,26 @@ export function ciBriefRefusal(root, branch, brief) {
   return null;
 }
 
-export function resolveFailures(root, branch, head, run) {
-  const ids = openFailures(root, branch).filter((r) => !sameHead(r.head, head)
+export function resolveFailures(root, branch, head, run, repository = originOf(root)) {
+  const ids = openFailures(root, branch, repository).filter((r) => !sameHead(r.head, head)
     && (run === undefined || !/^\d+$/.test(r.run) || BigInt(run) > BigInt(r.run))).map((r) => r.id);
-  if (ids.length) appendRecord(ledgerFileOf(root), { type: "ci-resolution", branch, head, run, ids });
+  if (ids.length) appendRecord(ledgerFileOf(root), { type: "ci-resolution", repository, branch, head, run, ids });
 }
 
 export function currentBranch(root) {
   return execFileSync("git", ["branch", "--show-current"], { cwd: root, encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
-export function resolvedFailures(root, branch) {
+export function resolvedFailures(root, branch, { merging = false } = {}) {
   const records = recordsOf(root);
   const resolved = new Set(records.filter((r) => r.type === "ci-resolution" && r.branch === branch).flatMap((r) => r.ids));
-  return records.filter((r) => r.type === "ci-failure" && r.branch === branch && resolved.has(r.id));
+  const repository = originOf(root);
+  const merged = merging || isAncestor(root, branch, load(root).worktree.base) === true;
+  return records.filter((r) => r.type === "ci-failure" && r.branch === branch && (r.repository ?? repository) === repository && (resolved.has(r.id) || merged));
 }
 
-export function lessonRefusal(root, branch, text) {
-  const missing = [...new Set(resolvedFailures(root, branch).map((r) => r.test))].filter((name) => {
+export function lessonRefusal(root, branch, text, failures = resolvedFailures(root, branch)) {
+  const missing = [...new Set(failures.map((r) => r.test))].filter((name) => {
     const body = section(text ?? "", name);
     return ["Symptom", "Cause", "Rule"].some((field) => !new RegExp(`^${field}:[ \\t]*\\S`, "m").test(body));
   });
@@ -203,14 +215,17 @@ export function rerunFailures(root, branch, lessons, { run = (command, options) 
       }
       files.push(file);
     }
-    if (skipped.length) warn(`ci-failures: skip ${skipped.length} test files: ${skipped.map((file) => JSON.stringify(file)).join(", ")}`);
+    if (skipped.length) {
+      const line = `ci-failures: skip ${skipped.length} test file${skipped.length === 1 ? "" : "s"}: ${skipped.map((file) => JSON.stringify(file)).join(", ")}`;
+      warn(line.length <= 200 ? line : `${line.slice(0, 197)}...`);
+    }
     if (!files.length) return 0;
     const command = `${lessons.rerun} ${files.map((file) => `"${file}"`).join(" ")}`;
     const result = run(command, { cwd: root });
     if (result.status === 0) return 0;
     const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
     const names = [...output.matchAll(/^\s*(?:not ok \d+ - |[\u2716\u00d7] )(.+)/gmu)].map((match) => match[1]);
-    for (const name of [...new Set(names.length ? names : failures.map((r) => r.test))].slice(0, skipped.length ? 2 : 3)) {
+    for (const name of [...new Set(names.length ? names : failures.filter((r) => r.file && files.includes(testFile(r.file))).map((r) => r.test))].slice(0, skipped.length ? 2 : 3)) {
       warn(`ci-failures: ${String(name).replace(/[\r\n]+/g, " ")}`);
     }
     warn(`Run for full output: ${command}`);
@@ -238,10 +253,11 @@ export function runCiFailures(root, argv, { gh = (args) => readGh(args, root), w
     return 1;
   }
   try {
-    const run = JSON.parse(gh(["run", "view", argv[1], "--json", "headBranch,headSha,conclusion"]));
-    if (!run.headBranch || !run.headSha) throw new Error("run has no branch or head");
-    if (run.conclusion === "success") resolveFailures(root, run.headBranch, run.headSha, argv[1]);
-    else if (recordRun(root, { id: argv[1], branch: run.headBranch, head: run.headSha }, { gh, warn }) === null) return 1;
+    const run = JSON.parse(gh(["api", `repos/{owner}/{repo}/actions/runs/${argv[1]}`]));
+    const repository = repoOfSpelling(run.head_repository?.full_name ?? "");
+    if (!run.head_branch || !run.head_sha || !repository) throw new Error("run has no branch, head, or head repository");
+    if (run.conclusion === "success") resolveFailures(root, run.head_branch, run.head_sha, argv[1], repository);
+    else if (recordRun(root, { id: argv[1], branch: run.head_branch, head: run.head_sha, repository }, { gh, warn }) === null) return 1;
     return 0;
   } catch (error) {
     warn(`ci-failures: gh failed: ${String(error.message).split(/\r?\n/)[0]}`);
