@@ -138,9 +138,10 @@ function policyOf(merge, root, cwd, gh, deadline) {
   if (pr.head && pr.sameRepository) {
     const hold = holdRefusal(root, pr.head);
     if (hold) throw new HoldRefusal(hold);
-    if (resolvedFailures(root, pr.head).length) {
+    const failures = resolvedFailures(root, pr.head, { merging: true });
+    if (failures.length) {
       const text = /^[0-9a-f]{7,40}$/i.test(merge.sha ?? "") ? git(root, "show", `${merge.sha}:${lessons.file}`) : null;
-      const refusal = lessonRefusal(root, pr.head, text);
+      const refusal = lessonRefusal(root, pr.head, text, failures);
       if (refusal) throw new HoldRefusal(refusal.replace(/^Merge guard: /, ""));
     }
   }

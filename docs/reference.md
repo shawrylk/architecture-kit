@@ -668,7 +668,7 @@ Text that mentions the skill earns no activation credit.
 The `noop` and `reference` controls prove failure and success with synthetic transcripts.
 The package test script runs the offline grader tests in CI; the eval itself never runs in CI.
 Fixture setup uses an empty local hook folder before its initial commit, then binds the agent hooks.
-A failed fixture commit stops the run; refused agent and reference commits record their exit codes.
+A failed fixture commit stops the run. Agent runs record refused commit exit codes; reference runs discard the commit exit code.
 An agent refusal records `hookCommit.passed: false`.
 See [Agent eval](../evals/agents/README.md) for the commands and result fields.
 
@@ -985,8 +985,11 @@ A hold applies only when the record's repository matches the local `origin` repo
 Unknown output records the job name and first error line instead.
 A failed log fetch records nothing, writes one line to stderr, and preserves exit `5`.
 Use `qc ci-failures --run <id>` to record a run manually.
+The command reads the run's head repository from the Actions API for both failures and resolutions.
 A green later head on the same branch and repository resolves its open records.
 Open records also require lessons when their branch merges into `worktree.base`.
+Before the merge, the merge guard requires lessons for every open record of the PR head branch in the same repository.
+A watch with an explicit repository still applies the local hold when it cannot read `origin`.
 The pre-push hook reruns open test files for the remote branch before `qc check`, with `lessons.rerun` (default `node --test`).
 It strips runner checkout prefixes and skips unresolved or unsafe paths, with skips in one stderr line of at most 200 characters.
 The summary names skipped paths and uses `1 test file` for one file.
@@ -1192,6 +1195,7 @@ A passing `qc plan-check` prints nothing.
 A refusal prints at most three lines, each naming the task or quoting the question's first six words and its missing requirement.
 A list marker at the left margin starts a question and closes the open question.
 An unindented line that contains `?` also starts a question and closes the open question.
+An unindented line starting with `Source:`, `Recommendation:`, or `Recommend` continues the open question, even with `?`.
 An indented line, an indented list item, and an unindented line without `?` continue the open question.
 Before any question, a line ending with `:` is an introduction, even with `?`, such as `Answer these first (why?):`.
 An unlisted line without `?` before any question is also an introduction.

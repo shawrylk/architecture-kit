@@ -101,6 +101,43 @@ test("a local branch hold leaves an explicit foreign repository watch available"
   }), 0);
 });
 
+test("an unreadable origin keeps the hold on an explicit repository watch", async (t) => {
+  const root = fixture(t);
+  for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "main", head }, { gh: () => tap });
+  execFileSync("git", ["remote", "remove", "origin"], { cwd: root });
+  assert.ok(holdRefusal(root, "main"));
+  const lines = [];
+  assert.equal(await runWatch(["--run", "ci.yml@main", "--repo", "local/repo"], {
+    cwd: root, requiredChecks: [], say: (line) => lines.push(line),
+    gh: () => assert.fail("the hold must apply before polling"),
+    now: () => 0, sleep: () => { throw new Error("the hold must apply before waiting"); },
+  }), 5);
+  assert.match(lines[0], /qc resume --branch/);
+});
+
+test("manual recording and resolution use the fork run's head repository", (t) => {
+  const root = fixture(t);
+  recordRun(root, { id: 1, branch: "main", head: "aaaaaaa" }, { gh: () => tap });
+  let conclusion = "failure";
+  let head = "bbbbbbb";
+  const gh = (args) => args.includes("--log-failed") ? tap : JSON.stringify({
+    head_branch: "main", head_sha: head, conclusion,
+    head_repository: { full_name: "fork/repo" }, repository: { full_name: "local/repo" },
+  });
+  for (const [id, sha] of [[2, "bbbbbbb"], [3, "ccccccc"], [4, "ddddddd"]]) {
+    head = sha;
+    assert.equal(runCiFailures(root, ["--run", String(id)], { gh, warn: () => {} }), 0);
+  }
+  assert.equal(openFailures(root, "main", "fork/repo").length, 3);
+  assert.equal(openFailures(root, "main").length, 1);
+  assert.equal(holdRefusal(root, "main"), null);
+  conclusion = "success";
+  head = "eeeeeee";
+  assert.equal(runCiFailures(root, ["--run", "5"], { gh }), 0);
+  assert.equal(openFailures(root, "main", "fork/repo").length, 0);
+  assert.equal(openFailures(root, "main").length, 1);
+});
+
 test("open failures require lessons when their branch merges into the base", (t) => {
   const root = fixture(t);
   const git = (...args) => execFileSync("git", ["-c", "user.name=test", "-c", "user.email=test@example.com", ...args], { cwd: root, encoding: "utf8" }).trim();
@@ -280,17 +317,17 @@ test("manual recording reads run metadata with a fake gh", (t) => {
   const calls = [];
   const gh = (args) => {
     calls.push(args);
-    return args.includes("--log-failed") ? tap : JSON.stringify({ headBranch: "feat/test", headSha: "aaaaaaa", conclusion: "failure" });
+    return args.includes("--log-failed") ? tap : JSON.stringify({ head_branch: "feat/test", head_repository: { full_name: "local/repo" }, head_sha: "aaaaaaa", conclusion: "failure" });
   };
   assert.equal(runCiFailures(root, ["--run", "42"], { gh, say: () => {} }), 0);
   assert.equal(openFailures(root, "feat/test").length, 1);
-  assert.deepEqual(calls[0], ["run", "view", "42", "--json", "headBranch,headSha,conclusion"]);
+  assert.deepEqual(calls[0], ["api", "repos/{owner}/{repo}/actions/runs/42"]);
 });
 
 test("CI commands pass silently and refusals fit four lines", (t) => {
   const root = fixture(t);
   const output = [];
-  const options = { say: (s) => output.push(s), warn: (s) => output.push(s), gh: () => JSON.stringify({ headBranch: "feat/test", headSha: "bbbbbbb", conclusion: "success" }) };
+  const options = { say: (s) => output.push(s), warn: (s) => output.push(s), gh: () => JSON.stringify({ head_branch: "feat/test", head_repository: { full_name: "local/repo" }, head_sha: "bbbbbbb", conclusion: "success" }) };
   assert.equal(runCiFailures(root, ["--run", "42"], options), 0);
   assert.deepEqual(output, []);
   assert.equal(runCiFailures(root, ["--rerun", "--branch", "green"], options), 0);
@@ -354,7 +391,7 @@ test("an older green run cannot resolve a newer failure, and a manual log error 
   const warnings = [];
   const gh = (args) => {
     if (args.includes("--log-failed")) throw new Error("log unavailable\nmore detail");
-    return JSON.stringify({ headBranch: "feat/test", headSha: "ddddddd", conclusion: "failure" });
+    return JSON.stringify({ head_branch: "feat/test", head_repository: { full_name: "local/repo" }, head_sha: "ddddddd", conclusion: "failure" });
   };
   assert.equal(runCiFailures(root, ["--run", "40"], { gh, say: () => {}, warn: (s) => warnings.push(s) }), 1);
   assert.deepEqual(warnings, ["ci-failures: gh failed: log unavailable"]);

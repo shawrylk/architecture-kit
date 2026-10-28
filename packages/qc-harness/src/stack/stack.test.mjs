@@ -30,6 +30,13 @@ test("stack up waits for health, status observes it, and down stops its process"
     writeFileSync(path.join(other, "qc.stack.json"), JSON.stringify({ ...manifest, name: "other", ports: { web: health.address().port } }));
     await assert.rejects(stackAction("up", ["fixture", "other"], { ...options, registry: { fixture: root, other } }), /Stack other: port .* is in use/);
     assert.equal((await stackAction("down", ["fixture"], options))[0].running, false);
+    const port = Number(readFileSync(path.join(root, "port"), "utf8"));
+    await assert.rejects(new Promise((resolve, reject) => {
+      const socket = net.createConnection({ port, host: "127.0.0.1" });
+      socket.once("connect", () => { socket.destroy(); resolve(); });
+      socket.once("error", reject);
+      socket.setTimeout(2000, () => { socket.destroy(); reject(new Error("connection timed out")); });
+    }), { code: "ECONNREFUSED" });
     await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
     writeFileSync(path.join(root, "qc.stack.json"), JSON.stringify({ ...manifest, ports: { web: probe.address().port } }));
     await assert.rejects(stackAction("up", ["fixture"], options), /in use/);

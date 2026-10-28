@@ -172,9 +172,10 @@ export function questionProblems(markdown) {
     if (depth === null) continue;
     const listed = /^(?:[-*+]|\d+[.)])[ \t]+/.exec(line);
     if (heading || line.trim() === "") { finish(); continue; }
-    if (!question && line.trimEnd().endsWith(":")) continue;
+    if (!question && questions.length === 0 && line.trimEnd().endsWith(":")) continue;
     const asks = line.includes("?");
-    const starts = listed || (!/^[ \t]/.test(line) && asks);
+    const continues = question && /^(?:Source:|Recommendation:|Recommend\b)/.test(line);
+    const starts = listed || (!continues && !/^[ \t]/.test(line) && asks);
     if (starts) finish();
     if (starts || question) question += `${listed ? line.slice(listed[0].length) : line}\n`;
   }

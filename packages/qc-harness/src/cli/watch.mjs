@@ -197,8 +197,9 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
   };
   const context = { repo: parsed.repo, gh: read, now, requiredChecks };
   const root = checkoutRootOf(cwd);
+  const origin = root && originOf(root);
   for (const { branch } of parsed.runs) {
-    const refusal = root && (!parsed.repo || repoOfSpelling(parsed.repo) === originOf(root)) && holdRefusal(root, branch);
+    const refusal = root && (!parsed.repo || !origin || repoOfSpelling(parsed.repo) === origin) && holdRefusal(root, branch);
     if (refusal) {
       say(refusal);
       return EXIT.FAILED;

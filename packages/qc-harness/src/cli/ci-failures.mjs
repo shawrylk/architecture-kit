@@ -156,16 +156,16 @@ export function currentBranch(root) {
   return execFileSync("git", ["branch", "--show-current"], { cwd: root, encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
-export function resolvedFailures(root, branch) {
+export function resolvedFailures(root, branch, { merging = false } = {}) {
   const records = recordsOf(root);
   const resolved = new Set(records.filter((r) => r.type === "ci-resolution" && r.branch === branch).flatMap((r) => r.ids));
   const repository = originOf(root);
-  const merged = isAncestor(root, branch, load(root).worktree.base) === true;
+  const merged = merging || isAncestor(root, branch, load(root).worktree.base) === true;
   return records.filter((r) => r.type === "ci-failure" && r.branch === branch && (r.repository ?? repository) === repository && (resolved.has(r.id) || merged));
 }
 
-export function lessonRefusal(root, branch, text) {
-  const missing = [...new Set(resolvedFailures(root, branch).map((r) => r.test))].filter((name) => {
+export function lessonRefusal(root, branch, text, failures = resolvedFailures(root, branch)) {
+  const missing = [...new Set(failures.map((r) => r.test))].filter((name) => {
     const body = section(text ?? "", name);
     return ["Symptom", "Cause", "Rule"].some((field) => !new RegExp(`^${field}:[ \\t]*\\S`, "m").test(body));
   });
@@ -253,10 +253,11 @@ export function runCiFailures(root, argv, { gh = (args) => readGh(args, root), w
     return 1;
   }
   try {
-    const run = JSON.parse(gh(["run", "view", argv[1], "--json", "headBranch,headSha,conclusion"]));
-    if (!run.headBranch || !run.headSha) throw new Error("run has no branch or head");
-    if (run.conclusion === "success") resolveFailures(root, run.headBranch, run.headSha, argv[1]);
-    else if (recordRun(root, { id: argv[1], branch: run.headBranch, head: run.headSha }, { gh, warn }) === null) return 1;
+    const run = JSON.parse(gh(["api", `repos/{owner}/{repo}/actions/runs/${argv[1]}`]));
+    const repository = repoOfSpelling(run.head_repository?.full_name ?? "");
+    if (!run.head_branch || !run.head_sha || !repository) throw new Error("run has no branch, head, or head repository");
+    if (run.conclusion === "success") resolveFailures(root, run.head_branch, run.head_sha, argv[1], repository);
+    else if (recordRun(root, { id: argv[1], branch: run.head_branch, head: run.head_sha, repository }, { gh, warn }) === null) return 1;
     return 0;
   } catch (error) {
     warn(`ci-failures: gh failed: ${String(error.message).split(/\r?\n/)[0]}`);

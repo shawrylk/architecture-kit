@@ -24,6 +24,19 @@ test("indented list items continue their question", () => {
 test("a colon ends an introduction even when it contains a question mark", () => {
   assert.deepEqual(questionProblems("## Open questions\nAnswer these first (why?):\n- Which store? Source: storage.mjs:12"), []);
 });
+test("a colon after the first question starts a question after a blank line", () => {
+  assert.deepEqual(questionProblems("## Open questions\nWhich store? Source: storage.mjs:12\n\nWhich region? Options:\n  - Europe\n  - Asia"), [
+    'question "Which region?" needs its own Source: with a file:line or URL',
+  ]);
+});
+
+test("unindented source and recommendation lines continue an open question with question marks", () => {
+  for (const continuation of ["Source: https://example.com/docs?region=eu", "Recommendation: Europe?", "Recommend Europe?"]) {
+    const source = continuation.startsWith("Source:") ? "" : "\nSource: regions.mjs:12";
+    assert.deepEqual(questionProblems(`## Open questions\nWhich region?\n${continuation}${source}`), []);
+  }
+});
+
 const FENCE = "`".repeat(3);
 
 const task = (n, { files = true, fileLines = null, exempt = null, testStep = true, commit = true, estimate = null, extra = [] } = {}) =>
