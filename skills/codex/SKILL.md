@@ -77,7 +77,9 @@ The runner adds these to the prompt of every run, so a brief carries no lean sec
 
 ## Launch a run
 
-Choose the effort from the task: `high` for a design or a change across many files, and `medium` for a small fix.
+A Codex review job always uses `--review`, which pins `gpt-6.1-sol` at high effort.
+For the `codex` agent, dispatch `Role: review` and omit `Effort:`.
+Implementer jobs choose their effort from the task: `high` for a design or a change across many files, and `medium` for a small fix.
 Use `low` for a task that needs little reasoning. Pass your choice as `--effort <low|medium|high>`.
 If you dispatch the `codex` agent, include `Effort: <value>` in its dispatch.
 Omit the flag to keep the Codex config value.

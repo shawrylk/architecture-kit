@@ -28,16 +28,34 @@ const SECRET_READ_DENIES = [
   "Read(~/.ssh/**)",
 ];
 
+const PROCESS_ALLOWS = [
+  'Bash(powershell -Command "Stop-Process -Id *)',
+  'Bash(powershell -NoProfile -Command "Stop-Process -Id *)',
+];
+const GIT_AND_INFRA_DENIES = [
+  "Bash(git checkout*)", "Bash(git -C * checkout*)", "Bash(git switch*)", "Bash(git -C * switch*)",
+  "Bash(git reset*)", "Bash(git -C * reset*)", "Bash(git stash*)", "Bash(git -C * stash*)",
+  "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git push --force-with-lease*)",
+  "Bash(git worktree prune*)", "Bash(terraform apply*)",
+];
+
 test("shared permissions deny secret reads in the working directory and ~/.ssh while examples stay readable", () => {
   const shared = readFileSync(new URL("../../../../user-config/claude/settings.shared.json", import.meta.url), "utf8");
-  assert.deepEqual(JSON.parse(shared).permissions.deny, SECRET_READ_DENIES);
+  assert.deepEqual(JSON.parse(shared).permissions.deny, [...SECRET_READ_DENIES, ...GIT_AND_INFRA_DENIES]);
   const local = { permissions: { allow: ["Read(**/.env.example)"], deny: ["Bash(rm *)"] } };
   const merged = mergeClaudeSettings(JSON.stringify(local), shared);
   const permissions = JSON.parse(merged.text).permissions;
-  assert.deepEqual(permissions.deny, ["Bash(rm *)", ...SECRET_READ_DENIES]);
-  assert.deepEqual(permissions.allow, local.permissions.allow);
+  assert.deepEqual(permissions.deny, ["Bash(rm *)", ...SECRET_READ_DENIES, ...GIT_AND_INFRA_DENIES]);
+  assert.deepEqual(permissions.allow, [...local.permissions.allow, ...PROCESS_ALLOWS]);
   assert.ok(merged.changed.includes("permissions.deny"));
   assert.deepEqual(mergeClaudeSettings(merged.text, shared).changed, []);
+});
+
+test("shared autoMode trusts every repository under GitHub and its worktrees", () => {
+  const shared = JSON.parse(readFileSync(new URL("../../../../user-config/claude/settings.shared.json", import.meta.url), "utf8"));
+  assert.deepEqual(shared.autoMode.environment.filter((line) => line.startsWith("**Trusted repo**:")), [
+    "**Trusted repo**: Every git repository under `~/Documents/GitHub/`, with its worktrees under `.worktree/` and `.claude/worktrees/`",
+  ]);
 });
 
 test("user-config check reports secret deny drift and becomes silent after apply", async (t) => {
@@ -64,6 +82,92 @@ test("JSON merges listed plugin and marketplace keys, preserving local keys and 
   assert.deepEqual(JSON.parse(result.text), { ...local, model: "opus", enabledPlugins: { local: true, kit: true }, extraKnownMarketplaces: { ...local.extraKnownMarketplaces, ...shared.extraKnownMarketplaces } });
   assert.deepEqual(result.changed, ["model", "enabledPlugins.kit", "extraKnownMarketplaces.remote"]);
   assert.deepEqual(mergeClaudeSettings(result.text, JSON.stringify(shared)).changed, []);
+});
+
+test("permissions allow and autoMode lists merge in machine order and stay idempotent", () => {
+  const local = { permissions: { allow: ["local", "both"] }, autoMode: { localOnly: true } };
+  const shared = { permissions: { allow: ["both", "kit"] }, autoMode: { unknown: ["ignored"] } };
+  for (const key of ["allow", "soft_deny", "hard_deny"]) {
+    local.autoMode[key] = ["local", "both"];
+    shared.autoMode[key] = ["both", "kit"];
+  }
+  const result = mergeClaudeSettings(JSON.stringify(local), JSON.stringify(shared));
+  const merged = JSON.parse(result.text);
+  assert.deepEqual(merged.permissions.allow, ["local", "both", "kit"]);
+  assert.ok(result.changed.includes("permissions.allow"));
+  for (const key of ["allow", "soft_deny", "hard_deny"]) {
+    assert.deepEqual(merged.autoMode[key], ["local", "both", "kit"]);
+    assert.ok(result.changed.includes(`autoMode.${key}`));
+  }
+  assert.equal(merged.autoMode.localOnly, true);
+  assert.equal(merged.autoMode.unknown, undefined);
+  assert.deepEqual(mergeClaudeSettings(result.text, JSON.stringify(shared)).changed, []);
+});
+
+test("autoMode environment replaces matching labels in place and preserves local lines", () => {
+  const local = { autoMode: { environment: ["**Machine**: old", "**Organization**: local", "### heading", "unlabeled", "### heading"] } };
+  const shared = { autoMode: { environment: ["**Machine**: shared", "### heading", "unlabeled", "**New**: appended", "new text"] } };
+  const result = mergeClaudeSettings(JSON.stringify(local), JSON.stringify(shared));
+  assert.deepEqual(JSON.parse(result.text).autoMode.environment, [
+    "**Machine**: shared", "**Organization**: local", "### heading", "unlabeled", "**New**: appended", "new text",
+  ]);
+  assert.deepEqual(result.changed, ["autoMode.environment"]);
+  assert.deepEqual(mergeClaudeSettings(result.text, JSON.stringify(shared)).changed, []);
+});
+
+test("autoMode environment deduplicates labels after replacement and stays idempotent", () => {
+  for (const environment of [
+    ["**Machine**: old", "**Machine**: kit"],
+    ["**Machine**: old", "**Machine**: other"],
+  ]) {
+    const shared = JSON.stringify({ autoMode: { environment: ["**Machine**: kit"] } });
+    const result = mergeClaudeSettings(JSON.stringify({ autoMode: { environment } }), shared);
+    assert.deepEqual(JSON.parse(result.text).autoMode.environment, ["**Machine**: kit"]);
+    const second = mergeClaudeSettings(result.text, shared);
+    assert.deepEqual(second.changed, []);
+    assert.equal(second.text, result.text);
+  }
+  const local = { autoMode: { environment: ["**Local**: first", "plain", "**Local**: second", "plain"] } };
+  const shared = JSON.stringify({ autoMode: { environment: [] } });
+  const result = mergeClaudeSettings(JSON.stringify(local), shared);
+  assert.deepEqual(JSON.parse(result.text).autoMode.environment, ["**Local**: first", "plain"]);
+  assert.deepEqual(mergeClaudeSettings(result.text, shared).changed, []);
+});
+
+test("check reports changed environment labels and a second apply changes nothing", async (t) => {
+  const f = fixture(t);
+  const shared = { autoMode: { environment: ["**Machine**: shared"], allow: ["$defaults"] }, permissions: { allow: ["shared"] } };
+  writeFileSync(path.join(f.kitDir, "claude/settings.shared.json"), JSON.stringify(shared));
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  const file = configPaths(f.home, f.env).claude;
+  const local = JSON.parse(readFileSync(file, "utf8"));
+  local.autoMode.environment = ["**Machine**: changed", "**Organization**: local"];
+  writeFileSync(file, JSON.stringify(local));
+  f.lines.length = 0;
+  assert.equal(await runUserConfig(["check"], f), 1);
+  assert.equal(f.lines.length, 1);
+  assert.match(f.lines[0], /autoMode.environment/);
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  f.lines.length = 0;
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  assert.deepEqual(f.lines, []);
+  assert.equal(await runUserConfig(["check"], f), 0);
+  assert.deepEqual(f.lines, []);
+});
+
+test("capture keeps every environment line and filters unsupported autoMode keys", async (t) => {
+  const f = fixture(t);
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  const file = configPaths(f.home, f.env).claude;
+  const local = JSON.parse(readFileSync(file, "utf8"));
+  local.autoMode = { environment: ["**Organization**: local", "### heading"], allow: ["local"], soft_deny: ["soft"], hard_deny: ["hard"], unsupported: true };
+  local.permissions = { allow: ["local"], deny: ["deny"], defaultMode: "auto", localOnly: true };
+  writeFileSync(file, JSON.stringify(local));
+  assert.equal(await runUserConfig(["capture"], f), 0);
+  const captured = JSON.parse(readFileSync(path.join(f.kitDir, "claude/settings.shared.json"), "utf8"));
+  const { unsupported, ...expected } = local.autoMode;
+  assert.deepEqual(captured.autoMode, expected);
+  assert.deepEqual(captured.permissions, { allow: ["local"], deny: ["deny"], defaultMode: "auto" });
 });
 
 test("TOML merges top-level keys and plugin fields while preserving comments and unrelated lines", () => {

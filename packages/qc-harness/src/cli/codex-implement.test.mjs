@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DONE_MARKER, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
+import { DONE_MARKER, REVIEW_MODEL, REVIEW_EFFORT, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
 import { readLimit, writeLimit } from "./codex-limit.mjs";
 import { recordRun } from "./ci-failures.mjs";
 import { holdBranch } from "./pause.mjs";
@@ -423,12 +423,49 @@ for (const effort of ["low", "medium", "high"]) {
   });
 }
 
+test("--review pins the model and effort on every run and reset retry", async (t) => {
+  const { argv, progress } = setup(t);
+  const calls = [];
+  assert.equal(REVIEW_MODEL, "gpt-6.1-sol");
+  assert.equal(REVIEW_EFFORT, "high");
+  assert.equal(await runCodexImplement([...argv, "--review", "--max-runs", "2", "--wait-reset"], {
+    ...resetClock(), say: quiet, out: quiet,
+    fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: { announced_at: "2026-01-01T00:01:00.000Z" } } }) }),
+    run: async (call) => {
+      calls.push(call);
+      if (calls.length === 1) return { status: 2, tail: "usage limit" };
+      if (calls.length === 3) appendFileSync(progress, `${DONE_MARKER}\n`);
+      return { status: 0 };
+    },
+  }), 0);
+  assert.equal(calls.length, 3);
+  for (const { args } of calls) {
+    for (const override of [`model="${REVIEW_MODEL}"`, `model_reasoning_effort="${REVIEW_EFFORT}"`]) {
+      const index = args.indexOf(override);
+      assert.ok(index > 0);
+      assert.equal(args[index - 1], "-c");
+    }
+  }
+});
+
+test("--review and --effort exit one with usage before Codex starts", async (t) => {
+  const { argv } = setup(t);
+  const messages = [];
+  assert.equal(await runCodexImplement([...argv, "--review", "--effort", "low"], {
+    say: (line) => messages.push(line), out: quiet,
+    run: async () => assert.fail("Codex must stay stopped"),
+  }), 1);
+  assert.match(messages.join("\n"), /--review.*--effort/);
+  assert.match(messages.join("\n"), /usage: qc codex-implement/);
+});
+
 test("omitting --effort preserves the Codex config value", async (t) => {
   const { argv, progress } = setup(t);
   assert.equal(await runCodexImplement(argv, {
     say: quiet, out: quiet,
     run: async ({ args }) => {
       assert.equal(args.some((arg) => arg.startsWith("model_reasoning_effort=")), false);
+      assert.equal(args.some((arg) => arg.startsWith("model=")), false);
       appendFileSync(progress, `${DONE_MARKER}\n`);
       return { status: 0, tail: "ok" };
     },
