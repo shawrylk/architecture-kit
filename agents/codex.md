@@ -17,6 +17,7 @@ The prompt gives these lines:
 - `Log:` the Codex log file. Never read it.
 - `Qc:` the command that runs the CLI, such as `npx qc` or `node <path>/qc.mjs`.
 - `MaxRuns:` optional. Omit the flag to use the runner's default and the `codex.maxRuns` cap.
+- `Role:` optional. `review` pins the review model and effort with `--review`.
 - `Effort:` optional. Use `low`, `medium`, or `high`. Omit the flag to keep the Codex config value.
 
 ## Steps
@@ -28,6 +29,8 @@ The prompt gives these lines:
    ```
 
    If the dispatch has a `MaxRuns:` line, append `--max-runs <MaxRuns>` before the redirect.
+   If the dispatch has `Role: review`, append `--review` before the redirect and never append `--effort`.
+   For a dispatch without `Role: review`:
    If the dispatch has an `Effort:` line, append `--effort <Effort>` before the redirect.
 
 2. Wait in bounded steps. Run this in the foreground with a 600000 ms timeout, and repeat it until it prints an `exit` line:

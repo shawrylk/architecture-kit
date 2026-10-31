@@ -7,6 +7,10 @@
   },
   "permissions": {
     "defaultMode": "auto",
+    "allow": [
+      "Bash(powershell -Command \"Stop-Process -Id *)",
+      "Bash(powershell -NoProfile -Command \"Stop-Process -Id *)"
+    ],
     "deny": [
       "Read(**/.env)",
       "Read(**/.env.local)",
@@ -16,7 +20,32 @@
       "Read(**/*.key)",
       "Read(**/id_rsa*)",
       "Read(**/id_ed25519*)",
-      "Read(~/.ssh/**)"
+      "Read(~/.ssh/**)",
+      "Bash(git checkout*)",
+      "Bash(git -C * checkout*)",
+      "Bash(git switch*)",
+      "Bash(git -C * switch*)",
+      "Bash(git reset*)",
+      "Bash(git -C * reset*)",
+      "Bash(git stash*)",
+      "Bash(git -C * stash*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push --force-with-lease*)",
+      "Bash(git worktree prune*)",
+      "Bash(terraform apply*)"
+    ]
+  },
+  "autoMode": {
+    "environment": [
+      "**Local machine**: a single-user dev PC. The agent starts and stops its own local jobs (codex, node, vitest, flutter_tester, dart, adb, gradle, docker containers); stopping those is routine housekeeping",
+      "**Primary use of Claude Code**: software development",
+      "**Trusted repo**: The git repository of the session's working directory and its worktrees under `.worktree/` and `.claude/worktrees/`",
+      "**Org-specific CLIs**: `qc` (architecture-kit: `qc worktree`, `qc codex-implement`, `qc throwaway-db`), `codex`, `gh`, `aws`, `flutter`, `dart`, `adb`"
+    ],
+    "allow": [
+      "$defaults",
+      "Stopping a local process on this PC by process ID (Stop-Process, taskkill, kill) when the user asked for it, or when the process is a stalled or orphaned job the agent or its subagents started (codex, node, vitest, flutter_tester, dart, adb, gradle). Check the process name first; never stop system processes, the user's editor, or the Claude Code process itself."
     ]
   },
   "model": "opus",

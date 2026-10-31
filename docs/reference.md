@@ -176,10 +176,14 @@ The command prints each changed key. Matching files keep their contents and modi
 `capture` updates the kit files from your machine and backs up changed kit files.
 Review the captured diff before committing it.
 
-Claude shares `cleanupPeriodDays`, `syncClaudeAiPlugins`, `env`, `permissions`, `model`, `skillOverrides`, `statusLine`, `enabledPlugins`, `extraKnownMarketplaces`, `effortLevel`, and `modelSettings`.
+Claude shares `cleanupPeriodDays`, `syncClaudeAiPlugins`, `env`, `permissions`, `autoMode`, `model`, `skillOverrides`, `statusLine`, `enabledPlugins`, `extraKnownMarketplaces`, `effortLevel`, and `modelSettings`.
 It also shares `awaySummaryEnabled`, `autoUpdatesChannel`, `tui`, `skipWorkflowUsageWarning`, `theme`, `autoCompactEnabled`, `autoContinueAtUsageLimit`, `agentPushNotifEnabled`, and `skipAutoPermissionPrompt`.
 Only `CLAUDE_CODE_DISABLE_MOUSE` and `CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP` are shared under `env`.
-`defaultMode` and `deny` are shared under `permissions`; shared deny rules extend your local deny list.
+`defaultMode`, `allow`, and `deny` are shared under `permissions`; shared allow and deny rules extend your local lists.
+`autoMode` shares `environment`, `allow`, `soft_deny`, and `hard_deny`. Its rule lists keep machine order, then append new kit entries.
+Environment lines with matching bold labels replace machine lines in place. New labels append; other machine labels stay.
+Unlabeled lines appear once. Organization lines stay on each machine when the kit lacks their labels.
+Capture copies every environment line. Remove private lines before you commit captured settings.
 The shared rules deny `Read` of `.env`, `.env.local`, `.env.*.local`, `.env.production`, `*.pem`, `*.key`, `id_rsa*`, and `id_ed25519*` beneath the working directory.
 They also deny `Read` of every file in `~/.ssh`.
 `.env.example` stays readable. Shell reads still need the operating system sandbox.
@@ -820,7 +824,7 @@ The Codex runner and `qc watch --run` exit `5` for a held branch.
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.
 
 ```bash
-npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
+npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
 ```
 
 The runner passes the prompt on stdin to this command, with `QC_ROLE=implementer` in the environment:
@@ -870,6 +874,7 @@ The runner validates the worktree's brief and Codex settings before launch:
 | Setting or requirement | Default or rule |
 |---|---|
 | `--max-runs` | `1`; a positive whole number, capped by `codex.maxRuns` (default `2`) |
+| `--review` | pins `gpt-6.1-sol` at high effort for every run and reset retry; conflicts with `--effort` |
 | `--effort` | optional; `low`, `medium`, or `high`; omission keeps the Codex config value |
 | `--poll-minutes` | `30`; a positive interval of at most 35791 minutes for `--wait-reset` |
 | `codex.briefMaxLines` | `40` non-blank lines in the brief |
@@ -891,6 +896,8 @@ The overrides apply to the runner's `codex exec` call only, so your interactive 
 
 | Override | Source |
 |---|---|
+| `-c model="gpt-6.1-sol"` | `--review`; applies to every run, including a retry after a reset |
+| `-c model_reasoning_effort="high"` | `--review`; applies to every run, including a retry after a reset |
 | `-c model_reasoning_effort=<value>` | `--effort`; applies to every run, including a retry after a reset; omitted without the flag |
 | `-c plugins."<name>".enabled=false` | enabled plugins in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), plus `codex.disablePlugins` (default `["superpowers@claude-plugins-official"]`) |
 | `-c model_auto_compact_token_limit=<n>` | `budgets.codex.compactAt`; null uses `codex.compactTokens` (default `300000`) |
@@ -898,6 +905,8 @@ The overrides apply to the runner's `codex exec` call only, so your interactive 
 
 The lean rules tell the run to load no skill. A null `budgets.codex` omits both limit overrides.
 The runner validates only `budgets.codex`; a bad budget for another role leaves its launch unchanged.
+`--review` together with `--effort` exits `1` with a usage line before Codex starts.
+The `codex` agent accepts `Role: review`, which appends `--review` and never `--effort`.
 An invalid `--effort` value exits `1` with a usage line before Codex starts.
 The `codex` agent accepts an optional `Effort:` dispatch line and passes it as `--effort`.
 Choose `high` for a design or a change across many files, and `medium` for a small fix.

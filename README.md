@@ -167,6 +167,22 @@ A hook timeout on a fresh database means the schema step is missing.
 Never raise a timeout.
 Never use port 5432 or another port the local stack owns.
 
+## Shared user configuration
+
+`user-config/` holds the shared settings for Claude Code and Codex.
+Run `qc user-config apply` to merge them, or `qc user-config check` to report drift.
+
+| Claude setting | Merge rule |
+|---|---|
+| `permissions.defaultMode` | Use the kit value. |
+| `permissions.allow` and `permissions.deny` | Keep machine entries, then append new kit entries. |
+| `autoMode.allow`, `autoMode.soft_deny`, and `autoMode.hard_deny` | Keep machine entries, then append new kit entries. |
+| `autoMode.environment` | Replace matching bold labels in place, append new labels, and keep each unlabeled line once. |
+
+Organization lines in `autoMode.environment` stay on each machine when the kit lacks their labels.
+`qc user-config capture` copies every environment line into the kit file.
+Remove private lines before you commit captured settings.
+
 ## Tests
 
 ```bash

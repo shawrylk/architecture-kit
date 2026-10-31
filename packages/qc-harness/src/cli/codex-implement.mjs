@@ -15,6 +15,8 @@ import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
+export const REVIEW_MODEL = "gpt-6.1-sol";
+export const REVIEW_EFFORT = "high";
 const DEFAULT_MAX_RUNS = 1;
 const TAIL_CHARS = 4000;
 const LIMIT = /usage limit|spend cap|rate limit|hit your limit/i;
@@ -46,7 +48,7 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
 }
 
 const USAGE =
-  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
+  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
   "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs, 4 guard refused, 5 paused";
 
 const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
@@ -55,6 +57,7 @@ const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "pro
 export function parseArgs(argv) {
   const found = {};
   for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--review") { found.review = true; continue; }
     if (argv[index] === "--wait-reset") { found.waitReset = true; continue; }
     const key = FLAGS[argv[index]];
     if (!key) throw new Error(`unknown argument ${argv[index]}`);
@@ -66,6 +69,7 @@ export function parseArgs(argv) {
   const maxRuns = found.maxRuns === undefined ? DEFAULT_MAX_RUNS : Number(found.maxRuns);
   if (!Number.isInteger(maxRuns) || maxRuns < 1) throw new Error(`--max-runs must be a positive integer, got ${found.maxRuns}`);
   if (found.effort !== undefined && !["low", "medium", "high"].includes(found.effort)) throw new Error("--effort must be low, medium, or high");
+  if (found.review && found.effort !== undefined) throw new Error("--review cannot be combined with --effort");
   const progress = path.resolve(found.progress);
   return {
     brief: path.resolve(found.brief),
@@ -74,6 +78,7 @@ export function parseArgs(argv) {
     log: path.resolve(found.log ?? `${progress}.log`),
     maxRuns,
     effort: found.effort,
+    review: found.review ?? false,
     waitReset: found.waitReset ?? false,
     maxHours: parseMaxHours(found.maxHours),
     pollMinutes: parsePollMinutes(found.pollMinutes),
@@ -304,7 +309,7 @@ async function runJob(argv, {
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
     const limits = codexLimits === null ? [] : ["-c", `model_auto_compact_token_limit=${codexLimits.compactAt}`, "-c", `tool_output_token_limit=${codexLimits.toolOutputTokens}`];
-    const effort = settings.effort === undefined ? [] : ["-c", `model_reasoning_effort=${settings.effort}`];
+    const effort = settings.review ? ["-c", `model="${REVIEW_MODEL}"`, "-c", `model_reasoning_effort="${REVIEW_EFFORT}"`] : settings.effort === undefined ? [] : ["-c", `model_reasoning_effort=${settings.effort}`];
     const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, ...effort, "-"];
     const allow = protectedAllow(readFileSync(settings.brief, "utf8"));
     const childEnv = Object.fromEntries(Object.entries(codexEnvironment(env, codex.envAllow)).filter(([name]) => name.toUpperCase() !== "QC_PROTECTED_ALLOW"));
