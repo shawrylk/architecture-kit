@@ -69,6 +69,29 @@ const stop = (ws, file, agentType, extra = {}) => ({
 
 const costs = (ws) => readLedger(ws.ledger).filter((record) => record.type === "cost");
 
+test("the cost record carries endContext and peakContext", (t) => {
+  const ws = workspace(t);
+  const file = path.join(ws.base, "context.jsonl");
+  writeFileSync(file, [
+    prompt("No worktree named."),
+    ...[10_000, 90_000, 60_000].map((context, index) =>
+      assistant(`m${index}`, "claude-sonnet-5-5", usage(context - 3000, 500, 2000, 1000))),
+  ].join("\n") + "\n");
+  decide(stop(ws, file, "sdd-implementer"), ws.tmp);
+  const [record] = costs(ws);
+  assert.equal(record.endContext, 60_000);
+  assert.equal(record.peakContext, 90_000);
+});
+
+test("cost records carry the task Estimate value, or null when absent", (t) => {
+  const ws = workspace(t);
+  for (const [index, text, estimate] of [[0, "Estimate: 25 tool calls", 25], [1, "**Estimate:** 30 tool calls", 30], [2, "No estimate.", null]]) {
+    const file = transcript(ws, `estimate-${index}`, text);
+    assert.equal(decide(stop(ws, file, "sdd-implementer", { agent_id: `estimate-${index}` }), ws.tmp), null);
+    assert.equal(costs(ws).at(-1).estimate, estimate);
+  }
+});
+
 test("a subagent stop records its tokens once per request, its tool calls, and the branch and head of its dispatch", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledger, { type: "dispatch", session: "s", agentType: "sdd-implementer", task: true, worktree: ws.repo, branch: "feat/1-x", head: ws.head });
@@ -89,7 +112,10 @@ test("a subagent stop records its tokens once per request, its tool calls, and t
       output: 150,
       cacheRead: 4000,
       cacheCreation: 200,
+      endContext: 3005,
+      peakContext: 3005,
       toolCalls: 4,
+      estimate: null,
       branch: "feat/1-x",
       head: ws.head,
     },

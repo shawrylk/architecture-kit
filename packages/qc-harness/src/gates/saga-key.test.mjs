@@ -222,7 +222,7 @@ test("a wrapping call of stored values passes", () => {
   assert.deepEqual(check("runPipeline({ mutationId: options.mutationId ?? state.clientMutationId });"), []);
 });
 
-test("the outbox key expression of quality-control-mono fails inside a runner call", () => {
+test("the outbox key expression of example-app fails inside a runner call", () => {
   assert.equal(check("runPipeline({ mutationId: options.mutationId ?? crypto.randomUUID(), failureCode: null });").length, 1);
 });
 

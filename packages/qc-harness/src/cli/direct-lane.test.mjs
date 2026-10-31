@@ -42,7 +42,7 @@ const edit = (root, rel, input) =>
   editLane({ root, base: BASE, protectedBranches: ["main"], rel, toolName: "Edit", input });
 
 test("the settings fill their defaults, accept false, and name a wrong key", () => {
-  assert.deepEqual(directSettings({}), directDefaults);
+  assert.deepEqual(directSettings({}), { ...directDefaults, reviewPaths: [".mcp.json", "**/.claude/**", ".github/workflows/**", "hooks/**"] });
   assert.equal(directSettings({ direct: false }), null);
   assert.equal(directSettings({ direct: { maxLines: 5 } }).maxLines, 5);
   assert.throws(() => directSettings({ direct: { maxLines: 0 } }), /swarm\.direct\.maxLines/);
@@ -127,6 +127,23 @@ test("a head that touches a review path needs one APPROVED review of either kind
   assert.equal(mergeLane({ root, baseOid: oidOf(root), sha, records: approved }).problem, null);
 });
 
+for (const file of [".mcp.json", ".claude/settings.json", "nested/.claude/agents/a.md", ".github/workflows/ci.yml", "hooks/check.mjs"]) {
+  test(`the default review paths require approval for ${file}`, (t) => {
+    const root = repo(t);
+    const sha = commit(root, file, "trust config\n");
+    const input = { root, baseOid: oidOf(root), sha };
+    assert.match(mergeLane({ ...input, records: [] }).problem, /matches swarm\.direct\.reviewPaths/);
+    assert.equal(mergeLane({ ...input, records: [{ type: "verdict", kind: "branch", verdict: "APPROVED", sha }] }).problem, null);
+  });
+}
+
+test("repository review paths replace the defaults, including an empty list", (t) => {
+  assert.deepEqual(directSettings({ direct: { reviewPaths: ["src/**"] } }).reviewPaths, ["src/**"]);
+  const root = repo(t, { dispatch: {}, direct: { reviewPaths: [] } });
+  const sha = commit(root, ".mcp.json", "{}\n");
+  assert.equal(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, null);
+});
+
 test("a commit after a review that asked for changes stays out of the lane until a review approves it", (t) => {
   const root = repo(t);
   const first = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
@@ -194,6 +211,7 @@ test("a head with no commit past the base, the head of a protected branch, or a 
 test("a Write over a tracked binary has no size the lane can judge", (t) => {
   const root = repo(t);
   commit(root, "src/lib.dll", Buffer.from([0, 1, 2, 3]));
+  git(root, "update-ref", "refs/remotes/origin/main", "HEAD");
   const write = editLane({ root, base: BASE, protectedBranches: [], rel: "src/lib.dll", toolName: "Write", input: { content: "x" } });
   assert.match(write.problem, /src\/lib\.dll is a binary file/);
 });
@@ -225,8 +243,8 @@ test("a base that sets reviewPaths holds a merge to its review, though the check
 test("a base with no qc.config.json closes the lane", (t) => {
   const root = repo(t, undefined, null);
   const sha = commit(root, "src/a.ts", lines(10).replace("line 3", "line three"));
-  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /git cannot read qc\.config\.json at the PR base/);
-  assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /git cannot read qc\.config\.json at origin\/main/);
+  assert.match(mergeLane({ root, baseOid: oidOf(root), sha, records: [] }).problem, /qc\.config\.json is absent at the PR base/);
+  assert.match(edit(root, "src/a.ts", { old_string: "a", new_string: "b" }).problem, /qc\.config\.json is absent at origin\/main/);
 });
 
 test("a base config that is not JSON, or holds a wrong swarm or swarm.direct, closes the lane and names the cause", (t) => {

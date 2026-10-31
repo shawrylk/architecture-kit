@@ -32,9 +32,122 @@ test("with swarm.dispatch off, the checks are off", (t) => {
   for (const dir of dirs) assert.equal(workflowAt(dir), null);
 });
 
+test("workflowAt reads the policy at the PR commit even when the checkout has no config", (t) => {
+  const { dirs } = folders(t, [null]);
+  const baseOid = "a".repeat(40);
+  const calls = [];
+  const git = (root, ...args) => {
+    calls.push({ root, args });
+    if (args[0] === "ls-tree") return "100644 blob config\tqc.config.json";
+    return args[0] === "show" ? JSON.stringify({ swarm: { dispatch: {}, direct: false } }) : "";
+  };
+  const workflow = workflowAt(dirs[0], { baseOid, git });
+  assert.equal(workflow.review.merge, "branch");
+  assert.equal(workflow.direct, null);
+  assert.deepEqual(calls.map(({ args }) => args), [["cat-file", "-e", `${baseOid}^{commit}`], ["ls-tree", baseOid, "--", "qc.config.json"], ["show", `${baseOid}:qc.config.json`]]);
+  assert.throws(() => workflowAt(dirs[0], { baseOid: "main", git }), /no base commit/);
+  assert.equal(calls.length, 3);
+});
+
+test("a failed or late config listing keeps the base policy closed", (t) => {
+  const { dirs } = folders(t, [{ swarm: { dispatch: {} } }]);
+  for (const late of [false, true]) {
+    const git = (root, ...args) => args[0] === "ls-tree" && !late ? null : "";
+    git.late = () => late;
+    assert.throws(() => workflowAt(dirs[0], { baseOid: "a".repeat(40), git }), late ? /ran past.*budget/ : /git cannot read qc\.config\.json/);
+  }
+});
+
+test("a config content read that finishes late keeps the base policy closed", (t) => {
+  const { dirs } = folders(t, [{ swarm: { dispatch: {} } }]);
+  let late = false;
+  const git = (root, ...args) => {
+    if (args[0] === "ls-tree") return "100644 blob config\tqc.config.json";
+    if (args[0] === "show") {
+      late = true;
+      return JSON.stringify({ swarm: {} });
+    }
+    return "";
+  };
+  git.late = () => late;
+  assert.throws(() => workflowAt(dirs[0], { baseOid: "a".repeat(40), git }), /ran past.*budget/);
+});
+
+test("the checkout can close the direct lane while the PR base keeps its review policy", (t) => {
+  const { dirs } = folders(t, [{ swarm: { direct: false } }, { swarm: { direct: { maxLines: 0 } } }]);
+  const git = (root, ...args) => args[0] === "show" ? JSON.stringify({ swarm: { dispatch: {} } }) : args[0] === "ls-tree" ? "100644 blob config\tqc.config.json" : "";
+  for (const dir of dirs) {
+    const workflow = workflowAt(dir, { baseOid: "a".repeat(40), git });
+    assert.equal(workflow.review.merge, "branch");
+    assert.equal(workflow.direct, null);
+  }
+});
+
 test("an empty dispatch section takes every review default", () => {
   assert.deepEqual(reviewSettings({ dispatch: {} }), { ...reviewDefaults, implementerTypes: dispatchDefaults.implementerTypes });
 });
+
+test("requireGreen accepts booleans and not-red", () => {
+  for (const requireGreen of [true, false, "not-red"]) {
+    assert.equal(reviewSettings({ dispatch: {}, review: { requireGreen } }).requireGreen, requireGreen);
+  }
+});
+
+test("requireGreen rejects other strings and names every allowed value", () => {
+  for (const requireGreen of ["", "true", "false", "green", "not_red"]) {
+    assert.throws(
+      () => reviewSettings({ dispatch: {}, review: { requireGreen } }),
+      /swarm\.review\.requireGreen.*true, false, or "not-red"/,
+    );
+  }
+});
+
+test("promotion review is off by default", () => {
+  assert.equal(reviewSettings({ dispatch: {} }).promotion, null);
+});
+
+test("promotion review fills the default surfaces", () => {
+  const promotion = { integration: "dev", release: "main" };
+  assert.deepEqual(reviewSettings({ dispatch: {}, review: { promotion } }).promotion, {
+    ...promotion,
+    surfaces: ["infra/**", "**/migrations/**", ".github/workflows/**"],
+  });
+});
+
+test("promotion review accepts custom surfaces", () => {
+  const promotion = { integration: "dev", release: "main", surfaces: ["deploy/**"] };
+  assert.deepEqual(reviewSettings({ dispatch: {}, review: { promotion } }).promotion, promotion);
+});
+
+for (const [name, promotion, key] of [
+  ["a string", "on", "promotion"],
+  ["an array", [], "promotion"],
+  ["a boolean", false, "promotion"],
+  ["a number", 1, "promotion"],
+  ["missing integration", { release: "main" }, "promotion.integration"],
+  ["empty integration", { integration: "", release: "main" }, "promotion.integration"],
+  ["blank integration", { integration: "  ", release: "main" }, "promotion.integration"],
+  ["missing release", { integration: "dev" }, "promotion.release"],
+  ["empty release", { integration: "dev", release: "" }, "promotion.release"],
+  ["blank release", { integration: "dev", release: "  " }, "promotion.release"],
+  ["equal branches", { integration: "dev", release: "dev" }, "promotion.release"],
+  ["equal normalized integration", { integration: "origin/main", release: "main" }, "promotion.release"],
+  ["equal normalized release", { integration: "main", release: "origin/main" }, "promotion.release"],
+  ["a string for surfaces", { integration: "dev", release: "main", surfaces: "infra/**" }, "promotion.surfaces"],
+  ["empty surfaces", { integration: "dev", release: "main", surfaces: [] }, "promotion.surfaces"],
+  ["an empty glob", { integration: "dev", release: "main", surfaces: [""] }, "promotion.surfaces"],
+  ["a blank glob", { integration: "dev", release: "main", surfaces: ["  "] }, "promotion.surfaces"],
+  ["a non-string glob", { integration: "dev", release: "main", surfaces: [1] }, "promotion.surfaces"],
+  ["an unknown key", { integration: "dev", release: "main", typo: true }, "promotion.typo"],
+]) {
+  test(`promotion review rejects ${name} and names its key`, () => {
+    assert.throws(() => reviewSettings({ dispatch: {}, review: { promotion } }), (error) => {
+      assert.ok(error.message.startsWith(`swarm.review.${key} in qc.config.json must be `), error.message);
+      assert.match(error.message, /, got /);
+      return true;
+    });
+  });
+}
 
 test("a repository overrides one reviewer kind and keeps the other", () => {
   const settings = reviewSettings({ dispatch: {}, review: { merge: "task", reviewerTypes: { task: ["my-reviewer"] } } });

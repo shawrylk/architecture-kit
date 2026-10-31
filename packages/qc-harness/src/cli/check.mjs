@@ -50,6 +50,7 @@ import { literalRegistries } from "../registries.mjs";
 import { checkThresholdRatchet } from "../gates/threshold-ratchet.mjs";
 import { checkParity, placeholderSlices } from "../gates/parity.mjs";
 import { checkIntegrationImports } from "../gates/integration-imports.mjs";
+import { checkFeatureSwitches } from "../gates/feature-switches.mjs";
 import { checkClosedSetWriters, matchedKeys } from "../gates/closed-set-writers.mjs";
 import { checkDocClaims, parseDocClaims } from "../gates/doc-claims.mjs";
 import { checkContractIdempotency, checkLedgerGrowth } from "../gates/contract-idempotency.mjs";
@@ -517,10 +518,11 @@ async function contractKeys(config, lines) {
   if (text === null) return [];
   let document;
   try {
-    const { parse } = await import("yaml");
+    const { importConsumerPackage } = await import("../consumer-package.mjs");
+    const { parse } = await importConsumerPackage("yaml", config.root);
     document = parse(text);
   } catch (error) {
-    const rule = error?.code === "ERR_MODULE_NOT_FOUND" ? "contract-reader-unavailable" : "unreadable-contract";
+    const rule = ["ERR_MODULE_NOT_FOUND", "MODULE_NOT_FOUND"].includes(error?.code) ? "contract-reader-unavailable" : "unreadable-contract";
     return [{ path: contract, rule, detail: error.message }];
   }
   const problems = checkContractKeys(document, contract);
@@ -536,7 +538,7 @@ async function contractIdempotency(config, lines) {
   if (text === null) return [];
   let operations;
   try {
-    operations = await contractOperations(text);
+    operations = await contractOperations(text, { root: config.root });
   } catch (error) {
     const rule = error.code === "CONTRACT_PEER_MISSING" ? "contract-reader-unavailable" : "unreadable-contract";
     return [{ path: contract, rule, detail: error.message }];
@@ -567,7 +569,7 @@ async function contractRouteAgreement(config, routes, lines) {
   if (text === null) return [];
   let operations;
   try {
-    operations = await contractOperations(text);
+    operations = await contractOperations(text, { root: config.root });
   } catch (error) {
     const rule = error.code === "CONTRACT_PEER_MISSING" ? "contract-reader-unavailable" : "unreadable-contract";
     return [{ path: contract, rule, detail: error.message }];
@@ -933,6 +935,24 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     const subjects = await integrationSubjects(config, tree);
     problems.push(...checkIntegrationImports(subjects, config.integrationImports));
     lines.push(`OK  integration  ${subjects.length} integration test(s), each importing the product it integrates with`);
+  }
+
+  if (enabled(config.gates, "feature-switches")) {
+    let fileCount = 0;
+    const switchProblems = [];
+    for (const root of config.featureRoots.map(posix)) {
+      for (const folder of tree.foldersIn(root)) {
+        const featureRoot = join(root, folder);
+        const rels = tree.under(featureRoot).filter((file) => SOURCE_EXTENSION.test(file) && !SKIP.test(`/${file}`) && !/\.spec\.[cm]?[jt]sx?$/.test(file));
+        const files = await readEach(config.root, rels);
+        fileCount += files.length;
+        switchProblems.push(...checkFeatureSwitches(files, config.featureSwitches, featureRoot));
+      }
+    }
+    problems.push(...switchProblems);
+    lines.push(switchProblems.length === 0
+      ? `OK  switches     ${fileCount} file(s) hold no unwire constant outside ${config.featureSwitches.file}`
+      : `FAIL  switches   ${fileCount} file(s), ${switchProblems.length} unwire constant(s) outside ${config.featureSwitches.file}`);
   }
 
   if (enabled(config.gates, "closed-set-writers")) {

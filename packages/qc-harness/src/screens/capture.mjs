@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { PNG } from "pngjs";
+import { importConsumerPackage } from "../consumer-package.mjs";
+const { PNG } = await importConsumerPackage("pngjs");
 import { targetSession } from "./stack-auth.mjs";
 import { compareImages, gallery, sortReport } from "./compare.mjs";
 import { stableCapture, findRegions, regionCrop, boxPair } from "./regions.mjs";

@@ -1,6 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { contractOperations } from "./contract-operations.mjs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { defaults } from "../config.mjs";
+import { runCheck } from "../cli/check.mjs";
+
+test("contract readers load yaml from the config root outside the current directory", async () => {
+  const root = mkdtempSync(join(tmpdir(), "qc-contract-root-"));
+  try {
+    const directory = join(root, "node_modules/yaml");
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ type: "module", main: "index.mjs" }));
+    writeFileSync(join(directory, "index.mjs"), `export function parse(text) {
+      if (text === "consumer sentinel") throw new Error("consumer yaml selected");
+      return { paths: { "/consumer": { get: { operationId: "consumerParser" } } } };
+    }`);
+    const found = await contractOperations("paths: {}", { root });
+    assert.equal(found[0]?.id, "consumerParser");
+    writeFileSync(join(root, "api.yaml"), "consumer sentinel");
+    for (const gate of ["contract-idempotency", "contract-routes"]) {
+      const config = { ...defaults, root, featureRoots: [], contract: "api.yaml", gates: Object.fromEntries(Object.keys(defaults.gates).map((name) => [name, name === gate])) };
+      const result = await runCheck(config, [], { lister: async () => ["api.yaml"] });
+      assert.ok(result.problems.some((problem) => problem.rule === "unreadable-contract" && problem.detail === "consumer yaml selected"), JSON.stringify(result));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 const contract = `
 openapi: 3.0.3

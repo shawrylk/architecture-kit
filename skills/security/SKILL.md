@@ -1,5 +1,5 @@
 ---
-name: architecture-security
+name: security
 description: The security model of this architecture — tenant isolation, presigned URLs, secrets, audit log, and what never gets logged. Use only in a repository with a `qc.config.json` at its root, when touching repositories, storage access, authentication, secrets, or anything that crosses a tenant boundary.
 ---
 

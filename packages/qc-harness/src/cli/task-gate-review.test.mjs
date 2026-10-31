@@ -5,6 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { decide } from "./dispatch-guard.mjs";
+import { checkpointPathOf } from "./checkpoint.mjs";
+import { runtimeTagOf } from "./dispatch-route.mjs";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { judgeTask, recordDispatch } from "./task-gate.mjs";
 
@@ -39,6 +41,9 @@ function workspace(t, config = { swarm: { dispatch: {} } }) {
   git(main, "worktree", "add", "-q", "-b", "feat/1-x", linked);
   const tmp = path.join(base, "tmp");
   mkdirSync(tmp);
+  const checkpoint = checkpointPathOf(main, "s");
+  mkdirSync(path.dirname(checkpoint), { recursive: true });
+  writeFileSync(checkpoint, "## Goal\nTest the review gate.\n## Rules\nKeep the gate checks on.\n## Tasks\nDispatch the review.\n## Next\nCheck the result.\n");
   return { base, main, origin, linked, tmp, ledger: path.join(main, ".git", "qc", "ledger.jsonl") };
 }
 
@@ -56,11 +61,25 @@ const call = (ws, type, prompt) => ({
   hook_event_name: "PreToolUse",
   tool_name: "Agent",
   tool_use_id: "toolu_1",
-  tool_input: { subagent_type: type, description: "Review", prompt },
+  tool_input: { subagent_type: type, description: runtimeTagOf({ subagent_type: type }, { codexModel: null }) + "Review", prompt },
 });
 const reviewPrompt = (ws, more = "") => `Review the branch.\nWorktree: ${ws.linked}\n${more}`;
 const judge = (ws, type, prompt, deps = { ciState: green }) => judgeTask(call(ws, type, prompt), ws.tmp, deps);
 const branchVerdict = (ws, sha) => appendRecord(ws.ledger, { type: "verdict", kind: "branch", verdict: "APPROVED", sha, branch: "feat/1-x" });
+
+test("the task gate passes required checks from the repository despite an invalid worktree config", (t) => {
+  const ws = workspace(t, { swarm: { dispatch: {} }, ci: { requiredChecks: ["build"] } });
+  writeFileSync(path.join(ws.linked, "qc.config.json"), JSON.stringify({ ci: null }));
+  const seen = [];
+  const task = judge(ws, BRANCH_REVIEWER, reviewPrompt(ws), {
+    ciState: (sha, cwd, options) => {
+      seen.push({ sha, cwd, options });
+      return { reason: "CI on head: build is missing", unknown: null, pending: true };
+    },
+  });
+  assert.match(task.refusal ?? "", /build is missing/);
+  assert.deepEqual(seen, [{ sha: git(ws.linked, "rev-parse", "HEAD"), cwd: ws.linked, options: { requiredChecks: ["build"] } }]);
+});
 
 test("a reviewer whose head holds the tip of the base, with green CI, passes with no note", (t) => {
   const ws = workspace(t);
@@ -176,7 +195,7 @@ test("a long brief file warns and still passes, and the warning reaches the sess
   const task = implement(ws, "Read it.", brief);
   assert.equal(task.refusal, null);
   assert.match(task.note ?? "", /9 numbered findings/);
-  const output = decide(call(ws, IMPLEMENTER, `Read it.\nBrief: ${brief}\nWorktree: ${ws.linked}`), ws.tmp, Date.now(), { ciState: green });
+  const output = decide(call(ws, IMPLEMENTER, `Read it.\nBrief: ${brief}\nWorktree: ${ws.linked}\nRuntime: claude test`), ws.tmp, Date.now(), { ciState: green });
   assert.match(output.hookSpecificOutput.additionalContext, /disjoint paths/);
   assert.equal(output.hookSpecificOutput.permissionDecision, undefined);
 });

@@ -50,6 +50,13 @@ const remind = (count, budget) => ({
   },
 });
 
+export const HANDOFF_STEPS =
+  "1. Commit and push green work with git add, git commit and git push. " +
+  "2. Write the hand-off note in a `handoffs/` folder beside the report file, outside every checkout: lines " +
+  "`Brief:`, `Worktree:`, `Branch:`, and `Head:`, and sections `## Done`, `## Left`, and `## Next step`. " +
+  "3. Send the final report with a line `HANDOFF: <note path>` in place of the GREEN line. " +
+  "Read and read-only commands still run.";
+
 const deny = (count, budget) => ({
   hookSpecificOutput: {
     hookEventName: "PreToolUse",
@@ -57,11 +64,7 @@ const deny = (count, budget) => ({
     permissionDecisionReason:
       `Tool-call budget spent: this is call ${count} of ${budget} (${KEY} in qc.config.json). ` +
       "Only the hand-off can run now. " +
-      "1. Commit and push green work with git add, git commit and git push. " +
-      "2. Write the hand-off note in a `handoffs/` folder beside the report file, outside every checkout: lines " +
-      "`Brief:`, `Worktree:`, `Branch:`, and `Head:`, and sections `## Done`, `## Left`, and `## Next step`. " +
-      "3. Send the final report with a line `HANDOFF: <note path>` in place of the GREEN line. " +
-      "Read and read-only commands still run.",
+      HANDOFF_STEPS,
   },
 });
 

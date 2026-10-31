@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import path from "node:path";
 import { reviewDefaults } from "../config.mjs";
+import { ciState as readCiState } from "./ci-state.mjs";
 import {
   baseCheck,
   briefCheck,
@@ -60,6 +62,18 @@ test("a second branch review with no Reviewed line is refused, and the refusal n
 
 test("a second branch review that carries a Reviewed line passes", () => {
   assert.equal(check({ records: [branchVerdict], prompt: branchPrompt("Reviewed: ccccccc") }).refusal, null);
+});
+
+test("scoped reviews share an integration head when CI is unknown", () => {
+  const over = {
+    branch: "feat/7-integration",
+    records: [{ ...branchVerdict, branch: "feat/7-integration", scope: "a" }],
+    ciState: () => ({ reason: null, unknown: "no check runs" }),
+  };
+  assert.equal(check({ ...over, prompt: branchPrompt("Scope: b") }).refusal, null);
+  const { refusal, note } = check({ ...over, prompt: branchPrompt("Scope: a\nReviewed: ccccccc") });
+  assert.equal(refusal, null);
+  assert.match(note, /unknown/);
 });
 
 test("the refusal and the Reviewed line speak of the last head a branch review named", () => {
@@ -123,6 +137,70 @@ test("requireGreen off never asks CI", () => {
   const ciState = () => ((asked += 1), { reason: "red", unknown: null });
   assert.equal(check({ ciState, review: { ...review, requireGreen: false, reviewerTypes: { task: [], branch: ["sdd-branch-reviewer"] } } }).refusal, null);
   assert.equal(asked, 0);
+});
+
+const checkRuns = (runs, requireGreen = "not-red") => check({
+  review: { ...review, requireGreen },
+  ciState: (sha) => {
+    assert.equal(sha, SHA);
+    return readCiState(sha, "/w", {
+      gh: (args) => args[1].includes("/actions/runs")
+        ? JSON.stringify({ workflow_runs: [] })
+        : JSON.stringify({ check_runs: runs }),
+      origin: () => "owner/repo",
+    });
+  },
+});
+
+for (const status of ["queued", "in_progress", "waiting", "pending"]) {
+  test(`requireGreen not-red allows ${status} CI and names the check in a note`, () => {
+    const { refusal, note } = checkRuns([{ name: "build", status, conclusion: null }]);
+    assert.equal(refusal, null);
+    assert.match(note, new RegExp(`CI on aaaaaaa: build is ${status}`));
+    assert.match(note, /review proceeds/i);
+  });
+}
+
+for (const conclusion of ["failure", "cancelled", "timed_out", "action_required"]) {
+  test(`requireGreen not-red refuses ${conclusion} even while another check runs`, () => {
+    const { refusal, note } = checkRuns([
+      { name: "lint", status: "in_progress", conclusion: null },
+      { name: "build", status: "completed", conclusion },
+    ]);
+    assert.match(refusal, new RegExp(`build ended ${conclusion}`));
+    assert.equal(note, null);
+  });
+}
+
+for (const conclusion of ["success", "skipped", "neutral"]) {
+  test(`requireGreen not-red allows ${conclusion} without a note`, () => {
+    assert.deepEqual(checkRuns([{ name: "build", status: "completed", conclusion }]), { refusal: null, note: null });
+  });
+}
+
+test("requireGreen not-red allows unknown CI with a note", () => {
+  const { refusal, note } = checkRuns([]);
+  assert.equal(refusal, null);
+  assert.match(note, /CI on aaaaaaa is unknown.*no check runs/);
+});
+
+test("requireGreen true still refuses queued and running CI", () => {
+  for (const status of ["queued", "in_progress"]) {
+    const { refusal, note } = checkRuns([{ name: "build", status, conclusion: null }], true);
+    assert.match(refusal, new RegExp(`build is ${status}`));
+    assert.match(refusal, /waits for green CI/);
+    assert.equal(note, null);
+  }
+});
+
+test("requireGreen not-red uses the newest run of a check", () => {
+  const older = { name: "build", status: "completed", conclusion: "failure", started_at: "2026-01-01T00:00:00Z", id: 1 };
+  const newer = { ...older, status: "queued", conclusion: null, started_at: "2026-01-02T00:00:00Z", id: 2 };
+  for (const runs of [[older, newer], [newer, older]]) {
+    const { refusal, note } = checkRuns(runs);
+    assert.equal(refusal, null);
+    assert.match(note, /build is queued/);
+  }
 });
 
 // Head contains the base tip
@@ -207,6 +285,26 @@ const onBrief = (file) => file.replaceAll("\\", "/").endsWith("/plans/brief.md")
 const briefCheckOf = (text, over = {}) =>
   briefCheck({ prompt: "Read it.\nBrief: /plans/brief.md\nReport: /plans/report.md", dirs: ["/w"], review, exists: onBrief, read: () => text, ...over });
 const offAll = { ...review, productDecisions: false, roundFindings: 0, roundFiles: 0 };
+
+test("the dispatch brief checks CI failures even with the optional brief checks off", async (t) => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const { recordRun } = await import("./ci-failures.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "ci-brief-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10 }));
+  execFileSync("git", ["init", "-q", "-b", "fix/ci", root]);
+  recordRun(root, { id: 1, branch: "fix/ci", head: "aaaaaaa" }, { gh: () => "not ok 1 - cleanup retries\n  error: EBUSY" });
+  const file = path.join(root, "brief.md");
+  writeFileSync(file, "## Product decisions\nnone\n");
+  const call = { prompt: `Brief: ${file}`, dirs: [root], review: offAll };
+  assert.match(briefCheck(call).refusal, /cleanup retries/);
+  writeFileSync(file, "## CI failures\n### cleanup retries\nCause: open handle\n");
+  assert.deepEqual(briefCheck(call), { refusal: null, note: null });
+  const { appendRecord, ledgerFileOf } = await import("./ledger.mjs");
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "multi", branch: "fix/ci", head: "aaaaaaa", test: "first\nsecond\nthird\nfourth\nfifth" });
+  assert.ok(briefCheck(call).refusal.split(/\r?\n/).length <= 4);
+});
 
 test("a brief with a Product decisions heading passes, with no note when it is under the limits", () => {
   assert.deepEqual(briefCheckOf(brief("# Brief", "## Product decisions", "None.", "1. one", `Files: ${files(3)}`)), { refusal: null, note: null });
@@ -331,4 +429,22 @@ test("a file is a path with a separator or a known extension; a URL, a version, 
   assert.equal(countFiles("see https://github.com/o/r/issues/1 and e.g. v0.20.4, i.e. the 1.5x speed"), 0);
   assert.equal(countFiles("docs/a.md, `packages/x/y.json`, (hooks/hooks.json)."), 3);
   assert.equal(countFiles("README.md and README.md"), 1);
+});
+
+
+test("a detached HEAD skips branch holds when the ledger contains CI failures", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const os = await import("node:os");
+  const { appendRecord, ledgerFileOf } = await import("./ledger.mjs");
+  const { holdBranch } = await import("./pause.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "ci-detached-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10 }));
+  const git = (...args) => execFileSync("git", ["-C", root, ...args]);
+  git("init", "-q", "-b", "main");
+  git("-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "init");
+  holdBranch(root, "main", "other branch");
+  appendRecord(ledgerFileOf(root), { type: "ci-failure", id: "detached", branch: "main", test: "failed" });
+  git("checkout", "--detach", "-q");
+  assert.deepEqual(briefCheck({ prompt: "", dirs: [root], review: offAll }), { refusal: null, note: null });
 });

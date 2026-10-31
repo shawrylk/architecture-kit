@@ -7,6 +7,18 @@ import path from "node:path";
 
 const GH_TIMEOUT_MS = 20_000;
 
+/** A branch that flattens API pages from `gh api --paginate --slurp`, or returns null for an unreadable list. */
+export function parseApiList(text, key) {
+  try {
+    const parsed = JSON.parse(text);
+    const pages = Array.isArray(parsed) ? parsed : [parsed];
+    if (!pages.every((page) => Array.isArray(page?.[key]))) return null;
+    return pages.flatMap((page) => page[key]);
+  } catch {
+    return null;
+  }
+}
+
 /** Expands a leading `~`, `~/`, or `~\` in each value, as a shell does for an assignment. */
 export function expandHome(env) {
   return Object.fromEntries(
@@ -19,12 +31,18 @@ export function expandHome(env) {
 
 /** @returns gh's stdout on exit 0, or null when gh fails, times out, or is not installed. */
 export function runGh(args, { cwd = process.cwd(), env = {}, timeoutMs = GH_TIMEOUT_MS } = {}) {
-  const result = spawnSync("gh", args, {
+  const result = runGhResult(args, { cwd, env, timeoutMs });
+  return result.status === 0 ? (result.stdout ?? "") : null;
+}
+
+/** Returns the process result, including stderr and any spawn error. */
+export function runGhResult(args, { cwd = process.cwd(), env = {}, timeoutMs = GH_TIMEOUT_MS } = {}) {
+  return spawnSync("gh", args, {
     cwd,
     encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
     windowsHide: true,
     timeout: timeoutMs,
     env: { ...process.env, ...expandHome(env) },
   });
-  return result.status === 0 ? (result.stdout ?? "") : null;
 }

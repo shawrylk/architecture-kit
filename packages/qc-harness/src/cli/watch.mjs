@@ -1,18 +1,21 @@
 // `qc watch`: block until the first event among the pull requests, Codex jobs and workflow runs it watches.
 // The wait is a shell command, so it costs no model tokens, and its exit is the event.
 
-import { spawnSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
+import { parseApiList, runGhResult } from "./gh-run.mjs";
+import { checkVerdict, pendingCiReason } from "./check-verdict.mjs";
+import { load } from "../config.mjs";
+import { checkoutRootOf } from "./checkout-root.mjs";
+import { recordRun, resolveFailures } from "./ci-failures.mjs";
+import { originOf, repoOfSpelling } from "./git-read.mjs";
+import { holdRefusal } from "./pause.mjs";
 
 const DEFAULT_MAX_MINUTES = 55;
 const DEFAULT_INTERVAL_SECONDS = 60;
 const QUEUED_LIMIT_MS = 15 * 60_000;
 const CODEX_TAIL_BYTES = 2048;
-const GH_TIMEOUT_MS = 20_000;
 const SHA_SUFFIX = /^(.+)@([0-9a-f]{7,40})$/i;
-const FAILED_CONCLUSIONS = new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
-const FAILED_STATES = new Set(["FAILURE", "ERROR"]);
 
 export const EXIT = { PASSED: 0, BAD_INPUT: 1, TIMEOUT: 4, FAILED: 5, QUEUED: 6 };
 
@@ -90,22 +93,11 @@ const parseJson = (text) => {
   }
 };
 
-/** @returns "failed", "queued", "pending", or "passed" for one rollup entry, a check run or a status context. */
-function entryState(entry) {
-  if (entry.__typename === "StatusContext" || entry.context !== undefined) {
-    if (FAILED_STATES.has(entry.state)) return "failed";
-    return entry.state === "SUCCESS" ? "passed" : "pending";
-  }
-  if (entry.status !== "COMPLETED") return entry.status === "QUEUED" ? "queued" : "pending";
-  if (FAILED_CONCLUSIONS.has(entry.conclusion)) return "failed";
-  return "passed";
-}
-
 /**
  * Watches one pull request. The queued timers belong to a head, so a new head starts them over.
  * @returns a function that polls once and answers `{ state, detail, code }` for an event, or null.
  */
-function pullRequestWatcher(number, { repo, gh, now }) {
+function pullRequestWatcher(number, { repo, gh, now, requiredChecks }) {
   let head = null;
   let queuedSince = new Map();
   const args = ["pr", "view", String(number), "--json", "headRefOid,statusCheckRollup", ...(repo ? ["-R", repo] : [])];
@@ -117,12 +109,17 @@ function pullRequestWatcher(number, { repo, gh, now }) {
       queuedSince = new Map();
     }
     const at = now();
-    const states = view.statusCheckRollup.map((entry) => [entry.name ?? entry.context, entryState(entry)]);
-    if (states.some(([, state]) => state === "failed")) return { state: "failed", detail: head, code: EXIT.FAILED };
+    const states = view.statusCheckRollup.map((entry) => [entry.name ?? entry.context, checkVerdict(entry)]);
+    if (states.some(([, state]) => state === "failed")) return { state: "failed", detail: head, code: EXIT.FAILED, prHead: head };
     for (const [name] of [...queuedSince]) if (!states.some(([other, state]) => other === name && state === "queued")) queuedSince.delete(name);
     for (const [name, state] of states) if (state === "queued" && !queuedSince.has(name)) queuedSince.set(name, at);
     if ([...queuedSince.values()].some((since) => at - since > QUEUED_LIMIT_MS)) return { state: "queued", detail: head, code: EXIT.QUEUED };
-    if (states.length > 0 && states.every(([, state]) => state === "passed")) return { state: "passed", detail: head, code: EXIT.PASSED };
+    if (states.length > 0 && states.every(([, state]) => state === "passed")) {
+      const workflows = parseApiList(gh(["api", `repos/${repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate", "--slurp"]), "workflow_runs");
+      const checkNames = view.statusCheckRollup.filter((entry) => entry.__typename !== "StatusContext" && entry.context === undefined).map((entry) => entry.name);
+      if (workflows === null || pendingCiReason(checkNames, workflows.filter((run) => run.head_sha === head), requiredChecks)) return null;
+      return { state: "passed", detail: head, code: EXIT.PASSED, runs: workflows.filter((run) => run.head_sha === head) };
+    }
     return null;
   };
 }
@@ -140,22 +137,24 @@ function codexWatcher(file) {
  * or the one that `@<sha>` pins. A run of an earlier head never fires.
  */
 function runWatcher({ workflow, branch, sha }, { repo, gh }) {
-  const headArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/commits/${branch}`, "--jq", ".sha"];
-  const listArgs = ["run", "list", "--workflow", workflow, "--branch", branch, "--limit", "20", "--json", "status,conclusion,headSha", ...(repo ? ["-R", repo] : [])];
+  const headArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/commits/${encodeURIComponent(sha ?? branch)}`, "--jq", ".sha"];
+  let pinnedHead = sha?.length === 40 ? sha : null;
   return () => {
-    const head = sha ?? gh(headArgs)?.trim();
+    const head = sha ? (pinnedHead ??= gh(headArgs)?.trim()) : gh(headArgs)?.trim();
     if (!head) return null;
-    const latest = parseJson(gh(listArgs))?.find((run) => typeof run.headSha === "string" && run.headSha.startsWith(head.toLowerCase()) || run.headSha === head);
-    if (!latest || latest.status !== "completed") return null;
-    return latest.conclusion === "success"
-      ? { state: "passed", detail: latest.headSha, code: EXIT.PASSED }
-      : { state: "failed", detail: latest.headSha, code: EXIT.FAILED };
+    const listArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(branch)}&head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate", "--slurp"];
+    const runs = parseApiList(gh(listArgs), "workflow_runs")?.filter((run) => typeof run.head_sha === "string" && run.head_sha.toLowerCase() === head.toLowerCase());
+    if (!runs?.length || pendingCiReason([], runs)) return null;
+    const latest = runs[0];
+    return checkVerdict(latest) === "passed"
+      ? { state: "passed", detail: latest.head_sha, code: EXIT.PASSED, runs: [{ ...latest, head_branch: branch }] }
+      : { state: "failed", detail: latest.head_sha, code: EXIT.FAILED, runs: runs.filter((run) => checkVerdict(run) === "failed").map((run) => ({ ...run, head_branch: branch })) };
   };
 }
 
 /** @returns gh's stdout on exit 0; throws an Error with gh's message when gh fails, times out, or is missing. */
 function readGh(args) {
-  const result = spawnSync("gh", args, { encoding: "utf8", windowsHide: true, timeout: GH_TIMEOUT_MS });
+  const result = runGhResult(args);
   if (result.status === 0) return result.stdout ?? "";
   const reason = (result.stderr ?? "").split(/\r?\n/).find((line) => line.trim()) ?? result.error?.message ?? `gh exited ${result.status}`;
   throw new Error(reason.trim());
@@ -168,13 +167,23 @@ const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param deps `gh` returns stdout, null, or throws; `say`, `warn`, `now` and `sleep` replace the output and the clock, for a test.
  * @returns the exit code: 0 an item finished well, 4 the bound passed, 5 a check or run failed, 6 a job stayed queued.
  */
-export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep } = {}) {
+export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep, requiredChecks, cwd = process.cwd() } = {}) {
   let parsed;
   try {
     parsed = parseWatchArgs(argv);
   } catch (error) {
     console.error(`${error.message}\n${USAGE}`);
     return EXIT.BAD_INPUT;
+  }
+  if (parsed.repo) requiredChecks = [];
+  if (requiredChecks === undefined) {
+    requiredChecks = [];
+    try {
+      const root = checkoutRootOf(cwd);
+      if (root) requiredChecks = load(root).ci.requiredChecks;
+    } catch (error) {
+      warn(`watch: cannot read qc.config.json: ${String(error?.message ?? error).split(/\r?\n/)[0]}`);
+    }
   }
   const read = (args) => {
     try {
@@ -186,7 +195,16 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
       return null;
     }
   };
-  const context = { repo: parsed.repo, gh: read, now };
+  const context = { repo: parsed.repo, gh: read, now, requiredChecks };
+  const root = checkoutRootOf(cwd);
+  const origin = root && originOf(root);
+  for (const { branch } of parsed.runs) {
+    const refusal = root && (!parsed.repo || !origin || repoOfSpelling(parsed.repo) === origin) && holdRefusal(root, branch);
+    if (refusal) {
+      say(refusal);
+      return EXIT.FAILED;
+    }
+  }
   const watchers = [
     ...parsed.prs.map((number) => ({ item: `pr:${number}`, poll: pullRequestWatcher(number, context) })),
     ...parsed.codex.map((file) => ({ item: `codex:${file}`, poll: codexWatcher(file) })),
@@ -197,6 +215,20 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
     for (const { item, poll } of watchers) {
       const event = poll();
       if (event) {
+        try {
+          const root = checkoutRootOf(cwd);
+          if (root) {
+            const runs = event.runs ?? (event.prHead ? parseApiList(read(["api", `repos/${parsed.repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(event.prHead)}&per_page=100`, "--paginate", "--slurp"]), "workflow_runs") : []) ?? [];
+            for (const run of runs) {
+              if (!run.head_branch || !run.head_sha || run.head_sha !== event.detail) continue;
+              const repository = repoOfSpelling(run.head_repository?.full_name ?? run.repository?.full_name ?? parsed.repo ?? originOf(root) ?? "");
+              if (event.code === EXIT.PASSED) resolveFailures(root, run.head_branch, run.head_sha, run.id, repository);
+              else if (checkVerdict(run) === "failed" && run.id) recordRun(root, { id: run.id, branch: run.head_branch, head: run.head_sha, repository }, { gh, warn, repo: parsed.repo });
+            }
+          }
+        } catch (error) {
+          warn(`watch: cannot update CI records: ${String(error.message).split(/\r?\n/)[0]}`);
+        }
         say(`EVENT ${item} ${event.state} ${event.detail}`);
         return event.code;
       }

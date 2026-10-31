@@ -1,5 +1,25 @@
 // What the JSX rules share: reading an element, and resolving an attribute to the function it runs.
 
+import { classTokensOf } from "../ui/class-sites.mjs";
+import { loadTypeScript } from "../ui/typescript.mjs";
+
+const classFiles = new WeakMap();
+
+/** Fragment: reads class tokens through the shared UI parser. */
+export function classTokens(sourceCode, filename, callees) {
+  // The compiler loads on first use, so the plugin runtime keeps no bare import.
+  const ts = loadTypeScript();
+  if (!ts) throw new Error("the class-value rules need the `typescript` package, which neither the repository nor the kit resolves");
+  let file = classFiles.get(sourceCode);
+  if (!file) {
+    const kind = /\.[cm]?ts$/.test(filename) ? ts.ScriptKind.TS : ts.ScriptKind.TSX;
+    const parserFilename = /\.[cm]?tsx?$/.test(filename) ? filename : `${filename}.tsx`;
+    file = ts.createSourceFile(parserFilename, sourceCode.text, ts.ScriptTarget.Latest, true, kind);
+    classFiles.set(sourceCode, file);
+  }
+  return classTokensOf(ts, file, callees);
+}
+
 export const FUNCTIONS = new Set(["ArrowFunctionExpression", "FunctionExpression", "FunctionDeclaration"]);
 
 export function tagName(name) {

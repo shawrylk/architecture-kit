@@ -13,6 +13,18 @@ process.env.QC_RUNTIME = "codex";
 delete process.env.QC_ROLE;
 const BASE = `${REMINDER}${modelsLine({ models: runtimeModels.codex, runtime: "codex" })}${CODEX_LINE}`;
 
+test("CODEX_LINE names the runtime tags, Runtime line, and qc codex status", () => {
+  for (const text of ["Codex <model> · ", "Claude <model> · ", "Runtime: claude <reason>", "qc codex status"]) {
+    assert.ok(CODEX_LINE.includes(text), text);
+  }
+});
+
+test("the orchestrator note requires the SessionStart checkpoint before dispatch and compaction", () => {
+  assert.match(CODEX_LINE, /checkpoint named by SessionStart/);
+  assert.match(CODEX_LINE, /before each dispatch and compaction/);
+  assert.match(CODEX_LINE, /source of truth for open work/);
+});
+
 const NOTE = fileURLToPath(new URL("./dispatch-reminder.mjs", import.meta.url));
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
 
@@ -214,12 +226,16 @@ test("a swarm.direct section that does not parse names the key and leaves the re
 });
 
 test("the direct lane note says when a merge needs a review", (t) => {
-  const [none, some, every] = checkouts(t, [
+  const [defaults, none, some, every] = checkouts(t, [
     { swarm: { dispatch: {} } },
+    { swarm: { dispatch: {}, direct: { reviewPaths: [] } } },
     { swarm: { dispatch: {}, direct: { reviewPaths: ["src/**", "api/**"] } } },
     { swarm: { dispatch: {}, direct: { reviewPaths: ["**"] } } },
   ]);
   const noteOf = (dir) => decide(start(dir, "startup")).hookSpecificOutput.additionalContext;
+  const defaultNote = noteOf(defaults);
+  assert.match(defaultNote, /--match-head-commit <sha>`\. A merge needs one APPROVED review of the head \(sdd-reviewer\) when a changed path matches swarm\.direct\.reviewPaths\./);
+  assert.doesNotMatch(defaultNote, /no review/);
   assert.match(noteOf(none), /--match-head-commit <sha>` and no review\./);
   const partial = noteOf(some);
   assert.match(partial, /--match-head-commit <sha>`\. A merge needs one APPROVED review of the head \(sdd-reviewer\) when a changed path matches swarm\.direct\.reviewPaths\./);

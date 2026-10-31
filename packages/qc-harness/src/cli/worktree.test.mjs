@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { load } from "../config.mjs";
-import { installCommand, runWorktree } from "./worktree.mjs";
+import { installCommand, runWorktree, USAGE } from "./worktree.mjs";
+
+test("worktree usage lists exit 5 for an operator pause", () => {
+  assert.match(USAGE, /exit 5.*pause/);
+});
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
@@ -210,6 +214,21 @@ test("remove deletes the remote branch of a merged PR that gh pr merge could not
   assert.equal(git(main, "branch", "--list", "feat/r"), "");
   assert.equal(git(main, "ls-remote", "--heads", "origin", "feat/r"), "");
   rmSync(top, { recursive: true, force: true });
+});
+
+test("a pause refuses worktree removal before deleting a remote branch", async (t) => {
+  const { top, main } = fixture();
+  t.after(() => rmSync(top, { recursive: true, force: true }));
+  const { tip, where } = squashed(main, "wt-paused", "feat/paused");
+  mkdirSync(path.join(main, ".git", "qc"), { recursive: true });
+  writeFileSync(path.join(main, ".git", "qc", "pause"), "operator investigation\n");
+  const messages = [];
+  t.mock.method(console, "error", (line) => messages.push(line));
+  assert.equal(await removeIn(main, "wt-paused", fakeGh([{ number: 7, headRefOid: tip }]).gh), 5);
+  assert.deepEqual(messages, ["An operator paused the kit: operator investigation. Wait for the operator to run `qc resume`."]);
+  assert.match(git(main, "ls-remote", "--heads", "origin", "feat/paused"), new RegExp(`^${tip}\\s`));
+  assert.ok(existsSync(where));
+  assert.equal(git(main, "rev-parse", "feat/paused"), tip);
 });
 
 test("remove keeps a branch with unpushed commits when no merged PR has it as its head", async () => {

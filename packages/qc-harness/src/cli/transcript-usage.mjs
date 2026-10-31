@@ -48,6 +48,33 @@ export function readRequests(file) {
   return requests;
 }
 
+/** Pipeline: explicit hook attachment timings, including cancelled hooks, once per record id. */
+export function readHookTimings(file) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch {
+    return [];
+  }
+  const seen = new Set();
+  const timings = [];
+  for (const line of text.split(/\r?\n/)) {
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const hook = record?.attachment;
+    if (record?.type !== "attachment" || typeof hook?.type !== "string" || !hook.type.startsWith("hook_") || typeof hook.hookName !== "string"
+      || !hook.hookName || !Number.isFinite(hook.durationMs) || hook.durationMs < 0) continue;
+    if (record.uuid && seen.has(record.uuid)) continue;
+    if (record.uuid) seen.add(record.uuid);
+    timings.push({ hook: hook.hookName, event: hook.hookEvent ?? "unknown", durationMs: hook.durationMs });
+  }
+  return timings;
+}
+
 /** The whole lines of one window at the head or the tail of a file, or [] when it does not read. */
 function windowLines(file, fromEnd, bytes) {
   let fd;

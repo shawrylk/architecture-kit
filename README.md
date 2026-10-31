@@ -85,8 +85,44 @@ export default preset({
 | CI | `qc check`, `qc typecheck`, `qc lint --base`, and the tests | fails the build |
 
 A drift of the kit setup, such as a changed git hook, is a note and never blocks a stop. Codex reaches
-the kit through the git hooks and the CI workflow. The `workspace-write` sandbox of Codex makes `.git`
-read-only, so the hooks run at the commit you make after the Codex run.
+the kit through the git hooks and the CI workflow. The Codex runner uses `danger-full-access`,
+so Codex commits, pushes, and runs the git hooks.
+
+The runner passes this environment allowlist, plus names in `codex.envAllow` (default `[]`):
+
+| Group | Names or prefixes |
+|---|---|
+| Paths and folders | `PATH`, `PATHEXT`, `HOME`, `HOMEDRIVE`, `HOMEPATH`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `ALLUSERSPROFILE`, `TEMP`, `TMP`, `TMPDIR`, `PUBLIC` |
+| Locale | `LANG`, `LANGUAGE`, `LC_ALL`, `LC_CTYPE`, `LC_COLLATE`, `LC_MESSAGES`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME` |
+| Terminal | `TERM`, `COLORTERM`, `TERM_PROGRAM`, `TERM_PROGRAM_VERSION`, `TERMINFO`, `TERMINFO_DIRS`, `NO_COLOR`, `FORCE_COLOR` |
+| User | `USER`, `LOGNAME`, `USERNAME`, `USERDOMAIN`, `USERDOMAIN_ROAMINGPROFILE`, `COMPUTERNAME` |
+| Windows | `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC`, `OS`, `PROGRAMFILES`, `PROGRAMFILES(X86)`, `PROGRAMW6432`, `COMMONPROGRAMFILES`, `COMMONPROGRAMFILES(X86)`, `COMMONPROGRAMW6432`, `PROCESSOR_ARCHITECTURE` |
+| SSH agent | `SSH_AUTH_SOCK`, `SSH_AGENT_PID` |
+| Proxies and certificates | `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, `SSL_CERT_FILE`, `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS` |
+| Configuration and session | `GH_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_RUNTIME_DIR`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `DBUS_SESSION_BUS_ADDRESS`, `SHELL` |
+| Prefixes | `CODEX_`, `GIT_`, `QC_`, `DOCKER_`, `npm_config_` |
+| OpenAI API | `OPENAI_API_KEY` |
+
+The four proxy names and the `npm_config_` prefix match in any case on every platform.
+Other names and prefixes require exact case except on Windows.
+Names allowed only by `DOCKER_` or `npm_config_` stay out when they contain a hold-back word, in any case.
+The hold-back words are `TOKEN`, `PASS`, `PWD`, `SECRET`, `AUTH`, `CRED`, and `KEY`.
+An entry in `codex.envAllow` can pass such a name in full.
+The `GIT_` prefix passes names such as `GIT_ASKPASS` and `GIT_CONFIG_KEY_<n>` for pushes.
+Tokens such as `GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN`, and `NODE_AUTH_TOKEN` require an entry in `codex.envAllow`.
+Each `codex.envAllow` entry must be non-empty and have no leading or trailing whitespace.
+A brief that needs `gh` reads its token through `gh auth token`.
+
+## Task and merge gates
+
+The task gate reads CI on the current branch head, including commits after an implementer stops.
+Failed or running CI lets the next implementer continue the task when its prompt has no `Fix:` line.
+
+`Fix: ci` needs known-red CI on the current head.
+`Fix: review` needs a `CHANGES_REQUIRED` verdict and a review of every implementer stop.
+The newest stop needs no review if the prompt continues its `HANDOFF:`.
+A merge that requires branch reviews waits for approval of every dispatched scope.
+A merge that requires task reviews uses task verdicts.
 
 ## Turn on more
 
@@ -95,9 +131,10 @@ Every rule below is off until a repository turns it on.
 | Feature | Turn it on with |
 |---|---|
 | The reference architecture: docs, decisions, quality thresholds, and the PR policy workflow | `qc init --full` |
-| Lint rules of the reference stack: `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key` | `rules` in `qc.config.json` |
+| Lint rules of the reference stack: `no-offset-pagination`, `no-status-literal`, `no-promise-then`, `signal-last-param`, `ime-safe-key`, `one-component-per-file`, `raw-element-in-primitive`, `no-arbitrary-class-value`, `no-literal-color`, `no-static-inline-style` | `rules` in `qc.config.json` |
 | A prose style for docs and PR bodies, through Vale | `qc init --full`, then `qc prose` |
 | A tool-call budget for each subagent | `swarm.toolCallBudget` |
+| A context budget for each role | `budgets` |
 | The subagent workflow: dispatch rules, reviews, and merge checks | `swarm.dispatch` |
 | Exclusive paths for agents that share one folder | `.claude/work-order.local.json` |
 
@@ -108,6 +145,43 @@ command, hook, gate, and key.
 
 `evals/agents/` runs Claude Code or Codex on a small fixture, with and without the kit, and grades
 each run with tests the agent never sees. The [eval guide](evals/agents/README.md) has the commands.
+
+## Run tests on a throwaway database
+
+`npx qc throwaway-db -- <test command>` creates a fresh database and removes it after the command exits.
+Set `throwawayDb.schemaCommand` in `qc.config.json` to prepare its schema before the tests:
+
+```json
+{
+  "throwawayDb": {
+    "schemaCommand": "pnpm exec drizzle-kit push --force"
+  }
+}
+```
+
+The schema command and the test command use the same database environment.
+The setting defaults to none.
+If the schema command fails, the runner skips the tests, returns its exit code, and removes the database.
+Wrap live database tests in `npx qc gate-slot -- npx qc throwaway-db -- <test command>`.
+A hook timeout on a fresh database means the schema step is missing.
+Never raise a timeout.
+Never use port 5432 or another port the local stack owns.
+
+## Shared user configuration
+
+`user-config/` holds the shared settings for Claude Code and Codex.
+Run `qc user-config apply` to merge them, or `qc user-config check` to report drift.
+
+| Claude setting | Merge rule |
+|---|---|
+| `permissions.defaultMode` | Use the kit value. |
+| `permissions.allow` and `permissions.deny` | Keep machine entries, then append new kit entries. |
+| `autoMode.allow`, `autoMode.soft_deny`, and `autoMode.hard_deny` | Keep machine entries, then append new kit entries. |
+| `autoMode.environment` | Replace matching bold labels in place, append new labels, and keep each unlabeled line once. |
+
+Organization lines in `autoMode.environment` stay on each machine when the kit lacks their labels.
+`qc user-config capture` copies every environment line into the kit file.
+Remove private lines before you commit captured settings.
 
 ## Tests
 

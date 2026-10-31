@@ -1,11 +1,75 @@
 import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { decide, isControllerPath } from "./controller-guard.mjs";
+import { checkpointPathOf } from "./checkpoint.mjs";
+
+test("the session can write and edit its own checkpoint under Git", (t) => {
+  const ws = workspace(t);
+  for (const cwd of [ws.main, ws.linked]) {
+    const file = checkpointPathOf(cwd, "s");
+    for (const tool of ["Write", "Edit"]) assert.equal(decide(edit(cwd, file, tool)), null);
+  }
+});
+
+test("sibling checkpoints and other Git paths stay refused", (t) => {
+  const ws = workspace(t);
+  for (const cwd of [ws.main, ws.linked]) {
+    const file = checkpointPathOf(cwd, "s");
+    assert.ok(denied(decide(edit(cwd, path.join(path.dirname(file), "other.md")))));
+    assert.ok(denied(decide(edit(cwd, path.join(ws.main, ".git", "config")))));
+  }
+});
+
+test("a checkpoint that is a symlink grants no edit exception for it or its target", (t) => {
+  const ws = workspace(t);
+  const file = checkpointPathOf(ws.main, "s");
+  const target = path.join(ws.main, "app.js");
+  writeFileSync(target, "x\n");
+  mkdirSync(path.dirname(file), { recursive: true });
+  try {
+    symlinkSync(target, file);
+  } catch (error) {
+    t.skip(`this platform cannot create a symlink (${error.code})`);
+    return;
+  }
+  assert.ok(denied(decide(edit(ws.main, file))));
+  assert.ok(denied(decide(edit(ws.main, target, "Write"))));
+});
+
+test("a linked checkpoint folder does not let the session edit the folder it points to", (t) => {
+  const ws = workspace(t);
+  const file = checkpointPathOf(ws.main, "s");
+  const src = path.join(ws.main, "src");
+  mkdirSync(src);
+  mkdirSync(path.dirname(path.dirname(file)), { recursive: true });
+  try {
+    symlinkSync(src, path.dirname(file), "junction");
+  } catch (error) {
+    t.skip(`this platform cannot link a folder (${error.code})`);
+    return;
+  }
+  assert.ok(denied(decide(edit(ws.main, path.join(src, "s.md"), "Write"))));
+  assert.ok(denied(decide(edit(ws.main, file, "Write"))));
+});
+
+test("checkpoint paths through a checkout junction compare equal", (t) => {
+  const ws = workspace(t);
+  const alias = path.join(path.dirname(ws.main), "alias");
+  symlinkSync(ws.main, alias, "junction");
+  for (const exists of [false, true]) {
+    if (exists) mkdirSync(path.dirname(checkpointPathOf(ws.main, "s")), { recursive: true });
+    for (const cwd of [ws.main, alias, ws.linked]) {
+      for (const from of [ws.main, alias, ws.linked]) {
+        assert.equal(decide(edit(cwd, checkpointPathOf(from, "s"), "Write")), null);
+      }
+    }
+  }
+});
 
 const HOOK = fileURLToPath(new URL("./controller-guard.mjs", import.meta.url));
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
@@ -174,7 +238,7 @@ test("the lane reads its limits from the base, and names a base that holds no co
   const bare = laneWorkspace(t, null);
   writeFileSync(path.join(bare.main, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} } }));
   const closed = decide(edit(bare.main, path.join(bare.linked, "src", "a.ts"), "Edit", { tool_input: { file_path: path.join(bare.linked, "src", "a.ts"), ...small } }));
-  assert.match(denied(closed) ?? "", /does not apply: git cannot read qc\.config\.json at origin\/main/);
+  assert.match(denied(closed) ?? "", /does not apply: qc\.config\.json is absent at origin\/main/);
 });
 
 test("a pending edit of qc.config.json leaves the lane when the controller does not own the file", (t) => {

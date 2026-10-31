@@ -16,10 +16,64 @@ function fixture(t) {
   for (const dir of ["claude", "codex"]) mkdirSync(path.join(kitDir, dir), { recursive: true });
   writeFileSync(path.join(kitDir, "claude/settings.shared.json"), '{"model":"opus","enabledPlugins":{"kit@remote":true}}\n');
   writeFileSync(path.join(kitDir, "claude/statusline.js"), "console.log('status');\n");
+  writeFileSync(path.join(kitDir, "claude/CLAUDE.core.md"), "core\n");
   writeFileSync(path.join(kitDir, "codex/config.shared.toml"), 'model = "shared"\n[plugins."kit@remote"]\nenabled = true\n');
   const lines = [];
   return { root, kitDir, home: path.join(root, "home"), env: {}, log: (line) => lines.push(line), lines, now: new Date(2026, 0, 2, 3, 4, 5) };
 }
+
+const SECRET_READ_DENIES = [
+  ...[".env", ".env.local", ".env.*.local", ".env.production", "*.pem", "*.key", "id_rsa*", "id_ed25519*"]
+    .map((pattern) => `Read(**/${pattern})`),
+  "Read(~/.ssh/**)",
+];
+
+const PROCESS_ALLOWS = [
+  'Bash(powershell -Command "Stop-Process -Id *)',
+  'Bash(powershell -NoProfile -Command "Stop-Process -Id *)',
+];
+const GIT_AND_INFRA_DENIES = [
+  "Bash(git checkout*)", "Bash(git -C * checkout*)", "Bash(git switch*)", "Bash(git -C * switch*)",
+  "Bash(git reset*)", "Bash(git -C * reset*)", "Bash(git stash*)", "Bash(git -C * stash*)",
+  "Bash(git push --force*)", "Bash(git push -f*)", "Bash(git push --force-with-lease*)",
+  "Bash(git worktree prune*)", "Bash(terraform apply*)",
+];
+
+test("shared permissions deny secret reads in the working directory and ~/.ssh while examples stay readable", () => {
+  const shared = readFileSync(new URL("../../../../user-config/claude/settings.shared.json", import.meta.url), "utf8");
+  assert.deepEqual(JSON.parse(shared).permissions.deny, [...SECRET_READ_DENIES, ...GIT_AND_INFRA_DENIES]);
+  const local = { permissions: { allow: ["Read(**/.env.example)"], deny: ["Bash(rm *)"] } };
+  const merged = mergeClaudeSettings(JSON.stringify(local), shared);
+  const permissions = JSON.parse(merged.text).permissions;
+  assert.deepEqual(permissions.deny, ["Bash(rm *)", ...SECRET_READ_DENIES, ...GIT_AND_INFRA_DENIES]);
+  assert.deepEqual(permissions.allow, [...local.permissions.allow, ...PROCESS_ALLOWS]);
+  assert.ok(merged.changed.includes("permissions.deny"));
+  assert.deepEqual(mergeClaudeSettings(merged.text, shared).changed, []);
+});
+
+test("shared autoMode trusts every repository under GitHub and its worktrees", () => {
+  const shared = JSON.parse(readFileSync(new URL("../../../../user-config/claude/settings.shared.json", import.meta.url), "utf8"));
+  assert.deepEqual(shared.autoMode.environment.filter((line) => line.startsWith("**Trusted repo**:")), [
+    "**Trusted repo**: Every git repository under `~/Documents/GitHub/`, with its worktrees under `.worktree/` and `.claude/worktrees/`",
+  ]);
+});
+
+test("user-config check reports secret deny drift and becomes silent after apply", async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.kitDir, "claude/settings.shared.json"), JSON.stringify({ permissions: { deny: SECRET_READ_DENIES } }));
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  const file = configPaths(f.home, f.env).claude;
+  const settings = JSON.parse(readFileSync(file, "utf8"));
+  settings.permissions.deny.pop();
+  writeFileSync(file, JSON.stringify(settings));
+  f.lines.length = 0;
+  assert.equal(await runUserConfig(["check"], f), 1);
+  assert.match(f.lines.join("\n"), /permissions.deny/);
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  f.lines.length = 0;
+  assert.equal(await runUserConfig(["check"], f), 0);
+  assert.deepEqual(f.lines, []);
+});
 
 test("JSON merges listed plugin and marketplace keys, preserving local keys and omitted shared keys", () => {
   const local = { model: "old", effortLevel: "high", local: 7, enabledPlugins: { local: true, kit: false }, extraKnownMarketplaces: { local: {} } };
@@ -28,6 +82,92 @@ test("JSON merges listed plugin and marketplace keys, preserving local keys and 
   assert.deepEqual(JSON.parse(result.text), { ...local, model: "opus", enabledPlugins: { local: true, kit: true }, extraKnownMarketplaces: { ...local.extraKnownMarketplaces, ...shared.extraKnownMarketplaces } });
   assert.deepEqual(result.changed, ["model", "enabledPlugins.kit", "extraKnownMarketplaces.remote"]);
   assert.deepEqual(mergeClaudeSettings(result.text, JSON.stringify(shared)).changed, []);
+});
+
+test("permissions allow and autoMode lists merge in machine order and stay idempotent", () => {
+  const local = { permissions: { allow: ["local", "both"] }, autoMode: { localOnly: true } };
+  const shared = { permissions: { allow: ["both", "kit"] }, autoMode: { unknown: ["ignored"] } };
+  for (const key of ["allow", "soft_deny", "hard_deny"]) {
+    local.autoMode[key] = ["local", "both"];
+    shared.autoMode[key] = ["both", "kit"];
+  }
+  const result = mergeClaudeSettings(JSON.stringify(local), JSON.stringify(shared));
+  const merged = JSON.parse(result.text);
+  assert.deepEqual(merged.permissions.allow, ["local", "both", "kit"]);
+  assert.ok(result.changed.includes("permissions.allow"));
+  for (const key of ["allow", "soft_deny", "hard_deny"]) {
+    assert.deepEqual(merged.autoMode[key], ["local", "both", "kit"]);
+    assert.ok(result.changed.includes(`autoMode.${key}`));
+  }
+  assert.equal(merged.autoMode.localOnly, true);
+  assert.equal(merged.autoMode.unknown, undefined);
+  assert.deepEqual(mergeClaudeSettings(result.text, JSON.stringify(shared)).changed, []);
+});
+
+test("autoMode environment replaces matching labels in place and preserves local lines", () => {
+  const local = { autoMode: { environment: ["**Machine**: old", "**Organization**: local", "### heading", "unlabeled", "### heading"] } };
+  const shared = { autoMode: { environment: ["**Machine**: shared", "### heading", "unlabeled", "**New**: appended", "new text"] } };
+  const result = mergeClaudeSettings(JSON.stringify(local), JSON.stringify(shared));
+  assert.deepEqual(JSON.parse(result.text).autoMode.environment, [
+    "**Machine**: shared", "**Organization**: local", "### heading", "unlabeled", "**New**: appended", "new text",
+  ]);
+  assert.deepEqual(result.changed, ["autoMode.environment"]);
+  assert.deepEqual(mergeClaudeSettings(result.text, JSON.stringify(shared)).changed, []);
+});
+
+test("autoMode environment deduplicates labels after replacement and stays idempotent", () => {
+  for (const environment of [
+    ["**Machine**: old", "**Machine**: kit"],
+    ["**Machine**: old", "**Machine**: other"],
+  ]) {
+    const shared = JSON.stringify({ autoMode: { environment: ["**Machine**: kit"] } });
+    const result = mergeClaudeSettings(JSON.stringify({ autoMode: { environment } }), shared);
+    assert.deepEqual(JSON.parse(result.text).autoMode.environment, ["**Machine**: kit"]);
+    const second = mergeClaudeSettings(result.text, shared);
+    assert.deepEqual(second.changed, []);
+    assert.equal(second.text, result.text);
+  }
+  const local = { autoMode: { environment: ["**Local**: first", "plain", "**Local**: second", "plain"] } };
+  const shared = JSON.stringify({ autoMode: { environment: [] } });
+  const result = mergeClaudeSettings(JSON.stringify(local), shared);
+  assert.deepEqual(JSON.parse(result.text).autoMode.environment, ["**Local**: first", "plain"]);
+  assert.deepEqual(mergeClaudeSettings(result.text, shared).changed, []);
+});
+
+test("check reports changed environment labels and a second apply changes nothing", async (t) => {
+  const f = fixture(t);
+  const shared = { autoMode: { environment: ["**Machine**: shared"], allow: ["$defaults"] }, permissions: { allow: ["shared"] } };
+  writeFileSync(path.join(f.kitDir, "claude/settings.shared.json"), JSON.stringify(shared));
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  const file = configPaths(f.home, f.env).claude;
+  const local = JSON.parse(readFileSync(file, "utf8"));
+  local.autoMode.environment = ["**Machine**: changed", "**Organization**: local"];
+  writeFileSync(file, JSON.stringify(local));
+  f.lines.length = 0;
+  assert.equal(await runUserConfig(["check"], f), 1);
+  assert.equal(f.lines.length, 1);
+  assert.match(f.lines[0], /autoMode.environment/);
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  f.lines.length = 0;
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  assert.deepEqual(f.lines, []);
+  assert.equal(await runUserConfig(["check"], f), 0);
+  assert.deepEqual(f.lines, []);
+});
+
+test("capture keeps every environment line and filters unsupported autoMode keys", async (t) => {
+  const f = fixture(t);
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  const file = configPaths(f.home, f.env).claude;
+  const local = JSON.parse(readFileSync(file, "utf8"));
+  local.autoMode = { environment: ["**Organization**: local", "### heading"], allow: ["local"], soft_deny: ["soft"], hard_deny: ["hard"], unsupported: true };
+  local.permissions = { allow: ["local"], deny: ["deny"], defaultMode: "auto", localOnly: true };
+  writeFileSync(file, JSON.stringify(local));
+  assert.equal(await runUserConfig(["capture"], f), 0);
+  const captured = JSON.parse(readFileSync(path.join(f.kitDir, "claude/settings.shared.json"), "utf8"));
+  const { unsupported, ...expected } = local.autoMode;
+  assert.deepEqual(captured.autoMode, expected);
+  assert.deepEqual(captured.permissions, { allow: ["local"], deny: ["deny"], defaultMode: "auto" });
 });
 
 test("TOML merges top-level keys and plugin fields while preserving comments and unrelated lines", () => {
@@ -83,11 +223,103 @@ test("TOML fills existing plugin sections before appending new tables", () => {
   }
 });
 
-test("TOML refuses inline plugin tables before adding a plugin section", () => {
-  for (const key of ["plugins", '"plugins"', "'plugins'"]) {
-    const local = `${key} = { "A@r" = { enabled = false } }\n`;
-    assert.throws(() => mergeCodexConfig(local, '[plugins."A@r"]\nenabled = true\n'), /inline.*plugins.*table/i);
+const tomlTests = {
+  skip: spawnSync("python", ["-c", "import tomllib"], { stdio: "ignore", timeout: 5_000 }).status === 0 ? false : "Python tomllib is unavailable",
+};
+
+function parseTomlFile(file) {
+  const result = spawnSync("python", ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], 'rb'))))", file], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+for (const [form, local] of [
+  ["top-level inline", 'plugins = { "kit@remote" = { enabled = false, local = 42 } }\n'],
+  ["dotted inline", 'plugins."kit@remote" = { enabled = false, local = 42 }\n'],
+  ["dotted field", 'plugins."kit@remote".enabled = false\nplugins."kit@remote".local = 42\n'],
+  ["plugins table", '[plugins]\n"kit@remote" = { enabled = false, local = 42 }\n'],
+]) {
+  test(`apply merges the ${form} plugin form into valid TOML`, tomlTests, async (t) => {
+    const f = fixture(t);
+    writeFileSync(path.join(f.kitDir, "codex/config.shared.toml"), '[plugins."kit@remote"]\nenabled = true\n');
+    const file = configPaths(f.home, f.env).codex;
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, local);
+    assert.equal(await runUserConfig(["apply"], f), 0, f.lines.join("\n"));
+    assert.deepEqual(parseTomlFile(file).plugins["kit@remote"], { enabled: true, local: 42 });
+    assert.equal(readFileSync(file, "utf8"), local.replace("false", "true"));
+    assert.equal(await runUserConfig(["apply"], f), 0);
+  });
+}
+
+test("plugin forms add missing fields and plugins without duplicate tables", tomlTests, async (t) => {
+  for (const local of [
+    '"plugins" = { "kit@remote" = { local = { x = 42 } } }\n',
+    "'plugins'.'kit@remote' = { local = { x = 42 } }\n",
+    'plugins."kit@remote".local = { x = 42 }\n',
+    '[plugins]\n"kit@remote" = { local = { x = 42 } }\n',
+  ]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.kitDir, "codex/config.shared.toml"), '[plugins."kit@remote"]\nenabled = true\n[plugins."new@remote"]\nenabled = false\n');
+    const file = configPaths(f.home, f.env).codex;
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, local);
+    assert.equal(await runUserConfig(["apply"], f), 0, f.lines.join("\n"));
+    assert.deepEqual(parseTomlFile(file).plugins, {
+      "kit@remote": { local: { x: 42 }, enabled: true }, "new@remote": { enabled: false },
+    });
+    assert.deepEqual(mergeCodexConfig(readFileSync(file, "utf8"), readFileSync(path.join(f.kitDir, "codex/config.shared.toml"), "utf8")).changed, []);
   }
+});
+
+test("incompatible plugin values name the form and line before any write", tomlTests, async (t) => {
+  for (const [form, local] of [
+    ["top-level inline plugins table", '# keep\nplugins = false\n'],
+    ["dotted inline plugin table", '# keep\nplugins."kit@remote" = false\n'],
+    ["[plugins] table", '# keep\n[plugins]\n"kit@remote" = false\n'],
+  ]) {
+    const f = fixture(t);
+    const file = configPaths(f.home, f.env).codex;
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, local);
+    assert.equal(await runUserConfig(["apply"], f), 2);
+    assert.ok(f.lines.at(-1).includes(form), f.lines.join("\n"));
+    assert.match(f.lines.at(-1), /line [23]/);
+    assert.equal(readFileSync(file, "utf8"), local);
+    parseTomlFile(file);
+    assert.equal(readdirSync(path.dirname(file)).length, 1);
+  }
+});
+
+test("an empty inline plugins table accepts several plugins as valid TOML", tomlTests, async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.kitDir, "codex/config.shared.toml"), '[plugins."kit@remote"]\nenabled = true\n[plugins."new@remote"]\nenabled = false\n');
+  const file = configPaths(f.home, f.env).codex;
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, "plugins = {}\n");
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  assert.deepEqual(parseTomlFile(file).plugins, { "kit@remote": { enabled: true }, "new@remote": { enabled: false } });
+});
+
+for (const name of ["secrets.json", "tokens.json", "apitoken.txt", "accesstoken.json", "mycredentials.txt", "authentication.json"]) {
+  test(`credential paths refuse ${name}`, () => {
+    assert.throws(() => assertSafePath(name), /credential/i);
+    assert.throws(() => assertSafePath(`C:\\settings\\${name.toUpperCase()}`), /credential/i);
+  });
+}
+
+test("author remains a safe config name without Python", () => {
+  assert.doesNotThrow(() => assertSafePath("author"));
+  assert.doesNotThrow(() => assertSafePath("author.toml"));
+});
+
+test("credential names allow author", tomlTests, async (t) => {
+  const f = fixture(t);
+  f.env.CODEX_HOME = path.join(f.root, "author");
+  assert.doesNotThrow(() => assertSafePath("author.toml"));
+  assert.throws(() => assertSafePath("auth_token.toml"), /credential/i);
+  assert.equal(await runUserConfig(["apply"], f), 0);
+  assert.equal(parseTomlFile(configPaths(f.home, f.env).codex).model, "shared");
 });
 
 test("malformed shared configuration fails before any target changes", async (t) => {
@@ -232,10 +464,11 @@ test("CLI check returns drift, matching, and error exit codes", (t) => {
   assert.equal(run().status, 2);
 });
 
-test("package staging includes all three shared files and resolves them outside the checkout", async (t) => {
+test("package staging includes all shared files and resolves them outside the checkout", async (t) => {
   const f = fixture(t);
   const target = path.join(f.root, "node_modules/architecture-harness/user-config");
   packageUserConfig(f.kitDir, target);
+  assert.equal(readFileSync(path.join(target, "claude/CLAUDE.core.md"), "utf8"), "core\n");
   assert.equal(readFileSync(path.join(target, "claude/statusline.js"), "utf8"), "console.log('status');\n");
   assert.equal(readFileSync(path.join(target, "codex/config.shared.toml"), "utf8"), readFileSync(path.join(f.kitDir, "codex/config.shared.toml"), "utf8"));
   assert.equal(readFileSync(path.join(target, "claude/settings.shared.json"), "utf8"), readFileSync(path.join(f.kitDir, "claude/settings.shared.json"), "utf8"));

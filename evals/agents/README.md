@@ -31,6 +31,33 @@ hooks. With `--agent claude`, the run also loads the plugin from `--kit`.
 `noop` changes nothing, and `reference` applies the known solution of each task. Together they prove
 the grader: `noop` solves no task, and `reference` solves every task.
 
+## Measure skill activation
+
+The `skill-activation` task asks for a cart guide without naming a skill in the prompt.
+Run both arms with Claude Code to measure whether the kit's skill description triggers a load:
+
+```bash
+node evals/agents/run.mjs --agent claude --tasks skill-activation --arm none --label none --out <dir>
+node evals/agents/run.mjs --agent claude --tasks skill-activation --arm kit --kit . --label kit --out <dir>
+```
+
+The grader reads `transcript.jsonl` for an assistant `Skill` tool call with the exact expected skill name.
+The task expects `architecture:writing-plain-english` and records `expectedSkill` and `skillActivated` in `results.jsonl`.
+`solved` requires both the hidden guide tests and activation.
+A mention in text, a `Read` call, or a different skill earns no activation credit.
+Codex runs receive no activation credit because this grader requires the Claude `Skill` tool format.
+
+The controls prove the grader without a model call:
+
+```bash
+node evals/agents/run.mjs --agent noop --tasks skill-activation --out <dir>
+node evals/agents/run.mjs --agent reference --tasks skill-activation --out <dir>
+```
+
+`noop` has no transcript and fails activation.
+`reference` writes a small synthetic `Skill` call and applies the known guide.
+The eval runs manually and never runs in CI.
+
 ## Read the report
 
 | Column | Meaning |
@@ -53,3 +80,5 @@ A task is a folder under `tasks/` with three parts:
 - `prompt.md`: the request the agent gets.
 - `hidden.test.ts`: the tests that grade the run.
 - `solution/`: the files of the known solution, which also set the scope of the task.
+
+An activation task also has `expected-skill.json` with a `skill` field that names the expected kit skill.

@@ -32,7 +32,7 @@ export async function contractHistory(root, { base, contract, legacy, fields, ex
   const contractText = at(contract);
   let operations = [];
   try {
-    const found = contractText === null ? [] : await contractOperations(contractText);
+    const found = contractText === null ? [] : await contractOperations(contractText, { root });
     operations = found.map((operation) => ({
       id: operation.id,
       method: operation.method,

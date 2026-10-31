@@ -1,4 +1,5 @@
 import path from "node:path";
+import { importConsumerPackage } from "../consumer-package.mjs";
 import { parseArgs } from "node:util";
 import { loadMap } from "../screens/map.mjs";
 import { captureScreens } from "../screens/capture.mjs";
@@ -35,7 +36,7 @@ export async function runScreens(argv, { say = console.error, sessionFactory = t
       for (const item of map.screens) say(`${item.name}\t${Object.keys(item.targets).join(", ")}`);
       return 0;
     }
-    const { chromium } = await import("playwright");
+    const { chromium } = await importConsumerPackage("playwright");
     if (command === "setup") {
       const target = map.targets[values.target];
       if (!target) throw new Error("Choose --target from the map");

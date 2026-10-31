@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export function packageUserConfig(source, target) {
-  for (const file of ["claude/statusline.js", "claude/settings.shared.json", "codex/config.shared.toml"]) {
+  for (const file of ["claude/CLAUDE.core.md", "claude/statusline.js", "claude/settings.shared.json", "codex/config.shared.toml"]) {
     mkdirSync(path.dirname(path.join(target, file)), { recursive: true });
     copyFileSync(path.join(source, file), path.join(target, file));
   }

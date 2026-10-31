@@ -3,18 +3,19 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { CONFIG_FILE, load, merge, reviewDefaults } from "../config.mjs";
+import { CONFIG_FILE, defaults, load, merge, promotionDefaults, reviewDefaults } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
-import { directSettings } from "./direct-lane.mjs";
+import { configAtBase, directSettings } from "./direct-lane.mjs";
 import { dispatchSettings } from "./dispatch.mjs";
 import { fileSafe } from "./edit-batch-state.mjs";
 import { ledgerFileOf } from "./ledger.mjs";
+import { promotionBranchName } from "./promotion-branch.mjs";
 
 const KEY = "swarm.review";
 const MERGE_KINDS = ["branch", "task"];
 const SWITCH_KEYS = ["oneBranchReview", "requireGreen", "requireBase", "productDecisions"];
 const LIMIT_KEYS = ["roundFindings", "roundFiles"];
-const REVIEW_KEYS = ["merge", "maxTaskCalls", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", ...SWITCH_KEYS, ...LIMIT_KEYS];
+const REVIEW_KEYS = ["merge", "maxTaskCalls", "riskPaths", "cases", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", "promotion", ...SWITCH_KEYS, ...LIMIT_KEYS];
 const STATE_FILE = "state.json";
 
 const isNameList = (value) => Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "");
@@ -31,30 +32,62 @@ export function reviewSettings(swarm = {}) {
   const unknown = Object.keys(raw).find((key) => !REVIEW_KEYS.includes(key));
   if (unknown !== undefined) throw new Error(`${KEY}.${unknown} in qc.config.json is not a review setting; the keys are ${REVIEW_KEYS.join(", ")}`);
   const merged = merge(reviewDefaults, raw);
+  let promotion = merged.promotion;
+  if (promotion !== null) {
+    if (typeof promotion !== "object" || Array.isArray(promotion)) throw wrong("promotion", promotion, "an object or null");
+    const unknown = Object.keys(promotion).find((key) => !["integration", "release", "surfaces"].includes(key));
+    if (unknown !== undefined) throw wrong(`promotion.${unknown}`, promotion[unknown], "absent; the keys are integration, release, surfaces");
+    promotion = { ...promotionDefaults, ...promotion };
+    for (const key of ["integration", "release"]) {
+      if (typeof promotion[key] !== "string" || !promotion[key].trim()) throw wrong(`promotion.${key}`, promotion[key], "a non-empty branch name");
+    }
+    if (promotionBranchName(promotion.integration) === promotionBranchName(promotion.release)) throw wrong("promotion.release", promotion.release, "different from swarm.review.promotion.integration");
+    if (!isNameList(promotion.surfaces) || promotion.surfaces.length === 0 || promotion.surfaces.some((glob) => !glob.trim())) {
+      throw wrong("promotion.surfaces", promotion.surfaces, "a non-empty list of non-empty globs");
+    }
+  }
   const { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills } = merged;
   if (!MERGE_KINDS.includes(mergeKind)) throw wrong("merge", mergeKind, `one of ${MERGE_KINDS.join(", ")}`);
   if (!Number.isInteger(maxTaskCalls) || maxTaskCalls < 1) throw wrong("maxTaskCalls", maxTaskCalls, "a positive whole number");
   if (!isNameList(controllerPaths)) throw wrong("controllerPaths", controllerPaths, "a list of globs");
+  if (!isNameList(merged.riskPaths)) throw wrong("riskPaths", merged.riskPaths, "a list of globs");
+  if (merged.cases === null || typeof merged.cases !== "object" || Array.isArray(merged.cases)) throw wrong("cases", merged.cases, "a map of globs to case-word lists");
+  for (const [glob, words] of Object.entries(merged.cases)) {
+    if (!glob.trim() || !isNameList(words) || words.some((word) => !word.trim())) throw wrong("cases", merged.cases, "a map of non-empty globs to non-empty case words");
+  }
   for (const kind of MERGE_KINDS) {
     if (!isNameList(reviewerTypes?.[kind])) throw wrong(`reviewerTypes.${kind}`, reviewerTypes?.[kind], "a list of agent types");
   }
   if (!isNameList(plannerTypes)) throw wrong("plannerTypes", plannerTypes, "a list of agent types");
   if (!isNameList(codeReviewSkills)) throw wrong("codeReviewSkills", codeReviewSkills, "a list of skill names");
   for (const key of SWITCH_KEYS) {
+    if (key === "requireGreen") {
+      if (![true, false, "not-red"].includes(merged[key])) throw wrong(key, merged[key], 'true, false, or "not-red"');
+      continue;
+    }
     if (typeof merged[key] !== "boolean") throw wrong(key, merged[key], "true or false");
   }
   for (const key of LIMIT_KEYS) {
     if (!Number.isInteger(merged[key]) || merged[key] < 0) throw wrong(key, merged[key], "a whole number, 0 or more");
   }
   const enforcement = Object.fromEntries([...SWITCH_KEYS, ...LIMIT_KEYS].map((key) => [key, merged[key]]));
-  return { merge: mergeKind, maxTaskCalls, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, ...enforcement, implementerTypes: dispatch.implementerTypes };
+  return { merge: mergeKind, maxTaskCalls, riskPaths: merged.riskPaths, cases: merged.cases, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, promotion, ...enforcement, implementerTypes: dispatch.implementerTypes };
 }
 
-/** @returns the workflow of the checkout that holds `cwd`, or null when it has no config or the checks are off. */
-export function workflowAt(cwd) {
+/** The workflow branch reads the PR base through `git`, or the checkout when `git` is absent; null while dispatch is off. */
+export function workflowAt(cwd, { baseOid, git } = {}) {
   const root = checkoutRootOf(cwd);
-  if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
-  const config = load(root);
+  if (!root) return null;
+  let config;
+  if (git) {
+    const settings = configAtBase(root, baseOid, git, "the PR base");
+    if (settings.problem) throw new Error(settings.problem);
+    if (settings.config === null) return null;
+    config = merge(defaults, settings.config);
+  } else {
+    if (!existsSync(path.join(root, CONFIG_FILE))) return null;
+    config = load(root);
+  }
   const review = reviewSettings(config.swarm);
   const ledger = review ? ledgerFileOf(root) : null;
   if (!review || !ledger) return null;
@@ -63,7 +96,9 @@ export function workflowAt(cwd) {
   let directProblem = null;
   try {
     direct = directSettings(config.swarm);
+    if (git && existsSync(path.join(root, CONFIG_FILE)) && !directSettings(load(root).swarm)) direct = null;
   } catch (error) {
+    direct = null;
     directProblem = error.message;
   }
   return {

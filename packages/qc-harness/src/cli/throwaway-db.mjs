@@ -12,10 +12,11 @@ export const USAGE = `qc throwaway-db — run a command on a database of its own
 
   qc throwaway-db [--port <n>|auto] -- <command...>
       start a postgres container on a free port (auto by default), wait until it is ready, run the
-      command with the variables of throwawayDb.env filled in, and remove the container after.
+      optional schemaCommand, then the command, with the variables of throwawayDb.env filled in,
+      and remove the container after.
 
   qc.config.json "throwawayDb": image, user, database, env (each value may hold {url},
-  {host}, {port}, {user}, {password}, {database}), avoidPorts, and readySeconds. The password is random for each run.`;
+  {host}, {port}, {user}, {password}, {database}), schemaCommand, avoidPorts, and readySeconds. The password is random for each run.`;
 
 export const throwawayDefaults = {
   image: "postgres:17-alpine",
@@ -119,7 +120,12 @@ export async function runThrowawayDb(config, argv, deps = {}) {
     }
     const url = `postgres://${encodeURIComponent(settings.user)}:${encodeURIComponent(password)}@${HOST}:${port}/${settings.database}`;
     const values = { url, host: HOST, port, user: settings.user, password, database: settings.database };
-    return await run(commandLine(command), { ...env, ...fillEnv(settings.env, values) });
+    const commandEnv = { ...env, ...fillEnv(settings.env, values) };
+    if (settings.schemaCommand) {
+      const code = await run(settings.schemaCommand, commandEnv);
+      if (code !== 0) return code;
+    }
+    return await run(commandLine(command), commandEnv);
   } finally {
     say(`qc throwaway-db: removing ${name}`);
     if (docker(["rm", "--force", name]).code !== 0) say(`qc throwaway-db: remove it by hand: docker rm --force ${name}`);

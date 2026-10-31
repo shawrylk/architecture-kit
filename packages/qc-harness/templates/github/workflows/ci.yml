@@ -1,7 +1,14 @@
 name: ci
 on:
-  push:
   pull_request:
+  # Edit this list if the repository uses another trunk branch.
+  # A branch push with no pull request runs no CI.
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   gates:

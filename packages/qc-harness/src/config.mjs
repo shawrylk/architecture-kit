@@ -9,6 +9,11 @@ import path from "node:path";
 export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
+  checkpoint: { maxAgeMinutes: 30 },
+  post: { aiLabel: true },
+  ci: { requiredChecks: [] },
+  lessons: { file: "docs/ci-lessons.md", rerun: "node --test" },
+  guard: { protectedPaths: [".github/workflows/**", ".husky/**", ".githooks/**", "qc.config.json", ".claude/settings*.json"] },
   // Where features live. Every structural gate walks these.
   featureRoots: ["backend/src/features", "frontend/src/features"],
   // The path segment that marks a feature, and the one file that crosses its boundary.
@@ -17,7 +22,28 @@ export const defaults = {
 
   // `qc codex-implement`. `compactTokens` is the backstop that compacts a runaway session; one item
   // runs in a fresh session and should finish under 200K.
-  codex: { compactTokens: 300000 },
+  codex: {
+    compactTokens: 300000,
+    disablePlugins: ["superpowers@claude-plugins-official"],
+    envAllow: [],
+    preamble: "",
+    briefMaxLines: 40,
+    briefMaxSteps: 6,
+    maxRuns: 2,
+  },
+
+  throwawayDb: {
+    schemaCommand: null,
+  },
+
+  // Token limits keep each role within its context: compactAt compacts, remindAt warns, and handoffAt hands off.
+  // toolOutputTokens caps one Codex tool output; null compactAt preserves codex.compactTokens.
+  budgets: {
+    orchestrator: { compactAt: 200000 },
+    implementer: { remindAt: 110000, handoffAt: 150000 },
+    reviewer: { remindAt: 80000, handoffAt: 120000 },
+    codex: { compactAt: null, toolOutputTokens: 4000 },
+  },
 
   docs: {
     root: "docs",
@@ -254,12 +280,14 @@ export const defaults = {
     dispatch: null,
     // Read only while `dispatch` is on. `reviewDefaults` fills each key it omits.
     review: null,
-    // Read only while `dispatch` is on, and on by default then. `false` turns it off; `directDefaults` fills each key it omits.
+    // Read only while `dispatch` is on, and on by default then. `false` turns it off; `directDefaults` fills each key it omits, except `reviewPaths`, which `direct-lane.mjs` defaults.
     direct: null,
   },
 
   // Files a generator writes. The generated-file hook refuses a hand edit of one and names `command`, when set.
   generated: { globs: ["**/*.generated.*"], command: null },
+
+  merge: { holdLabel: "hold" },
 
   // `qc worktree`. `install` runs in each new worktree; null picks it from the lockfile. `base` is the default `--from`: the ref a
   // branch starts at, and the ref `remove` checks a merge against.
@@ -284,9 +312,15 @@ export const defaults = {
     required: { "pre-commit": ["qc work-order-check"], "commit-msg": ["qc commit-msg"], "pre-push": ["qc check"] },
   },
 
+  // Push settled output in merge batches so each push triggers CI.
+  integrate: { ciEvery: 3, push: true, branchPattern: "^[a-z]+/[0-9]+-integration$", review: true },
+
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
     related: null,
+    // --since-push appends paths changed after the push; null uses related.
+    sincePush: null,
+    e2e: null,
     // Commands receive no extra arguments; for example, ["node script/check-comments.mjs --base origin/dev"].
     commands: [],
     // The merge base with this ref selects committed and staged changes.
@@ -338,6 +372,9 @@ export const defaults = {
     productRoots: ["backend", "bff", "frontend", "workers"],
     productPackages: [],
   },
+
+  // Keep unwired controls in JSX while their feature switch controls their visibility.
+  featureSwitches: { file: "feature-switches.ts", patterns: ["UNWIRED", "^SHOW_", "_WIRED$"] },
 
   // Each set: `source` declares the keys, `key` and `writer` are patterns whose first group is a key,
   // `roots` hold the writers, and `declaredAhead` maps a key with no writer yet to its reason.
@@ -411,6 +448,7 @@ export const defaults = {
     // sets, its claims. Shipped on, each would also red a consumer's enforcement map on upgrade.
     parity: false,
     "integration-imports": false,
+    "feature-switches": false,
     "closed-set-writers": false,
     "doc-claims": false,
     "tenant-isolation-test": false,
@@ -448,6 +486,11 @@ export const defaults = {
     "no-raw-fetch": true,
     "no-sql-raw": true,
     "ime-safe-key": false,
+    "one-component-per-file": false,
+    "raw-element-in-primitive": false,
+    "no-arbitrary-class-value": false,
+    "no-literal-color": false,
+    "no-static-inline-style": false,
     // A policy rule: a repository turns it on once its controls carry the pending prop.
     "mutation-control-pending": false,
     "registry-literal": true,
@@ -579,13 +622,20 @@ export const contextDefaults = {
   handoffTypes: ["sdd-implementer", "architecture:sdd-implementer", "general-purpose"],
 };
 
+export const PROMOTION_SCOPE = "promotion";
+export const promotionDefaults = { surfaces: ["infra/**", "**/migrations/**", ".github/workflows/**"] };
+
 // What each key of `swarm.review` means when a repository omits it. The workflow checks run only while
 // `swarm.dispatch` is on, so this section alone turns nothing on.
 export const reviewDefaults = {
+  // Require a promotion review only when the repository chooses its branch pair.
+  promotion: null,
   // The review kind whose APPROVED verdict lets `gh pr merge` run: "branch" or "task".
   merge: "branch",
   // The largest tool-call estimate one plan task may carry.
   maxTaskCalls: 35,
+  riskPaths: ["**/migrations/**", "schemas/**"],
+  cases: {},
   // Globs, relative to a checkout of this repository, that the main session may edit.
   controllerPaths: ["docs/**", "*.md", "qc.config.json", "**/.claude/**"],
   // The agent types whose stop records a verdict of each kind.
@@ -619,8 +669,6 @@ export const directDefaults = {
   maxFiles: 2,
   // Globs a direct fix may not touch. A change to one of these runs the subagent workflow.
   excludes: ["schemas/**", "**/migrations/**"],
-  // Globs a direct fix may touch only with one APPROVED review of its head, of either kind.
-  reviewPaths: [],
 };
 
 function isPlainObject(value) {
@@ -642,10 +690,67 @@ export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
   const user = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const config = merge(defaults, user);
+  if (!isPlainObject(config.lessons)) throw new TypeError("lessons must be an object");
+  for (const key of ["file", "rerun"]) {
+    if (typeof config.lessons[key] !== "string" || !config.lessons[key].trim()) throw new TypeError(`lessons.${key} must be a non-empty string`);
+  }
+  if (Object.hasOwn(user, "checkpoint") && !isPlainObject(user.checkpoint)) throw new TypeError("checkpoint must be an object");
+  if (!Number.isFinite(config.checkpoint.maxAgeMinutes) || config.checkpoint.maxAgeMinutes < 0) {
+    throw new TypeError("checkpoint.maxAgeMinutes must be a non-negative number");
+  }
+  if (!isPlainObject(config.merge)) throw new TypeError("merge must be an object");
+  if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
+    throw new TypeError("merge.holdLabel must be a non-empty string without surrounding whitespace");
+  }
+  if (isPlainObject(config.codex) && (!Array.isArray(config.codex.envAllow)
+    || !config.codex.envAllow.every((name) => typeof name === "string" && name.length > 0 && name === name.trim()))) {
+    throw new TypeError("codex.envAllow must be an array of non-empty strings without surrounding whitespace");
+  }
+  if (Object.hasOwn(user, "post") && !isPlainObject(user.post)) throw new TypeError("post must be an object");
+  if (typeof config.post.aiLabel !== "boolean") throw new TypeError("post.aiLabel must be a boolean");
+  if (Object.hasOwn(user, "guard") && !isPlainObject(user.guard)) throw new TypeError("guard must be an object");
+  if (!Array.isArray(config.guard.protectedPaths) || !config.guard.protectedPaths.every((glob) => typeof glob === "string" && glob.trim())) {
+    throw new TypeError("guard.protectedPaths must be an array of non-empty strings");
+  }
+  if (!isPlainObject(config.ci)) throw new TypeError("ci must be an object");
+  if (!Array.isArray(config.ci.requiredChecks) || !config.ci.requiredChecks.every((name) => typeof name === "string" && name.trim())) {
+    throw new TypeError("ci.requiredChecks must be an array of non-empty strings");
+  }
+  if (!isPlainObject(config.featureSwitches)) throw new TypeError("featureSwitches must be an object");
+  const switches = config.featureSwitches;
+  if (typeof switches.file !== "string" || !switches.file.trim() || /[\\/]/.test(switches.file) || [".", ".."].includes(switches.file)) {
+    throw new TypeError("featureSwitches.file must be a non-empty filename at the feature root");
+  }
+  if (!Array.isArray(switches.patterns) || !switches.patterns.every((pattern) => typeof pattern === "string")) {
+    throw new TypeError("featureSwitches.patterns must be an array of strings");
+  }
+  for (const pattern of switches.patterns) {
+    try {
+      new RegExp(pattern);
+    } catch {
+      throw new TypeError(`featureSwitches.patterns contains an invalid regular expression: ${JSON.stringify(pattern)}`);
+    }
+  }
+  if (!isPlainObject(config.integrate)) throw new TypeError("integrate must be an object");
+  if (config.integrate.base !== undefined && (typeof config.integrate.base !== "string" || !config.integrate.base.trim())) {
+    throw new TypeError("integrate.base must be a non-empty string");
+  }
+  const { ciEvery, push, branchPattern, review } = config.integrate;
+  if (!Number.isInteger(ciEvery) || ciEvery < 1) throw new TypeError("integrate.ciEvery must be a positive integer");
+  if (typeof push !== "boolean") throw new TypeError("integrate.push must be a boolean");
+  if (typeof branchPattern !== "string") throw new TypeError("integrate.branchPattern must be a regular expression string");
+  try {
+    new RegExp(branchPattern);
+  } catch {
+    throw new TypeError("integrate.branchPattern must be a valid regular expression");
+  }
+  if (typeof review !== "boolean") throw new TypeError("integrate.review must be a boolean");
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
-  const { related, commands, base } = config.check;
+  const { related, sincePush, e2e, commands, base } = config.check;
   const command = (value) => typeof value === "string" && value.trim().length > 0;
   if (related !== null && !command(related)) throw new TypeError("check.related must be a non-empty string or null");
+  if (sincePush !== null && !command(sincePush)) throw new TypeError("check.sincePush must be a non-empty string or null");
+  if (e2e !== null && !command(e2e)) throw new TypeError("check.e2e must be a non-empty string or null");
   if (!Array.isArray(commands) || !commands.every(command)) throw new TypeError("check.commands must be an array of non-empty strings");
   if (!command(base)) throw new TypeError("check.base must be a non-empty string");
   config.root = root;

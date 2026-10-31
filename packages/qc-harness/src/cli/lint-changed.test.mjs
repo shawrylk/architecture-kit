@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { onChangedLines, parseDiff } from "./lint-changed.mjs";
 
 const QC = path.join(path.dirname(fileURLToPath(import.meta.url)), "qc.mjs");
@@ -99,4 +99,115 @@ test("a repository without ESLint skips the lint", (t) => {
   const result = qc();
   assert.equal(result.status, 0);
   assert.match(result.stdout, /lint skipped/);
+});
+
+test("qc lint applies the baseline per file and rule up to the recorded count", (t) => {
+  const { root, qc } = repo(t);
+  writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({ "src/old.mjs": { "no-var": { count: 1 } } }));
+  writeFileSync(path.join(root, "src", "old.mjs"), "var legacy = 2;\nexport const kept = legacy;\n");
+  const suppressed = qc();
+  assert.equal(suppressed.status, 0, suppressed.stderr);
+  writeFileSync(path.join(root, "src", "old.mjs"), "var legacy = 2;\nexport const kept = legacy;\nvar added = 3;\n");
+  assert.equal(qc().status, 1, "a count over the baseline still fails");
+  writeFileSync(path.join(root, "src", "new.mjs"), "var fresh = 1;\n");
+  const otherFile = qc();
+  assert.equal(otherFile.status, 1, otherFile.stderr);
+  assert.match(otherFile.stderr, /src\/new\.mjs:1:1.*no-var/);
+});
+
+for (const staged of [false, true]) {
+  test(`named files apply their baseline without linting other files or checking stale entries (staged=${staged})`, (t) => {
+    const { root, git, qc } = repo(t);
+    writeFileSync(path.join(root, "eslint.config.mjs"), `export default [{
+      files: ["**/*.mjs"],
+      plugins: { probe: { rules: { selected: { create(context) {
+        if (context.filename.endsWith("old.mjs")) throw new Error("unselected file was linted");
+        return {};
+      } } } } },
+      rules: { "no-var": "error", "probe/selected": "error" },
+    }];\n`);
+    writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({
+      "src/old.mjs": { "no-var": { count: 2 } },
+      "src/new.mjs": { "no-var": { count: 1 } },
+    }));
+    const source = path.join(root, "src", "new.mjs");
+    const run = () => {
+      if (staged) git("add", "-A");
+      return qc(...(staged ? ["--staged"] : []), "src/new.mjs");
+    };
+    writeFileSync(source, "var fresh = 1;\n");
+    const suppressed = run();
+    assert.equal(suppressed.status, 0, suppressed.stderr);
+    writeFileSync(source, "const fresh = 1;\n");
+    const stale = run();
+    assert.equal(stale.status, 0, stale.stderr);
+    assert.doesNotMatch(stale.stderr, /suppressions left/);
+    writeFileSync(source, "var fresh = 1;\nvar added = 2;\n");
+    const increased = run();
+    assert.equal(increased.status, 1, increased.stderr);
+    assert.match(increased.stderr, /src\/new\.mjs:1:1.*no-var/);
+  });
+}
+
+for (const staged of [false, true]) {
+  for (const file of ["src/notes.md", "src/ignored.mjs"]) {
+    test(`qc lint skips a baseline for an unsupported or ignored file: ${file} (staged=${staged})`, (t) => {
+      const { root, git, qc } = repo(t);
+      writeFileSync(path.join(root, "eslint.config.mjs"), 'export default [{ ignores: ["src/ignored.mjs"] }, { files: ["**/*.mjs"], rules: { "no-var": "error" } }];\n');
+      writeFileSync(path.join(root, file), "var skipped = 1;\n");
+      writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({ [file]: { "no-var": { count: 1 } } }));
+      if (staged) git("add", "eslint-suppressions.json", file);
+      const result = qc(...(staged ? ["--staged"] : []));
+      assert.equal(result.status, 0, result.stderr);
+      assert.doesNotMatch(result.stderr, /suppressions left/);
+    });
+  }
+}
+
+test("qc lint fails stale baseline entries, including untouched and deleted files", (t) => {
+  const { root, qc } = repo(t);
+  const baseline = path.join(root, "eslint-suppressions.json");
+  writeFileSync(baseline, JSON.stringify({ "src/old.mjs": { "no-var": { count: 2 } } }));
+  assert.equal(qc().status, 2, "an untouched file with fewer findings fails");
+  writeFileSync(baseline, JSON.stringify({ "src/gone.mjs": { "no-var": { count: 1 } } }));
+  assert.equal(qc().status, 2, "a deleted file leaves a stale entry");
+  writeFileSync(baseline, JSON.stringify({ "src/old.mjs": { "no-console": { count: 1 } } }));
+  assert.equal(qc().status, 2, "a different rule cannot consume the count");
+});
+
+test("a staged baseline and source survive unstaged edits and deletion", (t) => {
+  const { root, git, qc } = repo(t);
+  const source = path.join(root, "src", "old.mjs");
+  const baseline = path.join(root, "eslint-suppressions.json");
+  writeFileSync(source, "var legacy = 2;\nexport const kept = legacy;\n");
+  writeFileSync(baseline, JSON.stringify({ "src/old.mjs": { "no-var": { count: 1 } } }));
+  git("add", "src/old.mjs", "eslint-suppressions.json");
+  writeFileSync(source, "const legacy = 3;\nexport const kept = legacy;\n");
+  writeFileSync(baseline, JSON.stringify({ "src/old.mjs": { "no-var": { count: 2 } } }));
+  const edited = qc("--staged");
+  assert.equal(edited.status, 0, edited.stderr);
+  rmSync(source);
+  const deleted = qc("--staged");
+  assert.equal(deleted.status, 0, deleted.stderr);
+});
+
+test("qc lint catches a component inserted above an unchanged component", (t) => {
+  const { root, git, qc } = repo(t);
+  const require = createRequire(import.meta.url);
+  const parser = pathToFileURL(require.resolve("@typescript-eslint/parser")).href;
+  const plugin = new URL("../eslint/index.mjs", import.meta.url).href;
+  writeFileSync(path.join(root, "eslint.config.mjs"), `
+    import parser from ${JSON.stringify(parser)};
+    import { rules } from ${JSON.stringify(plugin)};
+    export default [{ files: ["**/*.tsx"], languageOptions: { parser }, plugins: { qc: { rules } }, rules: { "qc/one-component-per-file": "error" } }];
+  `);
+  const original = "export function Existing() { return <li />; }\n";
+  writeFileSync(path.join(root, "src/view.tsx"), original);
+  git("add", "eslint.config.mjs", "src/view.tsx");
+  const commit = git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "test(qc): seed component");
+  assert.equal(commit.status, 0, commit.stderr);
+  writeFileSync(path.join(root, "src/view.tsx"), "const Added = () => <i />;\n" + original);
+  const result = qc();
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /src\/view\.tsx:1:7.*qc\/one-component-per-file/);
 });

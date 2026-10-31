@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 // The trigger that holds `gh pr merge` to its review. Before the call it needs `--match-head-commit` and an
-// APPROVED review of `swarm.review.merge` for that sha, or a head inside the direct lane of `swarm.direct`.
+// APPROVED review of `swarm.review.merge` for that sha, or a head inside the direct or integration lane.
 // After the call it records the merge and its issues.
-// A merge that names another repository than the checkout's `origin` is that repository's own, so it passes.
-// With `swarm.dispatch` off, the record is still written for the worktree check of QC-015, and nothing is judged.
+// A `gh pr merge` that names another repository than the checkout's `origin` is that repository's own, so it passes.
+// A raw API merge, REST or GraphQL, reads the base policy of its PR. It passes with `swarm.dispatch` off.
+// It denies with dispatch on, or when the guard cannot read the PR or its base.
+// Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes.
+// This applies in every checkout, with `swarm.dispatch` on or off.
 
 import { fileURLToPath } from "node:url";
+import { defaults, PROMOTION_SCOPE } from "../config.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
-import { LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
+import { checkoutRootOf } from "./checkout-root.mjs";
+import { configAtBase, LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh } from "./gh-run.mjs";
-import { originOf, repoOfSpelling } from "./git-read.mjs";
+import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
+import { integrationLane } from "./integration-lane.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
+import { promotionBranchName } from "./promotion-branch.mjs";
+import { pauseRefusal, holdRefusal } from "./pause.mjs";
+import { lessonRefusal, resolvedFailures } from "./ci-failures.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
 
@@ -30,17 +39,16 @@ const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", 
  * Judges each merge: an APPROVED review of `kind` on its head, or else the direct lane that `lane(merge)` decides.
  * @returns `{ refusal }` for the first merge that may not run, or `{ refusal: null, direct }` with the lane notes.
  */
-export function mergeVerdict(merges, records, kind, lane = null) {
+export function mergeVerdict(merges, records, kind, lane = null, promotion = null) {
   const direct = [];
   for (const merge of merges) {
     if (!merge.sha) {
       return { refusal: `Merge guard: \`gh pr merge\` must pass \`--match-head-commit <sha>\` with the head the ${kind} review approved, so a push after the review cannot merge unreviewed. Add it.` };
     }
     const verdict = decidingVerdictFor(records, merge.sha, [kind]);
-    const missing = dispatchedScopesFor(records, merge.sha).find(
+    const missing = (kind === "branch" ? dispatchedScopesFor(records, merge.sha) : []).find(
       (scope) => latestVerdictFor(records, merge.sha, [kind], scope)?.verdict !== "APPROVED",
     );
-    if (verdict?.verdict === "APPROVED" && missing === undefined) continue;
     if (missing !== undefined) {
       return {
         refusal:
@@ -48,7 +56,15 @@ export function mergeVerdict(merges, records, kind, lane = null) {
           `Dispatch ${REVIEWER[kind]} with \`Scope: ${missing}\` on that head, and merge after every scope approves.`,
       };
     }
-    const fit = lane ? lane(merge) : null;
+    if (promotion && kind === "branch" && latestVerdictFor(records, merge.sha, ["branch"], promotion)?.verdict !== "APPROVED") {
+      return {
+        refusal:
+          `Merge guard: the ledger holds no APPROVED branch review of scope "${promotion}" on ${merge.sha}. ` +
+          `Run \`qc review promotion ${merge.number ?? (/^[1-9]\d*$/.test(merge.selector ?? "") ? merge.selector : "<pr>")}\` on that head, and merge after every scope approves.`,
+      };
+    }
+    if (verdict?.verdict === "APPROVED") continue;
+    const fit = !promotion && lane ? lane(merge) : null;
     if (fit && fit.problem === null) {
       direct.push(fit.note);
       continue;
@@ -69,35 +85,103 @@ export function mergeVerdict(merges, records, kind, lane = null) {
 /** @returns the reason the first of `merges` may not run, or null when each pins an approved head. */
 export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict(merges, records, kind, lane).refusal;
 
-/** The base the PR of `merge` merges into, as gh reads it before the merge: `{ name, oid }`, or null. `oid` is null when gh names none. */
+/** The PR base selects its review policy; its head identifies a promotion. Missing base details keep the guard closed. */
 function prBaseOf(merge, cwd, gh, timeoutMs) {
-  const args = ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid"];
+  const args = merge.nodeId
+    ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner} labels(first:100){nodes{name} pageInfo{hasNextPage}} headRefName isCrossRepository}}}", "-f", `id=${merge.nodeId}`]
+    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"];
   try {
-    const pr = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
-    return typeof pr?.baseRefName === "string" ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null } : null;
+    const answer = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
+    const pr = merge.nodeId ? answer?.data?.node : answer;
+    if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
+      typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
+    return typeof pr?.baseRefName === "string"
+      ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null, number: Number.isInteger(pr.number) && pr.number > 0 ? pr.number : null, sameRepository: pr.isCrossRepository === false,
+        labels: merge.nodeId ? pr.labels?.nodes : pr.labels,
+        moreLabels: merge.nodeId ? pr.labels?.pageInfo?.hasNextPage !== false : pr.labels?.length >= 100 }
+      : null;
   } catch {
     return null;
   }
 }
 
-/**
- * The direct lane of one workflow, as `mergeVerdict` asks it. Null while the checkout's `swarm.direct` is false; a wrong
- * value names itself. The lane judges against the base commit that gh names for the PR, so no local ref decides.
- * A PR into a branch other than `worktree.base` stays out of it. The merges of one call share one time budget.
- */
-function laneOf(workflow, records, cwd, gh) {
+/** Record: a hold refusal that waits for the operator. */
+class HoldRefusal extends Error {}
+
+/** The fragment that reads one merge's PR base and workflow within the shared deadline. */
+function policyOf(merge, root, cwd, gh, deadline) {
+  const left = deadline - Date.now();
+  const pr = left > 0 ? prBaseOf(merge, cwd, gh, left) : null;
+  if (!pr) throw new Error("gh cannot read the base branch of the PR within the time budget of the lane");
+  const git = (dir, ...args) => {
+    const remaining = deadline - Date.now();
+    return remaining > 0 ? gitOutWithin(remaining, dir, ...args) : null;
+  };
+  git.late = () => Date.now() >= deadline;
+  const settings = configAtBase(root, pr.oid, git, "the PR base");
+  if (settings.problem) throw new Error(settings.problem);
+  const mergeConfig = settings.config?.merge;
+  if (mergeConfig !== undefined && (mergeConfig === null || typeof mergeConfig !== "object" || Array.isArray(mergeConfig))) {
+    throw new Error("merge in qc.config.json must be an object");
+  }
+  const holdLabel = mergeConfig?.holdLabel === undefined ? defaults.merge.holdLabel : mergeConfig.holdLabel;
+  if (typeof holdLabel !== "string" || !holdLabel.trim() || holdLabel !== holdLabel.trim()) {
+    throw new Error("merge.holdLabel must be a non-empty string without surrounding whitespace");
+  }
+  if (pr.moreLabels || !Array.isArray(pr.labels) || pr.labels.some((label) => typeof label?.name !== "string")) {
+    throw new Error("gh cannot read every PR label");
+  }
+  if (pr.labels.some((label) => label.name.toLowerCase() === holdLabel.trim().toLowerCase())) {
+    throw new HoldRefusal(`PR label "${holdLabel}" holds this merge. Wait for the operator to remove the label.`);
+  }
+  const lessons = { ...defaults.lessons, ...settings.config?.lessons };
+  if (pr.head && pr.sameRepository) {
+    const hold = holdRefusal(root, pr.head);
+    if (hold) throw new HoldRefusal(hold);
+    const failures = resolvedFailures(root, pr.head, { merging: true });
+    if (failures.length) {
+      const text = /^[0-9a-f]{7,40}$/i.test(merge.sha ?? "") ? git(root, "show", `${merge.sha}:${lessons.file}`) : null;
+      const refusal = lessonRefusal(root, pr.head, text, failures);
+      if (refusal) throw new HoldRefusal(refusal.replace(/^Merge guard: /, ""));
+    }
+  }
+  return { pr, workflow: workflowAt(root, { baseOid: pr.oid, git }) };
+}
+
+/** The fragment that names a REST or GraphQL merge's PR; null when the call cannot name one. */
+function apiPrOf({ endpoint, env, nodeId }) {
+  const { GH_REPO, ...settings } = env;
+  const host = /^https?:\/\/([^/]+)\//.exec(endpoint)?.[1];
+  if (host) settings.GH_HOST = host === "api.github.com" ? "github.com" : host;
+  if (nodeId !== undefined) return nodeId ? { nodeId, env: settings } : null;
+  const match = /^(?:https?:\/\/([^/]+)\/(?:api\/v3\/)?)?\/?(?:repos\/([^/]+\/[^/]+)\/)?pulls\/(\d+)\/merge\/?(?:\?.*)?$/.exec(endpoint);
+  if (!match || /[{}]/.test(endpoint.replace("repos/{owner}/{repo}/", "repos/owner/repo/"))) return null;
+  const repo = match[2] === "{owner}/{repo}" ? GH_REPO ?? null : match[2] ?? GH_REPO ?? null;
+  return { selector: match[3], repo, env: settings };
+}
+
+/** The branch that tries the direct lane, then the integration lane, against the PR base policy within one shared deadline. */
+function laneOf(workflow, records, pr, deadline) {
   const { direct, directProblem, base } = workflow;
-  if (!direct) return directProblem ? () => ({ problem: directProblem }) : null;
-  const deadline = Date.now() + LANE_BUDGET_MS;
-  return (merge) => {
-    const left = deadline - Date.now();
-    const pr = left > 0 ? prBaseOf(merge, cwd, gh, left) : null;
+  const kind = workflow.review.merge;
+  const directLane = !direct ? (directProblem ? () => ({ problem: directProblem }) : null) : (merge) => {
     if (pr === null) return { problem: "gh cannot read the base branch of the PR within the time budget of the lane" };
     if (pr.name !== base && `origin/${pr.name}` !== base) return { problem: `the PR merges into ${pr.name}, and the lane measures against ${base}` };
     const fit = mergeLane({ root: workflow.root, baseOid: pr.oid, protectedBranches: workflow.protectedBranches, sha: merge.sha, records, budgetMs: deadline - Date.now() });
     if (fit.problem !== null) return fit;
     const reviewed = fit.review ? `the APPROVED ${fit.review.kind} review of ${fit.review.sha}` : "no review";
     return { problem: null, note: `Merge guard: ${merge.sha} merges through the direct lane, with ${sizeLine(fit.size, fit.direct)} and ${reviewed}.` };
+  };
+  return (merge) => {
+    const fit = directLane ? directLane(merge) : null;
+    if (fit?.problem === null) return fit;
+    if (pr === null || !pr.head) return fit;
+    const result = integrationLane({ root: workflow.root, baseOid: pr.oid, headBranch: pr.head, sha: merge.sha, records, kinds: [kind], budgetMs: deadline - Date.now() });
+    if (!result.applies) return fit;
+    if (result.problem === null) {
+      return { problem: null, note: `Merge guard: ${merge.sha} merges through the integration lane of ${pr.head}, with ${result.heads} reviewed heads and no commit past a review.` };
+    }
+    return { problem: (fit?.problem ? fit.problem + "; " : "") + "the integration lane does not apply: " + result.problem };
   };
 }
 
@@ -122,15 +206,17 @@ export function namedIssues(pr, repo) {
 }
 
 /** Splits the merges into those of this checkout's repository and those that name another repository. */
-function partition(merges, root) {
-  const origin = merges.some((merge) => merge.repo) ? originOf(root) : null;
+function partition(merges, root, deadline) {
+  const left = deadline - Date.now();
+  const origin = left > 0 && merges.some((merge) => merge.repo) ? originOf(root, Math.min(5_000, left)) : null;
   const foreign = (merge) => origin !== null && merge.repo && repoOfSpelling(merge.repo) !== origin;
   return { origin, own: merges.filter((merge) => !foreign(merge)), other: merges.filter(foreign) };
 }
 
-function recordMerge(merge, call, workflow, gh) {
+function recordMerge(merge, call, workflow, gh, deadline) {
   const args = ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", VIEW_FIELDS];
-  const out = gh(args, { cwd: call.cwd ?? process.cwd(), env: merge.env });
+  const left = deadline - Date.now();
+  const out = left > 0 ? gh(args, { cwd: call.cwd ?? process.cwd(), env: merge.env, timeoutMs: left }) : null;
   let pr = null;
   try {
     pr = out === null ? null : JSON.parse(out);
@@ -174,24 +260,50 @@ function recordMerge(merge, call, workflow, gh) {
 
 /** The verdict on one Bash or PowerShell event. @returns the hook output, or null to let it pass with no message. */
 export function decide(call, { gh = runGh } = {}) {
+  const deadline = Date.now() + LANE_BUDGET_MS;
   const event = call.hook_event_name;
   if (event !== "PreToolUse" && !POST_EVENTS.has(event)) return null;
   const parse = PARSERS[call.tool_name];
   const command = call.tool_input?.command;
   if (!parse || typeof command !== "string" || !MAYBE_GH.test(command)) return null;
-  let workflow;
-  try {
-    workflow = workflowAt(call.cwd ?? process.cwd());
-  } catch (error) {
-    return event === "PreToolUse" ? context(`Merge guard is off: ${error.message}`) : null;
+  const cwd = call.cwd ?? process.cwd();
+  const root = checkoutRootOf(cwd);
+  if (!root) return null;
+  const merges = ghMerges(command, parse);
+  const apiMerges = event === "PreToolUse" ? ghApiMerges(command, parse, { cwd }) : [];
+  if (event === "PreToolUse" && (merges.length > 0 || apiMerges.length > 0)) {
+    try {
+      const refusal = pauseRefusal(root);
+      if (refusal) return deny(`Merge guard: ${refusal}`);
+    } catch (error) {
+      return deny(`Merge guard: cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`);
+    }
   }
-  // Only the record needs a ledger; the review check stays off with the workflow.
-  if (!workflow && event !== "PreToolUse") workflow = worktreeRuleAt(call.cwd ?? process.cwd());
-  if (!workflow) return null;
+  let workflow;
+  if (event !== "PreToolUse") {
+    try {
+      workflow = workflowAt(cwd);
+    } catch {
+      return null;
+    }
+    if (!workflow) workflow = worktreeRuleAt(cwd);
+    if (!workflow) return null;
+  }
   if (event === "PreToolUse") {
-    const [found] = ghApiMerges(command, parse, { cwd: call.cwd ?? process.cwd() });
-    if (found) {
+    for (const found of apiMerges) {
       const use = "Run `gh pr merge <n> --match-head-commit <sha>` with the head an APPROVED review named.";
+      if (found.inputField !== undefined) {
+        return deny(`Merge guard: \`gh api ${found.endpoint}\` mixes \`--input\` with \`${found.inputField}\`. Fields enter the URL query string, so the guard cannot pin the body to one PR. ${use}`);
+      }
+      const merge = apiPrOf(found);
+      if (merge) {
+        try {
+          if (!policyOf(merge, root, cwd, gh, deadline).workflow) continue;
+        } catch (error) {
+          if (error instanceof HoldRefusal) return deny(`Merge guard: ${error.message}`);
+          return deny(`Merge guard: the base policy cannot be read (${error.message}). ${use}`);
+        }
+      }
       return deny(
         found.unreadable === undefined
           ? `Merge guard: \`gh api ${found.endpoint}\` merges with no review check and no head pin. ${use}`
@@ -199,21 +311,28 @@ export function decide(call, { gh = runGh } = {}) {
       );
     }
   }
-  const merges = ghMerges(command, parse);
   if (merges.length === 0) return null;
-  const { origin, own, other } = partition(merges, workflow.root);
+  const { origin, own, other } = partition(merges, root, deadline);
   if (event === "PreToolUse") {
-    let verdict = { refusal: null, direct: [] };
-    if (own.length > 0) {
+    const notes = [];
+    for (const merge of own) {
       try {
+        const policy = policyOf(merge, root, cwd, gh, deadline);
+        const { pr } = policy;
+        workflow = policy.workflow;
+        if (!workflow) continue;
         const records = readLedger(workflow.ledger);
-        verdict = mergeVerdict(own, records, workflow.review.merge, laneOf(workflow, records, call.cwd ?? process.cwd(), gh));
+        const promotion = workflow.review.promotion;
+        const promotionScope = promotion && pr.sameRepository && promotionBranchName(pr.head) === promotionBranchName(promotion.integration) &&
+          promotionBranchName(pr.name) === promotionBranchName(promotion.release) ? PROMOTION_SCOPE : null;
+        const result = mergeVerdict([{ ...merge, number: pr.number }], records, workflow.review.merge, laneOf(workflow, records, pr, deadline), promotionScope);
+        if (result.refusal) return deny(result.refusal);
+        notes.push(...result.direct);
       } catch (error) {
-        verdict = { refusal: `Merge guard: the ledger cannot be read (${error.message}), so no review can be checked. Fix the ledger file, and merge again.` };
+        if (error instanceof HoldRefusal) return deny(`Merge guard: ${error.message}`);
+        return deny(`Merge guard: the base policy or ledger cannot be read (${error.message}), so no review can be checked.`);
       }
     }
-    if (verdict.refusal) return deny(verdict.refusal);
-    const notes = [...verdict.direct];
     if (other.length > 0) {
       notes.push(
         `Merge guard passes ${[...new Set(other.map((merge) => merge.repo))].join(", ")}: it is not this checkout's repository (${origin}), ` +
@@ -222,7 +341,7 @@ export function decide(call, { gh = runGh } = {}) {
     }
     return notes.length > 0 ? context(notes.join(" ")) : null;
   }
-  const notes = own.map((merge) => recordMerge(merge, call, workflow, gh)).filter(Boolean);
+  const notes = own.map((merge) => recordMerge(merge, call, workflow, gh, deadline)).filter(Boolean);
   return notes.length > 0 ? { systemMessage: notes.join(" ") } : null;
 }
 

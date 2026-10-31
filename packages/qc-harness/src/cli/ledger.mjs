@@ -5,7 +5,7 @@ import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync,
 import path from "node:path";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
-export const RECORD_TYPES = ["dispatch", "stop", "verdict", "merge", "issue-update", "cost"];
+export const RECORD_TYPES = ["dispatch", "stop", "verdict", "merge", "issue-update", "cost", "ci-failure", "ci-resolution"];
 const MIN_SHA = 7;
 const HEX = /^[0-9a-f]+$/;
 
@@ -128,6 +128,8 @@ export const lastTaskDispatchOn = (records, branch) =>
 const short = (sha) => (typeof sha === "string" ? sha.slice(0, MIN_SHA) : "");
 
 const SUMMARIES = {
+  "ci-failure": (r) => `${r.branch} ${short(r.head)} ${r.os} ${r.file ?? r.job} ${r.test}: ${r.error}`,
+  "ci-resolution": (r) => `${r.branch} ${short(r.head)} resolved ${r.ids.length} CI failures`,
   dispatch: (r) =>
     `${r.agentType} ${r.task ? `${r.branch} ${short(r.head)}` : "(no task)"}${r.resumeReason ? ` NO-RESUME: ${r.resumeReason}` : ""}${r.fix ? ` FIX: ${r.fix}` : ""}${
       r.ciPass ? ` CI-PASS: ${short(r.ciPass.sha)} ${r.ciPass.reason}` : ""
@@ -153,7 +155,7 @@ const COST_KEYS = ["input", "output", "cacheRead", "cacheCreation", "toolCalls"]
 const emptyTotal = () => ({ agents: 0, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, toolCalls: 0 });
 
 /** The cost records, one per agent: a resumed agent stops again with its whole transcript, so its newest record replaces the older. */
-function latestCosts(records) {
+export function latestCosts(records) {
   const latest = new Map();
   for (const record of records) if (record.type === "cost") latest.set(`${record.session}/${record.agentId}`, record);
   return [...latest.values()];

@@ -14,6 +14,9 @@ function calleeName(ts, expression) {
 /** The text spans of a string-like node, as source ranges inside its quotes or between its substitutions. */
 function spansOf(ts, file, node) {
   const start = node.getStart(file);
+  if (ts.isIdentifier(node)) {
+    return [{ start, end: node.getEnd(), leftOpen: false, rightOpen: false, identifierKey: true }];
+  }
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
     return [{ start: start + 1, end: node.getEnd() - 1, leftOpen: false, rightOpen: false }];
   }
@@ -35,11 +38,12 @@ function spansOf(ts, file, node) {
 
 /**
  * Every span of class text in a file.
- * @returns {{start: number, end: number, leftOpen: boolean, rightOpen: boolean}[]} in source order, none twice
+ * @returns {{start: number, end: number, leftOpen: boolean, rightOpen: boolean, identifierKey?: boolean}[]} in source order, none twice
  */
 export function classSpans(ts, file, callees) {
   const callable = new Set(callees);
   const found = new Map();
+  let checker;
 
   function take(node) {
     for (const span of spansOf(ts, file, node)) found.set(span.start, span);
@@ -54,6 +58,25 @@ export function classSpans(ts, file, callees) {
   function propertyValue(object, wanted) {
     if (!ts.isObjectLiteralExpression(object)) return [];
     return object.properties.filter((p) => wanted.has(propertyName(p))).map((p) => p.initializer);
+  }
+
+  /** Fragment: resolves a variant object through a same-file const binding. */
+  function variantObject(node) {
+    if (ts.isObjectLiteralExpression(node)) return node;
+    if (!ts.isIdentifier(node) && !ts.isShorthandPropertyAssignment(node)) return null;
+    if (!checker) {
+      const options = { noLib: true, noResolve: true };
+      const host = ts.createCompilerHost(options);
+      host.getSourceFile = (name) => name === file.fileName ? file : undefined;
+      checker = ts.createProgram([file.fileName], options, host).getTypeChecker();
+    }
+    const symbol = ts.isShorthandPropertyAssignment(node)
+      ? checker.getShorthandAssignmentValueSymbol(node)
+      : checker.getSymbolAtLocation(node);
+    const declaration = symbol?.valueDeclaration;
+    if (!declaration || !ts.isVariableDeclaration(declaration) || declaration.getSourceFile() !== file) return null;
+    if (!ts.isVariableDeclarationList(declaration.parent) || !(declaration.parent.flags & ts.NodeFlags.Const)) return null;
+    return declaration.initializer && ts.isObjectLiteralExpression(declaration.initializer) ? declaration.initializer : null;
   }
 
   /**
@@ -89,7 +112,7 @@ export function classSpans(ts, file, callees) {
       for (const element of node.elements) collectValue(element, objectKeys);
     } else if (ts.isObjectLiteralExpression(node) && objectKeys) {
       for (const property of node.properties) {
-        if (ts.isPropertyAssignment(property) && ts.isStringLiteral(property.name)) take(property.name);
+        if (ts.isPropertyAssignment(property) && (ts.isStringLiteral(property.name) || ts.isIdentifier(property.name))) take(property.name);
       }
     }
   }
@@ -98,9 +121,13 @@ export function classSpans(ts, file, callees) {
   function collectVariants(call) {
     const [base, config] = call.arguments;
     if (base) collectValue(base, false);
-    if (!config) return;
-    for (const variants of propertyValue(config, new Set(["variants"]))) {
-      if (!ts.isObjectLiteralExpression(variants)) continue;
+    if (!config || !ts.isObjectLiteralExpression(config)) return;
+    for (const property of config.properties) {
+      if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) continue;
+      if (!ts.isIdentifier(property.name) && !ts.isStringLiteral(property.name)) continue;
+      if (property.name.text !== "variants") continue;
+      const variants = variantObject(ts.isShorthandPropertyAssignment(property) ? property : property.initializer);
+      if (!variants) continue;
       for (const group of variants.properties) {
         if (!ts.isPropertyAssignment(group) || !ts.isObjectLiteralExpression(group.initializer)) continue;
         for (const option of group.initializer.properties) {
@@ -140,7 +167,12 @@ export function tokensOfSpan(text, span) {
     const touchesLeft = span.leftOpen && found.index === 0;
     const touchesRight = span.rightOpen && found.index + found[0].length === raw.length;
     if (touchesLeft || touchesRight || found[0].includes("\\")) continue;
-    out.push({ text: found[0], start: span.start + found.index, end: span.start + found.index + found[0].length });
+    out.push({
+      text: found[0],
+      start: span.start + found.index,
+      end: span.start + found.index + found[0].length,
+      ...(span.identifierKey ? { identifierKey: true } : {}),
+    });
   }
   return out;
 }

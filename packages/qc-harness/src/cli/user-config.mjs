@@ -12,19 +12,20 @@ import { captureCodexConfig, mergeCodexConfig } from "./user-config-toml.mjs";
 export { captureCodexConfig, mergeCodexConfig } from "./user-config-toml.mjs";
 
 export const CLAUDE_KEYS = Object.freeze([
-  "cleanupPeriodDays", "syncClaudeAiPlugins", "env", "permissions", "model", "skillOverrides",
+  "cleanupPeriodDays", "syncClaudeAiPlugins", "env", "permissions", "autoMode", "model", "skillOverrides",
   "statusLine", "enabledPlugins", "extraKnownMarketplaces", "effortLevel", "modelSettings",
   "awaySummaryEnabled", "autoUpdatesChannel", "tui", "skipWorkflowUsageWarning", "theme",
   "autoCompactEnabled", "autoContinueAtUsageLimit", "agentPushNotifEnabled", "skipAutoPermissionPrompt",
 ]);
 const ENV_KEYS = ["CLAUDE_CODE_DISABLE_MOUSE", "CLAUDE_CODE_DISABLE_BG_SHELL_PRESSURE_REAP"];
+const AUTO_MODE_KEYS = ["environment", "allow", "soft_deny", "hard_deny"];
 const MAP_KEYS = ["enabledPlugins", "extraKnownMarketplaces", "env"];
 const STATUS_COMMAND = 'node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.js"';
 const USAGE = "qc user-config apply|check|capture [--dry-run] [--kit-dir <path>] [--claude-dir <path>] [--codex-dir <path>]";
 
 export function assertSafePath(file) {
   const name = file.replaceAll("\\", "/").split("/").at(-1).toLowerCase();
-  if ([".claude.json", ".credentials.json", "auth.json"].includes(name) || /token|secret|credential|auth/i.test(name)) {
+  if ([".claude.json", ".credentials.json", "auth.json"].includes(name) || /token|secret|credential|auth(?!or(?:$|[^a-z0-9]))/i.test(name)) {
     throw new Error(`Refusing credential file: ${file}`);
   }
 }
@@ -54,7 +55,8 @@ function sharedClaude(text) {
   const source = objectOf(text);
   const shared = Object.fromEntries(CLAUDE_KEYS.filter((key) => Object.hasOwn(source, key)).map((key) => [key, source[key]]));
   if (shared.env) shared.env = Object.fromEntries(ENV_KEYS.filter((key) => Object.hasOwn(shared.env, key)).map((key) => [key, shared.env[key]]));
-  if (shared.permissions) shared.permissions = Object.fromEntries(["defaultMode"].filter((key) => Object.hasOwn(shared.permissions, key)).map((key) => [key, shared.permissions[key]]));
+  if (shared.permissions) shared.permissions = Object.fromEntries(["defaultMode", "allow", "deny"].filter((key) => Object.hasOwn(shared.permissions, key)).map((key) => [key, shared.permissions[key]]));
+  if (shared.autoMode) shared.autoMode = Object.fromEntries(AUTO_MODE_KEYS.filter((key) => Object.hasOwn(shared.autoMode, key)).map((key) => [key, shared.autoMode[key]]));
   if (shared.statusLine) shared.statusLine = { type: "command", command: STATUS_COMMAND };
   const local = new Set(["skills-dir"]);
   if (shared.extraKnownMarketplaces) {
@@ -68,16 +70,47 @@ function sharedClaude(text) {
   return shared;
 }
 
+/** Fragment: merges environment lines by their bold label, preserving local order. */
+function mergeEnvironment(local, shared) {
+  const labelOf = (line) => /^\*\*([^*]+)\*\*:/.exec(line)?.[1];
+  const lines = [...new Set(local)];
+  for (const line of shared) {
+    const label = labelOf(line);
+    const index = label === undefined ? -1 : lines.findIndex((entry) => labelOf(entry) === label);
+    if (index >= 0) lines[index] = line;
+    else if (!lines.includes(line)) lines.push(line);
+  }
+  const seenLabels = new Set();
+  const seenLines = new Set();
+  return lines.filter((line) => {
+    const label = labelOf(line);
+    if (seenLines.has(line) || (label !== undefined && seenLabels.has(label))) return false;
+    seenLines.add(line);
+    if (label !== undefined) seenLabels.add(label);
+    return true;
+  });
+}
+
+/** Fragment: selects the merge rule for a shared settings entry. */
+function mergeEntry(key, name, local, shared) {
+  if (key === "autoMode" && name === "environment") return mergeEnvironment(local ?? [], shared);
+  if (key === "autoMode" || (key === "permissions" && ["allow", "deny"].includes(name))) {
+    return [...new Set([...(local ?? []), ...shared])];
+  }
+  return shared;
+}
+
 export function mergeClaudeSettings(local, shared) {
   const target = objectOf(local);
   const source = sharedClaude(shared);
   const changed = [];
   for (const [key, value] of Object.entries(source)) {
-    if ([...MAP_KEYS, "permissions"].includes(key)) {
+    if ([...MAP_KEYS, "permissions", "autoMode"].includes(key)) {
       const before = target[key] ?? {};
       const merged = { ...before };
       for (const [name, entry] of Object.entries(value)) {
-        if (!isDeepStrictEqual(before[name], entry)) { changed.push(`${key}.${name}`); Object.defineProperty(merged, name, { value: entry, enumerable: true, writable: true, configurable: true }); }
+        const next = mergeEntry(key, name, before[name], entry);
+        if (!isDeepStrictEqual(before[name], next)) { changed.push(`${key}.${name}`); Object.defineProperty(merged, name, { value: next, enumerable: true, writable: true, configurable: true }); }
       }
       target[key] = merged;
     } else if (!isDeepStrictEqual(target[key], value)) { changed.push(key); target[key] = value; }
@@ -104,7 +137,7 @@ function stamp(now) {
   return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
 }
 
-function backupFile(file, now) {
+export function backupFile(file, now) {
   mkdirSync(path.dirname(file), { recursive: true });
   if (existsSync(file)) copyFileSync(file, `${file}.bak-${stamp(now)}`, constants.COPYFILE_EXCL);
 }
@@ -146,7 +179,6 @@ export async function runUserConfig(args, options = {}) {
       for (const plan of changes) writeFileSync(plan.target, plan.text, { mode: 0o600 });
     }
     const drift = plans.some((plan) => plan.changed.length);
-    if (!drift) log("Shared user configuration matches.");
     return verb === "check" && drift ? 1 : 0;
   } catch (error) {
     (options.log ?? console.error)(`qc user-config: ${error.message}`);

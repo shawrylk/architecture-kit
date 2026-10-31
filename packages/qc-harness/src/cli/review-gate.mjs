@@ -1,10 +1,13 @@
 // The checks of `swarm.review` that read a dispatch prompt and its branch: one branch review, a head that
-// is green and holds the base tip, and a brief with product decisions. The task gate calls them.
+// meets the CI policy and holds the base tip, and a brief with product decisions. The task gate calls them.
 
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { gitOutWithin, isAncestor, remoteTip } from "./git-read.mjs";
-import { shaMatches } from "./ledger.mjs";
+import { shaMatches, ledgerFileOf, readLedger } from "./ledger.mjs";
+import { ciBriefRefusal, currentBranch, openFailures } from "./ci-failures.mjs";
+import { holdRefusal } from "./pause.mjs";
+import { checkoutRootOf } from "./checkout-root.mjs";
 import { commitLookup, nativePath } from "./workflow-place.mjs";
 
 // Every read of a reviewer dispatch is capped, so the whole guard ends inside the Agent hook's 30 second limit.
@@ -121,8 +124,8 @@ export function baseCheck({ root, base, head, reads = defaultReads }) {
 }
 
 /**
- * The reviewer checks, in cheap-first order: one branch review, the base tip, green CI.
- * `ciState(sha)` is `{ reason, unknown }`; `reads` answers the base check.
+ * The reviewer checks, in cheap-first order: one branch review, the base tip, the CI policy.
+ * `ciState(sha)` is `{ reason, unknown, pending? }`; `reads` answers the base check.
  * @returns `{ refusal, note }`
  */
 export function reviewerCheck({ type, prompt, review, base, records, root, branch, head, ciState, reads = defaultReads }) {
@@ -140,11 +143,12 @@ export function reviewerCheck({ type, prompt, review, base, records, root, branc
   }
   if (review.requireGreen) {
     const state = ciState(head);
-    if (state.reason) {
+    if (state.reason && !(review.requireGreen === "not-red" && state.pending)) {
       return refuse(
         `Task gate: ${state.reason}. A review waits for green CI on the head, since a red head changes before it is reviewed. Wait for the run, or fix the failure, then dispatch the review.`,
       );
     }
+    if (state.reason && state.pending) notes.push(`Task gate: ${state.reason}. The review proceeds while CI runs.`);
     if (state.unknown) notes.push(`Task gate: CI on ${short(head)} is unknown: ${state.unknown}. The review proceeds.`);
   }
   return pass(notes.length > 0 ? notes.join(" ") : null);
@@ -201,10 +205,24 @@ function briefOf(prompt, dirs, exists, read) {
  * @returns `{ refusal, note }`
  */
 export function briefCheck({ prompt, dirs, review, exists = existsSync, read = (file) => readFileSync(file, "utf8") }) {
-  if (!review.productDecisions && review.roundFindings <= 0 && review.roundFiles <= 0) return pass();
+  let ciRoot;
+  let branch;
+  for (const dir of [...dirs].reverse()) {
+    const root = checkoutRootOf(dir);
+    const ledger = root && ledgerFileOf(root);
+    if (!ledger || !readLedger(ledger).some((r) => r.type === "ci-failure")) continue;
+    branch = currentBranch(root);
+    const hold = branch ? holdRefusal(root, branch) : null;
+    if (hold) return refuse(hold);
+    if (openFailures(root, branch).length) ciRoot = root;
+    break;
+  }
+  if (!ciRoot && !review.productDecisions && review.roundFindings <= 0 && review.roundFiles <= 0) return pass();
   const brief = briefOf(prompt, dirs, exists, read);
   if (brief.refusal) return refuse(brief.refusal);
   const { text, source } = brief;
+  const ciRefusal = ciRoot && ciBriefRefusal(ciRoot, branch, text);
+  if (ciRefusal) return refuse(`Task gate: ${ciRefusal}`);
   const decisions = review.productDecisions ? productDecisionsOf(text) : undefined;
   if (decisions === null) {
     return refuse(
