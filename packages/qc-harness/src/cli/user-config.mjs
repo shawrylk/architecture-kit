@@ -80,7 +80,15 @@ function mergeEnvironment(local, shared) {
     if (index >= 0) lines[index] = line;
     else if (!lines.includes(line)) lines.push(line);
   }
-  return lines;
+  const seenLabels = new Set();
+  const seenLines = new Set();
+  return lines.filter((line) => {
+    const label = labelOf(line);
+    if (seenLines.has(line) || (label !== undefined && seenLabels.has(label))) return false;
+    seenLines.add(line);
+    if (label !== undefined) seenLabels.add(label);
+    return true;
+  });
 }
 
 /** Fragment: selects the merge rule for a shared settings entry. */

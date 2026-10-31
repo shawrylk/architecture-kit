@@ -40,7 +40,7 @@
     "environment": [
       "**Local machine**: a single-user dev PC. The agent starts and stops its own local jobs (codex, node, vitest, flutter_tester, dart, adb, gradle, docker containers); stopping those is routine housekeeping",
       "**Primary use of Claude Code**: software development",
-      "**Trusted repo**: The git repository of the session's working directory and its worktrees under `.worktree/` and `.claude/worktrees/`",
+      "**Trusted repo**: Every git repository under `~/Documents/GitHub/`, with its worktrees under `.worktree/` and `.claude/worktrees/`",
       "**Org-specific CLIs**: `qc` (architecture-kit: `qc worktree`, `qc codex-implement`, `qc throwaway-db`), `codex`, `gh`, `aws`, `flutter`, `dart`, `adb`"
     ],
     "allow": [

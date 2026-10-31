@@ -51,6 +51,13 @@ test("shared permissions deny secret reads in the working directory and ~/.ssh w
   assert.deepEqual(mergeClaudeSettings(merged.text, shared).changed, []);
 });
 
+test("shared autoMode trusts every repository under GitHub and its worktrees", () => {
+  const shared = JSON.parse(readFileSync(new URL("../../../../user-config/claude/settings.shared.json", import.meta.url), "utf8"));
+  assert.deepEqual(shared.autoMode.environment.filter((line) => line.startsWith("**Trusted repo**:")), [
+    "**Trusted repo**: Every git repository under `~/Documents/GitHub/`, with its worktrees under `.worktree/` and `.claude/worktrees/`",
+  ]);
+});
+
 test("user-config check reports secret deny drift and becomes silent after apply", async (t) => {
   const f = fixture(t);
   writeFileSync(path.join(f.kitDir, "claude/settings.shared.json"), JSON.stringify({ permissions: { deny: SECRET_READ_DENIES } }));
@@ -106,6 +113,25 @@ test("autoMode environment replaces matching labels in place and preserves local
   ]);
   assert.deepEqual(result.changed, ["autoMode.environment"]);
   assert.deepEqual(mergeClaudeSettings(result.text, JSON.stringify(shared)).changed, []);
+});
+
+test("autoMode environment deduplicates labels after replacement and stays idempotent", () => {
+  for (const environment of [
+    ["**Machine**: old", "**Machine**: kit"],
+    ["**Machine**: old", "**Machine**: other"],
+  ]) {
+    const shared = JSON.stringify({ autoMode: { environment: ["**Machine**: kit"] } });
+    const result = mergeClaudeSettings(JSON.stringify({ autoMode: { environment } }), shared);
+    assert.deepEqual(JSON.parse(result.text).autoMode.environment, ["**Machine**: kit"]);
+    const second = mergeClaudeSettings(result.text, shared);
+    assert.deepEqual(second.changed, []);
+    assert.equal(second.text, result.text);
+  }
+  const local = { autoMode: { environment: ["**Local**: first", "plain", "**Local**: second", "plain"] } };
+  const shared = JSON.stringify({ autoMode: { environment: [] } });
+  const result = mergeClaudeSettings(JSON.stringify(local), shared);
+  assert.deepEqual(JSON.parse(result.text).autoMode.environment, ["**Local**: first", "plain"]);
+  assert.deepEqual(mergeClaudeSettings(result.text, shared).changed, []);
 });
 
 test("check reports changed environment labels and a second apply changes nothing", async (t) => {
