@@ -193,6 +193,12 @@ test("review flags preserve the state and body in both shells", (t) => {
   for (const tool of ["Bash", "PowerShell"]) {
     for (const [flags, body, state] of [
       ["-ab LGTM", "LGTM", "APPROVED"],
+      ["-abLGTM", "LGTM", "APPROVED"],
+      ["-ab=LGTM", "LGTM", "APPROVED"],
+      ['-ab="line1\nline2"', "line1\nline2", "APPROVED"],
+      ["-ab 'line1\nline2'", "line1\nline2", "APPROVED"],
+      ['-ab "line1\nline2"', "line1\nline2", "APPROVED"],
+      ["-rbNo", "No", "CHANGES_REQUESTED"],
       ['-rb "x"', "x", "CHANGES_REQUESTED"],
       ["-c -b x", "x", "COMMENTED"],
       ["--approve --body x", "x", "APPROVED"],

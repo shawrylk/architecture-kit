@@ -34,7 +34,7 @@ function fields(args, cwd, review = false) {
   if (review) args = [...args];
   const values = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file", "-m", "--message", "--title", "-t", "--base", "-B", "--head", "-H", "--json", "--jq", "--template"]);
   for (let i = 0; i < args.length; i++) {
-    const reviewCluster = review && /^-([arc]+)(b(?:=.*)?)?$/.exec(args[i]);
+    const reviewCluster = review && /^-([arc]+)(b.*)?$/s.exec(args[i]);
     if (reviewCluster) args.splice(i, 1, ...[...reviewCluster[1]].map(flag => `-${flag}`), ...(reviewCluster[2] ? [`-${reviewCluster[2]}`] : []));
     const cluster = /^-[a-zA-Z]*m$/.test(args[i]) && !args[i].startsWith("--");
     const attached = /^-([bmF])(.+)$/s.exec(args[i]);
