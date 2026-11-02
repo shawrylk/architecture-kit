@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Trigger: surface GitHub comments and keep their acknowledgments in a session ledger.
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { load } from "../config.mjs";
@@ -88,11 +88,16 @@ function ledger(root, session) {
   const file = path.join(common, "qc", `comment-watch-${hash(session)}.jsonl`);
   const items = new Map();
   const own = new Set();
+  const reviews = new Map();
+  const starts = new Map();
   let next = null;
   try {
     for (const line of readFileSync(file, "utf8").split("\n")) {
       try {
         const record = JSON.parse(line);
+        if (record.reviewStart) { starts.set(record.reviewStart, record.start); continue; }
+        if (record.review) { reviews.set(record.review.key, record.review); continue; }
+        if (record.reviewDone) { reviews.delete(record.reviewDone); continue; }
         if (record.own) { for (const url of record.own) own.add(url); continue; }
         if (record.next) { next = record.next; continue; }
         const key = itemKey(record);
@@ -105,7 +110,7 @@ function ledger(root, session) {
       } catch { /* A torn record leaves earlier acknowledgments intact. */ }
     }
   } catch (error) { if (error.code !== "ENOENT") throw error; }
-  return { items, own, next, append(record) {
+  return { items, own, reviews, starts, next, append(record) {
     mkdirSync(path.dirname(file), { recursive: true });
     appendFileSync(file, `\n${JSON.stringify(record)}\n`);
   } };
@@ -136,15 +141,29 @@ async function comments(item, gh) {
   return (await Promise.all(endpoints.map(list))).flat();
 }
 
-async function unseen(item, gh, own) {
-  return (await comments(item, gh)).filter((row) => !own.has(row.html_url) && !own.has(row.url) && !own.has(`${row.endpoint}:${row.id}`) && (row.body?.trim() || row.state))
+async function unseen(item, gh, state) {
+  const rows = await comments(item, gh);
+  for (const marker of state.reviews.values()) {
+    if (itemKey(marker) !== itemKey(item)) continue;
+    const row = rows.filter(row => row.endpoint.endsWith("/reviews") &&
+      !state.own.has(`${row.endpoint}:${row.id}`) && Date.parse(row.submitted_at) >= Date.parse(marker.start) &&
+      (marker.empty ? row.state === marker.state : hash(row.body ?? "") === marker.bodyHash))
+      .sort((a, b) => Date.parse(a.submitted_at) - Date.parse(b.submitted_at) || a.id - b.id)[0];
+    if (!row) continue;
+    const key = `${row.endpoint}:${row.id}`;
+    state.append({ own: [key] });
+    state.own.add(key);
+    state.append({ reviewDone: marker.key });
+    state.reviews.delete(marker.key);
+  }
+  return rows.filter((row) => !state.own.has(row.html_url) && !state.own.has(row.url) && !state.own.has(`${row.endpoint}:${row.id}`) && (row.body?.trim() || row.state))
     .map((row) => ({ row, stamp: hash(JSON.stringify([row.html_url, row.id, row.updated_at ?? row.submitted_at ?? row.created_at, row.body, row.state])) }))
     .filter(({ stamp }) => !item.seen?.has(stamp));
 }
 
 const bodyOf = (row) => [row.state, row.body].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 const truncated = (row) => bodyOf(row).length > 700;
-const describe = (item, row) => `@${row.user?.login ?? "unknown"} on ${itemKey(item)} ${row.html_url}: ${bodyOf(row).slice(0, 700)}${truncated(row) ? ` [truncated; read in full: gh ${item.kind === "pr" ? "pr" : "issue"} view ${item.number} -R ${item.repo} --comments${row.endpoint.includes("/pulls/") ? `; gh api ${row.endpoint} --paginate` : ""}]` : ""}`;
+const describe = (item, row) => `@${row.user?.login ?? "unknown"} on ${itemKey(item)} ${row.html_url}: ${bodyOf(row).slice(0, 700)}${truncated(row) ? ` [truncated; read in full: gh api ${row.endpoint} --paginate]` : ""}`;
 const context = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 
 // Ledger: retain truncated previews so a full read can acknowledge them from any hook.
@@ -163,10 +182,9 @@ function acknowledge(state, command, repo, number) {
   for (const item of state.items.values()) {
     const seen = [...item.pending.values()].filter(pending => !item.seen.has(pending.stamp) && (
       (view && item.repo.toLowerCase() === repo?.toLowerCase() && item.number === number &&
-        (command.group === "pr" || !pending.endpoint.includes("/pulls/"))) ||
-      (endpoint && (endpoint === pending.endpoint || endpoint === pending.url?.replace(/^https:\/\/api.github.com\//, "") ||
-        endpoint === pending.endpoint.replace(/\/(comments|reviews)$/, "") ||
-        endpoint === (pending.endpoint.endsWith("/reviews") ? `${pending.endpoint}/${pending.id}` : pending.endpoint.replace(/\/\d+\/comments$/, `/comments/${pending.id}`))))
+        (pending.endpoint.includes("/issues/") || (command.group === "pr" && pending.endpoint.endsWith("/reviews")))) ||
+      (endpoint && (endpoint === pending.endpoint ||
+        (pending.endpoint.endsWith("/comments") && endpoint === pending.endpoint.replace(/\/\d+\/comments$/, `/comments/${pending.id}`))))
     )).map(pending => pending.stamp);
     if (seen.length) state.append({ repo: item.repo, number: item.number, seen });
   }
@@ -258,7 +276,17 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
         }
         if (Number.isSafeInteger(number) && ["create", "comment", "review"].includes(command.verb)) {
           const resource = command.verb === "review" ? `pulls/${number}/reviews` : `issues/${number}/comments`;
-          state.append({ own: createdKeys(call.tool_response, `repos/${repo.toLowerCase()}/${resource}`) });
+          const endpoint = `repos/${repo.toLowerCase()}/${resource}`;
+          const keys = createdKeys(call.tool_response, endpoint);
+          state.append({ own: keys });
+          if (command.group === "pr" && command.verb === "review" && !keys.some(key => key.startsWith(`${endpoint}:`) || /(?:#pullrequestreview-\d+|\/pulls\/\d+\/reviews\/\d+)$/.test(key))) {
+            const body = found.body.replace(/^\n/, "");
+            const start = state.starts.get(hash(call.tool_input.command)) ?? new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
+            const review = { repo: repo.toLowerCase(), number, start, bodyHash: hash(body), empty: body.length === 0,
+              state: command.args.some(arg => ["--approve", "-a"].includes(arg)) ? "APPROVED" : command.args.some(arg => ["--request-changes", "-r"].includes(arg)) ? "CHANGES_REQUESTED" : "COMMENTED" };
+            state.append({ review: { ...review, key: randomUUID() } });
+          }
+          if (command.group === "pr" && command.verb === "review") state.append({ reviewStart: hash(call.tool_input.command), start: null });
         }
         acknowledge(state, command, repo, number);
       }
@@ -271,7 +299,7 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
       await Promise.all(items.map(async (_, i) => {
         const item = items[(start + i) % items.length];
         try {
-          const fresh = await unseen(item, gh, state.own);
+          const fresh = await unseen(item, gh, state);
           lines.push(...fresh.map(({ row }) => describe(item, row)));
           recordPreview(state, item, fresh, event === "UserPromptSubmit");
         } catch { lines.push(`Comment watch: GitHub comments for ${itemKey(item)} could not be checked; retry on the next prompt.`); }
@@ -281,6 +309,10 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
     if (event === "PreToolUse") {
       const parse = PARSERS[call.tool_name];
       if (!parse) return null;
+      if (ghCalls(call.tool_input?.command ?? "", parse).some(({ words }) => {
+        const command = ghCommand(words);
+        return command.group === "pr" && command.verb === "review";
+      })) state.append({ reviewStart: hash(call.tool_input.command), start: new Date(Math.floor(Date.now() / 1000) * 1000).toISOString() });
       const merges = mergeTargets ?? ghMerges(call.tool_input?.command ?? "", parse);
       if (!merges.length) return null;
       const origin = originOf(root, 1000);
@@ -309,7 +341,7 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
           state.append(target);
           const item = { ...state.items.get(itemKey(target)), ...target };
           try {
-            const fresh = await unseen(item, gh, state.own);
+            const fresh = await unseen(item, gh, state);
             recordPreview(state, item, fresh);
             lines.push(...fresh.map(({ row }) => describe(item, row)));
           }

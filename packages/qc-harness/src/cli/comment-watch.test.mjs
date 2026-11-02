@@ -157,33 +157,61 @@ test("only session-created URLs are skipped, including reviews and PRs", (t) => 
   assert.match(output, /Comment 4/);
 });
 
-test("truncated comments repeat and block merges until an explicit full read", (t) => {
-  for (const command of [
-    "gh issue view 4 --comments",
-    "gh api repos/shawrylk/example/issues/4/comments",
-    "gh api repos/shawrylk/example/issues/comments/1",
-    "gh api -X GET repos/shawrylk/example/issues/4",
-    "gh pr view 7 --comments",
-    "gh api repos/shawrylk/example/pulls/7/comments",
-    "gh api repos/shawrylk/example/pulls/7/reviews/2",
+test("full reads acknowledge only the comment kinds their output contains", (t) => {
+  for (const [command, seen] of [
+    ["gh issue view 4 --comments", [1]],
+    ["gh api repos/shawrylk/example/issues/4/comments", [1]],
+    ["gh api repos/shawrylk/example/issues/comments/1", [1]],
+    ["gh api -X GET repos/shawrylk/example/issues/4", []],
+    ["gh pr view 7 --comments", [2, 4]],
+    ["gh api repos/shawrylk/example/pulls/7/comments", [3]],
+    ["gh api repos/shawrylk/example/pulls/7/reviews", [2]],
+    ["gh api repos/shawrylk/example/pulls/comments/3", [3]],
+    ["gh api repos/shawrylk/example/pulls/7", []],
+    ["gh api repos/shawrylk/example/pulls/7/reviews/2", []],
   ]) {
     const f = fixture(t);
-    const pr = command.includes("pr view") || command.includes("pulls/");
-    const row = f.rows.find(row => row.id === (command.includes("reviews/") ? 2 : pr ? 3 : 1));
-    row.body = "x".repeat(850) + "hidden request";
+    for (const row of f.rows) row.body = `Comment ${row.id} ` + "x".repeat(850) + "hidden request";
     f.update();
-    f.run("PostToolUse", `gh ${pr ? 'pr view 7' : 'issue view 4'}`);
+    f.run("PostToolUse", "gh pr view 7");
     const output = JSON.stringify(f.run("UserPromptSubmit"));
     assert.match(output, /truncated/i, command);
-    assert.match(output, new RegExp(`gh ${pr ? 'pr' : 'issue'} view ${pr ? 7 : 4} .*--comments`), command);
+    assert.match(output, /gh api repos\/shawrylk\/example\/pulls\/7\/comments --paginate/, command);
     assert.doesNotMatch(output, /hidden request/, command);
     assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/i, command);
     assert.equal(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput?.permissionDecision, "deny", command);
     f.run("PostToolUse", command, "comment-watch.mjs", "session-a", { exit_code: 1 });
     assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/i, command);
-    f.run("PostToolUse", command, "comment-watch.mjs", "session-a", { stdout: JSON.stringify([row]) });
-    assert.doesNotMatch(JSON.stringify(f.run("UserPromptSubmit")), /truncated/i, command);
+    f.run("PostToolUse", command);
+    const remaining = JSON.stringify(f.run("UserPromptSubmit"));
+    for (const row of f.rows) assert.equal(remaining.includes(`Comment ${row.id} `), !seen.includes(row.id), command);
   }
+});
+
+test("pending session reviews match body or empty-body state once after the start", (t) => {
+  const f = fixture(t);
+  for (const [id, body, state, submitted_at] of [
+    [20, "session body", "COMMENTED", "2000-01-01T00:00:00Z"],
+    [21, "other body", "COMMENTED", "2099-01-01T00:00:00Z"],
+    [22, "session body", "COMMENTED", "2099-01-01T00:00:00Z"],
+    [23, "", "CHANGES_REQUESTED", "2099-01-01T00:00:00Z"],
+    [24, "", "APPROVED", "2099-01-01T00:00:00Z"],
+    [25, "", "APPROVED", "2099-01-01T00:00:00Z"],
+  ]) f.rows.push({ id, body, state, submitted_at, endpoint: "pulls/7/reviews", html_url: `https://github.com/reviews/${id}` });
+  f.update();
+  f.run("PreToolUse", 'gh pr review 7 --comment --body "session body"');
+  f.run("PostToolUse", 'gh pr review 7 --comment --body "session body"');
+  f.run("PreToolUse", "gh pr review 7 --approve");
+  f.run("PostToolUse", "gh pr review 7 --approve");
+  const output = JSON.stringify(f.run("UserPromptSubmit"));
+  for (const id of [20, 21, 23, 25]) assert.ok(output.includes(`/reviews/${id}`));
+  for (const id of [22, 24]) assert.ok(!output.includes(`/reviews/${id}`));
+  f.rows.find(row => row.id === 22).body = "edited session review";
+  f.rows.push({ ...f.rows.find(row => row.id === 22), id: 26, html_url: "https://github.com/reviews/26", body: "session body" });
+  f.update();
+  const next = JSON.stringify(f.run("UserPromptSubmit"));
+  assert.doesNotMatch(next, /edited session review/);
+  assert.match(next, /reviews\/26/);
 });
 
 test("merge targets include commit-only references and previously watched issues", (t) => {
