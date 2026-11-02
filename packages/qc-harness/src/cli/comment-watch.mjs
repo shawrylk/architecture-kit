@@ -29,13 +29,31 @@ function references(body, repo, add, linked = false) {
 }
 
 // Fragment: read a command's body flags without running the shell.
-function fields(args, cwd) {
-  const result = { selector: null, repo: null, body: "" };
+function fields(args, cwd, review = false) {
+  const result = { selector: null, repo: null, body: "", state: "COMMENTED" };
+  args = [...args];
   const values = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file", "-m", "--message", "--title", "-t", "--base", "-B", "--head", "-H", "--json", "--jq", "--template"]);
   for (let i = 0; i < args.length; i++) {
-    const cluster = /^-[a-zA-Z]*m$/.test(args[i]) && !args[i].startsWith("--");
+    if (/^-[a-zA-Z]/.test(args[i])) {
+      const token = args[i];
+      const flags = [];
+      for (let j = 1; j < token.length; j++) {
+        const flag = `-${token[j]}`;
+        if (values.has(flag)) {
+          flags.push(`-${token.slice(j)}`);
+          break;
+        }
+        flags.push(flag);
+      }
+      args.splice(i, 1, ...flags);
+    }
     const attached = /^-([bmF])(.+)$/s.exec(args[i]);
-    const [flag, ...tail] = cluster ? ["-m"] : attached ? [`-${attached[1]}`, attached[2]] : args[i].split("=");
+    const [flag, ...tail] = attached ? [`-${attached[1]}`, attached[2].replace(/^=/, "")] : args[i].split("=");
+    if (review) {
+      if (["-a", "--approve"].includes(flag)) result.state = "APPROVED";
+      if (["-r", "--request-changes"].includes(flag)) result.state = "CHANGES_REQUESTED";
+      if (["-c", "--comment"].includes(flag)) result.state = "COMMENTED";
+    }
     if (values.has(flag)) {
       const value = tail.length ? tail.join("=") : args[++i];
       if (flag === "-R" || flag === "--repo") result.repo = value;
@@ -61,7 +79,7 @@ export function watchedItems(call, origin, parse = PARSERS[call.tool_name]) {
   for (const { words, env } of ghCalls(command, parse)) {
     const { group, verb, args, repo } = ghCommand(words);
     if (!["issue", "pr"].includes(group)) continue;
-    const found = fields(args, call.cwd ?? process.cwd());
+    const found = fields(args, call.cwd ?? process.cwd(), group === "pr" && verb === "review");
     const repository = found.repo ?? repo ?? env.GH_REPO ?? origin;
     if (/^\d+$/.test(found.selector ?? "")) add(repository, Number(found.selector), group);
     for (const match of (found.selector ?? "").matchAll(itemUrl)) add(match[1], Number(match[3]), match[2] === "pull" ? "pr" : "issue");
@@ -258,7 +276,7 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
         if (request?.method === "POST" && /^repos\/[^/]+\/[^/]+\/(?:issues(?:\/\d+\/comments)?|pulls(?:\/\d+\/(?:comments|reviews))?)$/.test(request.endpoint ?? "")) {
           state.append({ own: createdKeys(call.tool_response, request.endpoint) });
         }
-        const found = fields(command.args, root);
+        const found = fields(command.args, root, command.group === "pr" && command.verb === "review");
         const created = command.verb === "create" ? [...JSON.stringify(call.tool_response ?? "").matchAll(itemUrl)].find(match => match[2] === "pull") : null;
         let repo = created?.[1] ?? [...(found.selector ?? "").matchAll(itemUrl)][0]?.[1] ?? found.repo ?? command.repo ?? env.GH_REPO ?? origin;
         if (["pr", "issue"].includes(command.group) && ["create", "comment", "review"].includes(command.verb)) {
@@ -283,7 +301,7 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
             const body = found.body.replace(/^\n/, "");
             const start = state.starts.get(hash(call.tool_input.command)) ?? new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
             const review = { repo: repo.toLowerCase(), number, start, bodyHash: hash(body), empty: body.length === 0,
-              state: command.args.some(arg => ["--approve", "-a"].includes(arg)) ? "APPROVED" : command.args.some(arg => ["--request-changes", "-r"].includes(arg)) ? "CHANGES_REQUESTED" : "COMMENTED" };
+              state: found.state };
             state.append({ review: { ...review, key: randomUUID() } });
           }
           if (command.group === "pr" && command.verb === "review") state.append({ reviewStart: hash(call.tool_input.command), start: null });
