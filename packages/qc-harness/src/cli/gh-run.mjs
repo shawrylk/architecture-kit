@@ -1,7 +1,7 @@
 // A fragment that runs one gh call for a workflow hook. The caller passes the GH_* settings the user's
 // own command made, so the hook reads with the account that command used.
 
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 
@@ -33,6 +33,16 @@ export function expandHome(env) {
 export function runGh(args, { cwd = process.cwd(), env = {}, timeoutMs = GH_TIMEOUT_MS } = {}) {
   const result = runGhResult(args, { cwd, env, timeoutMs });
   return result.status === 0 ? (result.stdout ?? "") : null;
+}
+
+/** Resource: run a gh request without blocking other requests under the caller's deadline. */
+export function runGhAsync(args, { cwd = process.cwd(), env = {}, timeoutMs = GH_TIMEOUT_MS } = {}) {
+  return new Promise((resolve) => {
+    execFile("gh", args, {
+      cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, windowsHide: true,
+      timeout: timeoutMs, env: { ...process.env, ...expandHome(env) },
+    }, (error, stdout) => resolve(error ? null : stdout));
+  });
 }
 
 /** Returns the process result, including stderr and any spawn error. */

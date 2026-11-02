@@ -33,8 +33,10 @@ test("PowerShell detects explicit repositories, body files, and commit reference
 function fixture(t) {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-comment-watch-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: path.join(cwd, "empty-gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" };
+  writeFileSync(env.GIT_CONFIG_GLOBAL, "");
   for (const args of [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"], ["remote", "add", "origin", "https://github.com/shawrylk/example.git"]]) {
-    assert.equal(spawnSync("git", args, { cwd }).status, 0);
+    assert.equal(spawnSync("git", args, { cwd, env }).status, 0);
   }
   const baseOid = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).stdout.trim();
   const mock = path.join(cwd, "mock.mjs");
@@ -50,10 +52,11 @@ function fixture(t) {
       if (program !== 'gh') return original(program, args, options);
       appendFileSync(process.env.CALLS, JSON.stringify({args, config: options.env.GH_CONFIG_DIR}) + '\\n');
       const data = JSON.parse(readFileSync(process.env.DATA, 'utf8'));
-      if (data.fail) return { status: 1, stderr: 'TOKEN_MUST_STAY_SECRET' };
+      if (data.fail || args.some(arg => arg.includes(data.failEndpoint ?? 'NEVER_MATCH'))) return { status: 1, stderr: 'TOKEN_MUST_STAY_SECRET' };
       let result;
-      if (args[0] === 'pr') result = { baseRefName: 'main', baseRefOid: data.baseOid, labels: [], number: 7, body: 'Fixes #4; https://github.com/ArentInc/other/issues/8' };
+      if (args[0] === 'pr') result = { baseRefName: 'main', baseRefOid: data.baseOid, labels: [], number: 7, body: 'Fixes #4; https://github.com/ArentInc/other/issues/8', commits: data.commits ?? [] };
       else if (args[1] === 'user') result = { login: 'self' };
+      else if (args[1] === 'graphql') result = { data: { node: { number: 7, repository: { nameWithOwner: 'shawrylk/example' } } } };
       else {
         const endpoint = args.at(-1);
         if (/issues\\/7$/.test(endpoint)) result = { pull_request: {} };
@@ -62,17 +65,23 @@ function fixture(t) {
       }
       return {status: 0, stdout: JSON.stringify(result)};
     };
+    cp.execFile = (program, args, options, callback) => {
+      const data = JSON.parse(readFileSync(process.env.DATA, 'utf8'));
+      appendFileSync(process.env.CALLS, JSON.stringify({ start: Date.now(), args, config: options.env.GH_CONFIG_DIR }) + '\\n');
+      const result = cp.spawnSync(program, args, options);
+      setTimeout(() => callback(result.status ? new Error('gh failed') : null, result.stdout, result.stderr), data.delay ?? 0);
+    };
     syncBuiltinESMExports();
   `);
   const row = (id, endpoint, login = "other") => ({ id, endpoint, user: { login }, body: `Comment ${id}`, html_url: `https://github.com/comments/${id}`, updated_at: "2026-01-01T00:00:00Z" });
   const rows = [row(1, "issues/4/comments"), row(2, "pulls/7/reviews"), row(3, "pulls/7/comments"), row(4, "issues/7/comments", "self"), row(5, "issues/8/comments")];
   const update = (extra = {}) => writeFileSync(data, JSON.stringify({ rows, baseOid, ...extra }));
   update();
-  const run = (event, command = "", script = "comment-watch.mjs", session = "session-a") => {
+  const run = (event, command = "", script = "comment-watch.mjs", session = "session-a", tool_response = "", tool_name = "PowerShell") => {
     const cli = fileURLToPath(new URL(script, import.meta.url));
     const result = spawnSync(process.execPath, ["--import", pathToFileURL(mock).href, cli], {
-      cwd, encoding: "utf8", env: { ...process.env, DATA: data, CALLS: calls },
-      input: JSON.stringify({ cwd, hook_event_name: event, session_id: session, tool_name: "PowerShell", tool_input: { command } }),
+      cwd, encoding: "utf8", env: { ...env, DATA: data, CALLS: calls },
+      input: JSON.stringify({ cwd, hook_event_name: event, session_id: session, tool_name, tool_response, tool_input: { command } }),
     });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout.trim() ? JSON.parse(result.stdout) : null;
@@ -80,7 +89,7 @@ function fixture(t) {
   return { cwd, rows, update, run, calls };
 }
 
-test("prompts show other authors once, retain failures, and isolate sessions and accounts", (t) => {
+test("prompts show shared-login feedback once, retain failures, and isolate sessions and accounts", (t) => {
   const f = fixture(t);
   f.run("PostToolUse", "gh issue close 4");
   f.run("PostToolUse", "gh pr view 7");
@@ -90,8 +99,7 @@ test("prompts show other authors once, retain failures, and isolate sessions and
   assert.doesNotMatch(note, /TOKEN_MUST_STAY_SECRET/);
   f.update();
   const output = f.run("UserPromptSubmit").hookSpecificOutput.additionalContext;
-  for (const id of [1, 2, 3, 5]) assert.match(output, new RegExp(`Comment ${id}`));
-  assert.doesNotMatch(output, /Comment 4/);
+  for (const id of [1, 2, 3, 4, 5]) assert.match(output, new RegExp(`Comment ${id}`));
   assert.equal(f.run("UserPromptSubmit"), null);
   f.rows.push({ ...f.rows[0], body: "Edited comment" });
   f.update();
@@ -120,7 +128,115 @@ test("merge guard names unseen PR and linked issue comments until a prompt ackno
   assert.equal(f.run("PreToolUse", command, "merge-guard.mjs").hookSpecificOutput.permissionDecision, "deny");
   f.run("UserPromptSubmit");
   const passed = f.run("PreToolUse", command, "merge-guard.mjs");
-  assert.notEqual(passed?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.notEqual(passed?.hookSpecificOutput?.permissionDecision, "deny", JSON.stringify(passed));
   writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ commentWatch: false }));
   assert.notEqual(f.run("PreToolUse", command, "merge-guard.mjs", "other-session")?.hookSpecificOutput?.permissionDecision, "deny");
+});
+
+test("combined message flags and numbered commands register watches in both shells", () => {
+  for (const tool_name of ["Bash", "PowerShell"]) {
+    for (const flag of ["-am", "-qam", "-sm"]) {
+      assert.equal(watchedItems({ tool_name, tool_input: { command: `git commit ${flag} "Refs #9"` } }, "owner/repo")[0]?.number, 9);
+    }
+    for (const command of ["gh pr review 7 --approve", "gh pr edit https://github.com/owner/repo/pull/7 --title title", "gh issue reopen 7"]) {
+      assert.equal(watchedItems({ tool_name, tool_input: { command } }, "owner/repo")[0]?.number, 7);
+    }
+  }
+});
+
+test("only session-created URLs are skipped, including reviews and PRs", (t) => {
+  const f = fixture(t);
+  for (const [command, output] of [
+    ['gh issue comment 4 --body "Comment 1"', 'https://github.com/comments/1'],
+    ['gh pr review --approve', { id: 2, body: 'https://github.com/comments/4' }],
+    ['gh api -X POST repos/shawrylk/example/pulls/7/comments -f body="Comment 3"', { output: '{"id":3}' }],
+    ['gh pr create --body "Fixes #4"', 'https://github.com/shawrylk/example/pull/7'],
+  ]) f.run("PostToolUse", command, "comment-watch.mjs", "session-a", output);
+  const output = JSON.stringify(f.run("UserPromptSubmit"));
+  assert.doesNotMatch(output, /Comment [123]\b/);
+  assert.match(output, /Comment 4/);
+});
+
+test("truncated comments repeat and block merges until an explicit full read", (t) => {
+  for (const command of [
+    "gh issue view 4 --comments",
+    "gh api repos/shawrylk/example/issues/4/comments",
+    "gh api repos/shawrylk/example/issues/comments/1",
+    "gh api -X GET repos/shawrylk/example/issues/4",
+    "gh pr view 7 --comments",
+    "gh api repos/shawrylk/example/pulls/7/comments",
+    "gh api repos/shawrylk/example/pulls/7/reviews/2",
+  ]) {
+    const f = fixture(t);
+    const pr = command.includes("pr view") || command.includes("pulls/");
+    const row = f.rows.find(row => row.id === (command.includes("reviews/") ? 2 : pr ? 3 : 1));
+    row.body = "x".repeat(850) + "hidden request";
+    f.update();
+    f.run("PostToolUse", `gh ${pr ? 'pr view 7' : 'issue view 4'}`);
+    const output = JSON.stringify(f.run("UserPromptSubmit"));
+    assert.match(output, /truncated/i, command);
+    assert.match(output, new RegExp(`gh ${pr ? 'pr' : 'issue'} view ${pr ? 7 : 4} .*--comments`), command);
+    assert.doesNotMatch(output, /hidden request/, command);
+    assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/i, command);
+    assert.equal(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput?.permissionDecision, "deny", command);
+    f.run("PostToolUse", command, "comment-watch.mjs", "session-a", { exit_code: 1 });
+    assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/i, command);
+    f.run("PostToolUse", command, "comment-watch.mjs", "session-a", { stdout: JSON.stringify([row]) });
+    assert.doesNotMatch(JSON.stringify(f.run("UserPromptSubmit")), /truncated/i, command);
+  }
+});
+
+test("merge targets include commit-only references and previously watched issues", (t) => {
+  const f = fixture(t);
+  f.rows.length = 0;
+  f.rows.push(...[9, 10].map(id => ({ id, endpoint: `issues/${id}/comments`, body: `Comment ${id}`, html_url: `https://github.com/comments/${id}` })));
+  f.update({ commits: [{ messageHeadline: "Fixes #9", messageBody: "Refs #11" }] });
+  f.run("PostToolUse", "gh pr view 7");
+  f.run("PostToolUse", 'git commit -m "Refs #10"');
+  const output = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
+  assert.match(JSON.stringify(output), /Comment 9/);
+  assert.match(JSON.stringify(output), /Comment 10/);
+});
+
+test("full reads acknowledge truncated previews from a merge refusal or Stop", (t) => {
+  for (const event of ["PreToolUse", "Stop"]) {
+    const f = fixture(t);
+    f.rows[0].body = "x".repeat(850);
+    f.update();
+    f.run("PostToolUse", "gh pr view 7");
+    assert.match(JSON.stringify(f.run(event, "gh pr merge 7", event === "PreToolUse" ? "merge-guard.mjs" : "comment-watch.mjs")), /truncated/);
+    f.run("PostToolUse", "gh issue view 4 --comments");
+    assert.doesNotMatch(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
+  }
+});
+
+test("API merges check comments with dispatch on and off in both shells", (t) => {
+  const f = fixture(t);
+  for (const dispatch of [false, true]) {
+    writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ swarm: dispatch ? { dispatch: {} } : {} }));
+    for (const tool of ["Bash", "PowerShell"]) {
+      for (const command of ["gh api -X PUT repos/shawrylk/example/pulls/7/merge", 'gh api graphql -f query=\'mutation { mergePullRequest(input: {pullRequestId: "PR_7"}) { clientMutationId } }\'']) {
+        const output = f.run("PreToolUse", command, "merge-guard.mjs", "session-a", "", tool);
+        assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
+        assert.match(JSON.stringify(output), /Comment 4/);
+      }
+    }
+  }
+});
+
+test("polls use one issue request and three PR requests in parallel", (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh pr view 7");
+  writeFileSync(f.calls, "");
+  f.update({ delay: 250 });
+  f.run("UserPromptSubmit");
+  const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start);
+  assert.equal(calls.length, 5);
+  assert.ok(Math.max(...calls.map(call => call.start)) - Math.min(...calls.map(call => call.start)) < 200);
+  assert.ok(calls.every(call => call.args.includes("--paginate")));
+  f.rows[0].body = "Retry this item";
+  f.update({ failEndpoint: "issues/4/comments" });
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /shawrylk\/example#4 could not be checked; retry on the next prompt/);
+  f.update();
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Retry this item/);
 });

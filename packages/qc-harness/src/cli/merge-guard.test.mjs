@@ -1,9 +1,9 @@
 import { strict as assert } from "node:assert";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync as execFile, spawnSync as spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { decide as decideMerge, mergeVerdict, namedIssues } from "./merge-guard.mjs";
@@ -13,6 +13,11 @@ import { holdBranch } from "./pause.mjs";
 const HOOK = fileURLToPath(new URL("./merge-guard.mjs", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const bases = new Map();
+const configDir = mkdtempSync(path.join(os.tmpdir(), "qc-merge-config-"));
+after(() => rmSync(configDir, { recursive: true, force: true }));
+const isolated = (options = {}) => ({ ...options, env: { ...process.env, ...options.env, GIT_CONFIG_GLOBAL: path.join(configDir, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" } });
+const execFileSync = (program, args, options) => execFile(program, args, isolated(options));
+const spawnSync = (program, args, options) => spawn(program, args, isolated(options));
 const decide = (call, options = {}) => decideMerge(call, { commentCheck: () => null, gh: fakeGh(prView(bases.get(call.cwd))).gh, ...options });
 
 /** Checkouts with the checks on (merge kind branch, and task), one with them off, each with a git dir. */

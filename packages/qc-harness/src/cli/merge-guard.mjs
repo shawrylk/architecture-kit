@@ -15,7 +15,7 @@ import { PARSERS } from "./bash-command-guard.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { configAtBase, LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
-import { runGh } from "./gh-run.mjs";
+import { runGh, runGhAsync } from "./gh-run.mjs";
 import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
 import { integrationLane } from "./integration-lane.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
@@ -271,9 +271,12 @@ export function decide(call, { gh = runGh, commentCheck = commentWatch } = {}) {
   const root = checkoutRootOf(cwd);
   if (!root) return null;
   const merges = ghMerges(command, parse);
-  const commentResult = event === "PreToolUse" && merges.length ? commentCheck(call, { gh }) : null;
-  if (commentResult?.hookSpecificOutput?.permissionDecision === "deny") return commentResult;
   const apiMerges = event === "PreToolUse" ? ghApiMerges(command, parse, { cwd }) : [];
+  const targets = [...merges, ...apiMerges.map(apiPrOf).filter(Boolean)];
+  const checked = event === "PreToolUse" && targets.length ? commentCheck(call, { gh: gh === runGh ? runGhAsync : gh, merges: targets }) : null;
+  if (checked instanceof Promise) return checked.then(result => decide(call, { gh, commentCheck: () => result }));
+  const commentResult = checked;
+  if (commentResult?.hookSpecificOutput?.permissionDecision === "deny") return commentResult;
   if (event === "PreToolUse" && (merges.length > 0 || apiMerges.length > 0)) {
     try {
       const refusal = pauseRefusal(root);
@@ -362,6 +365,6 @@ if (isEntryPoint) {
   } catch {
     // Not hook input, so there is no command to judge.
   }
-  const output = call ? decide(call) : null;
+  const output = call ? await decide(call) : null;
   if (output) process.stdout.write(JSON.stringify(output));
 }
