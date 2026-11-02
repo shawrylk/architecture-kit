@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { watchedItems } from "./comment-watch.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -38,7 +39,7 @@ function fixture(t) {
   for (const args of [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"], ["remote", "add", "origin", "https://github.com/shawrylk/example.git"]]) {
     assert.equal(spawnSync("git", args, { cwd, env }).status, 0);
   }
-  const baseOid = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).stdout.trim();
+  const baseOid = spawnSync("git", ["rev-parse", "HEAD"], { cwd, env, encoding: "utf8" }).stdout.trim();
   const mock = path.join(cwd, "mock.mjs");
   const data = path.join(cwd, "data.json");
   const calls = path.join(cwd, "calls.jsonl");
@@ -185,6 +186,34 @@ test("full reads acknowledge only the comment kinds their output contains", (t) 
     f.run("PostToolUse", command);
     const remaining = JSON.stringify(f.run("UserPromptSubmit"));
     for (const row of f.rows) assert.equal(remaining.includes(`Comment ${row.id} `), !seen.includes(row.id), command);
+  }
+});
+
+test("review flags preserve the state and body in both shells", (t) => {
+  for (const tool of ["Bash", "PowerShell"]) {
+    for (const [flags, body, state] of [
+      ["-ab LGTM", "LGTM", "APPROVED"],
+      ['-rb "x"', "x", "CHANGES_REQUESTED"],
+      ["-c -b x", "x", "COMMENTED"],
+      ["--approve --body x", "x", "APPROVED"],
+      ['-ab "-rb"', "-rb", "APPROVED"],
+      ["-a -b=text", "text", "APPROVED"],
+      ["--request-changes --body=text", "text", "CHANGES_REQUESTED"],
+      ["-a", "", "APPROVED"],
+      ["-r", "", "CHANGES_REQUESTED"],
+    ]) {
+      const f = fixture(t);
+      const command = `gh pr review 7 ${flags}`;
+      f.run("PreToolUse", command, "comment-watch.mjs", "session-a", "", tool);
+      f.run("PostToolUse", command, "comment-watch.mjs", "session-a", "", tool);
+      const dir = path.join(f.cwd, ".git", "qc");
+      const file = readdirSync(dir).find(name => name.startsWith("comment-watch-"));
+      const records = readFileSync(path.join(dir, file), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+      const review = records.find(record => record.review)?.review;
+      assert.equal(review?.state, state, `${tool}: ${flags}`);
+      assert.equal(review?.bodyHash, createHash("sha256").update(body).digest("hex"), `${tool}: ${flags}`);
+      assert.equal(review?.empty, body.length === 0, `${tool}: ${flags}`);
+    }
   }
 });
 
