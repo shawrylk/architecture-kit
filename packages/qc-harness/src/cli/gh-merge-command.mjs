@@ -66,7 +66,7 @@ function leadingFlags(words) {
  * The words after `gh` as a command: its group, its verb, the words after the verb, and the repository a flag before the verb names.
  * `gh pr -R o/r merge 60` and `gh -R o/r pr merge 60` are `pr merge 60`. `rest` holds every word after the group, flags kept.
  */
-function ghCommand(words) {
+export function ghCommand(words) {
   const first = leadingFlags(words);
   const [group, ...rest] = first.rest;
   const second = leadingFlags(rest);
@@ -101,7 +101,7 @@ function mergeOf(args) {
 }
 
 /** Every gh call in the command, in order, as `{ words, env }` with the words after `gh`; a nested shell's lines count. */
-function ghCalls(command, parse) {
+export function ghCalls(command, parse) {
   const calls = [];
   let env = {};
   for (const segment of parse(command)) {

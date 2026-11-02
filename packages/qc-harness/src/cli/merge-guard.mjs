@@ -8,13 +8,14 @@
 // Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes.
 // This applies in every checkout, with `swarm.dispatch` on or off.
 
+import { commentWatch } from "./comment-watch.mjs";
 import { fileURLToPath } from "node:url";
 import { defaults, PROMOTION_SCOPE } from "../config.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { configAtBase, LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
-import { runGh } from "./gh-run.mjs";
+import { runGh, runGhAsync } from "./gh-run.mjs";
 import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
 import { integrationLane } from "./integration-lane.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
@@ -259,7 +260,7 @@ function recordMerge(merge, call, workflow, gh, deadline) {
 }
 
 /** The verdict on one Bash or PowerShell event. @returns the hook output, or null to let it pass with no message. */
-export function decide(call, { gh = runGh } = {}) {
+export function decide(call, { gh = runGh, commentCheck = commentWatch } = {}) {
   const deadline = Date.now() + LANE_BUDGET_MS;
   const event = call.hook_event_name;
   if (event !== "PreToolUse" && !POST_EVENTS.has(event)) return null;
@@ -271,6 +272,11 @@ export function decide(call, { gh = runGh } = {}) {
   if (!root) return null;
   const merges = ghMerges(command, parse);
   const apiMerges = event === "PreToolUse" ? ghApiMerges(command, parse, { cwd }) : [];
+  const targets = [...merges, ...apiMerges.map(apiPrOf).filter(Boolean)];
+  const checked = event === "PreToolUse" && targets.length ? commentCheck(call, { gh: gh === runGh ? runGhAsync : gh, merges: targets }) : null;
+  if (checked instanceof Promise) return checked.then(result => decide(call, { gh, commentCheck: () => result }));
+  const commentResult = checked;
+  if (commentResult?.hookSpecificOutput?.permissionDecision === "deny") return commentResult;
   if (event === "PreToolUse" && (merges.length > 0 || apiMerges.length > 0)) {
     try {
       const refusal = pauseRefusal(root);
@@ -314,7 +320,7 @@ export function decide(call, { gh = runGh } = {}) {
   if (merges.length === 0) return null;
   const { origin, own, other } = partition(merges, root, deadline);
   if (event === "PreToolUse") {
-    const notes = [];
+    const notes = [commentResult?.hookSpecificOutput?.additionalContext].filter(Boolean);
     for (const merge of own) {
       try {
         const policy = policyOf(merge, root, cwd, gh, deadline);
@@ -359,6 +365,6 @@ if (isEntryPoint) {
   } catch {
     // Not hook input, so there is no command to judge.
   }
-  const output = call ? decide(call) : null;
+  const output = call ? await decide(call) : null;
   if (output) process.stdout.write(JSON.stringify(output));
 }

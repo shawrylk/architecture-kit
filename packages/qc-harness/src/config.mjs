@@ -9,6 +9,8 @@ import path from "node:path";
 export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
+  commentWatch: true,
+  github: { configDirs: { shawrylk: "~/.config/gh-personal" } },
   checkpoint: { maxAgeMinutes: 30 },
   post: { aiLabel: true },
   ci: { requiredChecks: [] },

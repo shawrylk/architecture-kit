@@ -1,10 +1,10 @@
 import { strict as assert } from "node:assert";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync as execFile, spawnSync as spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { after, test } from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { appendRecord, readLedger } from "./ledger.mjs";
 import { decide as decideMerge, mergeVerdict, namedIssues } from "./merge-guard.mjs";
 import { recordRun, resolveFailures } from "./ci-failures.mjs";
@@ -13,13 +13,29 @@ import { holdBranch } from "./pause.mjs";
 const HOOK = fileURLToPath(new URL("./merge-guard.mjs", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const bases = new Map();
-const decide = (call, options = {}) => decideMerge(call, { gh: fakeGh(prView(bases.get(call.cwd))).gh, ...options });
+const configDir = mkdtempSync(path.join(os.tmpdir(), "qc-merge-config-"));
+const gitEnv = { GIT_CONFIG_GLOBAL: path.join(configDir, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" };
+const previousGitEnv = Object.fromEntries(Object.keys(gitEnv).map(key => [key, process.env[key]]));
+Object.assign(process.env, gitEnv);
+after(() => {
+  for (const [key, value] of Object.entries(previousGitEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
+after(() => rmSync(configDir, { recursive: true, force: true }));
+const isolated = (options = {}) => ({ ...options, env: { ...process.env, ...options.env, GIT_CONFIG_GLOBAL: path.join(configDir, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" } });
+const execFileSync = (program, args, options) => execFile(program, args, isolated(options));
+const spawnSync = (program, args, options) => spawn(program, args, isolated(options));
+const decide = (call, options = {}) => decideMerge(call, { commentCheck: () => null, gh: fakeGh(prView(bases.get(call.cwd))).gh, ...options });
 
 /** Checkouts with the checks on (merge kind branch, and task), one with them off, each with a git dir. */
 function workspace(t) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-merge-guard-")));
   t.after(() => rmSync(base, { recursive: true, force: true }));
+  const checkouts = new Map();
   const make = (name, config) => {
+    if (checkouts.has(name)) return checkouts.get(name);
     const dir = path.join(base, name);
     execFileSync("git", ["init", "-q", dir], { stdio: "pipe" });
     writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify(config));
@@ -27,14 +43,17 @@ function workspace(t) {
       execFileSync("git", args, { cwd: dir, stdio: "pipe" });
     }
     bases.set(dir, execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim());
+    if (name === "on") execFileSync("git", ["remote", "add", "origin", "git@github.com-personal:o/r.git"], { cwd: dir, stdio: "pipe" });
+    checkouts.set(name, dir);
     return dir;
   };
-  const on = make("on", { swarm: { dispatch: {} } });
-  execFileSync("git", ["remote", "add", "origin", "git@github.com-personal:o/r.git"], { cwd: on, stdio: "pipe" });
-  const task = make("task", { swarm: { dispatch: {}, review: { merge: "task" } } });
-  const off = make("off", { swarm: {} });
-  const promo = make("promo", { swarm: { dispatch: {}, review: { promotion: { integration: "dev", release: "main" } } } });
-  return { on, task, off, promo, ledgerOf: (dir) => path.join(dir, ".git", "qc", "ledger.jsonl") };
+  return {
+    get on() { return make("on", { swarm: { dispatch: {} } }); },
+    get task() { return make("task", { swarm: { dispatch: {}, review: { merge: "task" } } }); },
+    get off() { return make("off", { swarm: {} }); },
+    get promo() { return make("promo", { swarm: { dispatch: {}, review: { promotion: { integration: "dev", release: "main" } } } }); },
+    ledgerOf: (dir) => path.join(dir, ".git", "qc", "ledger.jsonl"),
+  };
 }
 
 const shell = (cwd, command, hook_event_name = "PreToolUse", tool_name = "Bash") => ({
@@ -491,7 +510,21 @@ test("namedIssues drops the PR's own number and each repeat", () => {
 
 test("the hook process prints the deny", (t) => {
   const ws = workspace(t);
-  const result = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(shell(ws.on, "gh pr merge 60")), encoding: "utf8" });
+  const mock = path.join(ws.on, "mock-gh.mjs");
+  writeFileSync(mock, `
+    import cp from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    const spawn = cp.spawnSync;
+    cp.spawnSync = (program, args, options) => program === 'gh'
+      ? { status: 1, stdout: '', stderr: 'mock gh unavailable' }
+      : spawn(program, args, options);
+    cp.execFile = (program, args, options, callback) => {
+      if (program !== 'gh') throw new Error('unexpected async process');
+      callback(new Error('mock gh unavailable'), '', '');
+    };
+    syncBuiltinESMExports();
+  `);
+  const result = spawnSync(process.execPath, ["--import", pathToFileURL(mock).href, HOOK], { input: JSON.stringify(shell(ws.on, "gh pr merge 60")), encoding: "utf8", timeout: 10_000 });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, "deny");
 });
