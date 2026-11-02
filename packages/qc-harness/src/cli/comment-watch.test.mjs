@@ -194,6 +194,10 @@ test("review flags preserve the state and body in both shells", (t) => {
     for (const [flags, body, state] of [
       ["-ab LGTM", "LGTM", "APPROVED"],
       ["-abLGTM", "LGTM", "APPROVED"],
+      ["-abconfirm", "confirm", "APPROVED"],
+      ["-rbproblem", "problem", "CHANGES_REQUESTED"],
+      ["-cbm", "m", "COMMENTED"],
+      ["-ab-r", "-r", "APPROVED"],
       ["-ab=LGTM", "LGTM", "APPROVED"],
       ['-ab="line1\nline2"', "line1\nline2", "APPROVED"],
       ["-ab 'line1\nline2'", "line1\nline2", "APPROVED"],

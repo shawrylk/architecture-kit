@@ -31,14 +31,24 @@ function references(body, repo, add, linked = false) {
 // Fragment: read a command's body flags without running the shell.
 function fields(args, cwd, review = false) {
   const result = { selector: null, repo: null, body: "", state: "COMMENTED" };
-  if (review) args = [...args];
+  args = [...args];
   const values = new Set(["-R", "--repo", "-b", "--body", "-F", "--body-file", "-m", "--message", "--title", "-t", "--base", "-B", "--head", "-H", "--json", "--jq", "--template"]);
   for (let i = 0; i < args.length; i++) {
-    const reviewCluster = review && /^-([arc]+)(b.*)?$/s.exec(args[i]);
-    if (reviewCluster) args.splice(i, 1, ...[...reviewCluster[1]].map(flag => `-${flag}`), ...(reviewCluster[2] ? [`-${reviewCluster[2]}`] : []));
-    const cluster = /^-[a-zA-Z]*m$/.test(args[i]) && !args[i].startsWith("--");
+    if (/^-[a-zA-Z]/.test(args[i])) {
+      const token = args[i];
+      const flags = [];
+      for (let j = 1; j < token.length; j++) {
+        const flag = `-${token[j]}`;
+        if (values.has(flag)) {
+          flags.push(`-${token.slice(j)}`);
+          break;
+        }
+        flags.push(flag);
+      }
+      args.splice(i, 1, ...flags);
+    }
     const attached = /^-([bmF])(.+)$/s.exec(args[i]);
-    const [flag, ...tail] = cluster ? ["-m"] : attached ? [`-${attached[1]}`, attached[2].replace(/^=/, "")] : args[i].split("=");
+    const [flag, ...tail] = attached ? [`-${attached[1]}`, attached[2].replace(/^=/, "")] : args[i].split("=");
     if (review) {
       if (["-a", "--approve"].includes(flag)) result.state = "APPROVED";
       if (["-r", "--request-changes"].includes(flag)) result.state = "CHANGES_REQUESTED";
