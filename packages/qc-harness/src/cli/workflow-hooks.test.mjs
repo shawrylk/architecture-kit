@@ -53,7 +53,7 @@ test("workflow scripts stay silent without swarm.dispatch, and the merge guard d
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-workflow-hooks-")));
   t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   execFileSync("git", ["init", "-q"], { cwd: base, stdio: "pipe" });
-  writeFileSync(path.join(base, "qc.config.json"), JSON.stringify({ swarm: {} }));
+  writeFileSync(path.join(base, "qc.config.json"), JSON.stringify({ swarm: {}, commentWatch: false }));
   const events = {
     "controller-guard.mjs": { hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: path.join(base, "src", "a.ts") } },
     "report-stop.mjs": { hook_event_name: "SubagentStop", agent_id: "a", agent_type: "sdd-reviewer", last_assistant_message: "x" },

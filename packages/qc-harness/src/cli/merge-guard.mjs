@@ -8,6 +8,7 @@
 // Any `gh api graphql` call that mixes `--input` with a field denies, whether it reads or writes.
 // This applies in every checkout, with `swarm.dispatch` on or off.
 
+import { commentWatch } from "./comment-watch.mjs";
 import { fileURLToPath } from "node:url";
 import { defaults, PROMOTION_SCOPE } from "../config.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
@@ -259,7 +260,7 @@ function recordMerge(merge, call, workflow, gh, deadline) {
 }
 
 /** The verdict on one Bash or PowerShell event. @returns the hook output, or null to let it pass with no message. */
-export function decide(call, { gh = runGh } = {}) {
+export function decide(call, { gh = runGh, commentCheck = commentWatch } = {}) {
   const deadline = Date.now() + LANE_BUDGET_MS;
   const event = call.hook_event_name;
   if (event !== "PreToolUse" && !POST_EVENTS.has(event)) return null;
@@ -270,6 +271,8 @@ export function decide(call, { gh = runGh } = {}) {
   const root = checkoutRootOf(cwd);
   if (!root) return null;
   const merges = ghMerges(command, parse);
+  const commentResult = event === "PreToolUse" && merges.length ? commentCheck(call, { gh }) : null;
+  if (commentResult?.hookSpecificOutput?.permissionDecision === "deny") return commentResult;
   const apiMerges = event === "PreToolUse" ? ghApiMerges(command, parse, { cwd }) : [];
   if (event === "PreToolUse" && (merges.length > 0 || apiMerges.length > 0)) {
     try {
@@ -314,7 +317,7 @@ export function decide(call, { gh = runGh } = {}) {
   if (merges.length === 0) return null;
   const { origin, own, other } = partition(merges, root, deadline);
   if (event === "PreToolUse") {
-    const notes = [];
+    const notes = [commentResult?.hookSpecificOutput?.additionalContext].filter(Boolean);
     for (const merge of own) {
       try {
         const policy = policyOf(merge, root, cwd, gh, deadline);

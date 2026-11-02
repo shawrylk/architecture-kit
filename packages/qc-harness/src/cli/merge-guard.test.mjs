@@ -13,7 +13,7 @@ import { holdBranch } from "./pause.mjs";
 const HOOK = fileURLToPath(new URL("./merge-guard.mjs", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const bases = new Map();
-const decide = (call, options = {}) => decideMerge(call, { gh: fakeGh(prView(bases.get(call.cwd))).gh, ...options });
+const decide = (call, options = {}) => decideMerge(call, { commentCheck: () => null, gh: fakeGh(prView(bases.get(call.cwd))).gh, ...options });
 
 /** Checkouts with the checks on (merge kind branch, and task), one with them off, each with a git dir. */
 function workspace(t) {
