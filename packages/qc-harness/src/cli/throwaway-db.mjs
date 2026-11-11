@@ -10,10 +10,11 @@ import { commandLine, runInShell, splitAtDashes } from "./child-run.mjs";
 
 export const USAGE = `qc throwaway-db — run a command on a database of its own
 
-  qc throwaway-db [--port <n>|auto] -- <command...>
+  qc throwaway-db [--port <n>|auto] [--database <name>] -- <command...>
       start a postgres container on a free port (auto by default), wait until it is ready, run the
       optional schemaCommand, then the command, with the variables of throwawayDb.env filled in,
-      and remove the container after.
+      and remove the container and its data volume after. --database overrides throwawayDb.database
+      for one run.
 
   qc.config.json "throwawayDb": image, user, database, env (each value may hold {url},
   {host}, {port}, {user}, {password}, {database}), schemaCommand, avoidPorts, and readySeconds. The password is random for each run.`;
@@ -89,9 +90,15 @@ export async function runThrowawayDb(config, argv, deps = {}) {
   const settings = { ...merged, avoidPorts: [...new Set([5432, ...merged.avoidPorts])] };
   const { flags, command } = splitAtDashes(argv);
   let port;
+  let line;
   try {
-    const { values } = parseArgs({ args: flags, options: { port: { type: "string" } }, strict: true });
+    const { values } = parseArgs({ args: flags, options: { port: { type: "string" }, database: { type: "string" } }, strict: true });
     if (command.length === 0) throw new Error("name the command after --");
+    line = commandLine(command);
+    if (values.database !== undefined) {
+      if (!/^[a-z_][a-z0-9_]{0,62}$/.test(values.database)) throw new Error(`--database must be a lower-case postgres name, got ${values.database}`);
+      settings.database = values.database;
+    }
     const asked = values.port ?? "auto";
     if (asked === "auto") port = await freePort(settings.avoidPorts, open);
     else {
@@ -125,9 +132,10 @@ export async function runThrowawayDb(config, argv, deps = {}) {
       const code = await run(settings.schemaCommand, commandEnv);
       if (code !== 0) return code;
     }
-    return await run(commandLine(command), commandEnv);
+    return await run(line, commandEnv);
   } finally {
     say(`qc throwaway-db: removing ${name}`);
-    if (docker(["rm", "--force", name]).code !== 0) say(`qc throwaway-db: remove it by hand: docker rm --force ${name}`);
+    // The postgres image declares a data volume, and a forced removal keeps it unless told otherwise.
+    if (docker(["rm", "--force", "--volumes", name]).code !== 0) say(`qc throwaway-db: remove it by hand: docker rm --force --volumes ${name}`);
   }
 }

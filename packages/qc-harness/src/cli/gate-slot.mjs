@@ -113,11 +113,13 @@ export async function runGateSlot(argv, deps = {}) {
   let values;
   let slots;
   let maxMinutes;
+  let line;
   try {
     ({ values } = parseArgs({ args: flags, options: { slots: { type: "string" }, "max-minutes": { type: "string" }, status: { type: "boolean" } }, strict: true }));
     slots = positive(values.slots ?? env.QC_GATE_SLOTS ?? String(DEFAULT_SLOTS), "--slots");
     maxMinutes = positive(values["max-minutes"] ?? String(DEFAULT_MAX_MINUTES), "--max-minutes");
     if (!values.status && command.length === 0) throw new Error("name the command after --");
+    line = commandLine(command);
   } catch (error) {
     say(`qc gate-slot: ${error.message}\n\n${USAGE}`);
     return 2;
@@ -132,7 +134,6 @@ export async function runGateSlot(argv, deps = {}) {
     }
     return 0;
   }
-  const line = commandLine(command);
   let file = null;
   let waited = false;
   while (file === null) {

@@ -685,8 +685,10 @@ such commands run at once. Each claim records its process id, so a claim whose p
 freed on the next claim. `npx qc gate-slot --status` lists the holders.
 
 `npx qc throwaway-db -- <command>` runs a command on a database of its own: a postgres container
-on a free port, never 5432, removed once the command exits. `throwawayDb.env` in `qc.config.json`
-names each variable the command reads, such as `{ "DATABASE_URL": "{url}" }`.
+on a free port, never 5432, removed with its data volume once the command exits. `throwawayDb.env` in `qc.config.json`
+names each variable the command reads, such as `{ "DATABASE_URL": "{url}" }`. `--database <name>`
+overrides `throwawayDb.database` for one run. The command gets each word after `--` unchanged. On
+Windows, `cmd.exe` cannot pass a word with a line break, so put a multi-line script in a file and run the file.
 
 `npx qc retry-failed --report <json> --rerun "<command>" -- <command>` reruns only the failed test
 files once when a run fails under load. It reads the Jest or Vitest JSON report the run wrote, and
