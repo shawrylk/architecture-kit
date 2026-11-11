@@ -3,9 +3,14 @@
 
 import { spawn } from "node:child_process";
 
-/** One shell command line from argv words; a word with a space or a quote is quoted. */
-export function commandLine(words) {
+/**
+ * One shell command line from argv words, quoted for the shell that `runInShell` starts on `platform`.
+ * @throws on Windows when a word holds a line break, because cmd.exe ends the command there
+ */
+export function commandLine(words, platform = process.platform) {
   const args = words[0] === "--" ? words.slice(1) : words;
+  if (platform !== "win32") return args.map((arg) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`)).join(" ");
+  if (args.some((arg) => /[\r\n]/.test(arg))) throw new Error("cmd.exe cannot pass an argument with a line break; put the commands in a script file and run that file");
   return args.map((arg) => (/^$|[\s"]/.test(arg) ? `"${arg.replaceAll('"', '\\"')}"` : arg)).join(" ");
 }
 

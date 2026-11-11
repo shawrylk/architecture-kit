@@ -122,6 +122,27 @@ test("an explicit port to avoid is refused, and a docker that cannot start remov
   assert.deepEqual(calls, ["run --detach"]);
 });
 
+test("--database names the database for one run, and the container leaves no volume", async () => {
+  const calls = [];
+  let seen = null;
+  const docker = (args) => { calls.push(args); return { code: 0, err: "" }; };
+  const code = await runThrowawayDb({}, ["--database", "qc_ci_local", "--", "x"], {
+    docker, open: async () => 55004, sleep: async () => {}, run: async (command, env) => { seen = env; return 0; }, env: {}, say: () => {}, name: "qc-throwaway-test", password: generated,
+  });
+  assert.equal(code, 0);
+  assert.ok(calls[0].includes("POSTGRES_DB=qc_ci_local"));
+  assert.match(seen.DATABASE_URL, /:55004\/qc_ci_local$/);
+  assert.deepEqual(calls.at(-1), ["rm", "--force", "--volumes", "qc-throwaway-test"]);
+});
+
+test("a bad database name or a command cmd.exe cannot pass is a usage error before docker starts", async () => {
+  const calls = [];
+  const deps = { docker: fakeDocker(calls), open: async () => 55005, sleep: async () => {}, run: async () => 0, env: {}, say: () => {} };
+  assert.equal(await runThrowawayDb({}, ["--database", "app;drop", "--", "x"], deps), 2);
+  if (process.platform === "win32") assert.equal(await runThrowawayDb({}, ["--", "bash", "-c", "a\nb"], deps), 2);
+  assert.deepEqual(calls, []);
+});
+
 test("port 5432 stays avoided when the config lists other ports to avoid", async () => {
   const deps = { docker: fakeDocker([]), open: async () => 55003, sleep: async () => {}, run: async () => 0, env: {}, say: () => {} };
   const config = { throwawayDb: { avoidPorts: [5433] } };

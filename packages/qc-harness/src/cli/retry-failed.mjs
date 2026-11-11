@@ -50,9 +50,11 @@ export async function runRetryFailed(argv, deps = {}) {
   const { flags, command } = splitAtDashes(argv);
   let values;
   let maxFiles;
+  let line;
   try {
     ({ values } = parseArgs({ args: flags, options: { report: { type: "string" }, rerun: { type: "string" }, "max-files": { type: "string" } }, strict: true }));
     if (!values.report || !values.rerun || command.length === 0) throw new Error("--report, --rerun, and a command after -- are required");
+    line = commandLine(command);
     maxFiles = Number(values["max-files"] ?? DEFAULT_MAX_FILES);
     if (!Number.isInteger(maxFiles) || maxFiles < 1) throw new Error(`--max-files must be a positive integer, got ${values["max-files"]}`);
   } catch (error) {
@@ -61,7 +63,7 @@ export async function runRetryFailed(argv, deps = {}) {
   }
   const reportFile = path.resolve(cwd, values.report);
   remove(reportFile);
-  const first = await run(commandLine(command), env, cwd);
+  const first = await run(line, env, cwd);
   if (first === 0) return 0;
   const text = read(reportFile);
   const files = text === null ? null : failedFiles(text, cwd);
