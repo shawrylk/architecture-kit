@@ -55,7 +55,7 @@ function fixture(t) {
       const data = JSON.parse(readFileSync(process.env.DATA, 'utf8'));
       if (data.fail || args.some(arg => arg.includes(data.failEndpoint ?? 'NEVER_MATCH'))) return { status: 1, stderr: 'TOKEN_MUST_STAY_SECRET' };
       let result;
-      if (args[0] === 'pr') result = { baseRefName: 'main', baseRefOid: data.baseOid, labels: [], number: 7, body: 'Fixes #4; https://github.com/ArentInc/other/issues/8', commits: data.commits ?? [] };
+      if (args[0] === 'pr') result = { baseRefName: 'main', baseRefOid: data.baseOid, labels: [], number: 7, body: data.body ?? 'Fixes #4; https://github.com/ArentInc/other/issues/8', commits: data.commits ?? [] };
       else if (args[1] === 'user') result = { login: 'self' };
       else if (args[1] === 'graphql') result = { data: { node: { number: 7, repository: { nameWithOwner: 'shawrylk/example' } } } };
       else {
@@ -251,6 +251,20 @@ test("pending session reviews match body or empty-body state once after the star
   const next = JSON.stringify(f.run("UserPromptSubmit"));
   assert.doesNotMatch(next, /edited session review/);
   assert.match(next, /reviews\/26/);
+});
+
+test("references inside code spans and fences name no issue", () => {
+  const body = "Fixes #5. The button is `#128282`.\n\n```css\ncolor: #1d6496; /* #9 */\n```\n\nRefs #6";
+  const items = watchedItems({ tool_name: "Bash", tool_input: { command: `gh pr create --body '${body}'` } }, "owner/repo", PARSERS.Bash);
+  assert.deepEqual(items.map(({ number }) => number).sort((a, b) => a - b), [5, 6]);
+});
+
+test("a PR body read at merge skips hex colours in code spans", (t) => {
+  const f = fixture(t);
+  f.update({ body: "Fixes #4. Teal is `#128282`." });
+  f.run("PostToolUse", "gh pr view 7");
+  f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
+  assert.doesNotMatch(readFileSync(f.calls, "utf8"), /issues\/128282/);
 });
 
 test("merge targets include commit-only references and previously watched issues", (t) => {

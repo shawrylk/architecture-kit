@@ -17,8 +17,12 @@ const hash = (value) => createHash("sha256").update(value).digest("hex");
 const itemKey = ({ repo, number }) => `${repo.toLowerCase()}#${number}`;
 const itemUrl = /https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/(issues|pull)\/(\d+)/g;
 
+// GitHub links no reference inside code, so a hex colour such as `#128282` names no issue.
+const withoutCode = (body) => body.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "").replace(/(`+)[^`]*?\1/g, "");
+
 // Fragment: extract issue references from a body or a commit message.
 function references(body, repo, add, linked = false) {
+  body = withoutCode(body);
   for (const match of body.matchAll(itemUrl)) add(match[1], Number(match[3]));
   if (linked) for (const match of body.matchAll(/\b([\w.-]+\/[\w.-]+)#(\d+)\b/g)) add(match[1], Number(match[2]));
   if (linked) {
