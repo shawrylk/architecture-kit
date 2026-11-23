@@ -25,6 +25,9 @@ export const defaults = {
   // `qc codex-implement`. `compactTokens` is the backstop that compacts a runaway session; one item
   // runs in a fresh session and should finish under 200K.
   codex: {
+    model: null,
+    reviewModel: "gpt-6.1-sol",
+    reviewEffort: "high",
     compactTokens: 300000,
     disablePlugins: ["superpowers@claude-plugins-official"],
     envAllow: [],
@@ -630,6 +633,7 @@ export const promotionDefaults = { surfaces: ["infra/**", "**/migrations/**", ".
 // What each key of `swarm.review` means when a repository omits it. The workflow checks run only while
 // `swarm.dispatch` is on, so this section alone turns nothing on.
 export const reviewDefaults = {
+  runtime: "claude",
   // Require a promotion review only when the repository chooses its branch pair.
   promotion: null,
   // The review kind whose APPROVED verdict lets `gh pr merge` run: "branch" or "task".
@@ -703,6 +707,14 @@ export function load(root = process.cwd()) {
   if (!isPlainObject(config.merge)) throw new TypeError("merge must be an object");
   if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
     throw new TypeError("merge.holdLabel must be a non-empty string without surrounding whitespace");
+  }
+  if (isPlainObject(config.codex)) {
+    for (const key of ["model", "reviewModel"]) {
+      const value = config.codex[key];
+      if (key === "model" && value === null) continue;
+      if (typeof value !== "string" || !value.trim()) throw new TypeError(`codex.${key} must be a non-empty string${key === "model" ? " or null" : ""}`);
+    }
+    if (!["low", "medium", "high"].includes(config.codex.reviewEffort)) throw new TypeError("codex.reviewEffort must be low, medium, or high");
   }
   if (isPlainObject(config.codex) && (!Array.isArray(config.codex.envAllow)
     || !config.codex.envAllow.every((name) => typeof name === "string" && name.length > 0 && name === name.trim()))) {

@@ -1,6 +1,6 @@
 ---
 name: codex
-description: Runs one Codex implementer job through `qc codex-implement` and waits for it, so the job shows in the agent panel. Writes no code and reads no source. The dispatch names Brief, Worktree, Progress, Log, and Qc lines.
+description: Runs one Codex implementer job through `qc codex-implement` and waits for it, so the job shows in the agent panel. Writes no code and reads no source. The dispatch names Brief, Worktree, Progress, Log, and Qc lines, plus Report for a recorded review.
 tools: Bash
 model: haiku
 ---
@@ -18,6 +18,7 @@ The prompt gives these lines:
 - `Qc:` the command that runs the CLI, such as `npx qc` or `node <path>/qc.mjs`.
 - `MaxRuns:` optional. Omit the flag to use the runner's default and the `codex.maxRuns` cap.
 - `Role:` optional. `review` pins the review model and effort with `--review`.
+- `Report:` optional for `Role: review`; pass its path as `--report` to record the verdict for merge.
 - `Effort:` optional. Use `low`, `medium`, or `high`. Omit the flag to keep the Codex config value.
 
 ## Steps
@@ -30,6 +31,7 @@ The prompt gives these lines:
 
    If the dispatch has a `MaxRuns:` line, append `--max-runs <MaxRuns>` before the redirect.
    If the dispatch has `Role: review`, append `--review` before the redirect and never append `--effort`.
+   If that review dispatch has a `Report:` line, also append `--report "<Report>"` before the redirect.
    For a dispatch without `Role: review`:
    If the dispatch has an `Effort:` line, append `--effort <Effort>` before the redirect.
 
@@ -51,7 +53,7 @@ Keep the pull request body check for "no merge is authorized".
 
 ## Reply (under 10 lines)
 
-- `EXIT: <code>`: 0 done, 1 bad input, 2 a Codex usage limit, 3 out of runs, 4 guard refused, 5 paused.
+- `EXIT: <code>`: 0 done, 1 bad input, 2 a Codex usage limit, 3 out of runs or review report failure, 4 guard refused, 5 paused.
 - On `EXIT: 5`, report the pause reason and stop until the operator runs `qc resume`.
 - On `EXIT: 4`, report each finding and stop. Drop or rewrite the refused commits; rotate any secret that reached a remote.
 - On `EXIT: 2`, dispatch the same brief to `architecture:sdd-implementer` (sonnet). The guard refuses a codex dispatch while `qc codex status` shows a limit. While Codex is free, an implementer dispatch needs a prompt line `Runtime: claude <reason>`. Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other.

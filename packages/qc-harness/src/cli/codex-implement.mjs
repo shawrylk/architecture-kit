@@ -1,6 +1,8 @@
 // `qc codex-implement`: run one brief through `codex exec` as an implementer, and start a fresh session
 // after each stop until the progress file says it is done. It never calls Claude; exit 2 hands the brief back.
 
+import { execFileSync } from "node:child_process";
+import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
@@ -48,10 +50,10 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
 }
 
 const USAGE =
-  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
-  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs, 4 guard refused, 5 paused";
+  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review [--report <file>] | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
+  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs or review report failure, 4 guard refused, 5 paused";
 
-const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
+const FLAGS = { "--report": "report", "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
 
 /** @returns the settings with resolved paths; throws an Error naming the bad or missing flag. */
 export function parseArgs(argv) {
@@ -70,6 +72,7 @@ export function parseArgs(argv) {
   if (!Number.isInteger(maxRuns) || maxRuns < 1) throw new Error(`--max-runs must be a positive integer, got ${found.maxRuns}`);
   if (found.effort !== undefined && !["low", "medium", "high"].includes(found.effort)) throw new Error("--effort must be low, medium, or high");
   if (found.review && found.effort !== undefined) throw new Error("--review cannot be combined with --effort");
+  if (found.report !== undefined && !found.review) throw new Error("--report requires --review");
   const progress = path.resolve(found.progress);
   return {
     brief: path.resolve(found.brief),
@@ -79,6 +82,7 @@ export function parseArgs(argv) {
     maxRuns,
     effort: found.effort,
     review: found.review ?? false,
+    report: found.report === undefined ? undefined : path.resolve(found.report),
     waitReset: found.waitReset ?? false,
     maxHours: parseMaxHours(found.maxHours),
     pollMinutes: parsePollMinutes(found.pollMinutes),
@@ -265,6 +269,39 @@ export async function runCodexImplement(argv, { out = writeLine, ...options } = 
   return code;
 }
 
+/** Report metadata distinguishes an unchanged old report even if its timestamp is in the future. */
+function reportStamp(file) {
+  try {
+    const stat = statSync(file, { bigint: true });
+    return `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** Records a completed review once; every report, git or ledger error remains a failed job. */
+function completeReview(settings, started, originalStamp, message, say) {
+  if (!settings.report) return finish(say, message, 0);
+  try {
+    const stamp = reportStamp(settings.report);
+    if (stamp === null) throw new Error(`missing review report: ${settings.report}`);
+    if (stamp === originalStamp || statSync(settings.report).mtimeMs < started) throw new Error(`stale review report: ${settings.report}`);
+    const text = readFileSync(settings.report, "utf8");
+    const verdict = /^[ \t]*VERDICT:[ \t]*(APPROVED|CHANGES_REQUIRED)[ \t]*\r?$/m.exec(text)?.[1];
+    if (!verdict) throw new Error(`review report has no VERDICT: line: ${settings.report}`);
+    const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const sha = git("rev-parse", "--verify", "HEAD^{commit}");
+    const branch = git("symbolic-ref", "--quiet", "--short", "HEAD");
+    const ledger = ledgerFileOf(settings.worktree);
+    if (!ledger) throw new Error("cannot find the worktree ledger");
+    appendRecord(ledger, { type: "verdict", kind: "codex", verdict, sha, branch });
+    return finish(say, `${message}; recorded ${verdict} on ${sha}`, 0);
+  } catch (error) {
+    return finish(say, `cannot record review verdict: ${error.message}`, 3);
+  }
+}
+
 async function runJob(argv, {
   run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
   fetch, now = Date.now, sleep,
@@ -275,6 +312,13 @@ async function runJob(argv, {
   } catch (error) {
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
     return 1;
+  }
+  const started = Date.now();
+  let originalStamp;
+  try {
+    if (settings.report) originalStamp = reportStamp(settings.report);
+  } catch (error) {
+    return finish(say, `cannot stat review report: ${error.message}`, 3);
   }
   let codex;
   let codexLimits;
@@ -293,7 +337,7 @@ async function runJob(argv, {
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
   let resetDeadline;
   for (let count = 1; count <= settings.maxRuns; count += 1) {
-    if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
+    if (isDone(settings.progress)) return completeReview(settings, started, originalStamp, `done after ${count - 1} run(s)`, say);
     try {
       const branch = currentBranch(settings.worktree);
       const refusal = pauseRefusal(settings.worktree) ?? (branch ? holdRefusal(settings.worktree, branch) : null);
@@ -309,15 +353,17 @@ async function runJob(argv, {
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
     const limits = codexLimits === null ? [] : ["-c", `model_auto_compact_token_limit=${codexLimits.compactAt}`, "-c", `tool_output_token_limit=${codexLimits.toolOutputTokens}`];
-    const effort = settings.review ? ["-c", `model="${REVIEW_MODEL}"`, "-c", `model_reasoning_effort="${REVIEW_EFFORT}"`] : settings.effort === undefined ? [] : ["-c", `model_reasoning_effort=${settings.effort}`];
-    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, ...effort, "-"];
+    const model = settings.review ? codex.reviewModel : codex.model;
+    const modelArgs = model === null ? [] : ["-c", `model=${JSON.stringify(model)}`];
+    const effort = settings.review ? ["-c", `model_reasoning_effort=${JSON.stringify(codex.reviewEffort)}`] : settings.effort === undefined ? [] : ["-c", `model_reasoning_effort=${settings.effort}`];
+    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, ...modelArgs, ...effort, "-"];
     const allow = protectedAllow(readFileSync(settings.brief, "utf8"));
     const childEnv = Object.fromEntries(Object.entries(codexEnvironment(env, codex.envAllow)).filter(([name]) => name.toUpperCase() !== "QC_PROTECTED_ALLOW"));
     let before;
     try {
       before = guardRefs(settings.worktree);
     } catch (error) {
-      return finish(say, `guard refused: cannot capture the commit boundary: ${error.message}`, 4);
+      return finish(say, `guard refused: cannot capture the commit boundary: ${error.message}`, settings.report ? 3 : 4);
     }
     let result;
     let runError;
@@ -333,13 +379,13 @@ async function runJob(argv, {
         return 4;
       }
     } catch (error) {
-      return finish(say, `guard refused: cannot check run commits: ${error.message}`, 4);
+      return finish(say, `guard refused: cannot check run commits: ${error.message}`, settings.report ? 3 : 4);
     }
     if (runError) return finish(say, `codex did not run: ${runError.message}`, 1);
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     const line = limitLineOf(result.tail ?? "", prompt);
     if (!line) clearLimit(limitFileOf(env), say);
-    if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
+    if (isDone(settings.progress)) return completeReview(settings, started, originalStamp, `done after ${count} run(s)`, say);
     if (line) {
       const recordedAt = now();
       const reset = resetTimeOf(line, recordedAt);

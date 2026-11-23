@@ -23,7 +23,7 @@ after(() => {
     else process.env[key] = value;
   }
 });
-after(() => rmSync(configDir, { recursive: true, force: true }));
+after(() => rmSync(configDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 const isolated = (options = {}) => ({ ...options, env: { ...process.env, ...options.env, GIT_CONFIG_GLOBAL: path.join(configDir, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" } });
 const execFileSync = (program, args, options) => execFile(program, args, isolated(options));
 const spawnSync = (program, args, options) => spawn(program, args, isolated(options));
@@ -32,7 +32,7 @@ const decide = (call, options = {}) => decideMerge(call, { commentCheck: () => n
 /** Checkouts with the checks on (merge kind branch, and task), one with them off, each with a git dir. */
 function workspace(t) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-merge-guard-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const checkouts = new Map();
   const make = (name, config) => {
     if (checkouts.has(name)) return checkouts.get(name);
@@ -655,7 +655,7 @@ test("with swarm.dispatch off, a merge whose command failed after GitHub merged 
 /** A checkout with the checks on, `origin/main` at its first commit, and a small fix on `feat/1-x`. `tracked: false` keeps the config out of that commit. */
 function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true } = {}) {
   const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-merge-lane-")));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
   git("init", "-q", "-b", "main");
   for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"]]) git("config", key, value);
@@ -829,8 +829,8 @@ test("a promotion approval cannot bypass a dispatched scope", () => {
 
 const prViewWithHead = (oid, head) => JSON.stringify({ ...JSON.parse(prView(oid)), headRefName: head });
 
-function integrationMergeRepo(t, { integrate, kind = "branch", unreviewed = false } = {}) {
-  const repo = laneRepo(t, { swarm: { dispatch: {}, direct: false }, ...(integrate ? { integrate } : {}) });
+function integrationMergeRepo(t, { integrate, kind = "branch", unreviewed = false, runtime = "claude" } = {}) {
+  const repo = laneRepo(t, { swarm: { dispatch: {}, direct: false, review: { runtime } }, ...(integrate ? { integrate } : {}) });
   const { dir, base, ledger } = repo;
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
   git("branch", "-m", "task/7-a");
@@ -1114,4 +1114,52 @@ test("task merge reviews pass despite a scoped branch dispatch", (t) => {
   assert.equal(decide(shell(ws.task, command)), null);
   appendRecord(ws.ledgerOf(ws.task), verdict("task", "CHANGES_REQUIRED"));
   assert.match(denied(decide(shell(ws.task, command))) ?? "", /CHANGES_REQUIRED/);
+});
+
+test("Codex merge verdicts are opt-in, SHA pinned, and ordered with configured reviews", () => {
+  const merges = [{ sha: SHA }];
+  const judge = (records, runtime = "codex") => mergeVerdict(merges, records, "branch", null, null, runtime).refusal;
+  assert.equal(judge([verdict("codex", "APPROVED")]), null);
+  assert.ok(judge([verdict("codex", "APPROVED")], "claude"));
+  assert.ok(judge([verdict("codex", "APPROVED", "a".repeat(40))]));
+  assert.ok(judge([verdict("branch", "APPROVED"), verdict("codex", "CHANGES_REQUIRED")]));
+  assert.equal(judge([verdict("branch", "CHANGES_REQUIRED"), verdict("codex", "APPROVED")]), null);
+  assert.ok(judge([verdict("codex", "APPROVED"), verdict("branch", "CHANGES_REQUIRED")]));
+});
+
+test("Codex cannot satisfy a dispatched branch scope or promotion review", () => {
+  const records = [
+    { type: "dispatch", kind: "branch", task: false, branch: "feat/62-x", scope: "security", head: SHA },
+    { ...verdict("codex", "APPROVED"), scope: "security" },
+    verdict("codex", "APPROVED"),
+  ];
+  assert.match(mergeVerdict([{ sha: SHA }], records, "branch", null, null, "codex").refusal, /scope "security"/);
+  assert.match(mergeVerdict([{ sha: SHA }], [verdict("codex", "APPROVED")], "branch", null, "promotion", "codex").refusal, /scope "promotion"/);
+});
+
+test("a scoped Codex record cannot override a named branch scope", () => {
+  const records = [
+    { ...verdict("branch", "CHANGES_REQUIRED"), scope: "security" },
+    { ...verdict("codex", "APPROVED"), scope: "security" },
+    verdict("codex", "APPROVED"),
+  ];
+  assert.match(mergeVerdict([{ sha: SHA }], records, "branch", null, null, "codex").refusal, /CHANGES_REQUIRED/);
+  assert.ok(mergeVerdict([{ sha: SHA }], [records[1]], "branch", null, null, "codex").refusal);
+});
+
+for (const runtime of ["claude", "codex"]) {
+  test(`the PR base runtime ${runtime} decides whether Codex counts`, (t) => {
+    const { dir, head, base, ledger } = laneRepo(t, { swarm: { dispatch: {}, direct: false, review: { runtime } } });
+    writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {}, direct: false, review: { runtime: runtime === "codex" ? "claude" : "codex" } } }));
+    appendRecord(ledger, verdict("codex", "APPROVED", head));
+    const output = decide(shell(dir, `gh pr merge 7 --match-head-commit ${head}`), { gh: fakeGh(prView(base)).gh });
+    if (runtime === "codex") assert.equal(denied(output), null);
+    else assert.match(denied(output), /no APPROVED branch review/);
+  });
+}
+
+test("Codex constituent verdicts do not satisfy the integration lane", (t) => {
+  const { dir, head, base } = integrationMergeRepo(t, { kind: "codex", runtime: "codex" });
+  const output = decide(shell(dir, `gh pr merge 7 --match-head-commit ${head}`), { gh: fakeGh(prViewWithHead(base, "feat/7-integration")).gh });
+  assert.match(denied(output), /integration lane .*does not apply: .*holds? no APPROVED review/);
 });

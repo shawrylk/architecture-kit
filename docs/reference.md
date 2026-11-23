@@ -826,7 +826,7 @@ The Codex runner and `qc watch --run` exit `5` for a held branch.
 `qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.
 
 ```bash
-npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
+npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review [--report <file>] | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
 ```
 
 The runner passes the prompt on stdin to this command, with `QC_ROLE=implementer` in the environment:
@@ -876,7 +876,11 @@ The runner validates the worktree's brief and Codex settings before launch:
 | Setting or requirement | Default or rule |
 |---|---|
 | `--max-runs` | `1`; a positive whole number, capped by `codex.maxRuns` (default `2`) |
-| `--review` | pins `gpt-6.1-sol` at high effort for every run and reset retry; conflicts with `--effort` |
+| `--review` | pins `codex.reviewModel` at `codex.reviewEffort` for every run and reset retry; conflicts with `--effort` |
+| `--report` | optional with `--review` only; a resolved report path for recording a completed review |
+| `codex.model` | `null` keeps the Codex model config; a non-empty string overrides it on implementation runs |
+| `codex.reviewModel` | `"gpt-6.1-sol"`; a non-empty string overriding the implementation model for reviews |
+| `codex.reviewEffort` | `"high"`; `low`, `medium`, or `high` |
 | `--effort` | optional; `low`, `medium`, or `high`; omission keeps the Codex config value |
 | `--poll-minutes` | `30`; a positive interval of at most 35791 minutes for `--wait-reset` |
 | `codex.briefMaxLines` | `40` non-blank lines in the brief |
@@ -884,6 +888,15 @@ The runner validates the worktree's brief and Codex settings before launch:
 | `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
 | Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, `Exit criteria`, `CI failures`, and `Diagnosis` |
+
+With `--review --report <file>`, the runner reads the report only after the progress file marks completion.
+The report must have changed after the job started; an unchanged or older report is stale.
+The first matching `VERDICT: APPROVED` or `VERDICT: CHANGES_REQUIRED` line records one verdict in the shared worktree ledger.
+The record is `{ type: "verdict", kind: "codex", verdict, sha, branch }`, with the completed worktree's `HEAD` and branch.
+Both verdicts exit `0`; this means the review was recorded, and `CHANGES_REQUIRED` still blocks a merge.
+A missing or stale report, a missing verdict line, or any report read, git, or ledger write failure exits `3` with the cause and records nothing.
+`--report` without `--review` exits `1`. A review without `--report` retains the usual completion behavior and records nothing.
+A dispatch to `architecture:codex` with `Role: review` forwards its optional `Report:` line as `--report`.
 
 While the worktree's branch has open CI records, the brief needs `## CI failures` with every test and its `Cause:`.
 The Codex runner and implementer dispatch share this check. The Codex runner exits `1` and names missing tests.
@@ -898,8 +911,8 @@ The overrides apply to the runner's `codex exec` call only, so your interactive 
 
 | Override | Source |
 |---|---|
-| `-c model="gpt-6.1-sol"` | `--review`; applies to every run, including a retry after a reset |
-| `-c model_reasoning_effort="high"` | `--review`; applies to every run, including a retry after a reset |
+| `-c model="<value>"` | `codex.model` for implementations when non-null; `codex.reviewModel` for `--review`; serialized as a quoted config value on every run and reset retry |
+| `-c model_reasoning_effort="<value>"` | `codex.reviewEffort` for `--review`; applies to every run, including a retry after a reset |
 | `-c model_reasoning_effort=<value>` | `--effort`; applies to every run, including a retry after a reset; omitted without the flag |
 | `-c plugins."<name>".enabled=false` | enabled plugins in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), plus `codex.disablePlugins` (default `["superpowers@claude-plugins-official"]`) |
 | `-c model_auto_compact_token_limit=<n>` | `budgets.codex.compactAt`; null uses `codex.compactTokens` (default `300000`) |
@@ -1177,6 +1190,7 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 | Key | Default | Meaning |
 |---|---|---|
 | `merge` | `"branch"` | the review kind whose APPROVED verdict lets a merge run; `"task"` fits a one-task PR |
+| `runtime` | `"claude"` | `"codex"` also counts `kind: "codex"` verdicts for the pinned merge head, alongside the configured merge kind |
 | `maxTaskCalls` | `35` | the largest estimate one plan task may carry |
 | `riskPaths` | `["**/migrations/**", "schemas/**"]` | globs whose matching tasks need a non-empty `**Risk:**` line; `[]` turns the check off |
 | `cases` | `{}` | map each glob to case words required in a matching task's test step; an empty map turns the check off |
@@ -1189,6 +1203,9 @@ A junction or symlink that redirects the checkpoint folder elsewhere is refused;
 The checkpoint file itself is refused when `lstat` identifies a symlink.
 
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
+The PR base selects the runtime policy. Codex verdicts participate in the existing newest-per-scope ordering only when runtime is `"codex"`.
+A Codex verdict never satisfies a named branch scope or a promotion review. Integration-lane constituent approval rules stay unchanged.
+Codex is a ledger verdict kind, and is not added to `reviewerTypes`.
 
 For each task whose files match `riskPaths`, write one `**Risk:**` line.
 The line can start with a list marker, such as `- **Risk:**`.

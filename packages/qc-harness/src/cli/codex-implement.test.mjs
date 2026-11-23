@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -9,7 +9,7 @@ import { DONE_MARKER, REVIEW_MODEL, REVIEW_EFFORT, enabledPlugins, parseArgs, ru
 import { readLimit, writeLimit } from "./codex-limit.mjs";
 import { recordRun } from "./ci-failures.mjs";
 import { holdBranch } from "./pause.mjs";
-import { appendRecord, ledgerFileOf } from "./ledger.mjs";
+import { appendRecord, ledgerFileOf, readLedger } from "./ledger.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const VALID_BRIEF = "# Brief\nPaths: src/example.mjs\n\n## Product decisions\n- Use the local rules.\n\n## Task\n1. Do task one.\n";
@@ -21,13 +21,13 @@ process.env.QC_CODEX_LIMIT_FILE = path.join(limitDir, "limit.json");
 after(() => {
   if (previousLimitFile === undefined) delete process.env.QC_CODEX_LIMIT_FILE;
   else process.env.QC_CODEX_LIMIT_FILE = previousLimitFile;
-  rmSync(limitDir, { recursive: true, force: true });
+  rmSync(limitDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 const T = Date.UTC(2026, 9, 26);
 
 function setup(t, { progress = "" } = {}) {
   const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-codex-implement-")));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const files = { dir, brief: path.join(dir, "brief.md"), progress: path.join(dir, "progress.md"), worktree: path.join(dir, "wt") };
   writeFileSync(files.brief, VALID_BRIEF);
   writeFileSync(files.progress, progress);
@@ -1031,7 +1031,7 @@ const CODEX_TOML = [
 
 function codexHome(t, toml = CODEX_TOML) {
   const home = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-codex-home-")));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   if (toml !== null) writeFileSync(path.join(home, "config.toml"), toml);
   return home;
 }
@@ -1545,4 +1545,126 @@ test("prompt construction leaves branch holds to the dispatch check", () => {
   const source = readFileSync(new URL("./codex-implement.mjs", import.meta.url), "utf8");
   const prompt = promptSource(source);
   assert.doesNotMatch(prompt, /holdRefusal|agent never releases/i);
+});
+
+function reviewFixture(t) {
+  const f = setup(t);
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: f.worktree, env: f.gitEnv, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git("-c", "user.name=qc", "-c", "user.email=qc@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "init");
+  f.report = path.join(f.dir, "report.md");
+  return { ...f, git, argv: [...f.argv, "--review", "--report", f.report] };
+}
+
+test("--report requires --review and resolves the report path", async (t) => {
+  const f = setup(t);
+  assert.throws(() => parseArgs([...f.argv, "--report", "review.md"]), /--report.*--review/);
+  assert.equal(parseArgs([...f.argv, "--review", "--report", "review.md"]).report, path.resolve("review.md"));
+  assert.equal(await runCodexImplement([...f.argv, "--report", "review.md"], { say: quiet, out: quiet }), 1);
+});
+
+test("configured models are serialized safely and review settings win on retries", async (t) => {
+  for (const review of [false, true]) {
+    const f = setup(t);
+    const model = 'custom"model';
+    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { model, reviewModel: "review-model", reviewEffort: "medium" } }));
+    let calls = 0;
+    assert.equal(await runCodexImplement([...f.argv, "--max-runs", "2", ...(review ? ["--review"] : [])], {
+      say: quiet, out: quiet,
+      run: async ({ args }) => {
+        calls += 1;
+        const value = args.find(arg => arg.startsWith("model=")).slice(6);
+        assert.equal(JSON.parse(value), review ? "review-model" : model);
+        if (review) assert.ok(args.includes('model_reasoning_effort="medium"'));
+        if (calls === 2) writeFileSync(f.progress, DONE_MARKER);
+        return { status: 0 };
+      },
+    }), 0);
+    assert.equal(calls, 2);
+  }
+});
+
+for (const verdict of ["APPROVED", "CHANGES_REQUIRED"]) {
+  test(`review records ${verdict} once with final worktree HEAD and branch`, async (t) => {
+    const f = reviewFixture(t);
+    let calls = 0;
+    assert.equal(await runCodexImplement([...f.argv, "--max-runs", "2"], {
+      say: quiet, out: quiet,
+      run: async () => {
+        calls += 1;
+        writeFileSync(f.report, `VERDICT: ${verdict}\nVERDICT: APPROVED\n`);
+        if (calls === 2) writeFileSync(f.progress, DONE_MARKER);
+        assert.deepEqual(readLedger(ledgerFileOf(f.worktree)), []);
+        return { status: 0 };
+      },
+    }), 0);
+    assert.equal(calls, 2);
+    const records = readLedger(ledgerFileOf(f.worktree));
+    assert.equal(records.length, 1);
+    const { at, ...record } = records[0];
+    assert.deepEqual(record, { type: "verdict", kind: "codex", verdict, sha: f.git("rev-parse", "HEAD"), branch: f.git("branch", "--show-current") });
+  });
+}
+
+for (const scenario of ["missing", "stale", "no verdict", "unreadable", "git failure", "ledger failure", "already done"]) {
+  test(`review ${scenario} exits three without a record`, async (t) => {
+    const f = reviewFixture(t);
+    if (["stale", "already done"].includes(scenario)) {
+      writeFileSync(f.report, "VERDICT: APPROVED\n");
+      utimesSync(f.report, new Date(0), new Date(0));
+    }
+    if (scenario === "already done") writeFileSync(f.progress, DONE_MARKER);
+    const messages = [];
+    assert.equal(await runCodexImplement(f.argv, {
+      say: line => messages.push(line), out: quiet,
+      run: async () => {
+        if (scenario === "already done") assert.fail("must not run");
+        if (scenario === "unreadable") mkdirSync(f.report);
+        else if (!["missing", "stale"].includes(scenario)) writeFileSync(f.report, scenario === "no verdict" ? "No decision\n" : "VERDICT: APPROVED\n");
+        if (scenario === "git failure") f.git("update-ref", "-d", "HEAD");
+        if (scenario === "ledger failure") mkdirSync(ledgerFileOf(f.worktree), { recursive: true });
+        writeFileSync(f.progress, DONE_MARKER);
+        return { status: 0 };
+      },
+    }), 3);
+    assert.match(messages.join("\n"), /report|verdict|git|HEAD|ledger/i);
+    if (scenario !== "ledger failure") assert.deepEqual(readLedger(ledgerFileOf(f.worktree)), []);
+  });
+}
+
+test("an unfinished review never reads or records its report", async (t) => {
+  const f = reviewFixture(t);
+  const messages = [];
+  assert.equal(await runCodexImplement(f.argv, {
+    say: line => messages.push(line), out: quiet,
+    run: async () => { mkdirSync(f.report); return { status: 0 }; },
+  }), 3);
+  assert.match(messages.join("\n"), /out of runs/);
+  assert.deepEqual(readLedger(ledgerFileOf(f.worktree)), []);
+});
+
+test("a changed pre-existing report records after a reset retry, using the final HEAD", async (t) => {
+  const f = reviewFixture(t);
+  writeFileSync(f.report, "VERDICT: CHANGES_REQUIRED\n");
+  utimesSync(f.report, new Date(0), new Date(0));
+  let calls = 0;
+  assert.equal(await runCodexImplement([...f.argv, "--wait-reset"], {
+    ...resetClock(), say: quiet, out: quiet,
+    fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: { announced_at: "2026-01-01T00:01:00.000Z" } } }) }),
+    run: async () => {
+      calls += 1;
+      if (calls === 1) return { status: 2, tail: "usage limit" };
+      f.git("-c", "user.name=qc", "-c", "user.email=qc@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "finish");
+      writeFileSync(f.report, "  VERDICT: APPROVED\r\n");
+      writeFileSync(f.progress, DONE_MARKER);
+      return { status: 0 };
+    },
+  }), 0);
+  const records = readLedger(ledgerFileOf(f.worktree));
+  assert.equal(records.length, 1);
+  assert.equal(records[0].sha, f.git("rev-parse", "HEAD"));
+  assert.equal(records[0].verdict, "APPROVED");
 });
