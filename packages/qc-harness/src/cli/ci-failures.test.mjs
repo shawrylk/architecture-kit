@@ -54,9 +54,9 @@ test("records the repository and asks only for failures from the local origin", 
   assert.equal(holdRefusal(root, "main"), null);
   const calls = [];
   for (const [id, head] of [[4, "ddddddd"], [5, "eeeeeee"], [6, "fffffff"]]) {
-    recordRun(root, { id, branch: "main", head }, { gh: (args) => { calls.push(args); return args[0] === "run" ? tap : args[0] === "pr" ? JSON.stringify([{ body: "Refs #227" }]) : "[]"; } });
+    recordRun(root, { id, branch: "main", head }, { gh: (args) => { calls.push(args); return args[0] === "run" ? tap : args[1]?.endsWith("/pulls") ? JSON.stringify([{ body: "Refs #227", state: "open", head: { ref: "main" } }]) : "[]"; } });
   }
-  assert.ok(calls.some((args) => args[0] === "pr"));
+  assert.ok(calls.some((args) => args[1] === "repos/local/repo/commits/fffffff/pulls"));
   assert.equal(readLedger(ledgerFileOf(root)).at(-1).repository, "local/repo");
   assert.equal(holdRefusal(root, "main"), null);
 });
@@ -229,7 +229,7 @@ test("three red heads → a needs-user question, and no hold record", (t) => {
   const gh = (args) => {
     calls.push(args);
     if (args[0] === "run") return tap;
-    if (args[0] === "pr") return JSON.stringify([{ body: "Refs #227", state: "OPEN", headRefName: "feat/test", headRefOid: currentHead }]);
+    if (args[1] === `repos/local/repo/commits/${currentHead}/pulls`) return JSON.stringify([{ body: "Refs #227", state: "open", head: { ref: "feat/test", sha: currentHead } }]);
     if (args[0] === "api") return JSON.stringify([comments]);
     if (args[1] === "comment") comments.push({ body: args[args.indexOf("--body") + 1] });
     return "[]";
@@ -539,19 +539,18 @@ test("the skip line stays within 200 characters for many long paths", (t) => {
 
 
 test("CI questions use only PR issue references and diagnose missing issues or GitHub failures", (t) => {
-  for (const mode of ["old PR", "retry same run", "retry next head"]) {
+  for (const mode of ["advanced PR", "old PR", "retry same run", "retry next head"]) {
     const root = fixture(t);
     const comments = [];
     const warnings = [];
-    let failAsk = true;
+    let failAsk = mode !== "advanced PR";
     let head;
     const gh = (args) => {
       if (args[0] === "run") return tap;
-      if (args[0] === "pr") return JSON.stringify([
-        { body: "Closes #12", state: "CLOSED", headRefName: "feat/test", headRefOid: "0000000" },
-        { body: "Refs #13", state: "OPEN", headRefName: "other", headRefOid: head },
-        { body: "Refs #14", state: "OPEN", headRefName: "feat/test", headRefOid: "0000000" },
-        { body: mode === "old PR" ? "No linked issue" : "Refs #227", state: "OPEN", headRefName: "feat/test", headRefOid: head },
+      if (args[1] === `repos/local/repo/commits/${head}/pulls`) return JSON.stringify([
+        { body: "Closes #12", state: "closed", head: { ref: "feat/test", sha: "0000000" } },
+        { body: "Refs #13", state: "open", head: { ref: "other", sha: head } },
+        { body: mode === "old PR" ? "No linked issue" : "Refs #227", state: "open", head: { ref: "feat/test", sha: mode === "advanced PR" ? "ddddddd" : head } },
       ]);
       if (args[0] === "api") return JSON.stringify([comments]);
       if (args[0] === "issue" && args[1] === "comment") {
@@ -566,6 +565,10 @@ test("CI questions use only PR issue references and diagnose missing issues or G
       recordRun(root, { id, branch: "feat/test", head }, { gh, warn: (s) => warnings.push(s) });
     };
     record(1, "aaaaaaa"); record(2, "bbbbbbb"); record(3, "ccccccc");
+    if (mode === "advanced PR") {
+      assert.equal(comments.length, 1, "C asks even after its associated PR advances to D");
+      assert.deepEqual(warnings, []);
+    }
     failAsk = false;
     record(mode === "retry next head" ? 4 : 3, mode === "retry next head" ? "ddddddd" : "ccccccc");
     if (mode === "old PR") {
@@ -584,7 +587,7 @@ test("CI questions use only PR issue references and diagnose missing issues or G
     const gh = (args) => {
       calls.push(args);
       if (args[0] === "run") return tap;
-      if (args[0] === "pr") return JSON.stringify([{ body, state: "OPEN", headRefName: "feature-without-number", headRefOid: "ccccccc" }]);
+      if (args[1] === "repos/local/repo/commits/ccccccc/pulls") return JSON.stringify([{ body, state: "open", head: { ref: "feature-without-number", sha: "ccccccc" } }]);
       return "[]";
     };
     for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "feature-without-number", head }, { gh, warn: (line) => warnings.push(line) });
