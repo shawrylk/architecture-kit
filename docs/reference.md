@@ -31,6 +31,9 @@ claude plugin marketplace add shawrylk/architecture-kit
 claude plugin install architecture@architecture-kit
 ```
 
+The plugin depends on [ai-chat-assistant](https://github.com/shawrylk/ai-chat-assistant),
+which has its own pinned GitHub entry in this marketplace.
+
 The `sdd-*` subagent types and the `codex` skill follow the `subagent-driven-development` skill of the
 `superpowers` plugin. Install it if you use them:
 
@@ -46,6 +49,21 @@ pnpm add -D architecture-harness --save-exact
 
 The exact version and the lockfile keep the installed package fixed until you update it.
 Continue with [Tutorial](#tutorial) to set up your repository.
+
+### Tools from GitHub
+
+`qc stack`, `qc screens` and `qc throwaway-db` run from pinned GitHub commits on first use.
+The CLI installs them through npm; the first run needs access to GitHub. The pins live in
+`packages/qc-harness/src/cli/tools.mjs`. Commands and flags stay the same, including
+`npx qc throwaway-db -- <command>`.
+
+| Command | Tool repository |
+|---|---|
+| `qc stack` | [qc-stack](https://github.com/shawrylk/qc-stack) |
+| `qc screens` | [qc-screens](https://github.com/shawrylk/qc-screens) |
+| `qc throwaway-db` | [qc-throwaway-db](https://github.com/shawrylk/qc-throwaway-db) |
+
+`qc stack` installs the pinned `qc-screens` package alongside `qc-stack` for stack authentication.
 
 ## Tutorial
 
@@ -750,6 +768,20 @@ A failed fixture commit stops the run. Agent runs record refused commit exit cod
 An agent refusal records `hookCommit.passed: false`.
 See [Agent eval](../evals/agents/README.md) for the commands and result fields.
 
+#### Split issues across PCs
+
+Fleet uses a local file and a shared node list to assign free issues, with no server or GitHub writes.
+See [Fleet setup and takeover](fleet.md) for three PCs, file paths, size limits and dead-PC recovery.
+
+| Command | Result |
+|---|---|
+| `qc fleet init --self <id> --nodes <id:weight:size,...> [--force]` | Create local fleet settings; refuse replacement without `--force` |
+| `qc fleet next [--repo <o/r>] [--all]` | Print this PC's oldest five free issue numbers, or all; exit 3 when empty |
+| `qc fleet status [--repo <o/r>]` | Show each node's weight, maxSize, active state and free issues, then taken and unassigned counts; at most 15 lines |
+
+`--repo` defaults to origin. `QC_FLEET_FILE` overrides the local settings path; a missing file turns fleet off.
+Keep `nodes` identical on every PC and change only `self`. Set a dead node's `active` to false on all PCs to redistribute its work.
+
 #### Share the machine between agents
 
 Several agents on one machine can each start a heavy run at once and stall it. Wrap each heavy
@@ -758,7 +790,8 @@ browser test, a live database test, a commit, and a push. At most `QC_GATE_SLOTS
 such commands run at once. Each claim records its process id, so a claim whose process is gone is
 freed on the next claim. `npx qc gate-slot --status` lists the holders.
 
-`npx qc throwaway-db -- <command>` runs a command on a database of its own: a postgres container
+`npx qc throwaway-db -- <command>` runs [qc-throwaway-db](https://github.com/shawrylk/qc-throwaway-db)
+on a database of its own: a postgres container
 on a free port, never 5432, removed with its data volume once the command exits. `throwawayDb.env` in `qc.config.json`
 names each variable the command reads, such as `{ "DATABASE_URL": "{url}" }`. `--database <name>`
 overrides `throwawayDb.database` for one run. The command gets each word after `--` unchanged. On
@@ -1006,6 +1039,31 @@ The review prompt resolves the implementation brief's `Report:` path when that b
 A separate review brief should name this implementation report's `## Survivors` section so the reviewer can assess the uncovered behavior.
 `--report`, the review verdict and the review ledger retain their existing behavior.
 
+The runner checks every `Paths:` entry before Codex starts. Name each owned path in backticks,
+separated by commas, spaces, or `and`; other text is refused with the unparsed text.
+The read-only review form `Paths: none. ...` remains valid.
+Naming `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, or a `*.csproj` file requires
+`## Design`, even with approval off; list each added dependency there.
+
+For reviews, `Reviewed: <sha>` must match a reviewed head of the current branch in the shared ledger
+(a `codex` or `branch` verdict). A mismatch exits `1` before launch and names the latest reviewed head.
+When omitted, the runner adds the newest branch review's SHA to the prompt and requests `git diff <sha>..HEAD`.
+Without a previous review, the prompt keeps its existing scope.
+
+`Verify:` lists shell commands in backticks. After the progress marker appears, the runner executes them
+in order in the worktree, through the platform shell, with a 15-minute timeout for each command.
+`Live:` uses the same format and runs after all Verify commands pass. Each Live command gets a new empty
+temporary folder and `QC_WORKTREE` set to the worktree path; the folder is removed afterward.
+The first failure stops verification, exits `7` (`verify failed`), and leaves `exit 7` as the wrapper's final line.
+A timeout is recorded as command exit `124`. Completion requires both the progress marker and successful commands,
+including when the marker exists at startup. Briefs without either line keep their existing behavior.
+
+The runner appends `## Runner proof` to the report named by `Report:` (relative to the brief),
+or `<progress>.report.md` if omitted. Each command gets `<command>: exit <n> in <s> s`;
+a failed command also gets its last ten output lines. A proof-write failure also prevents completion.
+Review runs skip Verify and Live. A review brief's `Proof:` line names the last code report;
+the runner adds its proof section to the prompt with “The runner ran these commands. Do not run them again.”
+
 The runner validates the worktree's brief and Codex settings before launch:
 
 | Setting or requirement | Default or rule |
@@ -1021,7 +1079,7 @@ The runner validates the worktree's brief and Codex settings before launch:
 | `codex.briefMaxLines` | `40` non-blank lines in the brief |
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
 | `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
-| Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
+| Required brief fields | a `Paths:` line naming owned paths in backticks, and a `## Product decisions` heading; manifest paths also require `## Design` |
 | `codex.requireApproval` | boolean, default `false`; implement requires Design and Approved when true |
 | `codex.maxDiffLines` | positive whole number, default `400` |
 | `tests.maxNewCases` | nonnegative whole number, default `8`; added cases allowed in a tests job |
@@ -1103,12 +1161,13 @@ It exits `0` after a reset, or `1` at the bound or on invalid input.
 
 | Exit | Meaning |
 |---|---|
-| `0` | the progress file says `ALL TASKS DONE` |
+| `0` | the progress marker is present and every Verify/Live command passed |
 | `1` | invalid arguments, Codex settings, `budgets.codex`, or brief; a file error; or `codex` did not start |
 | `2` | an output line reports `usage limit`, `spend cap`, `rate limit`, or `hit your limit`; the runner stops immediately or reaches its reset-wait bound |
 | `3` | `--max-runs` (default `1`) runs ended and the progress file is unfinished |
 | `4` | the guard refuses a finding in the run's changes |
 | `5` | the operator paused the kit, or the runner cannot read the pause |
+| `7` | a Verify/Live command failed or timed out, or runner proof could not be saved |
 
 With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the controller note.
 The runner's prompt requires tests first, the touched tests, one local check, and the brief's commit and push rules.
@@ -1122,10 +1181,10 @@ Its exit code says which:
 
 | Exit | Meaning |
 |---|---|
-| 0 | The first item finishes: a pull request has green checks and meets its requirements, a workflow passes, or a Codex wrapper reports an exit |
+| 0 | The first item finishes: a pull request has green checks and meets its requirements, a workflow passes, or a Codex wrapper reports `exit 0` |
 | 1 | A bad argument |
 | 4 | `--max` minutes passed (55 by default) |
-| 5 | A completed check or workflow has a conclusion outside the green allowlist |
+| 5 | A completed check or workflow has a conclusion outside the green allowlist, or a Codex wrapper reports a nonzero exit (including `exit 7`) |
 | 6 | A check stayed queued for 15 minutes, as on a runner that is offline |
 
 A new head starts the queued timers over. Run it as one background command for each head.
@@ -1593,13 +1652,9 @@ npx qc ui codemod --suggest                        # arbitrary-value tokens, wit
 
 ### Compare screen pairs
 
-`qc screens` captures two applications with Playwright and compares their pixels with `pixelmatch`.
-The screen packages are optional peer dependencies, so install them with the package. Install Google
-Chrome before the first capture.
-
-```sh
-pnpm add -D playwright pixelmatch pngjs
-```
+`qc screens` runs [qc-screens](https://github.com/shawrylk/qc-screens), which captures two applications
+with Playwright and compares their pixels with `pixelmatch`. The CLI installs the pinned tool on first use.
+Install Google Chrome before the first capture.
 
 ```sh
 npx qc screens --map screens.json --targets legacy,mono --out captures

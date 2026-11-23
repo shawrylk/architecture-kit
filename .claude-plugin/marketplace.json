@@ -9,9 +9,17 @@
     {
       "name": "architecture",
       "description": "Bounded vertical slice architecture: the decision register, the gates that enforce it, and the hooks that hold an agent to it",
-      "version": "0.22.0",
+      "version": "0.23.0",
       "category": "workflow",
       "source": "./"
+    },
+    {
+      "name": "ai-chat-assistant",
+      "source": {
+        "source": "github",
+        "repo": "shawrylk/ai-chat-assistant",
+        "sha": "e699bb3796dcd052da7476d625582d078b20b542"
+      }
     }
   ]
 }

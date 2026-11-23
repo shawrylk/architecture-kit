@@ -31,6 +31,20 @@ claude plugin marketplace add shawrylk/architecture-kit
 claude plugin install architecture@architecture-kit
 ```
 
+To split the open issues across several PCs, read [Split work across PCs](docs/fleet.md).
+
+The plugin depends on [ai-chat-assistant](https://github.com/shawrylk/ai-chat-assistant),
+which has its own pinned entry in the marketplace.
+
+`qc stack`, `qc screens` and `qc throwaway-db` run from pinned GitHub commits on first use.
+The CLI installs them through npm, so the first run needs access to GitHub. Commands and flags stay the same.
+
+| Command | Tool repository |
+|---|---|
+| `qc stack` | [qc-stack](https://github.com/shawrylk/qc-stack) |
+| `qc screens` | [qc-screens](https://github.com/shawrylk/qc-screens) |
+| `qc throwaway-db` | [qc-throwaway-db](https://github.com/shawrylk/qc-throwaway-db) |
+
 ## Set up a repository
 
 ```bash

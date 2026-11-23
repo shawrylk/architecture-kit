@@ -128,7 +128,9 @@ function codexWatcher(file) {
   return () => {
     const tail = readTail(file);
     const line = tail?.split(/\r?\n/).reverse().find((text) => text.startsWith("exit "));
-    return line === undefined ? null : { state: "exit", detail: line.slice("exit ".length).trim(), code: EXIT.PASSED };
+    if (line === undefined) return null;
+    const detail = line.slice("exit ".length).trim();
+    return { state: "exit", detail, code: detail === "0" ? EXIT.PASSED : EXIT.FAILED };
   };
 }
 

@@ -276,11 +276,13 @@ function wrapper(t, text) {
   return file;
 }
 
-test("--codex exits 0 on a line that starts with `exit `", async (t) => {
-  const file = wrapper(t, "working\nmore output\nexit 2\n");
-  const { code, lines } = await watch(["--codex", file], { gh: () => null });
-  assert.equal(code, 0);
-  assert.deepEqual(lines, [`EVENT codex:${file} exit 2`]);
+test("--codex returns 0 for success and 5 for every nonzero runner exit", async (t) => {
+  for (const status of [0, 1, 2, 3, 4, 5, 6, 7, 9]) {
+    const file = wrapper(t, `working\nmore output\nexit ${status}\n`);
+    const { code, lines } = await watch(["--codex", file], { gh: () => null });
+    assert.equal(code, status === 0 ? 0 : 5);
+    assert.deepEqual(lines, [`EVENT codex:${file} exit ${status}`]);
+  }
 });
 
 test("--codex ignores `exit` inside a line and a missing file, then times out", async (t) => {
