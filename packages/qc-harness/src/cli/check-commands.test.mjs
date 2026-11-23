@@ -277,6 +277,84 @@ test("related excludes staged deletions and receives the new path of a staged re
 });
 
 
+test("--affected runs a test that spawns a CLI importing the changed module", (t) => {
+  const root = fixture(t);
+  const dir = "packages/qc-harness/src/cli";
+  mkdirSync(path.join(root, dir), { recursive: true });
+  const put = (file, text) => writeFileSync(path.join(root, dir, file), text);
+  put("lib.mjs", "export const value = 1;\n");
+  put("tool.mjs", "import { value } from './lib.mjs'; console.log(value);\n");
+  put("tool-spawn.test.mjs", `import { spawnSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+const run = spawnSync(process.execPath, [fileURLToPath(new URL('./tool.mjs', import.meta.url))], { encoding: 'utf8' });
+assert.equal(run.status, 0, run.stderr);
+assert.equal(run.stdout.trim(), '2');
+console.log('SPAWN TEST RAN');
+`);
+  put("unrelated.test.mjs", "throw Error('UNRELATED TEST RAN');\n");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "echo FULL SUITE" } }));
+  git(root, "add", "."); git(root, "commit", "-qm", "test: seed spawned CLI");
+  const base = git(root, "rev-parse", "HEAD").trim();
+  put("lib.mjs", "export const value = 2;\n");
+  git(root, "add", ".");
+  const run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /tool-spawn\.test\.mjs/);
+  assert.match(run.stdout, /SPAWN TEST RAN/);
+  assert.doesNotMatch(run.stdout + run.stderr, /unrelated\.test\.mjs|UNRELATED TEST RAN|FULL SUITE/);
+});
+
+test("--affected runs a changed test and the wrapper that spawns it", (t) => {
+  const root = fixture(t);
+  const dir = "packages/qc-harness/src/cli";
+  mkdirSync(path.join(root, dir), { recursive: true });
+  const put = (file, text) => writeFileSync(path.join(root, dir, file), text);
+  put("child.test.mjs", "console.log('CHILD BEFORE');\n");
+  put("wrapper.test.mjs", `import { spawnSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+const run = spawnSync(process.execPath, ['--test', fileURLToPath(new URL('./child.test.mjs', import.meta.url))], { encoding: 'utf8', env: { ...process.env, NODE_TEST_CONTEXT: undefined } });
+assert.equal(run.status, 0, run.stderr);
+assert.match(run.stdout, /CHILD AFTER/);
+console.log('WRAPPER RAN');
+`);
+  put("unrelated.test.mjs", "throw Error('UNRELATED TEST RAN');\n");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "echo FULL SUITE" } }));
+  git(root, "add", "."); git(root, "commit", "-qm", "test: seed spawned test");
+  const base = git(root, "rev-parse", "HEAD").trim();
+  put("child.test.mjs", "console.log('CHILD AFTER');\n");
+  git(root, "add", ".");
+  const run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /child\.test\.mjs/);
+  assert.match(run.stdout, /CHILD AFTER/);
+  assert.match(run.stdout, /wrapper\.test\.mjs/);
+  assert.match(run.stdout, /WRAPPER RAN/);
+  assert.doesNotMatch(run.stdout + run.stderr, /unrelated\.test\.mjs|UNRELATED TEST RAN|FULL SUITE/);
+});
+
+test("--affected selects only tests included in the full suite", (t) => {
+  const root = fixture(t);
+  const dir = "packages/qc-harness/src/cli";
+  mkdirSync(path.join(root, dir), { recursive: true });
+  mkdirSync(path.join(root, "evals/agents/tasks/x"), { recursive: true });
+  writeFileSync(path.join(root, dir, "module.mjs"), "export const value = 1;\n");
+  writeFileSync(path.join(root, dir, "module.test.mjs"), "import './module.mjs'; console.log('SUITE TEST RAN');\n");
+  writeFileSync(path.join(root, "evals/agents/run.test.mjs"), "// module.mjs\nconsole.log('EVAL RUNNER RAN');\n");
+  writeFileSync(path.join(root, "evals/agents/tasks/x/hidden.test.ts"), "// module.mjs\nthrow Error('HIDDEN TEST RAN');\n");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "echo FULL SUITE" } }));
+  git(root, "add", "."); git(root, "commit", "-qm", "test: seed suite selection");
+  const base = git(root, "rev-parse", "HEAD").trim();
+  writeFileSync(path.join(root, dir, "module.mjs"), "export const value = 2;\n");
+  git(root, "add", ".");
+  const run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /SUITE TEST RAN/);
+  assert.match(run.stdout, /EVAL RUNNER RAN/);
+  assert.doesNotMatch(run.stdout + run.stderr, /hidden\.test\.ts|HIDDEN TEST RAN|FULL SUITE/);
+});
+
 test("--affected with one changed gate file runs that gate's test file and not an unrelated one", (t) => {
   const root = fixture(t);
   const dir = "packages/qc-harness/src/cli";
@@ -350,7 +428,8 @@ test("--affected with one changed gate file runs that gate's test file and not a
     rmSync(path.join(root, dir, file), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     return result;
   });
-  assert.deepEqual(omittedRuns.map(({ status }) => status), [1, 1], omittedRuns.map(({ stdout, stderr }) => stdout + stderr).join("\n"));
+  assert.deepEqual(omittedRuns.map(({ status }) => status), [0, 1], omittedRuns.map(({ stdout, stderr }) => stdout + stderr).join("\n"));
+  assert.doesNotMatch(omittedRuns[0].stdout + omittedRuns[0].stderr, /consumer\.test\.js|JS READER/);
   for (const result of omittedRuns) assert.doesNotMatch(result.stdout, /unrelated\.test\.mjs|FULL SUITE/);
   put("dynamic.test.mjs", "const target = './' + 'gate' + '.mjs'; await import(target); if (false) require(target); console.log('DYNAMIC COVERED');\n");
   git(root, "add", ".");

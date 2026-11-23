@@ -1,9 +1,12 @@
 import { strict as assert } from "node:assert";
+import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandsOf, runShell, validatePaths, verifyBrief } from "./codex-verify.mjs";
+
+const pem = (edge, label) => ["-----", edge, " ", label, " PRIVATE", " KEY-----"].join("");
 
 function fixture(t) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-verify-"));
@@ -41,6 +44,40 @@ test("shell verification supports operators, worktree cwd, output tails and nonz
   assert.ok(result.tail.includes(f.worktree));
   assert.match(result.tail, /last/);
   assert.ok(result.seconds >= 0);
+});
+
+test("shell proof preserves each held blank line's order across streams", async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.worktree, "print-order.cjs"), `
+    const wait = () => new Promise((resolve) => setTimeout(resolve, 100));
+    (async () => {
+      process.stdout.write("first\\n\\n");
+      await wait();
+      process.stderr.write("middle\\n");
+      await wait();
+      process.stdout.write("\\nend\\n");
+    })();
+  `);
+  const result = await runShell("node print-order.cjs", { cwd: f.worktree });
+  assert.equal(result.status, 0);
+  assert.equal(result.tail, "first\n\nmiddle\n\nend");
+});
+
+test("shell proof keeps the latest ten held blank orders across streams", async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.worktree, "print-order.cjs"), `
+    const wait = () => new Promise((resolve) => setTimeout(resolve, 100));
+    (async () => {
+      process.stdout.write("first\\n" + "\\n".repeat(10));
+      await wait();
+      process.stderr.write("middle\\n");
+      await wait();
+      process.stdout.write("\\nend\\n");
+    })();
+  `);
+  const result = await runShell("node print-order.cjs", { cwd: f.worktree });
+  assert.equal(result.status, 0);
+  assert.match(result.tail, /middle\n\nend$/);
 });
 
 test("a timed out shell command fails and terminates its process tree", async (t) => {
@@ -90,6 +127,205 @@ test("Live failures keep proof, stop later commands and clean their temporary di
   const folder = proof.trimEnd().split(/\r?\n/).at(-1);
   assert.equal(existsSync(folder), false);
   assert.ok(path.basename(folder).startsWith("qc-codex-live-"));
+});
+
+test("Verify failures redact secrets in both the command and its output proof", async (t) => {
+  const f = fixture(t);
+  const token = ["ghp", "_", "a".repeat(36)].join("");
+  const command = `node -e "console.log('${token}'); process.exit(7)"`;
+  writeFileSync(f.brief, `Verify: \`${command}\`\n`);
+  assert.equal(await verifyBrief(f), false);
+  const proof = readFileSync(`${f.progress}.report.md`, "utf8");
+  assert.ok(!proof.includes(token));
+  assert.match(proof, /node -e "console\.log\('\[REDACTED\]'\); process\.exit\(7\)": exit 7 in [\d.]+ s\n\[REDACTED\]\n$/);
+});
+
+test("Verify failures redact private keys whose BEGIN header falls outside the proof tail", async (t) => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const keyLines = privateKey.trimEnd().split(/\r?\n/);
+  assert.ok(keyLines.length > 10);
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.worktree, "key.pem"), privateKey.trimEnd());
+    writeFileSync(path.join(f.worktree, "print-key.cjs"), `
+      const lines = require("node:fs").readFileSync("key.pem", "utf8").split("\\n");
+      process.${stream}.write(lines.shift() + "\\n");
+      setImmediate(() => {
+        process.${stream}.write(lines.join("\\n"));
+        process.exitCode = 7;
+      });
+    `);
+    writeFileSync(f.brief, 'Verify: `node print-key.cjs`\n');
+    assert.equal(await verifyBrief(f), false);
+    const proof = readFileSync(`${f.progress}.report.md`, "utf8");
+    for (const line of keyLines) assert.ok(!proof.includes(line), "private key line must not reach the report");
+    assert.match(proof, /exit 7 in [\d.]+ s\n\[REDACTED\]\n$/);
+  }
+});
+
+test("shell proof redacts a private key after 65,536 characters on one line", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "x".repeat(65536) + `${pem("BEGIN", "RSA")}\nlong-line-key-secret\n${pem("END", "RSA")}\n`;
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.ok(result.tail.length > 0, "the key span must leave a redaction marker");
+    assert.doesNotMatch(result.tail, /long-line-key-secret|-----BEGIN|-----END/);
+  }
+});
+
+test("shell proof redacts a token before stdout and stderr are merged", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const other = stream === "stdout" ? "stderr" : "stdout";
+    const token = ["ghp", "_", "a".repeat(200)].join("");
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      (async () => {
+        const write = (stream, text) => new Promise((resolve) => stream.write(text, resolve));
+        const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
+        await write(process.${stream}, ${JSON.stringify(token.slice(0, 140))});
+        await pause();
+        await write(process.${other}, "other-stream\\n".repeat(20));
+        await pause();
+        await write(process.${stream}, ${JSON.stringify(token.slice(140) + "\n")});
+      })();
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, [...Array(9).fill("other-stream"), "[REDACTED]"].join("\n"));
+  }
+});
+
+test("shell proof keeps AWS label context across blank lines on each stream", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "aws_secret_access_key=" + "\n".repeat(13) + "A".repeat(40);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.tail, /AAAA/);
+    assert.match(result.tail, /\[REDACTED\]/);
+  }
+});
+
+test("shell proof caps whitespace-only runs before the end sentinel", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      process.${stream}.write((" ".repeat(1024) + "\\n").repeat(20000) + "end-sentinel");
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "\n".repeat(9) + "end-sentinel");
+  }
+});
+
+test("shell proof skips trailing blank lines before taking the tail", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "failure-sentinel" + "\n".repeat(202);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "failure-sentinel");
+  }
+});
+
+test("shell proof discards the rest of a 70000-character cut line", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      process.${stream}.write("x".repeat(70000), () => {
+        setTimeout(() => process.${stream}.write("cut-line-remainder\\nretained-sentinel\\n"), 50);
+      });
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "retained-sentinel");
+  }
+});
+
+test("shell proof keeps one, two, three in line completion order", async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+    process.stdout.write("one\\n", () => {
+      setTimeout(() => process.stderr.write("two\\n", () => {
+        setTimeout(() => process.stdout.write("three\\n"), 50);
+      }), 50);
+    });
+  `);
+  const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+  assert.equal(result.status, 0);
+  assert.equal(result.tail, "one\ntwo\nthree");
+});
+
+test("shell proof keeps one key marker when a dropped line overlaps a key boundary", async (t) => {
+  const begin = pem("BEGIN", "RSA");
+  const end = pem("END", "RSA");
+  for (const chunks of [
+    ["x".repeat(70000) + begin + "secret" + end, "\nsafe\n"],
+    [begin + "\n", "secret".repeat(14000), "\n" + end + "\nsafe\n"],
+    ["x".repeat(70000) + begin.slice(0, 12), begin.slice(12) + "\nsecret\n" + end + "\nsafe\n"],
+  ]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      (async () => {
+        for (const chunk of ${JSON.stringify(chunks)}) {
+          await new Promise((resolve) => process.stdout.write(chunk, resolve));
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      })();
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "[REDACTED]\nsafe");
+  }
+});
+
+test("shell proof keeps redacting until the private key END label matches", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = `${pem("BEGIN", "RSA")}\n${pem("END", "EC")}\nsecret-after-wrong-end\n${pem("END", "RSA")}\nsafe-after-key\n`;
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "[REDACTED]\nsafe-after-key");
+  }
+});
+
+test("shell proof retains a sentinel after 65,536 characters and drops the cut line", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "x".repeat(65536) + "\nretained-sentinel\n";
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.ok(result.tail.length < 65536, "the proof must stay bounded after dropping the partial line");
+    assert.equal(result.tail, "retained-sentinel");
+  }
+});
+
+test("shell proof preserves text around a private key across stream chunks", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const chunks = [`before ${pem("BEGIN", "RSA").slice(0, 7)}`, `${pem("BEGIN", "RSA").slice(7)}\nsecret`, `\n${pem("END", "RSA").slice(0, 17)}`, `${pem("END", "RSA").slice(17)} after\n`];
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      (async () => {
+        for (const chunk of ${JSON.stringify(chunks)}) {
+          await new Promise((resolve) => process.${stream}.write(chunk, resolve));
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      })();
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "before [REDACTED] after");
+  }
 });
 
 test("proof-write failures prevent acceptance of an otherwise successful command", async (t) => {
