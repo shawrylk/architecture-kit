@@ -131,6 +131,58 @@ test("Verify failures redact private keys whose BEGIN header falls outside the p
   }
 });
 
+test("shell proof redacts a private key after 65,536 characters on one line", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "x".repeat(65536) + "-----BEGIN RSA PRIVATE KEY-----\nlong-line-key-secret\n-----END RSA PRIVATE KEY-----\n";
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.tail, /long-line-key-secret|-----BEGIN|-----END/);
+  }
+});
+
+test("shell proof keeps redacting until the private key END label matches", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "-----BEGIN RSA PRIVATE KEY-----\n-----END EC PRIVATE KEY-----\nsecret-after-wrong-end\n-----END RSA PRIVATE KEY-----\nsafe-after-key\n";
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "[REDACTED]\nsafe-after-key");
+  }
+});
+
+test("shell proof retains a sentinel after 65,536 characters and drops the cut line", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "x".repeat(65536) + "\nretained-sentinel\n";
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.ok(result.tail.length < 65536, "the proof must stay bounded after dropping the partial line");
+    assert.equal(result.tail, "retained-sentinel");
+  }
+});
+
+test("shell proof preserves text around a private key across stream chunks", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const chunks = ["before -----BE", "GIN RSA PRIVATE KEY-----\nsecret", "\n-----END RSA PRIV", "ATE KEY----- after\n"];
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      (async () => {
+        for (const chunk of ${JSON.stringify(chunks)}) {
+          await new Promise((resolve) => process.${stream}.write(chunk, resolve));
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      })();
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "before [REDACTED] after");
+  }
+});
+
 test("proof-write failures prevent acceptance of an otherwise successful command", async (t) => {
   const f = fixture(t);
   writeFileSync(f.brief, 'Report: .\nVerify: `echo ok`\n');

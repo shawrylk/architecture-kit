@@ -68,34 +68,51 @@ export function verificationPolicy(brief, settings) {
 export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 1000 }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const lines = [];
+    let text = "";
     let timedOut = false;
     let timer;
+    const emit = (value) => {
+      text += value;
+      if (text.length > 64 * 1024) {
+        const start = text.length - 64 * 1024;
+        const newline = text.indexOf("\n", start);
+        text = text[start - 1] === "\n" ? text.slice(start) : newline < 0 ? "" : text.slice(newline + 1);
+      }
+    };
     const recorder = () => {
-      let partial = "";
-      let inKey = false;
-      const line = (value) => {
-        const beginsKey = /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value);
-        if (beginsKey && !inKey) lines.push("[REDACTED]");
-        else if (!inKey) lines.push(redactOutput(value));
-        if (beginsKey) inKey = true;
-        if (inKey && /-----END [A-Z ]*PRIVATE KEY-----/.test(value)) inKey = false;
-        if (lines.length > 200) lines.splice(0, lines.length - 200);
-      };
+      let buffer = "";
+      let end = "";
       return {
         record(chunk) {
-          const parts = chunk.split("\n");
-          for (let i = 0; i < parts.length; i++) {
-            partial = (partial + parts[i]).slice(0, 64 * 1024);
-            if (i < parts.length - 1) {
-              line(partial.replace(/\r$/, ""));
-              partial = "";
+          buffer += chunk;
+          while (buffer) {
+            if (end) {
+              const index = buffer.indexOf(end);
+              if (index < 0) {
+                buffer = buffer.slice(-end.length);
+                return;
+              }
+              buffer = buffer.slice(index + end.length);
+              end = "";
+            } else {
+              const begin = /-----BEGIN ([A-Z ]*PRIVATE KEY)-----/.exec(buffer);
+              if (!begin) {
+                const length = Math.max(0, buffer.length - 100);
+                emit(buffer.slice(0, length));
+                buffer = buffer.slice(length);
+                return;
+              }
+              emit(buffer.slice(0, begin.index));
+              emit("[REDACTED]");
+              // Match the BEGIN label, as in output-redaction.mjs:7.
+              end = `-----END ${begin[1]}-----`;
+              buffer = buffer.slice(begin.index + begin[0].length);
             }
           }
         },
         flush() {
-          if (partial) line(partial.replace(/\r$/, ""));
-          partial = "";
+          if (!end) emit(buffer);
+          buffer = "";
         },
       };
     };
@@ -117,8 +134,8 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
       clearTimeout(timer);
       stdout.flush();
       stderr.flush();
-      if (timedOut) lines.push("command timed out");
-      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: lines.join("\n").trimEnd().split(/\r?\n/).slice(-10).join("\n") });
+      if (timedOut) emit(`${text && !text.endsWith("\n") ? "\n" : ""}command timed out`);
+      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: redactOutput(text).trimEnd().split(/\r?\n/).slice(-10).join("\n") });
     });
   });
 }
