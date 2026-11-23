@@ -155,6 +155,26 @@ export async function runFullCheck(config, args = [], options = {}) {
   } catch (error) { write(`check --full: ${error.message}`); return 1; }
 }
 
+export async function runAffectedCheck(config, selection = {}, options = {}) {
+  const write = options.write ?? console.log;
+  const git = options.git ?? ((...words) => gitText(config.root, ...words));
+  const os = hostOS(options.platform);
+  try {
+    if (!["linux", "windows"].includes(os)) throw new Error("unsupported platform");
+    const head = git("rev-parse", "HEAD"), clean = git("status", "--porcelain", "--untracked-files=all") === "";
+    const { problems, lines } = await (options.gates ?? runCheck)(config);
+    for (const line of lines) write(line);
+    for (const problem of problems) write(`FAIL  ${problem.feature ?? problem.path}  ${problem.rule}: ${problem.detail}`);
+    if (problems.length) return 1;
+    const code = await (options.commands ?? runCheckCommands)(config, { ...selection, affected: true });
+    if (code !== 0) return code;
+    if (process.env.QC_PLATFORM_LEG_PARENT !== config.root && clean && git("rev-parse", "HEAD") === head && git("status", "--porcelain", "--untracked-files=all") === "") {
+      (options.record ?? appendLeg)(config.root, { type: "leg", os, head, source: "local" });
+    }
+    return 0;
+  } catch (error) { write(`qc check: ${error.message}`); return 1; }
+}
+
 /** A problem names a path a reader can open — forward slashes always, since every gate splits on "/". */
 const relativeTo = (root) => (file) => (path.relative(root, file) || file).split(path.sep).join("/");
 

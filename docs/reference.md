@@ -126,6 +126,17 @@ Every gate reads one file list: `git ls-files --cached --others --exclude-standa
 `ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
 `qc decisions`. Outside a git work tree, the check walks the tree instead.
 
+`qc check --affected --base origin/main` runs the gates and the configured `check.related` command.
+Without `check.related`, it selects sibling tests and tests that import each changed harness module, including transitive imports.
+Uncertain dependency coverage, a deletion, missing base, shared config change, or uncovered file falls back to the repository test script.
+The base defaults to `check.base`. This mode accepts no file list, `--full`, `--os`, or `--since-push`.
+A passing affected run records the same host leg as a full run, only for a clean, unchanged head.
+Readiness still requires exact-head evidence and every configured platform when the diff has platform risk.
+
+CI runs affected checks on pull requests on Linux and Windows. Main pushes and nightly runs at 02:00 UTC run the full suite.
+Preview dispatches and merge queues also keep the full suite. Main or nightly failures open one `ci-red` and `priority` issue
+per failing SHA with its run URL; only that trusted reporting job receives issue-write permission.
+
 ### Record platform legs
 
 `qc check --full` runs the gates, the configured check commands, and the whole test suite from the repository's test script.

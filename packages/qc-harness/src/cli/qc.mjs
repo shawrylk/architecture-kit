@@ -12,6 +12,7 @@ const USAGE = `qc — architecture gates
 
   qc check [file...] [--files-from <path|->] [--since-push]
                            every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
+  qc check --affected [--base <ref>]  gates and affected tests; records a clean host leg
   qc check --full [--os <linux|windows>]
                            the gates and whole test suite; a clean pass records a platform leg
   qc ci-preview [--os <linux|windows|both>]
@@ -203,6 +204,15 @@ async function main() {
       return;
     }
     case "check": {
+      if (rest.includes("--affected") || rest.includes("--base")) {
+        const args = rest.filter((arg) => arg !== "--affected");
+        if (rest.filter((arg) => arg === "--affected").length !== 1 || !(args.length === 0 || (args.length === 2 && args[0] === "--base" && args[1] && !args[1].startsWith("-")))) {
+          console.error("qc check: --affected accepts only --base <ref>"); process.exitCode = 1; return;
+        }
+        const { runAffectedCheck } = await import("./check.mjs");
+        process.exitCode = await runAffectedCheck(config, { base: args[1] ?? config.check.base }, { write: console.error });
+        return;
+      }
       if (rest.includes("--full")) {
         const { runFullCheck } = await import("./check.mjs");
         process.exitCode = await runFullCheck(config, rest.filter((arg) => arg !== "--full"));
