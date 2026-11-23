@@ -69,13 +69,27 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
   return new Promise((resolve) => {
     const started = Date.now();
     const lines = [];
+    let nextLine = 0;
     let timedOut = false;
     let timer;
-    const emit = (line) => {
-      lines.push(redactOutput(line.replace(/\r$/, "")));
+    const emitLine = (line, order = nextLine++) => {
+      lines.push({ text: redactOutput(line.replace(/\r$/, "")), order });
+      lines.sort((a, b) => a.order - b.order);
       if (lines.length > 200) lines.shift();
     };
     const recorder = () => {
+      let group = [];
+      const emit = (line) => {
+        const entry = { text: line.replace(/\r$/, ""), order: nextLine++ };
+        if (!entry.text.trim()) {
+          group.push(entry);
+          return;
+        }
+        const redacted = redactOutput([...group.map(({ text }) => text), entry.text].join("\n")).split("\n");
+        for (let index = 0; index < redacted.length - 1; index++) emitLine(redacted[index], group[index].order);
+        // Keep completion order when a held line is emitted after another stream's lines.
+        group = [{ text: redacted.at(-1), order: entry.order }];
+      };
       let buffer = "";
       let end = "";
       let dropping = false;
@@ -135,6 +149,9 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
         flush() {
           if (buffer) consume(buffer, dropping);
           if (prefix) emit(prefix);
+          const redacted = redactOutput(group.map(({ text }) => text).join("\n")).split("\n");
+          for (let index = 0; index < group.length && index < redacted.length; index++) emitLine(redacted[index], group[index].order);
+          group = [];
           buffer = "";
           prefix = "";
         },
@@ -158,8 +175,9 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
       clearTimeout(timer);
       stdout.flush();
       stderr.flush();
-      if (timedOut) emit("command timed out");
-      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: lines.slice(-10).join("\n").trimEnd() });
+      if (timedOut) emitLine("command timed out");
+      while (lines.length && !lines.at(-1).text.trim()) lines.pop();
+      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: lines.slice(-10).map(({ text }) => text).join("\n").trimEnd() });
     });
   });
 }

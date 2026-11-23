@@ -167,6 +167,29 @@ test("shell proof redacts a token before stdout and stderr are merged", async (t
   }
 });
 
+test("shell proof keeps AWS label context across blank lines on each stream", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "aws_secret_access_key=" + "\n".repeat(13) + "A".repeat(40);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.doesNotMatch(result.tail, /AAAA/);
+    assert.match(result.tail, /\[REDACTED\]/);
+  }
+});
+
+test("shell proof skips trailing blank lines before taking the tail", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const output = "failure-sentinel" + "\n".repeat(12);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "failure-sentinel");
+  }
+});
+
 test("shell proof discards the rest of a 70000-character cut line", async (t) => {
   for (const stream of ["stdout", "stderr"]) {
     const f = fixture(t);
