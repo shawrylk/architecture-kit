@@ -117,9 +117,11 @@ export async function verifyBaseTests(worktree, base, cases, command = ["node", 
       if (lstatSync(destination, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`unsafe base test path: ${file}`);
       return { file, source, destination };
     });
-    for (const { file, source, destination } of targets) {
+    for (const { source, destination } of targets) {
       mkdirSync(path.dirname(destination), { recursive: true });
       copyFileSync(source, destination);
+    }
+    for (const { file, destination } of targets) {
       if (await runTestCommand([...command, destination], checkout) === 0) {
         problems.push(`${file}: passes on the base: ${cases.filter((entry) => entry.path === file).map((entry) => entry.name).join(", ")}`);
       }

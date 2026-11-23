@@ -100,6 +100,18 @@ test("a new test that passes on the base → exit 4 naming the test", async (t) 
   assert.equal(existsSync(path.join(outside, "created-outside")), false);
   assert.equal(existsSync(escaped.lock), false);
   assert.equal(escaped.git("worktree", "list", "--porcelain").match(/^worktree /gm).length, 1);
+  const mutation = fixture(t, "tests");
+  const external = path.join(mutation.root, "outside");
+  mkdirSync(external);
+  mkdirSync(path.join(mutation.worktree, "suite"));
+  writeFileSync(path.join(mutation.worktree, "a.test.mjs"), `import { symlinkSync } from 'node:fs';\nsymlinkSync(${JSON.stringify(external)}, 'suite', 'dir');\nprocess.exit(1);\n`);
+  writeFileSync(path.join(mutation.worktree, "suite", "b.test.mjs"), "process.exit(1);\n");
+  assert.deepEqual(await verifyBaseTests(mutation.worktree, mutation.base, [
+    { path: "a.test.mjs", name: "mutates parent" },
+    { path: "suite/b.test.mjs", name: "stays inside" },
+  ]), { problems: [] });
+  assert.equal(existsSync(path.join(external, "b.test.mjs")), false);
+  assert.equal(mutation.git("worktree", "list", "--porcelain").match(/^worktree /gm).length, 1);
   const custom = fixture(t, "tests", { tests: { command: [process.execPath, "probe.mjs"] } });
   writeFileSync(path.join(custom.worktree, "probe.mjs"), "import { appendFileSync } from 'node:fs';\nappendFileSync(process.argv[2] + '.ran', 'yes');\nprocess.exit(7);\n");
   custom.git("add", "."); custom.git("commit", "-qm", "custom runner");
