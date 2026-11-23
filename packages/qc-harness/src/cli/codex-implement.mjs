@@ -333,7 +333,7 @@ export async function runCodexImplement(argv, { out = writeLine, warn = console.
   try {
     const settings = metrics.settings;
     const worktreeIndex = argv.indexOf("--worktree");
-    const root = settings?.worktree ?? (worktreeIndex >= 0 ? argv[worktreeIndex + 1] : undefined) ?? process.cwd();
+    const root = settings?.worktree ?? (worktreeIndex >= 0 ? argv[worktreeIndex + 1] : undefined);
     let verdict = null;
     let findings = null;
     try {
@@ -343,7 +343,7 @@ export async function runCodexImplement(argv, { out = writeLine, warn = console.
         findings = text.split(/\r?\n/).filter((line) => line.startsWith("- [P")).length;
       }
     } catch { /* An absent report has no verdict or finding count. */ }
-    appendRun(runLogFileOf(root), {
+    if (root) appendRun(runLogFileOf(root), {
       kind: "codex", time: new Date(clock()).toISOString(), branch: currentBranch(root),
       issue: metrics.issue ?? null, role: metrics.role ?? settings?.role ?? "implement", effort: metrics.effort ?? null,
       exit: code, refusal: metrics.refusal,
