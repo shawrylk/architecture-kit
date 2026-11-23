@@ -39,7 +39,6 @@
     "./eslint": "./src/eslint/index.mjs",
     "./preset": "./src/eslint/preset.mjs",
     "./config": "./src/config.mjs",
-    "./screens": "./src/screens/catalog.mjs",
     "./gates/*": "./src/gates/*.mjs",
     "./package.json": "./package.json",
     "./ui/*": "./src/ui/*.mjs"
@@ -64,10 +63,7 @@
     "@commitlint/lint": ">=19",
     "@commitlint/config-conventional": ">=19",
     "yaml": ">=2",
-    "typescript": ">=5",
-    "pixelmatch": ">=8",
-    "playwright": ">=1.64",
-    "pngjs": ">=7"
+    "typescript": ">=5"
   },
   "peerDependenciesMeta": {
     "@typescript-eslint/eslint-plugin": {
@@ -93,15 +89,6 @@
     },
     "typescript": {
       "optional": true
-    },
-    "pixelmatch": {
-      "optional": true
-    },
-    "playwright": {
-      "optional": true
-    },
-    "pngjs": {
-      "optional": true
     }
   },
   "devDependencies": {
@@ -112,9 +99,6 @@
     "eslint": "^9",
     "eslint-plugin-boundaries": "^5",
     "eslint-plugin-sonarjs": "^3",
-    "pixelmatch": "^8.0.0",
-    "playwright": "^1.64.1",
-    "pngjs": "^7.0.0",
     "typescript": "^5",
     "yaml": "^2.9.1"
   }

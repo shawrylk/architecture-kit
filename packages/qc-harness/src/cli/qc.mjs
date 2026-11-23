@@ -91,6 +91,7 @@ const USAGE = `qc — architecture gates
   qc doctor                the hooks and the lockfile must run the same harness
   qc config                print the resolved configuration
 
+qc stack, qc screens and qc throwaway-db run from pinned GitHub commits on first use.
 Every gate reads qc.config.json. A key it does not set keeps the reference default.`;
 
 async function main() {
@@ -118,21 +119,9 @@ async function main() {
     const { runSetup } = await import("./setup.mjs");
     process.exit(await runSetup(rest));
   }
-  if (command === "stack") {
-    const { runStack } = await import("./stack.mjs");
-    process.exit(await runStack(rest));
-  }
-  if (command === "screens") {
-    // The screen packages are optional peers: only this command needs them, so a repository installs them for it.
-    try {
-      const { runScreens } = await import("./screens.mjs");
-      process.exit(await runScreens(rest));
-    } catch (error) {
-      const missing = /Cannot find package '(playwright|pixelmatch|pngjs)'/.exec(error?.message ?? "");
-      if (error?.code !== "ERR_MODULE_NOT_FOUND" || !missing) throw error;
-      console.error(`qc screens needs the ${missing[1]} package. Install the screen packages: pnpm add -D playwright pixelmatch pngjs`);
-      process.exit(2);
-    }
+  if (["stack", "screens", "throwaway-db"].includes(command)) {
+    const { runTool } = await import("./tools.mjs");
+    process.exit(await runTool(command, rest));
   }
   if (command === "pause" || command === "resume") {
     const { runPause, runResume } = await import("./pause.mjs");
@@ -310,10 +299,6 @@ async function main() {
     case "tokens": {
       const { runTokens } = await import("./tokens.mjs");
       process.exit(runTokens(config, rest));
-    }
-    case "throwaway-db": {
-      const { runThrowawayDb } = await import("./throwaway-db.mjs");
-      process.exit(await runThrowawayDb(config, rest));
     }
     case "retry-failed": {
       const { runRetryFailed } = await import("./retry-failed.mjs");

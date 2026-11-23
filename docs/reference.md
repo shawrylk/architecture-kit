@@ -31,6 +31,9 @@ claude plugin marketplace add shawrylk/architecture-kit
 claude plugin install architecture@architecture-kit
 ```
 
+The plugin depends on [ai-chat-assistant](https://github.com/shawrylk/ai-chat-assistant),
+which has its own pinned GitHub entry in this marketplace.
+
 The `sdd-*` subagent types and the `codex` skill follow the `subagent-driven-development` skill of the
 `superpowers` plugin. Install it if you use them:
 
@@ -46,6 +49,21 @@ pnpm add -D architecture-harness --save-exact
 
 The exact version and the lockfile keep the installed package fixed until you update it.
 Continue with [Tutorial](#tutorial) to set up your repository.
+
+### Tools from GitHub
+
+`qc stack`, `qc screens` and `qc throwaway-db` run from pinned GitHub commits on first use.
+The CLI installs them through npm; the first run needs access to GitHub. The pins live in
+`packages/qc-harness/src/cli/tools.mjs`. Commands and flags stay the same, including
+`npx qc throwaway-db -- <command>`.
+
+| Command | Tool repository |
+|---|---|
+| `qc stack` | [qc-stack](https://github.com/shawrylk/qc-stack) |
+| `qc screens` | [qc-screens](https://github.com/shawrylk/qc-screens) |
+| `qc throwaway-db` | [qc-throwaway-db](https://github.com/shawrylk/qc-throwaway-db) |
+
+`qc stack` installs the pinned `qc-screens` package alongside `qc-stack` for stack authentication.
 
 ## Tutorial
 
@@ -758,7 +776,8 @@ browser test, a live database test, a commit, and a push. At most `QC_GATE_SLOTS
 such commands run at once. Each claim records its process id, so a claim whose process is gone is
 freed on the next claim. `npx qc gate-slot --status` lists the holders.
 
-`npx qc throwaway-db -- <command>` runs a command on a database of its own: a postgres container
+`npx qc throwaway-db -- <command>` runs [qc-throwaway-db](https://github.com/shawrylk/qc-throwaway-db)
+on a database of its own: a postgres container
 on a free port, never 5432, removed with its data volume once the command exits. `throwawayDb.env` in `qc.config.json`
 names each variable the command reads, such as `{ "DATABASE_URL": "{url}" }`. `--database <name>`
 overrides `throwawayDb.database` for one run. The command gets each word after `--` unchanged. On
@@ -1593,13 +1612,9 @@ npx qc ui codemod --suggest                        # arbitrary-value tokens, wit
 
 ### Compare screen pairs
 
-`qc screens` captures two applications with Playwright and compares their pixels with `pixelmatch`.
-The screen packages are optional peer dependencies, so install them with the package. Install Google
-Chrome before the first capture.
-
-```sh
-pnpm add -D playwright pixelmatch pngjs
-```
+`qc screens` runs [qc-screens](https://github.com/shawrylk/qc-screens), which captures two applications
+with Playwright and compares their pixels with `pixelmatch`. The CLI installs the pinned tool on first use.
+Install Google Chrome before the first capture.
 
 ```sh
 npx qc screens --map screens.json --targets legacy,mono --out captures

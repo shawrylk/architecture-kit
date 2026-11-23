@@ -44,7 +44,6 @@ test("shipped global skills use neutral text and optional source navigation tool
 test("the plugin contains exactly the global skills and the kit skills", () => {
   assert.deepEqual(readdirSync(`${PLUGIN}skills`).sort(), [
     ...GLOBAL_SKILLS,
-    "ai-chat-assistant",
     "architecture",
     "codex",
     "enforcement",

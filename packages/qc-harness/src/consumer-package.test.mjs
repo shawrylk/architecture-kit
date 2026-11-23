@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -18,13 +17,13 @@ test("consumer packages resolve beside the consumer, including ESM-only packages
       assert.equal((await importConsumerPackage(name, root)).value, 178);
     }
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
 test("an installed peer with a missing require entry keeps the resolution error", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "qc-broken-peer-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const directory = join(root, "node_modules", "yaml");
   mkdirSync(directory, { recursive: true });
   writeFileSync(join(directory, "package.json"), JSON.stringify({ exports: { require: "./missing.cjs" } }));
@@ -50,20 +49,6 @@ test("consumer package loader rejects names outside the optional peer allowlist"
       await assert.rejects(importConsumerPackage(name, root), { message: `Unsupported optional peer '${name}'` });
     }
   } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test("screens without optional peers prints the install hint and exits 2", () => {
-  const root = mkdtempSync(join(tmpdir(), "qc-no-peers-"));
-  try {
-    cpSync(new URL("./", import.meta.url), join(root, "src"), { recursive: true });
-    const result = spawnSync(process.execPath, [join(root, "src/cli/qc.mjs"), "screens", "list"], { cwd: root, encoding: "utf8" });
-    assert.equal(result.status, 2, result.stderr);
-    assert.match(result.stderr, /qc screens needs the (pngjs|pixelmatch|playwright) package/);
-    assert.match(result.stderr, /pnpm add -D playwright pixelmatch pngjs/);
-    assert.doesNotMatch(result.stderr, /Require stack|at async/);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
