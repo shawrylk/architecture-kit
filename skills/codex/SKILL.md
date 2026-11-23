@@ -54,7 +54,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - A review uses `--review --report <file>`. It pins `codex.reviewModel` at high effort and records the `VERDICT:` line in the ledger.
 - Never call `codex exec` directly, and never start Codex in the main checkout, the scratchpad, or the home folder.
 - The child gets system variables, `CODEX_`, `GIT_`, and `QC_` names, `OPENAI_API_KEY`, and names in `codex.envAllow`. A brief that needs `gh` reads its token through `gh auth token`.
-- Run one job at a time. Run more only up to `swarm.dispatch.implementerSlots`, on disjoint paths, with more than 4 GB of free memory for each extra run.
+- Run independent jobs in parallel, up to `swarm.dispatch.implementerSlots` (default 3). Give each job its own worktree and disjoint paths. Keep more than 4 GB of free memory for each extra run.
 - Use `--max-runs 2` for a second session, and `--wait-reset` to resume after a Codex reset.
 
 ## Read the result

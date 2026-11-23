@@ -165,7 +165,7 @@ test("a prompt over the limit is refused, and the refusal claims no slot", (t) =
 });
 
 test("a second implementer is refused until the first one stops, and the refusal names the slot file", (t) => {
-  const ws = workspace(t);
+  const ws = workspace(t, { implementerSlots: 1 });
   assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
   const second = reasonOf(decide(agentCall(ws.on, { ...implementer, subagent_type: "sdd-implementer" }), ws.tmp)) ?? "";
   assert.match(second, /holds the one implementer slot/);
@@ -223,7 +223,7 @@ test("a repository's models override replaces one type's families and leaves the
 });
 
 test("a slot with no stop expires after slotMinutes", (t) => {
-  const ws = workspace(t);
+  const ws = workspace(t, { implementerSlots: 1 });
   decide(agentCall(ws.on, implementer), ws.tmp);
   assert.notEqual(reasonOf(decide(agentCall(ws.on, implementer), ws.tmp)), null);
   const future = new Date(Date.now() + 61 * 60_000);
@@ -299,7 +299,7 @@ test("agents in one assistant message share the first dispatch age check", (t) =
 });
 
 test("a resumed implementer holds the slot again", (t) => {
-  const ws = workspace(t);
+  const ws = workspace(t, { implementerSlots: 1 });
   decide(agentCall(ws.on, implementer), ws.tmp);
   decide(subagentEvent(ws.on, "architecture:sdd-implementer"), ws.tmp);
   decide(subagentEvent(ws.on, "architecture:sdd-implementer", "SubagentStart"), ws.tmp);
@@ -354,8 +354,8 @@ const agentEvent = (cwd, agentId, hook_event_name) => ({
   agent_id: agentId,
 });
 
-test("a limit of 3 lets three implementers run, refuses the fourth with the holders and the limit, and a stop frees one", (t) => {
-  const ws = workspace(t, { implementerSlots: 3 });
+test("the default limit lets three implementers run, refuses the fourth with the holders and the limit, and a stop frees one", (t) => {
+  const ws = workspace(t);
   for (const id of ["a", "b", "c"]) {
     assert.equal(decide(slotCall(ws.on, `use-${id}`), ws.tmp), null);
     decide(agentEvent(ws.on, `agent-${id}`, "SubagentStart"), ws.tmp);
@@ -394,7 +394,7 @@ const taskStop = (cwd, taskId) => ({
 });
 
 test("a TaskStop frees the slot of the agent it stopped, and a TaskStop of another task frees nothing", (t) => {
-  const ws = workspace(t);
+  const ws = workspace(t, { implementerSlots: 1 });
   assert.equal(decide(slotCall(ws.on, "use-a"), ws.tmp), null);
   decide(agentEvent(ws.on, "agent-a", "SubagentStart"), ws.tmp);
   assert.equal(decide(taskStop(ws.on, "shell-9"), ws.tmp), null);
@@ -404,7 +404,7 @@ test("a TaskStop frees the slot of the agent it stopped, and a TaskStop of anoth
 });
 
 test("a session startup or resume frees every slot of the session, and a compaction frees none", (t) => {
-  const ws = workspace(t);
+  const ws = workspace(t, { implementerSlots: 1 });
   assert.equal(decide(slotCall(ws.on, "use-a"), ws.tmp), null);
   const start = (source) => ({ session_id: "session-aaaa", cwd: ws.on, hook_event_name: "SessionStart", source });
   assert.equal(decide(start("compact"), ws.tmp), null);

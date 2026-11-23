@@ -680,7 +680,7 @@ fix:
   string carrying none of `models`' known families is refused the same way. A fork keeps the rule
   above instead, since it ignores `model`.
 - A prompt longer than `maxPromptChars`. The brief goes in a file, and the prompt names its path.
-- A dispatch of a type in `implementerTypes` while `implementerSlots` of them run in the session. The default is one.
+- A dispatch of a type in `implementerTypes` while `implementerSlots` of them run in the session. The default is three.
 
 The hook judges the dispatches of the main session only. A subagent's dispatch follows that
 subagent's own definition, which is often another plugin's. The hook keeps `implementerSlots` fixed slot files per session under the OS temp folder, `slot-0.claim`
@@ -696,11 +696,11 @@ the hook can still be denied later, and then no stop comes. So the refusal names
 delete. At a limit of 1 it names the claim's time and file. Above 1 it also names each holder and the
 limit.
 
-A limit over 1 fits a repository whose work orders own disjoint paths. Each implementer then runs in
-its own worktree.
+By default, up to three implementers run at once. Each needs disjoint paths and its own worktree;
+each extra implementer needs more than 4 GB of free memory. Set `implementerSlots: 1` for one at a time.
 
 A `SessionStart` hook adds one short note at each start, resume, clear, compaction, and fork. The note
-names the workflow, the four types, each role's models for the session's runtime, and the one-implementer rule, and makes Codex the first choice through `qc codex-implement`. When `implementerSlots` is over 1, the note adds one line that states the limit and replaces that rule. With `QC_ROLE=implementer` in the environment, the note is the worker note instead, as the next section says.
+names the workflow, the four types, each role's models for the session's runtime, and the configured implementer limit, and makes Codex the first choice through `qc codex-implement`. With `implementerSlots` above 1, the note states the parallel rule directly, including the worktree, disjoint-path, and memory requirements. With `implementerSlots: 1`, it keeps the one-at-a-time rule. With `QC_ROLE=implementer` in the environment, the note is the worker note instead, as the next section says.
 
 Load `architecture:codex` before the first implementer dispatch; the skill covers the brief, the runner, the results, CI, the review, and the merge.
 
@@ -710,7 +710,7 @@ Load `architecture:codex` before the first implementer dispatch; the skill cover
 | `implementerTypes` | `["sdd-implementer", "architecture:sdd-implementer"]` | the types that share the slots |
 | `maxPromptChars` | `12000` | the longest prompt, in characters |
 | `slotMinutes` | `60` | when a slot with no stop expires |
-| `implementerSlots` | `1` | how many implementers run at once in a session; a positive whole number |
+| `implementerSlots` | `3` | how many implementers run at once in a session; a positive whole number |
 | `models` | the runtime's table above | the model families each type's named `model` may carry |
 
 `gpt-6.1-sol` is an exact model id; other GPT model ids are refused.

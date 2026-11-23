@@ -60,21 +60,23 @@ test("with the section on, every start adds the note, a compaction included", (t
   }
 });
 
-test("the note names the workflow, the four types, and the one-implementer rule, in a short text", () => {
+test("the note names the workflow, the four types, and the parallel rule, in a short text", () => {
   for (const word of [
     "superpowers:subagent-driven-development",
     "architecture:sdd-planner",
     "architecture:sdd-implementer",
     "architecture:sdd-reviewer",
     "architecture:sdd-branch-reviewer",
-    "one implementer at a time",
+    "up to 3 implementers at once",
+    "disjoint paths",
+    "more than 4 GB of free memory",
     "Worktree: <path>",
     "VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>",
     "--match-head-commit <sha>",
   ]) {
     assert.ok(REMINDER.includes(word), word);
   }
-  assert.ok(REMINDER.length < 1300, `${REMINDER.length} characters`);
+  assert.ok(REMINDER.length < 1500, `${REMINDER.length} characters`);
 });
 
 test("the note says to review a green head only, to fix CI first, and to review a fix round by its increment", () => {
@@ -170,15 +172,39 @@ test("hooks.json also runs the note on SubagentStart, all matchers, beside the e
   );
 });
 
-test("a limit above 1 adds one line stating it, and a limit of 1 leaves the note as the base note", (t) => {
-  const [three, one] = checkouts(t, [
-    { swarm: { dispatch: { implementerSlots: 3 } } },
+test("the default and custom parallel limits state the rule directly; one keeps the original rule", (t) => {
+  const [defaults, five, one] = checkouts(t, [
+    { swarm: { direct: false, dispatch: {} } },
+    { swarm: { direct: false, dispatch: { implementerSlots: 5 } } },
     { swarm: { direct: false, dispatch: { implementerSlots: 1 } } },
   ]);
-  const text = decide(start(three, "startup")).hookSpecificOutput.additionalContext;
-  assert.ok(text.startsWith(BASE));
-  assert.match(text, /up to 3 implementers at once/);
-  assert.equal(decide(start(one, "startup")).hookSpecificOutput.additionalContext, BASE);
+  for (const [cwd, limit] of [[defaults, 3], [five, 5]]) {
+    const text = decide(start(cwd, "startup")).hookSpecificOutput.additionalContext;
+    assert.ok(text.includes(`up to ${limit} implementers at once`));
+    assert.match(text, /each in its own worktree/);
+    assert.match(text, /disjoint paths/);
+    assert.match(text, /more than 4 GB of free memory/);
+    assert.match(text, /A hook refuses one over the limit/);
+    assert.doesNotMatch(text, /one implementer at a time|one-at-a-time/);
+  }
+  assert.equal(decide(start(defaults, "startup")).hookSpecificOutput.additionalContext, BASE);
+  const serial = decide(start(one, "startup")).hookSpecificOutput.additionalContext;
+  assert.equal(
+    serial,
+    "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
+    "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
+    "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
+    "whole branch. " +
+    "Run one implementer at a time: a hook refuses a second. Name a model on any other dispatch, and " +
+    "write each brief to a file and name its path on a prompt line `Brief: <path>`; a dispatch with no such line, or a missing file, is refused. " +
+    "Name the worktree on a prompt line `Worktree: <path>`; a reviewer whose worktree, branch, or head the gate cannot read is refused. A reviewer starts with " +
+    "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`. " +
+    "Ask the user the product questions first, in one question, and record the answers under `## Product decisions` in each brief. " +
+    "Review a head only once CI on it is green, with the base merged in: fix a CI failure first, and merge `origin/<base>` at Step 0 of a fix round. " +
+    "A PR gets one branch review. After it, review each fix round once, by its increment: add `Reviewed: <sha>`, the last head a branch review named." +
+      modelsLine({ models: runtimeModels.codex, runtime: "codex" }) + CODEX_LINE,
+  );
+  assert.doesNotMatch(serial, /implementers at once|one over the limit/);
 });
 
 test("SubagentStart gives each tool's use and command, in config order, since a plugin agent carries no MCP tool", (t) => {

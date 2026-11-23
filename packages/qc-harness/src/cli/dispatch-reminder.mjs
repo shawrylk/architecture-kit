@@ -3,21 +3,24 @@
 // and fork, because a rule held only in the conversation is lost to a compaction.
 
 import { fileURLToPath } from "node:url";
+import { dispatchDefaults } from "../config.mjs";
 import { directSettingsAt } from "./direct-lane.mjs";
 import { dispatchSettingsAt, exploreSettingsAt, exploreToolLines } from "./dispatch.mjs";
 
-export const REMINDER =
+const reminder = (implementerSlots) =>
   "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
   "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
   "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
   "whole branch. " +
-  "Run one implementer at a time: a hook refuses a second. Name a model on any other dispatch, and " +
+  slotsRule(implementerSlots) + " Name a model on any other dispatch, and " +
   "write each brief to a file and name its path on a prompt line `Brief: <path>`; a dispatch with no such line, or a missing file, is refused. " +
   "Name the worktree on a prompt line `Worktree: <path>`; a reviewer whose worktree, branch, or head the gate cannot read is refused. A reviewer starts with " +
   "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`. " +
   "Ask the user the product questions first, in one question, and record the answers under `## Product decisions` in each brief. " +
   "Review a head only once CI on it is green, with the base merged in: fix a CI failure first, and merge `origin/<base>` at Step 0 of a fix round. " +
   "A PR gets one branch review. After it, review each fix round once, by its increment: add `Reviewed: <sha>`, the last head a branch review named.";
+
+export const REMINDER = reminder(dispatchDefaults.implementerSlots);
 
 /** The reminder names Codex first, its controller skill, and the runtime routing rules. */
 export const CODEX_LINE =
@@ -57,11 +60,12 @@ export function modelsLine({ models, runtime }) {
 
 const context = (eventName, text) => ({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
 
-/** One added line for a limit above 1, which overrides the one-at-a-time rule of the note. */
-const slotsLine = ({ implementerSlots }) =>
-  implementerSlots > 1
-    ? ` This repository allows up to ${implementerSlots} implementers at once, each in its own worktree, so the one-at-a-time rule above does not apply. A hook refuses one over the limit.`
-    : "";
+/** State the configured limit directly, retaining the original rule for a single slot. */
+function slotsRule(implementerSlots) {
+  return implementerSlots > 1
+    ? `Run up to ${implementerSlots} implementers at once, each in its own worktree with disjoint paths; each extra implementer needs more than 4 GB of free memory. A hook refuses one over the limit.`
+    : "Run one implementer at a time: a hook refuses a second.";
+}
 
 /** One added line for the direct lane of `swarm.direct`, or "" when it is off. */
 function directLine(cwd) {
@@ -124,7 +128,7 @@ function decideSessionStart(call, env) {
   if (env.QC_ROLE === "scout") return context("SessionStart", `scout worker mode: Work inline. Do not edit, stage, or commit worktree files. Write only the external report and progress; include Gap:, Plan:, Check:, Risks:, Questions:, Breaking: yes|no.${explore}`);
   if (["tests", "review"].includes(env.QC_ROLE)) return context("SessionStart", `${env.QC_ROLE} worker mode: Work inline. Follow the brief's role and exit criteria. Start no helper agents.${explore}`);
   if (env.QC_ROLE === "implementer") return context("SessionStart", `${WORKER_NOTE}${explore}`);
-  return context("SessionStart", `${REMINDER}${modelsLine(dispatch)}${CODEX_LINE}${slotsLine(dispatch)}${directLine(cwd)}${explore}`);
+  return context("SessionStart", `${reminder(dispatch.implementerSlots)}${modelsLine(dispatch)}${CODEX_LINE}${directLine(cwd)}${explore}`);
 }
 
 /** @returns the hook output, or null when there is nothing to add for this event. */

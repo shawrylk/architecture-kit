@@ -15,7 +15,7 @@ import { PARSERS } from "./bash-command-guard.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { configAtBase, gitBy, LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
-import { runGh, runGhAsync } from "./gh-run.mjs";
+import { runGh, runGhAsync, runGhResult } from "./gh-run.mjs";
 import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
 import { globMatcher } from "../glob.mjs";
 import { MILESTONE_PATTERN } from "./milestone.mjs";
@@ -78,23 +78,29 @@ export function mergeVerdict(merges, records, kind, lane = null, promotion = nul
 export const mergeRefusal = (merges, records, kind, lane = null) => mergeVerdict(merges, records, kind, lane).refusal;
 
 /** The PR base selects its review policy; its head identifies a promotion. Missing base details keep the guard closed. */
-function prBaseOf(merge, cwd, gh, timeoutMs) {
+function prBaseOf(merge, cwd, gh, deadline) {
+  const read = (args) => {
+    const timeoutMs = deadline - Date.now();
+    if (timeoutMs <= 0) return null;
+    const options = { cwd, env: merge.env, timeoutMs };
+    if (gh !== runGh) return gh(args, options);
+    const result = runGhResult(args, options);
+    if (result.status !== 0) throw new Error(result.stderr?.trim() || result.error?.message || "gh failed to read the PR base");
+    return result.stdout;
+  };
   const args = merge.nodeId
     ? ["api", "graphql", "-f", "query=query($id: ID!) { node(id:$id){... on PullRequest{number baseRefName baseRefOid repository{nameWithOwner} labels(first:100){nodes{name} pageInfo{hasNextPage}} headRefName isCrossRepository}}}", "-f", `id=${merge.nodeId}`]
-    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"];
-  try {
-    const answer = JSON.parse(gh(args, { cwd, env: merge.env, timeoutMs }) ?? "null");
-    const pr = merge.nodeId ? answer?.data?.node : answer;
-    if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
-      typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
-    return typeof pr?.baseRefName === "string"
-      ? { name: pr.baseRefName, oid: pr.baseRefOid ?? null, head: pr.headRefName ?? null, number: Number.isInteger(pr.number) && pr.number > 0 ? pr.number : null, sameRepository: pr.isCrossRepository === false,
-        labels: merge.nodeId ? pr.labels?.nodes : pr.labels,
-        moreLabels: merge.nodeId ? pr.labels?.pageInfo?.hasNextPage !== false : pr.labels?.length >= 100 }
-      : null;
-  } catch {
-    return null;
-  }
+    : ["pr", "view", ...(merge.selector ? [merge.selector] : []), ...(merge.repo ? ["-R", merge.repo] : []), "--json", "baseRefName,headRefName,number,isCrossRepository,labels"];
+  const answer = JSON.parse(read(args) ?? "null");
+  const pr = merge.nodeId ? answer?.data?.node : answer;
+  if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
+    typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
+  if (typeof pr?.baseRefName !== "string") return null;
+  const ref = pr.baseRefName.split("/").map(encodeURIComponent).join("/");
+  const oid = merge.nodeId ? pr.baseRefOid : read(["api", `repos/${merge.repo || "{owner}/{repo}"}/git/ref/heads/${ref}`, ...(merge.host ? ["--hostname", merge.host] : []), "--jq", ".object.sha"])?.trim();
+  return { name: pr.baseRefName, oid: oid || null, head: pr.headRefName ?? null, number: Number.isInteger(pr.number) && pr.number > 0 ? pr.number : null, sameRepository: pr.isCrossRepository === false,
+    labels: merge.nodeId ? pr.labels?.nodes : pr.labels,
+    moreLabels: merge.nodeId ? pr.labels?.pageInfo?.hasNextPage !== false : pr.labels?.length >= 100 };
 }
 
 /** Record: a hold refusal that waits for the operator. */
@@ -102,9 +108,15 @@ class HoldRefusal extends Error {}
 
 /** The fragment that reads one merge's PR base and workflow within the shared deadline. */
 function policyOf(merge, root, cwd, gh, deadline) {
-  const left = deadline - Date.now();
-  const pr = left > 0 ? prBaseOf(merge, cwd, gh, left) : null;
-  if (!pr) throw new Error("gh cannot read the base branch of the PR within the time budget of the lane");
+  let pr;
+  try {
+    pr = prBaseOf(merge, cwd, gh, deadline);
+  } catch (error) {
+    if (Date.now() >= deadline) throw new Error("gh cannot read the base branch of the PR within the time budget of the lane");
+    throw new Error(`gh cannot read the base branch of the PR: ${String(error.message ?? error).split(/\r?\n/)[0]}`);
+  }
+  if (Date.now() >= deadline) throw new Error("gh cannot read the base branch of the PR within the time budget of the lane");
+  if (!pr) throw new Error("gh cannot read the base branch of the PR");
   const git = (dir, ...args) => {
     const remaining = deadline - Date.now();
     return remaining > 0 ? gitOutWithin(remaining, dir, ...args) : null;

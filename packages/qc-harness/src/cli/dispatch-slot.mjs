@@ -24,7 +24,7 @@ const slotFileOf = (dir, index) => path.join(dir, `slot-${index}.claim`);
 
 function recordedSettings(dir) {
   try {
-    const { implementerTypes, slotMinutes, implementerSlots = 1 } = JSON.parse(
+    const { implementerTypes, slotMinutes, implementerSlots = 3 } = JSON.parse(
       readFileSync(path.join(dir, SETTINGS_FILE), "utf8"),
     );
     const valid = Array.isArray(implementerTypes) && slotMinutes > 0 && Number.isInteger(implementerSlots) && implementerSlots > 0;
@@ -132,7 +132,7 @@ function refusalOf(slots, ttlMs, limit) {
  */
 export function claimSlot(dir, settings, now, holderId = randomUUID()) {
   const ttlMs = settings.slotMinutes * MINUTE_MS;
-  const limit = settings.implementerSlots ?? 1;
+  const limit = settings.implementerSlots ?? 3;
   const held = `${PENDING}${holderId}`;
   expireSlots(dir, ttlMs, now);
   if (slotsOf(dir).some((slot) => slot.held === held)) return null;

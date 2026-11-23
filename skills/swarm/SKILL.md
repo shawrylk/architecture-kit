@@ -37,7 +37,8 @@ Run `qc ready-check` before `gh pr ready`.
 - Keep at most 60 non-blank lines; update the file before each dispatch, at each clean break, and before compaction.
 - Treat the checkpoint as the source of truth for open work after compact or resume.
 
-Run feature units one at a time unless their paths are provably disjoint. Before each dispatch,
+Run feature units in parallel, up to `swarm.dispatch.implementerSlots` (default 3), when their paths are
+provably disjoint. Otherwise run them one at a time. Before each dispatch,
 confirm the tree is green: a red tree mid-dispatch is usually another unit still running, and the
 answer is to wait, not to edit.
 
