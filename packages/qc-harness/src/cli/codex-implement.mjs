@@ -4,7 +4,7 @@
 import { execFileSync } from "node:child_process";
 import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
@@ -17,6 +17,7 @@ import { checkRunCommits, findingName, guardRefs, protectedAllow } from "./commi
 import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
 import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCommand, verifyBaseTests } from "./locked-tests.mjs";
+import { runMutation } from "./mutate.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -231,7 +232,9 @@ const promptFor = (settings, codex) => {
   const lessons = rules.length ? `\n\nCI lesson rules (newest first):\n${rules.join("\n")}` : "";
   const roleRule = settings.role === "scout"
     ? `\n\nRole: scout. Do not edit, stage, or commit worktree files. Write a fresh report to ${settings.report} with Gap:, Plan:, Check:, Risks:, Questions:, and Breaking: yes|no. Keep report, progress and logs outside the worktree.`
-    : `\n\nRole: ${settings.role}.`;
+    : settings.role === "review"
+      ? "\n\nRole: review. Assess the implementation report's ## Survivors section named in the brief."
+      : `\n\nRole: ${settings.role}.`;
   return `${preamble}\n\n${brief}${roleRule}${lessons}${continuationNote(settings.progress)}`;
 };
 
@@ -377,7 +380,7 @@ function completeReview(settings, started, originalStamp, message, say) {
 
 async function runJob(argv, {
   run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
-  fetch, now = Date.now, sleep, runCheck = runTestCommand,
+  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation,
 } = {}) {
   let settings;
   try {
@@ -457,13 +460,27 @@ async function runJob(argv, {
     } catch (error) { return finish(say, `test run failed: ${error.message}`, 3); }
     return null;
   };
+  const mutationReport = async () => {
+    if (settings.role !== "implement" || locked === null) return;
+    const diagnostics = [];
+    try {
+      const result = await mutate({ worktree: settings.worktree, base: testBase, command: tests.command, files: Object.keys(locked), say: (line) => { diagnostics.push(line); say(line); } });
+      const report = briefPath(readFileSync(settings.brief, "utf8"), "Report", settings.brief);
+      if (!report) { say("mutation: no Report: path in brief; cannot append survivors"); return; }
+      const rows = result.survived.map(({ file, line, mutant }) => `- ${file}:${line}: ${JSON.stringify(mutant)}`);
+      mkdirSync(path.dirname(report), { recursive: true });
+      appendFileSync(report, `\n## Survivors\n\n${diagnostics.length ? diagnostics.join("\n") : rows.length ? rows.join("\n") : "No survivors."}\n${result.skippedLines} lines skipped by the budget or ten-line cap.\n`);
+    } catch (error) { say(`mutation: ${error.message.replace(/[\r\n]+/g, " ")}; no mutation coverage`); }
+  };
   let resetDeadline;
   let boundary;
   let contract;
   for (let count = 1; count <= settings.maxRuns; count += 1) {
     if (isDone(settings.progress)) {
       const refused = await verifyTests();
-      return refused ?? completeReview(settings, started, originalStamp, `done after ${count - 1} run(s)`, say);
+      if (refused !== null) return refused;
+      await mutationReport();
+      return completeReview(settings, started, originalStamp, `done after ${count - 1} run(s)`, say);
     }
     try {
       const branch = currentBranch(settings.worktree);
@@ -543,6 +560,7 @@ async function runJob(argv, {
       if (refused !== null) return refused;
     }
     if (isDone(settings.progress)) {
+      await mutationReport();
       return completeReview(settings, started, originalStamp, `done after ${count} run(s)`, say);
     }
     if (line) {

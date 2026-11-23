@@ -911,6 +911,22 @@ The runner executes `tests.command` with the locked file paths appended, then ru
 Either command failing exits `3`. Exit `0` requires both commands green and the progress marker, including when the marker already exists at startup.
 Implement runs without a branch lock keep their existing exit behavior and do not run these additional checks or commands.
 
+After both checks pass on a completed implement run, the runner checks mutants on changed JS and TS source lines.
+It uses the frozen `tests.command` and merge base from #222, with locked test files and related tests
+(sibling tests or tests importing changed modules, including transitive imports). Test files themselves are not mutated.
+The comparison complements, negated `if` conditions, boolean swaps and `return undefined` replacements skip comments and strings.
+The check runs a baseline, then one mutant at a time in a detached temporary worktree containing the current files.
+It restores each file between changed lines and removes the temporary worktree in `finally`; the issue checkout is untouched.
+At most ten lines run within one 180-second budget, including the baseline. A child exceeding the deadline is killed.
+`runMutation` returns `{ survived: [{ file, line, mutant }], skippedLines }`; the skipped count includes lines
+left out by the budget or ten-line cap. A failed baseline or missing test file prints one diagnostic and claims no mutation coverage.
+Survivors never change the exit code. Without a branch lock this check does not run.
+
+The runner appends `## Survivors` to the implement report named by the brief's `Report:` line, resolved beside the brief.
+The section lists each surviving mutant as `file:line` plus its replacement, and the skipped-line count, or a diagnostic when coverage is unavailable.
+Name this implementation report's `## Survivors` section in the review brief so the reviewer can assess the uncovered behavior.
+`--report`, the review verdict and the review ledger retain their existing behavior.
+
 The runner validates the worktree's brief and Codex settings before launch:
 
 | Setting or requirement | Default or rule |

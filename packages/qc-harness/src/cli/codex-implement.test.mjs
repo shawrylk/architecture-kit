@@ -1889,3 +1889,57 @@ if (fs.readFileSync(${JSON.stringify(f.progress)}, 'utf8').split('run').length >
     assert.match(messages.join("\n"), /session actual-thread/);
   }
 });
+
+test("implement completion mutates only after green locked runner tests and appends survivors to the brief report", async (t) => {
+  const { lockTests } = await import("./locked-tests.mjs");
+  for (const mode of ["new", "prewritten", "no-lock", "check-fails", "locked-fails"]) {
+    const f = setup(t);
+    const report = path.join(f.dir, "implement-report.md");
+    writeFileSync(f.brief, `${VALID_BRIEF}Report: ${report}\n`);
+    writeFileSync(report, "Implementation details\n");
+    commitFile(f, "qc.config.json", JSON.stringify({ check: { base: "HEAD" }, tests: { command: [process.execPath, "--test"] } }));
+    const frozenBase = commitFile(f, "acceptance.test.mjs", mode === "locked-fails" ? "process.exit(1);\n" : "process.exit(0);\n");
+    if (mode !== "no-lock") lockTests(f.worktree, ["acceptance.test.mjs"]);
+    if (mode === "prewritten") writeFileSync(f.progress, DONE_MARKER);
+    const events = [];
+    const exit = await runCodexImplement(f.argv, {
+      say: quiet, out: quiet,
+      run: async () => {
+        events.push("codex");
+        writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ check: { base: "missing-ref" }, tests: { command: [process.execPath, "--invalid"] } }));
+        writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+      },
+      runCheck: async () => { events.push("check"); return mode === "check-fails" ? 1 : 0; },
+      runMutation: async (options) => {
+        events.push("mutation");
+        assert.equal(options.worktree, f.worktree);
+        assert.deepEqual(options.command, [process.execPath, "--test"]);
+        assert.deepEqual(options.files, ["acceptance.test.mjs"]);
+        assert.equal(options.base, frozenBase);
+        return { survived: [{ file: "src/example.mjs", line: 2, mutant: "return undefined;" }], skippedLines: 3 };
+      },
+    });
+    assert.equal(exit, ["check-fails", "locked-fails"].includes(mode) ? 3 : 0);
+    if (["new", "prewritten"].includes(mode)) {
+      assert.deepEqual(events, mode === "new" ? ["codex", "check", "mutation"] : ["check", "mutation"]);
+      const text = readFileSync(report, "utf8");
+      assert.match(text, /^Implementation details\n/);
+      assert.match(text, /## Survivors/);
+      assert.match(text, /src\/example\.mjs:2/);
+      assert.match(text, /return undefined;/);
+      assert.match(text, /3.*skipped/i);
+    } else {
+      assert.ok(!events.includes("mutation"));
+      assert.equal(readFileSync(report, "utf8"), "Implementation details\n");
+    }
+  }
+  const review = reviewFixture(t);
+  writeFileSync(review.brief, `${VALID_BRIEF}Implementation report: ../implement-report.md\n`);
+  assert.equal(await runCodexImplement(review.argv, { say: quiet, out: quiet, run: async ({ input }) => {
+    assert.match(input, /implementation report's ## Survivors/);
+    assert.match(input, /Implementation report: \.\.\/implement-report\.md/);
+    writeFileSync(review.report, "VERDICT: APPROVED\n");
+    writeFileSync(review.progress, DONE_MARKER);
+    return { status: 0 };
+  } }), 0);
+});
