@@ -60,6 +60,14 @@ test("a timed out shell command fails and terminates its process tree", async (t
   assert.ok(Date.now() - start < 10000);
   assert.equal(existsSync(pidFile), true, "the descendant must start before the timeout");
   const pid = Number(readFileSync(pidFile, "utf8"));
+  const reapDeadline = Date.now() + 3000;
+  while (Date.now() < reapDeadline) {
+    try { process.kill(pid, 0); } catch (error) {
+      if (error.code === "ESRCH") break;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, reapDeadline - Date.now()))));
+  }
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "the descendant must be gone after timeout");
 });
 
