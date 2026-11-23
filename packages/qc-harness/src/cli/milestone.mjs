@@ -78,11 +78,12 @@ function collectFrom(config, text, dryRun = false) {
   }).map(({ branch, sha }) => ({ branch, sha, issue: /^[a-z]+\/(\d+)-/.exec(branch)[1] }));
 }
 
-function nextName(root, now) {
+function nextName(root, now, prNames) {
   const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const refs = git(root, ["for-each-ref", "--format=%(refname)", "refs/heads/", "refs/remotes/origin/"]);
   const names = new Set(lines(refs).map((r) => r.replace(/^refs\/(?:heads\/|remotes\/origin\/)/, "")));
   for (const state of states(root)) names.add(state.name);
+  for (const name of prNames) names.add(name);
   let n = 1;
   while (names.has(`milestone/${date}-${n}`)) n++;
   return `milestone/${date}-${n}`;
@@ -156,11 +157,14 @@ export function publishMilestone(config, state, { say = console.log, gh = runGh 
   git(root, ["branch", "--set-upstream-to", `origin/${state.name}`, state.name]);
   if (editing) {
     if (gh(["pr", "edit", state.name, "--body", bodyOf(next, config)], { cwd: root }) === null) throw new Error("gh pr edit failed; run qc milestone to resume");
-  } else if (gh(["pr", "view", state.name, "--json", "number"], { cwd: root }) === null) {
-    const pr = gh(["pr", "create", "--head", state.name, "--base", state.baseBranch,
-      "--title", redactOutput(`feat: milestone ${state.name.slice(10)}`), "--body", bodyOf(next, config)], { cwd: root });
-    if (pr === null) throw new Error("gh pr create failed; run qc milestone again to resume");
-    say(`pr     ${pr.trim()}`);
+  } else {
+    const existing = gh(["pr", "view", state.name, "--json", "number,state"], { cwd: root });
+    if (existing === null || JSON.parse(existing).state !== "OPEN") {
+      const pr = gh(["pr", "create", "--head", state.name, "--base", state.baseBranch,
+        "--title", redactOutput(`feat: milestone ${state.name.slice(10)}`), "--body", bodyOf(next, config)], { cwd: root });
+      if (pr === null) throw new Error("gh pr create failed; run qc milestone again to resume");
+      say(`pr     ${pr.trim()}`);
+    }
   }
   delete next.pendingDrop;
   next.phase = "done";
@@ -265,7 +269,10 @@ export async function runMilestone(config, argv, { say = console.log, run = runS
     const baseRef = config.worktree?.base ?? "origin/main";
     const baseBranch = baseRef.replace(/^refs\/(?:heads\/|remotes\/)/, "").replace(/^origin\//, "");
     if (!tryGit(root, ["check-ref-format", "--branch", baseBranch]).ok) throw new Error("worktree.base must name a branch");
-    const state = { name: nextName(root, now), base: git(root, ["rev-parse", baseRef]).trim(), baseBranch, members, phase: "building" };
+    const prs = gh(["pr", "list", "--state", "all", "--limit", "1000", "--json", "headRefName"], { cwd: root });
+    if (prs === null) throw new Error("cannot read milestone pull requests");
+    const prNames = JSON.parse(prs).map((pr) => pr.headRefName);
+    const state = { name: nextName(root, now, prNames), base: git(root, ["rev-parse", baseRef]).trim(), baseBranch, members, phase: "building" };
     git(root, ["switch", "-q", "-c", state.name, state.base]);
     save(root, state);
     state.members = buildMilestone(config, state, io);

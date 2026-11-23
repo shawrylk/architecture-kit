@@ -38,10 +38,30 @@ function fixture(t, { conflict = false } = {}) {
   git(root, "switch", "-q", "main");
   const config = { root, worktree: { base: "origin/main" }, swarm: { review: { merge: "branch" } }, generated: { globs: [] } };
   const calls = []; const output = [];
-  const io = { say: (s) => output.push(s), gh: (args) => { calls.push(args); return args[1] === "view" ? null : "https://github.com/a/b/pull/1"; } };
+  const io = { say: (s) => output.push(s), gh: (args) => { calls.push(args); return args[1] === "list" ? "[]" : args[1] === "view" ? null : "https://github.com/a/b/pull/1"; } };
   return { root, origin, members, config, calls, output, io };
 }
 const created = (calls) => calls.filter((args) => args[1] === "create");
+
+test("a merged PR reserves its milestone name without a branch or saved state", async (t) => {
+  const f = fixture(t);
+  const gh = (args) => {
+    if (args[1] !== "list") return f.io.gh(args);
+    assert.deepEqual(args, ["pr", "list", "--state", "all", "--limit", "1000", "--json", "headRefName"]);
+    return JSON.stringify([{ headRefName: "milestone/2026-01-02-1" }]);
+  };
+  assert.equal(await runMilestone(f.config, [], { ...f.io, gh, now: new Date(2026, 0, 2) }), 0);
+  assert.equal(git(f.root, "branch", "--show-current"), "milestone/2026-01-02-2");
+});
+
+test("publication creates a PR when the existing PR is MERGED", async (t) => {
+  const f = fixture(t);
+  const gh = (args) => args[1] === "view"
+    ? JSON.stringify({ number: 1, state: "MERGED" })
+    : f.io.gh(args);
+  assert.equal(await runMilestone(f.config, [], { ...f.io, gh }), 0);
+  assert.equal(created(f.calls).length, 1);
+});
 
 test("two finished branches → one milestone branch, one PR body with both Refs lines", async (t) => {
   const f = fixture(t);
@@ -93,7 +113,7 @@ test("one conflicting branch is left out and the other two merge", async (t) => 
     f.config.worktree.base = "main";
     assert.equal(await runMilestone(f.config, [], f.io), 0);
     assert.equal(git(f.root, "branch", "--show-current"), "main");
-    assert.equal(f.calls.length, 0);
+    assert.deepEqual(f.calls.map((args) => args[1]), ["list"]);
     assert.equal(git(f.root, "branch", "-r", "--list", "origin/milestone/*"), "");
     assert.equal(f.output.filter((s) => s.startsWith("Left out:")).length, 2);
   }
@@ -183,7 +203,7 @@ test("dry-run changes no refs or files and no candidates is a successful no-op",
 
 test("publication failure resumes the same branch and PR creation without another batch", async (t) => {
   const f = fixture(t);
-  assert.equal(await runMilestone(f.config, [], { ...f.io, gh: () => null }), 1);
+  assert.equal(await runMilestone(f.config, [], { ...f.io, gh: (args) => args[1] === "list" ? "[]" : null }), 1);
   const branch = git(f.root, "branch", "--show-current");
   assert.equal(await runMilestone(f.config, [], f.io), 0);
   assert.equal(git(f.root, "branch", "--show-current"), branch);
