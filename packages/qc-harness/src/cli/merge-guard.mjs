@@ -162,7 +162,7 @@ function milestoneLane(workflow, records, pr, sha, deadline) {
   const root = workflow.root;
   const commits = git(root, "log", "--first-parent", "--format=%H %P", sha, "--not", pr.oid);
   if (commits === null) return { problem: "cannot read milestone history" };
-  const kinds = ["codex", workflow.review.merge];
+  const kinds = workflow.review.runtime === "codex" ? [workflow.review.merge, "codex"] : [workflow.review.merge];
   const generated = globMatcher(policy.config?.generated?.globs ?? defaults.generated.globs);
   const merges = [];
   let heads = 0;

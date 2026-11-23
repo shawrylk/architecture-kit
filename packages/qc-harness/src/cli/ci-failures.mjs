@@ -96,12 +96,13 @@ export function recordRun(root, { id, branch, head, repository }, { gh = (args) 
     appendRecord(file, record);
     added.push(record);
   }
-  const repeated = added.find((failure) => repeatCount(root, branch, failure) === 3);
+  const repeated = openFailures(root, branch, repository).find((failure) => failure.run === String(id) && sameHead(failure.head, head) && repeatCount(root, branch, failure) >= 3);
   if (repository && repository === originOf(root) && repeated) {
     try {
-      const prs = JSON.parse(gh(["pr", "list", "--state", "all", "--head", branch, "--json", "body,isCrossRepository", "-R", repository]));
+      const prs = JSON.parse(gh(["pr", "list", "--state", "open", "--head", branch, "--json", "body,isCrossRepository,state,headRefName,headRefOid", "-R", repository]));
       const reference = /\b(?:refs|close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([\w.-]+\/[\w.-]+))?#([1-9]\d*)\b/gi;
-      const issue = prs.filter((pr) => !pr.isCrossRepository).flatMap((pr) => [...(pr.body ?? "").matchAll(reference)])
+      const pr = prs.find((pr) => pr.state === "OPEN" && !pr.isCrossRepository && pr.headRefName === branch && pr.headRefOid === head);
+      const issue = [...(pr?.body ?? "").matchAll(reference)]
         .find((match) => !match[1] || match[1].toLowerCase() === repository.toLowerCase())?.[2];
       if (!issue) {
         warn(`ci-failures: no linked issue in the PR for ${branch}; cannot ask about three failing heads`.replace(/[\r\n]+/g, " "));
@@ -109,7 +110,9 @@ export function recordRun(root, { id, branch, head, repository }, { gh = (args) 
         const marker = `<!-- qc-ci-question:${Buffer.from(branch).toString("base64url")}:${head} -->`;
         const pages = JSON.parse(gh(["api", `repos/${repository}/issues/${issue}/comments`, "--paginate", "--slurp"]));
         if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error("cannot read issue comments");
-        if (!pages.flat().some((comment) => comment.body?.includes(marker))) {
+        const streakHeads = [...failureHeads(root, branch, repeated).keys()].slice(-repeatCount(root, branch, repeated));
+        const markers = streakHeads.map((sha) => `<!-- qc-ci-question:${Buffer.from(branch).toString("base64url")}:${sha} -->`);
+        if (!pages.flat().some((comment) => markers.some((marker) => comment.body?.includes(marker)))) {
           askIssue(issue, `The CI test ${repeated.test} on branch ${branch} has failed on three heads in a row. How should we proceed?\n\n${marker}`, { cwd: root, repo: repository, gh });
         }
       }
@@ -122,15 +125,19 @@ export function recordRun(root, { id, branch, head, repository }, { gh = (args) 
 
 const identity = (r) => JSON.stringify([r.test, r.file, r.os]);
 
-export function repeatCount(root, branch, failure) {
+function failureHeads(root, branch, failure) {
   const heads = new Map();
   for (const record of openFailures(root, branch, failure.repository ?? originOf(root))) {
     const head = [...heads.keys()].find((head) => sameHead(head, record.head)) ?? record.head;
     if (!heads.has(head)) heads.set(head, new Set());
     heads.get(head).add(identity(record));
   }
+  return heads;
+}
+
+export function repeatCount(root, branch, failure) {
   let count = 0;
-  for (const tests of [...heads.values()].reverse()) {
+  for (const tests of [...failureHeads(root, branch, failure).values()].reverse()) {
     if (!tests.has(identity(failure))) break;
     count += 1;
   }

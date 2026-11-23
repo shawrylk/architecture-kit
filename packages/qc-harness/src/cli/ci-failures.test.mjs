@@ -225,15 +225,16 @@ test("three red heads → a needs-user question, and no hold record", (t) => {
   const root = fixture(t);
   const calls = [];
   const comments = [];
+  let currentHead;
   const gh = (args) => {
     calls.push(args);
     if (args[0] === "run") return tap;
-    if (args[0] === "pr") return JSON.stringify([{ body: "Refs #227" }]);
+    if (args[0] === "pr") return JSON.stringify([{ body: "Refs #227", state: "OPEN", headRefName: "feat/test", headRefOid: currentHead }]);
     if (args[0] === "api") return JSON.stringify([comments]);
     if (args[1] === "comment") comments.push({ body: args[args.indexOf("--body") + 1] });
     return "[]";
   };
-  const record = (id, head) => recordRun(root, { id, branch: "feat/test", head }, { gh });
+  const record = (id, head) => { currentHead = head; return recordRun(root, { id, branch: "feat/test", head }, { gh }); };
   record(1, "aaaaaaa");
   assert.match(ciBriefRefusal(root, "feat/test", ""), /cleanup retries/);
   assert.equal(ciBriefRefusal(root, "green", ""), null);
@@ -538,6 +539,44 @@ test("the skip line stays within 200 characters for many long paths", (t) => {
 
 
 test("CI questions use only PR issue references and diagnose missing issues or GitHub failures", (t) => {
+  for (const mode of ["old PR", "retry same run", "retry next head"]) {
+    const root = fixture(t);
+    const comments = [];
+    const warnings = [];
+    let failAsk = true;
+    let head;
+    const gh = (args) => {
+      if (args[0] === "run") return tap;
+      if (args[0] === "pr") return JSON.stringify([
+        { body: "Closes #12", state: "CLOSED", headRefName: "feat/test", headRefOid: "0000000" },
+        { body: "Refs #13", state: "OPEN", headRefName: "other", headRefOid: head },
+        { body: "Refs #14", state: "OPEN", headRefName: "feat/test", headRefOid: "0000000" },
+        { body: mode === "old PR" ? "No linked issue" : "Refs #227", state: "OPEN", headRefName: "feat/test", headRefOid: head },
+      ]);
+      if (args[0] === "api") return JSON.stringify([comments]);
+      if (args[0] === "issue" && args[1] === "comment") {
+        if (failAsk) throw new Error("GitHub unavailable");
+        assert.equal(args[2], "227");
+        comments.push({ body: args[args.indexOf("--body") + 1] });
+      }
+      return "[]";
+    };
+    const record = (id, sha) => {
+      head = sha;
+      recordRun(root, { id, branch: "feat/test", head }, { gh, warn: (s) => warnings.push(s) });
+    };
+    record(1, "aaaaaaa"); record(2, "bbbbbbb"); record(3, "ccccccc");
+    failAsk = false;
+    record(mode === "retry next head" ? 4 : 3, mode === "retry next head" ? "ddddddd" : "ccccccc");
+    if (mode === "old PR") {
+      assert.equal(comments.length, 0);
+      assert.ok(warnings.every((s) => /no linked issue/.test(s)), warnings.join("\n"));
+    } else {
+      assert.equal(comments.length, 1, mode);
+      record(5, "eeeeeee");
+      assert.equal(comments.length, 1, "successful question deduplicates later heads");
+    }
+  }
   for (const body of ["Fixes #12", "closed #13", "Resolves local/repo#14", "Refs #15", "Mentions #16", "Closes foreign/repo#17"]) {
     const root = fixture(t);
     const calls = [];
@@ -545,7 +584,7 @@ test("CI questions use only PR issue references and diagnose missing issues or G
     const gh = (args) => {
       calls.push(args);
       if (args[0] === "run") return tap;
-      if (args[0] === "pr") return JSON.stringify([{ body }]);
+      if (args[0] === "pr") return JSON.stringify([{ body, state: "OPEN", headRefName: "feature-without-number", headRefOid: "ccccccc" }]);
       return "[]";
     };
     for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "feature-without-number", head }, { gh, warn: (line) => warnings.push(line) });
