@@ -43,15 +43,51 @@ function fixture(t, { conflict = false } = {}) {
 }
 const created = (calls) => calls.filter((args) => args[1] === "create");
 
-test("a merged PR reserves its milestone name without a branch or saved state", async (t) => {
+test("merged and closed PRs reserve each candidate without a branch or saved state", async (t) => {
   const f = fixture(t);
+  const queried = [];
+  const prs = new Map([
+    ["milestone/2026-01-02-1", { number: 1, state: "MERGED" }],
+    ["milestone/2026-01-02-2", { number: 2, state: "CLOSED" }],
+  ]);
   const gh = (args) => {
     if (args[1] !== "list") return f.io.gh(args);
-    assert.deepEqual(args, ["pr", "list", "--state", "all", "--limit", "1000", "--json", "headRefName"]);
-    return JSON.stringify([{ headRefName: "milestone/2026-01-02-1" }]);
+    const candidate = args[args.indexOf("--head") + 1];
+    assert.deepEqual(args, ["pr", "list", "--state", "all", "--head", candidate, "--limit", "1", "--json", "number"]);
+    queried.push(candidate);
+    return JSON.stringify(prs.has(candidate) ? [{ number: prs.get(candidate).number }] : []);
   };
   assert.equal(await runMilestone(f.config, [], { ...f.io, gh, now: new Date(2026, 0, 2) }), 0);
-  assert.equal(git(f.root, "branch", "--show-current"), "milestone/2026-01-02-2");
+  assert.deepEqual(queried, ["milestone/2026-01-02-1", "milestone/2026-01-02-2", "milestone/2026-01-02-3"]);
+  assert.equal(git(f.root, "branch", "--show-current"), "milestone/2026-01-02-3");
+});
+
+test("an unreadable candidate PR list fails before creating a branch", async (t) => {
+  const f = fixture(t);
+  const branches = git(f.root, "branch", "--list");
+  const errors = [];
+  t.mock.method(console, "error", (message) => errors.push(message));
+  const gh = (args) => {
+    assert.deepEqual(args, ["pr", "list", "--state", "all", "--head", "milestone/2026-01-02-1", "--limit", "1", "--json", "number"]);
+    return null;
+  };
+  assert.equal(await runMilestone(f.config, [], { ...f.io, gh, now: new Date(2026, 0, 2) }), 1);
+  assert.match(errors.join("\n"), /cannot read milestone pull requests/);
+  assert.equal(git(f.root, "branch", "--show-current"), "main");
+  assert.equal(git(f.root, "branch", "--list"), branches);
+});
+
+test("publication reuses an OPEN PR without creating another", async (t) => {
+  const f = fixture(t);
+  let views = 0;
+  const gh = (args) => {
+    if (args[1] !== "view") return f.io.gh(args);
+    views++;
+    return JSON.stringify({ number: 1, state: "OPEN" });
+  };
+  assert.equal(await runMilestone(f.config, [], { ...f.io, gh }), 0);
+  assert.equal(views, 1);
+  assert.equal(created(f.calls).length, 0);
 });
 
 test("publication creates a PR when the existing PR is MERGED", async (t) => {

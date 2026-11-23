@@ -78,15 +78,19 @@ function collectFrom(config, text, dryRun = false) {
   }).map(({ branch, sha }) => ({ branch, sha, issue: /^[a-z]+\/(\d+)-/.exec(branch)[1] }));
 }
 
-function nextName(root, now, prNames) {
+function nextName(root, now, gh) {
   const date = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const refs = git(root, ["for-each-ref", "--format=%(refname)", "refs/heads/", "refs/remotes/origin/"]);
   const names = new Set(lines(refs).map((r) => r.replace(/^refs\/(?:heads\/|remotes\/origin\/)/, "")));
   for (const state of states(root)) names.add(state.name);
-  for (const name of prNames) names.add(name);
-  let n = 1;
-  while (names.has(`milestone/${date}-${n}`)) n++;
-  return `milestone/${date}-${n}`;
+  for (let n = 1; ; n++) {
+    const candidate = `milestone/${date}-${n}`;
+    if (names.has(candidate)) continue;
+    const prs = gh(["pr", "list", "--state", "all", "--head", candidate, "--limit", "1", "--json", "number"], { cwd: root });
+    if (prs === null) throw new Error("cannot read milestone pull requests");
+    if (JSON.parse(prs).length) continue;
+    return candidate;
+  }
 }
 function settle(config, members, run, say) {
   const command = config.generated?.command;
@@ -269,10 +273,7 @@ export async function runMilestone(config, argv, { say = console.log, run = runS
     const baseRef = config.worktree?.base ?? "origin/main";
     const baseBranch = baseRef.replace(/^refs\/(?:heads\/|remotes\/)/, "").replace(/^origin\//, "");
     if (!tryGit(root, ["check-ref-format", "--branch", baseBranch]).ok) throw new Error("worktree.base must name a branch");
-    const prs = gh(["pr", "list", "--state", "all", "--limit", "1000", "--json", "headRefName"], { cwd: root });
-    if (prs === null) throw new Error("cannot read milestone pull requests");
-    const prNames = JSON.parse(prs).map((pr) => pr.headRefName);
-    const state = { name: nextName(root, now, prNames), base: git(root, ["rev-parse", baseRef]).trim(), baseBranch, members, phase: "building" };
+    const state = { name: nextName(root, now, gh), base: git(root, ["rev-parse", baseRef]).trim(), baseBranch, members, phase: "building" };
     git(root, ["switch", "-q", "-c", state.name, state.base]);
     save(root, state);
     state.members = buildMilestone(config, state, io);
