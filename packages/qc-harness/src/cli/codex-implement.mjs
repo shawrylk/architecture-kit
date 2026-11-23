@@ -18,7 +18,7 @@ import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
 import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCommand, verifyBaseTests } from "./locked-tests.mjs";
 import { runMutation } from "./mutate.mjs";
-import { reviewContext, validatePaths, verifyBrief } from "./codex-verify.mjs";
+import { reviewContext, validatePaths, verificationPolicy, verifyBrief } from "./codex-verify.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -230,6 +230,7 @@ const promptFor = (settings, codex) => {
   const refusal = ciBriefRefusal(settings.worktree, branch, brief);
   if (refusal) throw new Error(refusal);
   const review = reviewContext(brief, settings, branch);
+  const promptBrief = settings.review ? brief.replace(/^Reviewed:[^\r\n]*(?:\r?\n|$)/gm, "") : brief;
   const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
   const rules = lessonRules(settings.worktree, load(settings.worktree).lessons);
   const lessons = rules.length ? `\n\nCI lesson rules (newest first):\n${rules.join("\n")}` : "";
@@ -247,7 +248,7 @@ Review checklist:
 3. Do the tests prove the issue? Name any test that adds nothing.
 4. Is there a simpler way with less code?
 5. Put debt outside the scope under \`## Debt\`, not under findings.` : "";
-  return `${preamble}\n\n${brief}${review}${roleRule}${checklist}${lessons}${continuationNote(settings.progress)}`;
+  return `${preamble}\n\n${promptBrief}${review}${roleRule}${checklist}${lessons}${continuationNote(settings.progress)}`;
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
@@ -486,7 +487,7 @@ async function runJob(argv, {
   };
   const verifiedCompletion = async (message) => {
     try {
-      if (!await verifyBrief(settings, { env })) return finish(say, "verify failed", 7);
+      if (!await verifyBrief(settings, { env, policy })) return finish(say, "verify failed", 7);
     } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
     if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
     return completeReview(settings, started, originalStamp, message, say);
@@ -494,6 +495,12 @@ async function runJob(argv, {
   let resetDeadline;
   let boundary;
   let contract;
+  let policy;
+  try {
+    policy = verificationPolicy(readFileSync(settings.brief, "utf8"), settings);
+  } catch (error) {
+    return finish(say, `cannot prepare the brief: ${error.message}`, 1);
+  }
   for (let count = 1; count <= settings.maxRuns; count += 1) {
     if (isDone(settings.progress)) {
       const refused = await verifyTests();

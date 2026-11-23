@@ -77,6 +77,16 @@ test("review preflight rejects a Reviewed head belonging to another branch", asy
     say: (line) => messages.push(line), out: quiet, run: async () => assert.fail("must refuse before launch"),
   }), 1);
   assert.ok(messages.some((line) => line.includes(`Reviewed: ${"b".repeat(40)} is not a reviewed head of ${branch}; the last one is ${"a".repeat(40)}`)));
+  for (const value of ["a".repeat(40) + "^", "a".repeat(40) + "; echo INJECTED #", "`" + "a".repeat(40) + "^`", "a".repeat(6), "a".repeat(41), "A".repeat(40), ""]) {
+    writeFileSync(f.brief, `${VALID_BRIEF}\nReviewed: ${value}\n`);
+    const errors = [];
+    let launched = false;
+    assert.equal(await runCodexImplement(f.argv, {
+      say: (line) => errors.push(line), out: quiet, run: async () => { launched = true; return { status: 0 }; },
+    }), 1, value);
+    assert.equal(launched, false, value);
+    assert.ok(errors.some((line) => /Reviewed:.*[Ss][Hh][Aa]/.test(line)), errors.join("\n"));
+  }
 });
 
 test("review fills Reviewed from the newest branch review and supplies saved proof without rerunning it", async (t) => {
@@ -86,19 +96,36 @@ test("review fills Reviewed from the newest branch review and supplies saved pro
   appendRecord(ledgerFileOf(f.worktree), { type: "verdict", kind: "codex", branch, sha, verdict: "CHANGES_REQUIRED" });
   appendRecord(ledgerFileOf(f.worktree), { type: "verdict", kind: "plan", branch, sha: "b".repeat(40), verdict: "APPROVED" });
   const proof = path.join(f.dir, "code-report.md");
-  writeFileSync(proof, "Implementation report\n## Runner proof\nnode check.mjs: exit 0 in 1 s\n");
+  writeFileSync(proof, "Implementation report\n## Runner proof\nnode check.mjs: exit 0 in 1 s\n## Notes\nOld attempt.\n## Runner proof\nnode check.mjs: exit 8 in 2 s\nlatest failure\n## Notes\nOutside the proof.\n");
   writeFileSync(f.brief, `${VALID_BRIEF}\nProof: \`${proof}\`\nVerify: \`node -e "process.exit(9)"\`\nLive: \`node -e "process.exit(9)"\`\n`);
   assert.equal(await runCodexImplement(f.argv, {
     say: quiet, out: quiet, run: async ({ input }) => {
       assert.ok(input.includes(`Reviewed: ${sha}`));
       assert.ok(input.includes(`git diff ${sha}..HEAD`));
-      assert.ok(input.includes("## Runner proof\nnode check.mjs: exit 0 in 1 s"));
+      assert.ok(input.includes("## Runner proof\nnode check.mjs: exit 8 in 2 s\nlatest failure"));
+      assert.ok(!input.includes("exit 0 in 1 s"));
+      assert.ok(!input.includes("Outside the proof."));
       assert.ok(input.includes("The runner ran these commands. Do not run them again."));
       writeFileSync(f.report, "VERDICT: APPROVED\n");
       writeFileSync(f.progress, `${DONE_MARKER}\n`);
       return { status: 0 };
     },
   }), 0);
+  for (const value of [sha, sha.slice(0, 7), `\`${sha.slice(0, 7)}\``]) {
+    writeFileSync(f.progress, "");
+    writeFileSync(f.brief, `${VALID_BRIEF}\nReviewed: ${value}\n`);
+    assert.equal(await runCodexImplement(f.argv, {
+      say: quiet, out: quiet, run: async ({ input }) => {
+        const reviewedLines = input.split(/\r?\n/).filter((line) => line.startsWith("Reviewed:"));
+        assert.ok(reviewedLines.length > 0);
+        assert.ok(reviewedLines.every((line) => line === `Reviewed: ${sha}`), reviewedLines.join("\n"));
+        assert.ok(input.includes(`git diff ${sha}..HEAD`));
+        writeFileSync(f.report, `VERDICT: APPROVED\nReviewed full SHA ${sha}\n`);
+        writeFileSync(f.progress, `${DONE_MARKER}\n`);
+        return { status: 0 };
+      },
+    }), 0);
+  }
 });
 
 test("Verify failure returns exit 7 with ordered proof and only the last ten output lines", async (t) => {
@@ -113,6 +140,7 @@ test("Verify failure returns exit 7 with ordered proof and only the last ten out
     assert.equal(await runCodexImplement(f.argv, {
       say: quiet, out: (line) => output.push(line), run: async () => {
         assert.equal(prewritten, false, "a prewritten marker must verify without launching Codex");
+        writeFileSync(f.brief, `${VALID_BRIEF}\nReport: \`${report}\`\nVerify: none\nLive: none\n`);
         writeFileSync(report, "Implementation report\n");
         writeFileSync(f.progress, `${DONE_MARKER}\n`);
         return { status: 0 };
@@ -138,6 +166,7 @@ test("Live commands run after Verify in separate empty folders with QC_WORKTREE 
   writeFileSync(f.brief, `${VALID_BRIEF}\nReport: \`${report}\`\nVerify: \`${verify}\`\nLive: \`${live}\`, \`${live}\`\n`);
   assert.equal(await runCodexImplement(f.argv, {
     say: quiet, out: quiet, run: async () => {
+      writeFileSync(f.brief, `${VALID_BRIEF}\nReport: \`${report}\`\nVerify: none\nLive: none\n`);
       writeFileSync(f.progress, `${DONE_MARKER}\n`);
       return { status: 0 };
     },

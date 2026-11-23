@@ -17,8 +17,6 @@ export function validatePaths(brief) {
       }
     }
   }
-  commandsOf(brief, "Verify");
-  commandsOf(brief, "Live");
 }
 
 /** Adds branch review history and the previous code report's runner proof to a review prompt. */
@@ -29,15 +27,17 @@ export function reviewContext(brief, settings, branch) {
     && ["codex", "branch"].includes(record.kind) && record.branch === branch && typeof record.sha === "string");
   const last = reviews.at(-1)?.sha;
   const explicit = /^Reviewed:[ \t]*(.*?)\s*$/m.exec(brief);
-  const sha = explicit ? explicit[1].replace(/^`(.*)`$/, "$1") : last;
-  if (explicit && !reviews.some((record) => shaMatches(record.sha, sha))) {
-    throw new Error(`Reviewed: ${sha} is not a reviewed head of ${branch}; the last one is ${last ?? "none"}`);
+  const requested = explicit?.[1].replace(/^`(.*)`$/, "$1");
+  if (explicit && !/^[0-9a-f]{7,40}$/.test(requested)) {
+    throw new Error("Reviewed: use a 7 to 40 character lowercase hexadecimal SHA");
   }
+  const sha = explicit ? reviews.findLast((record) => shaMatches(record.sha, requested))?.sha : last;
+  if (explicit && !sha) throw new Error(`Reviewed: ${requested} is not a reviewed head of ${branch}; the last one is ${last ?? "none"}`);
   let context = sha ? `\n\nReviewed: ${sha}\nReview git diff ${sha}..HEAD.` : "";
   const proof = /^Proof:[ \t]*(.+)$/m.exec(brief)?.[1].trim().replace(/^`(.*)`$/, "$1");
   if (proof) {
     const report = readFileSync(path.resolve(path.dirname(settings.brief), proof), "utf8");
-    const block = /^## Runner proof[ \t]*\r?\n[\s\S]*?(?=^## |$(?![\s\S]))/m.exec(report)?.[0];
+    const block = [...report.matchAll(/^## Runner proof[ \t]*\r?\n[\s\S]*?(?=^## |$(?![\s\S]))/gm)].at(-1)?.[0];
     if (block) context += `\n\n${block.trimEnd()}\nThe runner ran these commands. Do not run them again.`;
   }
   return context;
@@ -46,11 +46,21 @@ export function reviewContext(brief, settings, branch) {
 /** Reads ordered shell commands without silently dropping an unquoted command. */
 export function commandsOf(brief, label) {
   return [...brief.matchAll(new RegExp(`^${label}:[ \t]*(.*)$`, "gm"))].flatMap(([, value]) => {
+    if (value.trim() === "none") return [];
     const commands = [...value.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
     const leftover = value.replace(/`[^`]+`/g, "").replace(/\band\b|,/g, "").trim();
     if (!commands.length || commands.some((command) => !command.trim()) || leftover) throw new Error(`${label}: name each command in backticks`);
     return commands;
   });
+}
+
+/** Captures runner-owned commands and their proof destination before the child can edit the brief. */
+export function verificationPolicy(brief, settings) {
+  const verify = commandsOf(brief, "Verify");
+  const live = commandsOf(brief, "Live");
+  const named = /^Report:[ \t]*(.+)$/m.exec(brief)?.[1].trim().replace(/^`(.*)`$/, "$1");
+  const report = named ? path.resolve(path.dirname(settings.brief), named) : `${settings.progress}.report.md`;
+  return { verify, live, report };
 }
 
 /** Runs through the platform shell, retaining a bounded output tail and enforcing a deadline. */
@@ -82,14 +92,10 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
 }
 
 /** A marker is accepted only after Verify and Live succeed and their proof has been saved. */
-export async function verifyBrief(settings, { env = process.env } = {}) {
+export async function verifyBrief(settings, { env = process.env, policy } = {}) {
   if (settings.review) return true;
-  const brief = readFileSync(settings.brief, "utf8");
-  const verify = commandsOf(brief, "Verify");
-  const live = commandsOf(brief, "Live");
+  const { verify, live, report } = policy ?? verificationPolicy(readFileSync(settings.brief, "utf8"), settings);
   if (!verify.length && !live.length) return true;
-  const named = /^Report:[ \t]*(.+)$/m.exec(brief)?.[1].trim().replace(/^`(.*)`$/, "$1");
-  const report = named ? path.resolve(path.dirname(settings.brief), named) : `${settings.progress}.report.md`;
   mkdirSync(path.dirname(report), { recursive: true });
   appendFileSync(report, "\n## Runner proof\n");
   for (const [commands, isolated] of [[verify, false], [live, true]]) {
