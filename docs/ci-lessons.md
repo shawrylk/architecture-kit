@@ -40,7 +40,7 @@ Rule: Use rmSync with recursive, force, maxRetries, and retryDelay for temporary
 
 Symptom: cmd.exe reports that the Node command is not recognized on Windows.
 Cause: The fixture wraps inline JavaScript in single quotes, which cmd.exe does not treat as shell quoting.
-Rule: Write fixture JavaScript to a script file and double-quote both the Node executable and script path.
+Rule: A package.json script in a fixture holds no quotes, because npm runs it through cmd.exe on Windows.
 
 ## scope covers committed, index, tracked and untracked files including an unborn HEAD
 

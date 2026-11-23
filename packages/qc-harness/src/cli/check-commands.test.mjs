@@ -327,7 +327,7 @@ test("--affected with one changed gate file runs that gate's test file and not a
   for (const [name, source] of [["gate", ""], ["consumer", "import './bridge.mjs';"], ["unrelated", "throw Error('unrelated ran');"]]) {
     put(`${name}.test.mjs`, `${source} console.log("${name}.test.mjs");\n`);
   }
-  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: node('console.log("FULL SUITE")') } }));
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "echo FULL SUITE" } }));
   git(root, "add", "."); git(root, "commit", "-qm", "test: seed affected graph");
   const base = git(root, "rev-parse", "HEAD").trim();
   put("gate.mjs", "export const value = 2;\n");
