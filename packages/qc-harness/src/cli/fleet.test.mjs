@@ -137,9 +137,34 @@ test("free issues exclude hold labels and taken PR bodies, PR branches and origi
   assert.ok(branchRead);
   assert.deepEqual(result.free.map(row => row.number), [4, 5, 6, 7, 8, 9, 10, 11]);
   assert.equal(result.taken, 4);
+  assert.deepEqual(freeIssues("o/r", "/tmp", {
+    gh: fakeGh([issue(1)], [{ number: 90, headRefName: "feat/12-x", body: "Fixes #12" }]),
+    git: () => "abc\trefs/heads/feat/12-x\n",
+  }).free.map(row => row.number), [1]);
 });
 
 test("next prints the oldest five or all, exits 3 when empty, and status stays within 15 lines", t => {
+  const remoteFixture = fixture(t);
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: remoteFixture.cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  git("init");
+  git("init", "--bare", "origin.git");
+  git("init", "--bare", "requested.git");
+  git("-c", "user.name=Fleet Test", "-c", "user.email=fleet@example.test", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "fixture");
+  git("remote", "add", "origin", path.join(remoteFixture.cwd, "origin.git"));
+  git("push", "origin", "HEAD:refs/heads/feat/1-x");
+  git("config", `url.${path.join(remoteFixture.cwd, "requested.git")}.insteadOf`, "https://github.com/o/r.git");
+  assert.equal(remoteFixture.run(["init", "--self", "a1", "--nodes", "a1:1:L"]).code, 0);
+  const remoteReaders = { gh: fakeGh([issue(1)]), origin: () => "local/repo" };
+  assert.equal(remoteFixture.run(["next", "--repo", "local/repo"], {
+    ...remoteReaders, gh: args => JSON.stringify(args[0] === "issue" ? [issue(1)] : []),
+  }).code, 3);
+  assert.deepEqual(remoteFixture.run(["next", "--repo", "o/r"], remoteReaders), {
+    code: 0, lines: ["1"], errors: [],
+  });
   const f = fixture(t);
   assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:S"]).code, 0);
   const issues = Array.from({ length: 12 }, (_, i) => issue(i + 1, ["size:L"], `2026-01-${String(12 - i).padStart(2, "0")}T00:00:00Z`));

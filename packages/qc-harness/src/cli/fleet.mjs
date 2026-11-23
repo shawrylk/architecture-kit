@@ -67,13 +67,13 @@ function readList(gh, args, cwd, valid) {
 }
 
 /** Read free open issues and count those already taken by a PR or an origin branch. */
-export function freeIssues(repo, cwd, { gh = runGh, git = gitOut, holdLabel = "hold" } = {}) {
+export function freeIssues(repo, cwd, { gh = runGh, git = gitOut, holdLabel = "hold", remote = "origin" } = {}) {
   const issues = readList(gh, ["issue", "list", "--state", "open", "--limit", "500", "--json", "number,labels,createdAt", "--repo", repo], cwd,
     row => Number.isSafeInteger(row?.number) && row.number > 0 && Array.isArray(row.labels) && row.labels.every(label => typeof label?.name === "string") && Number.isFinite(Date.parse(row.createdAt)));
   const prs = readList(gh, ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,body", "--repo", repo], cwd,
     row => Number.isSafeInteger(row?.number) && typeof row.headRefName === "string" && typeof row.body === "string");
-  const branches = git(cwd, "ls-remote", "--heads", "origin");
-  if (branches === null) throw new Error("git ls-remote --heads origin failed");
+  const branches = git(cwd, "ls-remote", "--heads", remote);
+  if (branches === null) throw new Error(`git ls-remote --heads ${remote} failed`);
   const taken = new Set();
   const takeBranch = branch => {
     const match = /^[^/]+\/([0-9]+)-/.exec(branch);
@@ -156,10 +156,9 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     const localRepo = origin(cwd);
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
-    // Outside a checkout, an explicit repository supplies origin for this read only.
-    const readGit = git ?? (localRepo?.toLowerCase() === repo ? gitOut : (dir, ...args) => gitOut(dir, "-c", `remote.origin.url=https://github.com/${repo}.git`, ...args));
+    const remote = localRepo?.toLowerCase() === repo ? "origin" : `https://github.com/${repo}.git`;
     const config = load(checkoutRootOf(cwd) ?? cwd);
-    const { free, taken } = freeIssues(repo, cwd, { gh, git: readGit, holdLabel: config.merge.holdLabel });
+    const { free, taken } = freeIssues(repo, cwd, { gh, git, remote, holdLabel: config.merge.holdLabel });
     const owned = free.map(row => ({ ...row, owner: ownerOf(repo, row.number, row.size, fleet.nodes) }));
     if (options.verb === "next") {
       const mine = owned.filter(row => row.owner === fleet.self);
