@@ -170,9 +170,9 @@ test("the slot refusal names the expiry and the file that frees the slot", () =>
   assert.match(reason, /delete \/tmp\/slot\.claim/);
 });
 
-test("implementerSlots defaults to 1, and a repository sets a whole number", () => {
-  assert.equal(dispatchSettings({ dispatch: {} }).implementerSlots, 1);
-  assert.equal(dispatchSettings({ dispatch: { implementerSlots: 3 } }).implementerSlots, 3);
+test("implementerSlots defaults to 3, and a repository sets a whole number", () => {
+  assert.equal(dispatchSettings({ dispatch: {} }).implementerSlots, 3);
+  assert.equal(dispatchSettings({ dispatch: { implementerSlots: 1 } }).implementerSlots, 1);
 });
 
 test("a refusal over a limit above 1 names the limit and each holder, and one at 1 keeps its text", () => {
