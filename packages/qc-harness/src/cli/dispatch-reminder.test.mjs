@@ -347,3 +347,18 @@ test("the hook process reads QC_ROLE from its environment", (t) => {
   assert.equal(JSON.parse(run({ QC_ROLE: "implementer" }).stdout).hookSpecificOutput.additionalContext, WORKER_NOTE);
   assert.equal(JSON.parse(run({}).stdout).hookSpecificOutput.additionalContext, BASE);
 });
+
+test("the controller note names scout, optional approval, diff limits and explicit resume", () => {
+  for (const phrase of [/--role scout/, /codex.requireApproval/, /Approved:/, /## Design/, /codex.maxDiffLines/, /--resume/]) assert.match(CODEX_LINE, phrase);
+});
+
+for (const role of ["scout", "tests", "review"]) {
+  test(`${role} gets an inline role note instead of controller dispatch rules`, (t) => {
+    const [on] = checkouts(t, [{ swarm: { dispatch: {} } }]);
+    const text = decide(start(on, "startup"), { QC_ROLE: role }).hookSpecificOutput.additionalContext;
+    assert.match(text, /Work inline/);
+    assert.ok(text.includes(role));
+    assert.doesNotMatch(text, /run a plan with superpowers|make one commit|push once/);
+    if (role === "scout") assert.match(text, /Do not edit, stage, or commit/);
+  });
+}

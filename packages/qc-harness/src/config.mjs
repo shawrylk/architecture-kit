@@ -35,6 +35,8 @@ export const defaults = {
     briefMaxLines: 40,
     briefMaxSteps: 6,
     maxRuns: 2,
+    requireApproval: false,
+    maxDiffLines: 400,
   },
 
   throwawayDb: {

@@ -181,6 +181,8 @@ test("codex defaults bound a short session and disable the skill plugin", () => 
     briefMaxLines: 40,
     briefMaxSteps: 6,
     maxRuns: 2,
+    requireApproval: false,
+    maxDiffLines: 400,
   });
 });
 
