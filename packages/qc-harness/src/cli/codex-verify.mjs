@@ -10,10 +10,10 @@ export function validatePaths(brief) {
   for (const [, value] of brief.matchAll(/^Paths:[ \t]*(.+)$/gm)) {
     if (/^none\.(?:\s|$)/i.test(value)) continue;
     const leftover = value.replace(/`[^`]+`/g, "").replace(/\band\b|,/g, "").trim();
-    if (leftover) throw new Error(`Paths: name each path in backticks; unparsed text: "${leftover}"`);
+    if (leftover) throw Object.assign(new Error(`Paths: name each path in backticks; unparsed text: "${leftover}"`), { refusal: "brief:paths" });
     for (const [, file] of value.matchAll(/`([^`]+)`/g)) {
       if (/(?:^|[\\/])(?:package\.json|pyproject\.toml|Cargo\.toml|go\.mod|[^\\/]+\.csproj)$/.test(file) && !/^## Design[ \t]*\r?$/m.test(brief)) {
-        throw new Error(`## Design is required when Paths: names ${file}; list each added dependency there`);
+        throw Object.assign(new Error(`## Design is required when Paths: names ${file}; list each added dependency there`), { refusal: "brief:design" });
       }
     }
   }
@@ -49,7 +49,7 @@ export function commandsOf(brief, label) {
     if (value.trim() === "none") return [];
     const commands = [...value.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
     const leftover = value.replace(/`[^`]+`/g, "").replace(/\band\b|,/g, "").trim();
-    if (!commands.length || commands.some((command) => !command.trim()) || leftover) throw new Error(`${label}: name each command in backticks`);
+    if (!commands.length || commands.some((command) => !command.trim()) || leftover) throw Object.assign(new Error(`${label}: name each command in backticks`), { refusal: `brief:${label.toLowerCase()}` });
     return commands;
   });
 }
@@ -92,13 +92,16 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
 }
 
 /** A marker is accepted only after Verify and Live succeed and their proof has been saved. */
-export async function verifyBrief(settings, { env = process.env, policy } = {}) {
+export async function verifyBrief(settings, { env = process.env, policy, outcome = {} } = {}) {
+  outcome.verify = null;
+  outcome.live = null;
   if (settings.review) return true;
   const { verify, live, report } = policy ?? verificationPolicy(readFileSync(settings.brief, "utf8"), settings);
   if (!verify.length && !live.length) return true;
   mkdirSync(path.dirname(report), { recursive: true });
   appendFileSync(report, "\n## Runner proof\n");
-  for (const [commands, isolated] of [[verify, false], [live, true]]) {
+  for (const [commands, isolated, group] of [[verify, false, "verify"], [live, true, "live"]]) {
+    let passed = 0;
     for (const command of commands) {
       let folder;
       let result;
@@ -110,6 +113,8 @@ export async function verifyBrief(settings, { env = process.env, policy } = {}) 
       } finally {
         if (folder) rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
+      if (result.status !== 0) outcome[group] = "fail";
+      else if (++passed === commands.length) outcome[group] = "pass";
       appendFileSync(report, `${command}: exit ${result.status} in ${result.seconds} s\n${result.status !== 0 && result.tail ? result.tail + "\n" : ""}`);
       if (result.status !== 0) return false;
     }

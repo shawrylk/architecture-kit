@@ -59,3 +59,15 @@ Rule: Create newline-named fixture files and run their associated assertions onl
 Symptom: the guard denies with "gh returned no base commit" on ubuntu-latest.
 Cause: the fake `gh` in `comment-watch.test.mjs` had no answer for the new `git/ref/heads` call. The affected test selection missed this file, because it runs the guard in a child process.
 Rule: When a change adds a `gh` call, search every test file for a fake `gh` and give it an answer.
+
+## a stalled Windows remote loses its transport process at the deadline
+
+Symptom: "the remote transport kept its socket open" on windows-latest, after 10 seconds.
+Cause: a flake. The milestone did not change `commit-guard.mjs`, and the same test passed on main and on the next head.
+Rule: none: a flake that passed on a rerun
+
+## run lines share the git common directory, append, and count malformed records
+
+Symptom: "Missing expected exception." at `run-log.test.mjs:30` on windows-latest.
+Cause: on Windows, a read of `<file>/child` fails with `ENOENT`, and `readRuns` returns an empty log for `ENOENT`. Linux gives `ENOTDIR`.
+Rule: To prove a read error on every OS, read a folder and match `EISDIR|EPERM|EACCES`.

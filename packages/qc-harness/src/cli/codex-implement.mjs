@@ -3,6 +3,7 @@
 
 import { execFileSync } from "node:child_process";
 import { appendRecord, ledgerFileOf } from "./ledger.mjs";
+import { appendRun, runLogFileOf } from "./run-log.mjs";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
@@ -186,17 +187,17 @@ function codexSettingsOf(worktree) {
 function validateBrief(brief, codex, settings) {
   const lines = brief.split(/\r?\n/);
   const nonBlank = lines.filter((line) => line.trim()).length;
-  if (nonBlank > codex.briefMaxLines) throw new Error(`codex.briefMaxLines limit is ${codex.briefMaxLines} non-blank lines; got ${nonBlank}`);
-  if (!lines.some((line) => /^## Product decisions\s*$/.test(line))) throw new Error("## Product decisions is required: at least 1 heading");
-  if (!lines.some((line) => /^Paths:[ \t]*\S/.test(line))) throw new Error("Paths: is required: at least 1 line naming owned files or folders");
+  if (nonBlank > codex.briefMaxLines) throw refusalError("brief:max-lines", `codex.briefMaxLines limit is ${codex.briefMaxLines} non-blank lines; got ${nonBlank}`);
+  if (!lines.some((line) => /^## Product decisions\s*$/.test(line))) throw refusalError("brief:product-decisions", "## Product decisions is required: at least 1 heading");
+  if (!lines.some((line) => /^Paths:[ \t]*\S/.test(line))) throw refusalError("brief:paths", "Paths: is required: at least 1 line naming owned files or folders");
   validatePaths(brief);
   if (codex.requireApproval && settings.role === "implement") {
-    if (!/^## Design[ \t]*\r?$/m.test(brief)) throw new Error("## Design is required for implement when codex.requireApproval is true");
+    if (!/^## Design[ \t]*\r?$/m.test(brief)) throw refusalError("brief:design", "## Design is required for implement when codex.requireApproval is true");
     const approved = briefPath(brief, "Approved", settings.brief);
-    if (!approved) throw new Error("Approved: is required for implement when codex.requireApproval is true");
+    if (!approved) throw refusalError("brief:approval", "Approved: is required for implement when codex.requireApproval is true");
     try {
       if (!readFileSync(approved, "utf8").trim()) throw new Error("empty approval report");
-    } catch { throw new Error(`Approved: must name a readable, non-empty approval report: ${approved}`); }
+    } catch { throw refusalError("brief:approval", `Approved: must name a readable, non-empty approval report: ${approved}`); }
   }
   let tasks = 0;
   let steps = 0;
@@ -210,8 +211,8 @@ function validateBrief(brief, codex, settings) {
       steps += 1;
     }
   }
-  if (tasks > 1) throw new Error(`task heading limit is 1 besides the fixed template headings; got ${tasks}`);
-  if (steps > codex.briefMaxSteps) throw new Error(`codex.briefMaxSteps limit is ${codex.briefMaxSteps} numbered steps under the task; got ${steps}`);
+  if (tasks > 1) throw refusalError("brief:task-headings", `task heading limit is 1 besides the fixed template headings; got ${tasks}`);
+  if (steps > codex.briefMaxSteps) throw refusalError("brief:max-steps", `codex.briefMaxSteps limit is ${codex.briefMaxSteps} numbered steps under the task; got ${steps}`);
 }
 
 /** Fragment: reads the role limits that `budgets.codex` sets; null turns the launch overrides off. */
@@ -228,8 +229,9 @@ const promptFor = (settings, codex) => {
   validateBrief(brief, codex, settings);
   const branch = currentBranch(settings.worktree);
   const refusal = ciBriefRefusal(settings.worktree, branch, brief);
-  if (refusal) throw new Error(refusal);
-  const review = reviewContext(brief, settings, branch);
+  if (refusal) throw refusalError("brief:ci", refusal);
+  let review;
+  try { review = reviewContext(brief, settings, branch); } catch (error) { error.refusal = "reviewed"; throw error; }
   const promptBrief = settings.review ? brief.replace(/^Reviewed:[^\r\n]*(?:\r?\n|$)/gm, "") : brief;
   const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
   const rules = lessonRules(settings.worktree, load(settings.worktree).lessons);
@@ -261,6 +263,8 @@ function spawnRun({ args, input, env, log, cwd }, codexCommand) {
     let tail = Buffer.alloc(0);
     let pending = "";
     let session;
+    let inputTokens = 0;
+    let outputTokens = 0;
     const capture = (chunk, json) => {
       writeSync(fd, chunk);
       tail = Buffer.concat([tail, chunk]).subarray(-TAIL_CHARS);
@@ -271,6 +275,10 @@ function spawnRun({ args, input, env, log, cwd }, codexCommand) {
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
+          if (event.type === "turn.completed") {
+            inputTokens += tokenCount(event.usage?.input_tokens);
+            outputTokens += tokenCount(event.usage?.output_tokens);
+          }
           if (event.type === "thread.started" && typeof event.thread_id === "string" && /^[a-zA-Z0-9_-]+$/.test(event.thread_id)) session = event.thread_id;
         } catch { /* Non-JSON output remains in the log, without inventing a session. */ }
       }
@@ -288,7 +296,7 @@ function spawnRun({ args, input, env, log, cwd }, codexCommand) {
     child.on("close", (status) => {
       if (pending) capture(Buffer.from("\n"), true);
       closeSync(fd);
-      resolve({ status, tail: tail.toString("utf8"), session });
+      resolve({ status, tail: tail.toString("utf8"), session, inputTokens, outputTokens });
     });
   });
 }
@@ -297,6 +305,11 @@ function spawnRun({ args, input, env, log, cwd }, codexCommand) {
 const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${line}
 `, resolve));
 
+const tokenCount = (value) => Number.isFinite(value) && value >= 0 ? value : 0;
+
+/** Tag a refusal at its source without changing its printed diagnostic. */
+const refusalError = (id, message) => Object.assign(new Error(message), { refusal: id });
+
 /**
  * The last stdout line is `exit <code>` on every path, so a redirect of the runner into a wrapper log carries
  * the end of the job for `qc watch --codex`, in any shell.
@@ -304,12 +317,42 @@ const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${lin
  * @param out `(line) => Promise|void` writes the `exit` line; the default writes to stdout.
  * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs, 4 guard refused, 5 paused.
  */
-export async function runCodexImplement(argv, { out = writeLine, ...options } = {}) {
+export async function runCodexImplement(argv, { out = writeLine, warn = console.error, ...options } = {}) {
+  const clock = options.now ?? Date.now;
+  const started = clock();
+  const metrics = { inputTokens: 0, outputTokens: 0, verify: null, live: null, refusal: null };
+  const say = options.say ?? ((line) => console.error(line));
+  const report = say;
   let code;
   try {
-    code = await runJob(argv, options);
+    code = await runJob(argv, { ...options, say: report, metrics });
   } catch (error) {
-    code = finish(options.say ?? ((line) => console.error(line)), error.message, 1);
+    metrics.refusal ??= error.refusal ?? null;
+    code = finish(report, error.message, 1);
+  }
+  try {
+    const settings = metrics.settings;
+    const worktreeIndex = argv.indexOf("--worktree");
+    const root = settings?.worktree ?? (worktreeIndex >= 0 ? argv[worktreeIndex + 1] : undefined) ?? process.cwd();
+    let verdict = null;
+    let findings = null;
+    try {
+      if (metrics.report) {
+        const text = readFileSync(metrics.report, "utf8");
+        verdict = /^(?:VERDICT:[ \t]*)?(APPROVED|CHANGES_REQUIRED)[ \t]*$/.exec(text.split(/\r?\n/)[0])?.[1] ?? null;
+        findings = text.split(/\r?\n/).filter((line) => line.startsWith("- [P")).length;
+      }
+    } catch { /* An absent report has no verdict or finding count. */ }
+    appendRun(runLogFileOf(root), {
+      kind: "codex", time: new Date(clock()).toISOString(), branch: currentBranch(root),
+      issue: metrics.issue ?? null, role: metrics.role ?? settings?.role ?? "implement", effort: metrics.effort ?? null,
+      exit: code, refusal: metrics.refusal,
+      inputTokens: metrics.inputTokens, outputTokens: metrics.outputTokens,
+      minutes: Math.round(Math.max(0, clock() - started) / 6000) / 10,
+      verify: metrics.verify, live: metrics.live, verdict, findings,
+    });
+  } catch {
+    warn("qc codex-implement: cannot write run log");
   }
   await out(`exit ${code}`);
   return code;
@@ -393,15 +436,30 @@ function completeReview(settings, started, originalStamp, message, say) {
 
 async function runJob(argv, {
   run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
-  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation,
+  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation, metrics,
 } = {}) {
   let settings;
   try {
     settings = parseArgs(argv);
+    metrics.settings = settings;
+    metrics.role = settings.role;
+    metrics.effort = settings.effort ?? null;
+    try {
+      const brief = readFileSync(settings.brief, "utf8");
+      const issueMatch = /^Issue:[ \t]*(?:#(\d+)|(\d+)|`#?(\d+)`)[ \t]*\r?$/m.exec(brief);
+      const issue = issueMatch?.slice(1).find(Boolean);
+      metrics.issue = issue && Number.isSafeInteger(Number(issue)) ? Number(issue) : null;
+      if (/^#[ \t]+.*\bfix\b/i.test(brief)) metrics.role = "fix";
+      metrics.report = settings.report ?? briefPath(brief, "Report", settings.brief) ?? `${settings.progress}.report.md`;
+    } catch { /* Preflight still reports an unreadable brief through its normal exit. */ }
   } catch (error) {
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
     return 1;
   }
+  const refuse = (id, message, code = 4) => {
+    metrics.refusal = id;
+    return finish(say, message, code);
+  };
   const started = Date.now();
   let originalStamp;
   try {
@@ -427,6 +485,7 @@ async function runJob(argv, {
   let locked;
   try {
     codex = codexSettingsOf(settings.worktree);
+    if (settings.review) metrics.effort = codex.reviewEffort;
     codexLimits = codexLimitsOf(settings.worktree);
     const guardConfig = load(settings.worktree);
     protectedPaths = guardConfig.guard.protectedPaths;
@@ -451,21 +510,21 @@ async function runJob(argv, {
     try {
       if (settings.role === "implement") {
         const { problems } = checkLockedTests(settings.worktree, locked);
-        if (problems.length) return finish(say, `guard refused: ${problems.join("; ")}`, 4);
+        if (problems.length) return refuse("other", `guard refused: ${problems.join("; ")}`, 4);
         const current = readLockedTests(settings.worktree);
-        if (JSON.stringify(current) !== JSON.stringify(locked)) return finish(say, `guard refused: locked test map changed: ${Object.keys(locked).join(", ")}`, 4);
+        if (JSON.stringify(current) !== JSON.stringify(locked)) return refuse("other", `guard refused: locked test map changed: ${Object.keys(locked).join(", ")}`, 4);
       }
       const cases = addedTestCases(settings.worktree, settings.role === "tests" ? testBase : testHead);
       const cap = settings.role === "tests" ? "maxNewCases" : "maxExtraCases";
-      if (cases.length > tests[cap]) return finish(say, `guard refused: tests.${cap} limit ${tests[cap]}; got ${cases.length}`, 4);
+      if (cases.length > tests[cap]) return refuse("other", `guard refused: tests.${cap} limit ${tests[cap]}; got ${cases.length}`, 4);
       if (policyOnly) return null;
       if (settings.role === "tests") {
         const { problems } = await verifyBaseTests(settings.worktree, testBase, cases, tests.command);
-        if (problems.length) return finish(say, `guard refused: ${problems.join("; ")}`, 4);
+        if (problems.length) return refuse("other", `guard refused: ${problems.join("; ")}`, 4);
         if (isDone(settings.progress)) lockTests(settings.worktree, [...Object.keys(locked ?? {}), ...cases.map((entry) => entry.path)]);
         return null;
       }
-    } catch (error) { return finish(say, `guard refused: cannot verify locked tests: ${error.message}`, 4); }
+    } catch (error) { return refuse("other", `guard refused: cannot verify locked tests: ${error.message}`, 4); }
     try {
       const files = Object.keys(locked).map((file) => path.resolve(settings.worktree, file.replace(/\\/g, "/")));
       if (files.length && await runTestCommand([...tests.command, ...files], settings.worktree) !== 0) return finish(say, "locked tests failed", 3);
@@ -487,7 +546,8 @@ async function runJob(argv, {
   };
   const verifiedCompletion = async (message) => {
     try {
-      if (!await verifyBrief(settings, { env, policy })) return finish(say, "verify failed", 7);
+      const passed = await verifyBrief(settings, { env, policy, outcome: metrics });
+      if (!passed) return finish(say, "verify failed", 7);
     } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
     if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
     return completeReview(settings, started, originalStamp, message, say);
@@ -499,6 +559,7 @@ async function runJob(argv, {
   try {
     policy = verificationPolicy(readFileSync(settings.brief, "utf8"), settings);
   } catch (error) {
+    metrics.refusal = error.refusal ?? "other";
     return finish(say, `cannot prepare the brief: ${error.message}`, 1);
   }
   for (let count = 1; count <= settings.maxRuns; count += 1) {
@@ -511,7 +572,7 @@ async function runJob(argv, {
     try {
       const branch = currentBranch(settings.worktree);
       const refusal = pauseRefusal(settings.worktree) ?? (branch ? holdRefusal(settings.worktree, branch) : null);
-      if (refusal) return finish(say, refusal, 5);
+      if (refusal) return refuse("other", refusal, 5);
     } catch (error) {
       return finish(say, `cannot read the operator pause (${error.message}). Wait for the operator to run \`qc resume\`.`, 5);
     }
@@ -520,6 +581,7 @@ async function runJob(argv, {
       prompt = promptFor(settings, codex);
       contract ??= diffContract(readFileSync(settings.brief, "utf8"));
     } catch (error) {
+      metrics.refusal = error.refusal ?? "other";
       return finish(say, `cannot prepare the brief: ${error.message}`, 1);
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
@@ -541,9 +603,9 @@ async function runJob(argv, {
         boundary = before;
         if (settings.role === "scout") boundary.reflog = scoutReflog(settings.worktree);
       }
-      if (settings.role === "scout" && scoutDirt(settings.worktree)) return finish(say, "guard refused: scout requires a clean worktree (tracked, staged and untracked)", 4);
+      if (settings.role === "scout" && scoutDirt(settings.worktree)) return refuse("other", "guard refused: scout requires a clean worktree (tracked, staged and untracked)", 4);
     } catch (error) {
-      return finish(say, `guard refused: cannot capture the commit boundary: ${error.message}`, settings.report ? 3 : 4);
+      return refuse("other", `guard refused: cannot capture the commit boundary: ${error.message}`, settings.report ? 3 : 4);
     }
     let result;
     let runError;
@@ -552,22 +614,26 @@ async function runJob(argv, {
     } catch (error) {
       runError = error;
     }
+    metrics.inputTokens += tokenCount(result?.inputTokens);
+    metrics.outputTokens += tokenCount(result?.outputTokens);
     if (result?.session) say(`qc codex-implement: session ${result.session}`);
     try {
       if (settings.role === "scout") {
         const after = guardRefs(settings.worktree);
         if (after.head !== boundary.head || after.branch !== boundary.branch || scoutReflog(settings.worktree) !== boundary.reflog || scoutDirt(settings.worktree)) {
-          return finish(say, "guard refused: scout changed commits or tracked, staged, or untracked worktree files", 4);
+          return refuse("other", "guard refused: scout changed commits or tracked, staged, or untracked worktree files", 4);
         }
       }
       const findings = checkRunCommits(settings.worktree, before, { protectedPaths, role: "implementer", allow, base: guardBase, branch: before.branch });
       if (findings.length) {
+        metrics.refusal = /^[a-z0-9-]{1,40}$/.test(findings[0].rule) ? `guard:${findings[0].rule}` : "other";
         for (const finding of findings) say(`qc codex-implement: guard refused: ${findingName(finding)}`);
         return 4;
       }
       if (["implement", "tests"].includes(settings.role)) {
         const { problems } = checkDiffShape({ worktree: settings.worktree, base: boundary.head, ...contract, maxDiffLines: codex.maxDiffLines });
         if (problems.length) {
+          metrics.refusal = "diff-shape";
           for (const problem of problems) say(`qc codex-implement: diff shape refused: ${problem}`);
           return 4;
         }
@@ -575,7 +641,7 @@ async function runJob(argv, {
       const refused = await verifyTests({ policyOnly: true });
       if (refused !== null) return refused;
     } catch (error) {
-      return finish(say, `guard refused: cannot check run commits: ${error.message}`, settings.report ? 3 : 4);
+      return refuse("other", `guard refused: cannot check run commits: ${error.message}`, settings.report ? 3 : 4);
     }
     if (runError) return finish(say, `codex did not run: ${runError.message}`, 1);
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);

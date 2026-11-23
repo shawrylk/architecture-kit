@@ -105,6 +105,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - Stop when the PR body says "no merge is authorized", when `qc pause --status` shows a pause, or when the `merge.holdLabel` label is set.
 - Merge with `gh pr merge <n> --merge --match-head-commit <sha>`. Never use `--admin` or a force-push.
 - Confirm `MERGED`, close each issue the PR names with `Refs`, and remove each worktree with `npx qc worktree remove <name>`.
+- After each merge, run `npx qc metrics`. File one issue for each rate that got worse than the previous period. The run log stays on this PC.
 
 ## Fleet
 
