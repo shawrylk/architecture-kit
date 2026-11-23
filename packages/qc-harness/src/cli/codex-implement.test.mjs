@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { DONE_MARKER, REVIEW_MODEL, REVIEW_EFFORT, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
+import { DONE_MARKER, enabledPlugins, parseArgs, runCodexImplement } from "./codex-implement.mjs";
+import { defaults } from "../config.mjs";
 import { readLimit, writeLimit } from "./codex-limit.mjs";
 import { recordRun } from "./ci-failures.mjs";
 import { holdBranch } from "./pause.mjs";
@@ -426,8 +427,8 @@ for (const effort of ["low", "medium", "high"]) {
 test("--review pins the model and effort on every run and reset retry", async (t) => {
   const { argv, progress } = setup(t);
   const calls = [];
-  assert.equal(REVIEW_MODEL, "gpt-6.1-sol");
-  assert.equal(REVIEW_EFFORT, "high");
+  assert.equal(defaults.codex.reviewModel, "gpt-6.1-sol");
+  assert.equal(defaults.codex.reviewEffort, "high");
   assert.equal(await runCodexImplement([...argv, "--review", "--max-runs", "2", "--wait-reset"], {
     ...resetClock(), say: quiet, out: quiet,
     fetch: async () => ({ ok: true, json: async () => ({ data: { latest_reset: { announced_at: "2026-01-01T00:01:00.000Z" } } }) }),
@@ -440,7 +441,7 @@ test("--review pins the model and effort on every run and reset retry", async (t
   }), 0);
   assert.equal(calls.length, 3);
   for (const { args } of calls) {
-    for (const override of [`model="${REVIEW_MODEL}"`, `model_reasoning_effort="${REVIEW_EFFORT}"`]) {
+    for (const override of [`model="${defaults.codex.reviewModel}"`, `model_reasoning_effort="${defaults.codex.reviewEffort}"`]) {
       const index = args.indexOf(override);
       assert.ok(index > 0);
       assert.equal(args[index - 1], "-c");

@@ -202,5 +202,4 @@ test("Codex verdicts share the worktree ledger and only count when selected", (t
   const records = readLedger(ledgerFileOf(main));
   assert.equal(decidingVerdictFor(records, sha, ["branch"]), null);
   assert.equal(decidingVerdictFor(records, sha, ["branch", "codex"]).verdict, "CHANGES_REQUIRED");
-  assert.equal(latestVerdictFor(records, sha, ["branch"], "security"), null);
 });

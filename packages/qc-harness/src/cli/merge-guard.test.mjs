@@ -66,6 +66,18 @@ const shell = (cwd, command, hook_event_name = "PreToolUse", tool_name = "Bash")
 const denied = (output) => output?.hookSpecificOutput?.permissionDecisionReason ?? null;
 const verdict = (kind, value, sha = SHA) => ({ type: "verdict", kind, verdict: value, sha, branch: "feat/62-x" });
 
+test("codex CHANGES_REQUIRED on the head refuses a direct-lane merge", () => {
+  const result = mergeVerdict(
+    [{ sha: SHA }],
+    [verdict("codex", "CHANGES_REQUIRED")],
+    "branch",
+    () => ({ problem: null, note: "direct lane" }),
+    null,
+    "codex",
+  );
+  assert.match(result.refusal, /CHANGES_REQUIRED/);
+});
+
 test("a lesson refusal prints at most four lines with multiline test names", (t) => {
   const { off, ledgerOf } = workspace(t);
   const branch = "feat/ci";

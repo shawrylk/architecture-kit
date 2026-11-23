@@ -66,6 +66,9 @@ export function mergeVerdict(merges, records, kind, lane = null, promotion = nul
           `Run \`qc review promotion ${merge.number ?? (/^[1-9]\d*$/.test(merge.selector ?? "") ? merge.selector : "<pr>")}\` on that head, and merge after every scope approves.`,
       };
     }
+    if (verdict?.kind === "codex" && verdict.verdict === "CHANGES_REQUIRED") {
+      return { refusal: `Merge guard: the latest Codex review of ${merge.sha} is CHANGES_REQUIRED. Run a Codex review on that head, and merge after it approves.` };
+    }
     if (verdict?.verdict === "APPROVED") continue;
     const fit = !promotion && lane ? lane(merge) : null;
     if (fit && fit.problem === null) {

@@ -17,8 +17,6 @@ import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
-export const REVIEW_MODEL = "gpt-6.1-sol";
-export const REVIEW_EFFORT = "high";
 const DEFAULT_MAX_RUNS = 1;
 const TAIL_CHARS = 4000;
 const LIMIT = /usage limit|spend cap|rate limit|hit your limit/i;
