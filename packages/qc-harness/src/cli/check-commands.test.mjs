@@ -277,6 +277,34 @@ test("related excludes staged deletions and receives the new path of a staged re
 });
 
 
+test("--affected runs a test that spawns a CLI importing the changed module", (t) => {
+  const root = fixture(t);
+  const dir = "packages/qc-harness/src/cli";
+  mkdirSync(path.join(root, dir), { recursive: true });
+  const put = (file, text) => writeFileSync(path.join(root, dir, file), text);
+  put("lib.mjs", "export const value = 1;\n");
+  put("tool.mjs", "import { value } from './lib.mjs'; console.log(value);\n");
+  put("tool-spawn.test.mjs", `import { spawnSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+const run = spawnSync(process.execPath, [fileURLToPath(new URL('./tool.mjs', import.meta.url))], { encoding: 'utf8' });
+assert.equal(run.status, 0, run.stderr);
+assert.equal(run.stdout.trim(), '2');
+console.log('SPAWN TEST RAN');
+`);
+  put("unrelated.test.mjs", "throw Error('UNRELATED TEST RAN');\n");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "echo FULL SUITE" } }));
+  git(root, "add", "."); git(root, "commit", "-qm", "test: seed spawned CLI");
+  const base = git(root, "rev-parse", "HEAD").trim();
+  put("lib.mjs", "export const value = 2;\n");
+  git(root, "add", ".");
+  const run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /tool-spawn\.test\.mjs/);
+  assert.match(run.stdout, /SPAWN TEST RAN/);
+  assert.doesNotMatch(run.stdout + run.stderr, /unrelated\.test\.mjs|UNRELATED TEST RAN|FULL SUITE/);
+});
+
 test("--affected with one changed gate file runs that gate's test file and not an unrelated one", (t) => {
   const root = fixture(t);
   const dir = "packages/qc-harness/src/cli";

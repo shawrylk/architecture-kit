@@ -117,12 +117,10 @@ async function importingTests(root, changed) {
     const files = (await repoFiles(root)).filter((file) => extension.test(file));
     const known = new Set(files), readers = new Map(), uncertainFiles = new Set();
     const tests = new Set(files.filter((file) => /^packages\/qc-harness\/src\/gates\/[^/]+\.test\.mjs$/.test(file)));
-    const mentions = new Map(changed.map((file) => [file, new Set()]));
+    const testTexts = new Map();
     for (const file of files) {
       const text = readFileSync(path.join(root, file), "utf8");
-      if (isTest(file)) for (const changedFile of changed) {
-        if (text.includes(path.posix.basename(changedFile))) mentions.get(changedFile).add(file);
-      }
+      if (isTest(file)) testTexts.set(file, text);
       let uncertain = false;
       const add = (value) => {
         if (/\\|\$\{/.test(value)) { uncertain = true; return; }
@@ -146,11 +144,14 @@ async function importingTests(root, changed) {
     }
     // Unknown loaders can read any changed module; cover their readers too, or run the full suite.
     for (const file of new Set([...changed, ...uncertainFiles])) {
-      const seen = new Set([file]), queue = [file], covered = new Set(mentions.get(file));
+      const seen = new Set([file]), queue = [file], covered = new Set();
       const sibling = file.replace(extension, (suffix) => `.test${suffix}`);
       if (known.has(sibling)) covered.add(sibling);
       for (const next of queue) {
         if (isTest(next)) covered.add(next);
+        else for (const [test, text] of testTexts) {
+          if (text.includes(path.posix.basename(next))) covered.add(test);
+        }
         for (const reader of readers.get(next) ?? []) if (!seen.has(reader)) { seen.add(reader); queue.push(reader); }
       }
       if (!covered.size) return null;
