@@ -246,15 +246,23 @@ test("a merge passes only on an APPROVED review of the configured kind for its s
 test("an approved merge passes with gh 2.45 rejecting baseRefOid in pr view", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledgerOf(ws.on), verdict("branch", "APPROVED"));
-  const gh = (args) => {
-    if (args[0] === "pr") {
-      if (args.at(-1).split(",").includes("baseRefOid")) throw new Error('Unknown JSON field: "baseRefOid"');
-      return JSON.stringify({ baseRefName: "main", headRefName: "feat/62-x", number: 60, isCrossRepository: false, labels: [] });
-    }
-    assert.deepEqual(args, ["api", "repos/{owner}/{repo}/git/ref/heads/main", "--jq", ".object.sha"]);
-    return bases.get(ws.on);
-  };
-  assert.equal(decide(shell(ws.on, `gh pr merge 60 --match-head-commit ${SHA}`), { gh }), null);
+  const results = [];
+  for (const [selector, name, endpoint, host] of [
+    ["60", "main", "repos/{owner}/{repo}/git/ref/heads/main", null],
+    ["https://ghe.example.com/o/r/pull/60", "main", "repos/o/r/git/ref/heads/main", "ghe.example.com"],
+    ["60", "release#1", "repos/{owner}/{repo}/git/ref/heads/release%231", null],
+  ]) {
+    const gh = (args) => {
+      if (args[0] === "pr") {
+        if (args.at(-1).split(",").includes("baseRefOid")) throw new Error('Unknown JSON field: "baseRefOid"');
+        return JSON.stringify({ baseRefName: name, headRefName: "feat/62-x", number: 60, isCrossRepository: false, labels: [] });
+      }
+      assert.deepEqual(args, ["api", endpoint, ...(host ? ["--hostname", host] : []), "--jq", ".object.sha"]);
+      return bases.get(ws.on);
+    };
+    results.push({ selector, name, result: decide(shell(ws.on, `gh pr merge ${selector} --match-head-commit ${SHA}`), { gh }) });
+  }
+  assert.deepEqual(results.map(({ result }) => result), [null, null, null], JSON.stringify(results));
 });
 
 test("a failed PR or base-tip lookup names only the first error line before the deadline", (t) => {

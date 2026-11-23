@@ -96,7 +96,8 @@ function prBaseOf(merge, cwd, gh, deadline) {
   if (merge.nodeId && (answer?.errors?.length || !Number.isInteger(pr?.number) || pr.number <= 0 ||
     typeof pr?.baseRefOid !== "string" || !pr.baseRefOid || typeof pr?.repository?.nameWithOwner !== "string" || !pr.repository.nameWithOwner)) return null;
   if (typeof pr?.baseRefName !== "string") return null;
-  const oid = merge.nodeId ? pr.baseRefOid : read(["api", `repos/${merge.repo || "{owner}/{repo}"}/git/ref/heads/${pr.baseRefName}`, "--jq", ".object.sha"])?.trim();
+  const ref = pr.baseRefName.split("/").map(encodeURIComponent).join("/");
+  const oid = merge.nodeId ? pr.baseRefOid : read(["api", `repos/${merge.repo || "{owner}/{repo}"}/git/ref/heads/${ref}`, ...(merge.host ? ["--hostname", merge.host] : []), "--jq", ".object.sha"])?.trim();
   return { name: pr.baseRefName, oid: oid || null, head: pr.headRefName ?? null, number: Number.isInteger(pr.number) && pr.number > 0 ? pr.number : null, sameRepository: pr.isCrossRepository === false,
     labels: merge.nodeId ? pr.labels?.nodes : pr.labels,
     moreLabels: merge.nodeId ? pr.labels?.pageInfo?.hasNextPage !== false : pr.labels?.length >= 100 };
