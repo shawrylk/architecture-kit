@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { parseWatchArgs, runWatch } from "./watch.mjs";
 
 const MIN = 60_000;
+const pages = (values) => values.map(page => JSON.stringify(page)).join("\n");
 const RUN_HEAD = "abc1234" + "a".repeat(33);
 
 test("the watch and CI reference sections describe pending workflows and required checks", () => {
@@ -53,7 +54,7 @@ function stubGh(answers) {
   let answerIndex = 0;
   const gh = (args) => {
     calls.push(args);
-    if (args[0] === "api" && args[1].includes("/actions/runs?")) return JSON.stringify([{ workflow_runs: [] }]);
+    if (args[0] === "api" && args[1].includes("/actions/runs?")) return pages([{ workflow_runs: [] }]);
     const answer = answers[Math.min(answerIndex++, answers.length - 1)];
     return typeof answer === "function" ? answer(args) : answer;
   };
@@ -133,12 +134,12 @@ test("--pr waits for head workflows even when every visible check passes", async
   const gh = (args) => {
     calls.push(args);
     if (args[0] === "pr") return rollup("abc1234", check("lint", "COMPLETED", "SUCCESS"));
-    return JSON.stringify([{ workflow_runs: [] }, { workflow_runs: [{ name: "CI", head_sha: "abc1234", status: "queued" }] }]);
+    return pages([{ workflow_runs: [] }, { workflow_runs: [{ name: "CI", head_sha: "abc1234", status: "queued" }] }]);
   };
   assert.equal((await watch(["--pr", "7", "--repo", "o/r", "--max", "1"], { gh })).code, 4);
   assert.equal(calls[1][1], "repos/o/r/actions/runs?head_sha=abc1234&per_page=100");
   assert.ok(calls[1].includes("--paginate"));
-  assert.ok(calls[1].includes("--slurp"));
+  assert.ok(!calls[1].includes("--slurp"));
 });
 
 test("--pr waits for missing required checks and passes when they appear", async () => {
@@ -155,7 +156,7 @@ test("a commit status cannot satisfy a required check-run name", async () => {
 
 test("watch reads required checks at the git top level only for the local repository", async (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-watch-config-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   mkdirSync(path.join(cwd, ".git"));
   const nested = path.join(cwd, "nested");
   mkdirSync(nested);
@@ -172,7 +173,7 @@ test("watch reads required checks at the git top level only for the local reposi
 
 test("an unreadable watch config warns once and continues with no required checks", async (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-watch-bad-config-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   mkdirSync(path.join(cwd, ".git"));
   writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ ci: null }));
   const { gh } = stubGh([rollup("h", check("lint", "IN_PROGRESS")), rollup("h", check("lint", "COMPLETED", "SUCCESS"))]);
@@ -216,13 +217,13 @@ test("--pr uses the green allowlist for terminal status-context states", async (
 
 test("--run accepts neutral and skipped workflow conclusions", async () => {
   for (const conclusion of ["neutral", "skipped"]) {
-    const { gh } = stubGh([JSON.stringify([{ workflow_runs: [{ head_sha: RUN_HEAD, status: "completed", conclusion }] }])]);
+    const { gh } = stubGh([pages([{ workflow_runs: [{ head_sha: RUN_HEAD, status: "completed", conclusion }] }])]);
     assert.equal((await watch(["--run", `ci.yml@main@${RUN_HEAD}`], { gh })).code, 0);
   }
 });
 
 test("--run waits for an unfinished head workflow on a later page", async () => {
-  const { gh } = stubGh([JSON.stringify([
+  const { gh } = stubGh([pages([
     { workflow_runs: [{ head_sha: RUN_HEAD, status: "completed", conclusion: "success" }] },
     { workflow_runs: [{ head_sha: RUN_HEAD, status: "queued", conclusion: null }] },
   ])]);
@@ -269,7 +270,7 @@ test("the default bound is 55 minutes", async () => {
 
 function wrapper(t, text) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-watch-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const file = path.join(dir, "wrapper.log");
   if (text !== undefined) writeFileSync(file, text);
   return file;
@@ -295,13 +296,13 @@ test("--codex reads only the last 2 KB", async (t) => {
 });
 
 test("--run exits 0 on a success and 5 on a failure", async () => {
-  const run = (status, conclusion) => (args) => (args[1].includes("/commits/") ? "deadbeef\n" : JSON.stringify([{ workflow_runs: [{ status, conclusion, head_sha: "deadbeef" }] }]));
+  const run = (status, conclusion) => (args) => (args[1].includes("/commits/") ? "deadbeef\n" : pages([{ workflow_runs: [{ status, conclusion, head_sha: "deadbeef" }] }]));
   const pass = stubGh([run("in_progress", ""), run("in_progress", ""), run("completed", "success")]);
   const first = await watch(["--run", "ci.yml@feat/x", "--repo", "o/r"], { gh: pass.gh });
   assert.equal(first.code, 0);
   assert.deepEqual(first.lines, ["EVENT run:ci.yml@feat/x passed deadbeef"]);
   assert.deepEqual(pass.calls[0], ["api", "repos/o/r/commits/feat%2Fx", "--jq", ".sha"]);
-  assert.deepEqual(pass.calls[1], ["api", "repos/o/r/actions/workflows/ci.yml/runs?branch=feat%2Fx&head_sha=deadbeef&per_page=100", "--paginate", "--slurp"]);
+  assert.deepEqual(pass.calls[1], ["api", "repos/o/r/actions/workflows/ci.yml/runs?branch=feat%2Fx&head_sha=deadbeef&per_page=100", "--paginate"]);
   const fail = await watch(["--run", "ci.yml@feat/x"], { gh: stubGh([run("completed", "failure")]).gh });
   assert.equal(fail.code, 5);
   assert.deepEqual(fail.lines, ["EVENT run:ci.yml@feat/x failed deadbeef"]);
@@ -351,14 +352,14 @@ test("--run reads every workflow-run page and encodes the workflow and branch", 
   const calls = [];
   const gh = (args) => {
     calls.push(args);
-    return JSON.stringify([
+    return pages([
       { workflow_runs: [{ status: "completed", conclusion: "success", head_sha: "other99" }] },
       { workflow_runs: [{ status: "completed", conclusion: "success", head_sha: RUN_HEAD }] },
     ]);
   };
   assert.equal((await watch(["--run", `ci test.yml@feat/x@${RUN_HEAD}`, "--repo", "o/r"], { gh })).code, 0);
   assert.ok(calls[0].includes("--paginate"));
-  assert.ok(calls[0].includes("--slurp"));
+  assert.ok(!calls[0].includes("--slurp"));
   assert.equal(calls[0][1], `repos/o/r/actions/workflows/ci%20test.yml/runs?branch=feat%2Fx&head_sha=${RUN_HEAD}&per_page=100`);
 });
 
@@ -368,7 +369,7 @@ test("--run ignores a completed run on the previous head, and fires on the run o
   const fresh = { status: "completed", conclusion: "failure", head_sha: "newhead" };
   const answer = (args) => {
     if (args[1].includes("/commits/")) return "newhead\n";
-    return JSON.stringify([{ workflow_runs: time.clock.now < 2 * MIN ? [stale] : [fresh, stale] }]);
+    return pages([{ workflow_runs: time.clock.now < 2 * MIN ? [stale] : [fresh, stale] }]);
   };
   const { code, lines } = await watch(["--run", "ci.yml@feat/x"], { gh: stubGh([answer]).gh, time });
   assert.equal(code, 5);
@@ -376,14 +377,14 @@ test("--run ignores a completed run on the previous head, and fires on the run o
 });
 
 test("--run <wf>@<branch> never fires on a run of another head, so it times out", async () => {
-  const answer = (args) => (args[1].includes("/commits/") ? "newhead\n" : JSON.stringify([{ workflow_runs: [{ status: "completed", conclusion: "success", head_sha: "oldhead" }] }]));
+  const answer = (args) => (args[1].includes("/commits/") ? "newhead\n" : pages([{ workflow_runs: [{ status: "completed", conclusion: "success", head_sha: "oldhead" }] }]));
   const { code, lines } = await watch(["--run", "ci.yml@feat/x", "--max", "5"], { gh: stubGh([answer]).gh });
   assert.equal(code, 4);
   assert.deepEqual(lines, ["EVENT timeout"]);
 });
 
 test("--run <wf>@<branch>@<sha> pins the head and reads no branch head", async () => {
-  const runs = JSON.stringify([{ workflow_runs: [
+  const runs = pages([{ workflow_runs: [
     { status: "completed", conclusion: "failure", head_sha: "other99" },
     { status: "completed", conclusion: "success", head_sha: RUN_HEAD },
   ] }]);
@@ -397,7 +398,7 @@ test("--run <wf>@<branch>@<sha> pins the head and reads no branch head", async (
 test("a gh error writes one stderr line with the first line of the error, and the wait goes on", async () => {
   let calls = 0;
   const gh = (args) => {
-    if (args[0] === "api") return JSON.stringify([{ workflow_runs: [] }]);
+    if (args[0] === "api") return pages([{ workflow_runs: [] }]);
     calls += 1;
     if (calls === 1) throw new Error("HTTP 502 bad gateway\nmore detail");
     return rollup("h", check("a", "COMPLETED", "SUCCESS"));

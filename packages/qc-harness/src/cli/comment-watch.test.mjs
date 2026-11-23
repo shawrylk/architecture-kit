@@ -3,7 +3,7 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 import { watchedItems } from "./comment-watch.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -21,7 +21,7 @@ test("watch detection keeps closed issues, PR output, and body references", () =
 
 test("PowerShell detects explicit repositories, body files, and commit references", (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-comment-detection-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   writeFileSync(path.join(cwd, "body.txt"), "Refs #8");
   for (const tool_name of ["Bash", "PowerShell"]) {
     const items = watchedItems({ cwd, tool_name, tool_input: {
@@ -33,8 +33,9 @@ test("PowerShell detects explicit repositories, body files, and commit reference
 
 function fixture(t) {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-comment-watch-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: path.join(cwd, "empty-gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" };
+  delete env.GH_CONFIG_DIR;
   writeFileSync(env.GIT_CONFIG_GLOBAL, "");
   for (const args of [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"], ["remote", "add", "origin", "https://github.com/shawrylk/example.git"]]) {
     assert.equal(spawnSync("git", args, { cwd, env }).status, 0);
@@ -62,9 +63,9 @@ function fixture(t) {
         const endpoint = args.at(-1);
         if (/issues\\/7$/.test(endpoint)) result = { pull_request: {} };
         else if (/issues\\/\\d+$/.test(endpoint)) result = {};
-        else result = [data.rows.filter(row => endpoint.includes(row.endpoint)).map(({endpoint, ...row}) => row)];
+        else result = [[], data.rows.filter(row => endpoint.includes(row.endpoint)).map(({endpoint, ...row}) => row)];
       }
-      return {status: 0, stdout: JSON.stringify(result)};
+      return {status: 0, stdout: args.includes('--paginate') ? result.map(page => JSON.stringify(page)).join('\\n') : JSON.stringify(result)};
     };
     cp.execFile = (program, args, options, callback) => {
       const data = JSON.parse(readFileSync(process.env.DATA, 'utf8'));
@@ -78,10 +79,10 @@ function fixture(t) {
   const rows = [row(1, "issues/4/comments"), row(2, "pulls/7/reviews"), row(3, "pulls/7/comments"), row(4, "issues/7/comments", "self"), row(5, "issues/8/comments")];
   const update = (extra = {}) => writeFileSync(data, JSON.stringify({ rows, baseOid, ...extra }));
   update();
-  const run = (event, command = "", script = "comment-watch.mjs", session = "session-a", tool_response = "", tool_name = "PowerShell") => {
+  const run = (event, command = "", script = "comment-watch.mjs", session = "session-a", tool_response = "", tool_name = "PowerShell", parentCwd = cwd) => {
     const cli = fileURLToPath(new URL(script, import.meta.url));
     const result = spawnSync(process.execPath, ["--import", pathToFileURL(mock).href, cli], {
-      cwd, encoding: "utf8", env: { ...env, DATA: data, CALLS: calls },
+      cwd: parentCwd, encoding: "utf8", env: { ...env, DATA: data, CALLS: calls },
       input: JSON.stringify({ cwd, hook_event_name: event, session_id: session, tool_name, tool_response, tool_input: { command } }),
     });
     assert.equal(result.status, 0, result.stderr);
@@ -90,8 +91,46 @@ function fixture(t) {
   return { cwd, rows, update, run, calls };
 }
 
+for (const exists of [false, true]) {
+  test(`a mapped config folder that ${exists ? "exists sets GH_CONFIG_DIR" : "does not exist leaves GH_CONFIG_DIR unset"}`, (t) => {
+    const f = fixture(t);
+    const folder = path.join(f.cwd, "gh-config");
+    if (exists) mkdirSync(folder);
+    writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: `~/${path.relative(os.homedir(), folder).split(path.sep).join("/")}` } } }));
+    f.run("PostToolUse", "gh pr view 7");
+    f.run("UserPromptSubmit");
+    const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
+    const mapped = calls.filter(call => call.args.some(arg => arg.includes("shawrylk/example")));
+    assert.ok(mapped.length > 0);
+    for (const call of mapped) assert.equal(call.config, exists ? folder : undefined);
+    const unmapped = calls.filter(call => call.args.some(arg => arg.includes("ArentInc/other")));
+    assert.ok(unmapped.length > 0);
+    for (const call of unmapped) assert.equal(call.config, undefined);
+  });
+}
+
+test("a relative mapped config folder is checked against the checkout root", (t) => {
+  for (const existsInRoot of [true, false]) {
+    const f = fixture(t);
+    const parent = mkdtempSync(path.join(os.tmpdir(), "qc-comment-parent-"));
+    t.after(() => rmSync(parent, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
+    mkdirSync(path.join(existsInRoot ? f.cwd : parent, "packages"));
+    writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: "packages" } } }));
+    const parentCwd = existsInRoot ? path.parse(f.cwd).root : parent;
+    f.run("PostToolUse", "gh pr view 7", "comment-watch.mjs", "session-a", "", "PowerShell", parentCwd);
+    f.run("UserPromptSubmit", "", "comment-watch.mjs", "session-a", "", "PowerShell", parentCwd);
+    const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
+    const mapped = calls.filter(call => call.args.some(arg => arg.includes("shawrylk/example")));
+    assert.ok(mapped.length > 0);
+    for (const call of mapped) assert.equal(call.config, existsInRoot ? "packages" : undefined);
+  }
+});
+
 test("prompts show shared-login feedback once, retain failures, and isolate sessions and accounts", (t) => {
   const f = fixture(t);
+  const folder = path.join(f.cwd, "gh-personal");
+  mkdirSync(folder);
+  writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: folder } } }));
   f.run("PostToolUse", "gh issue close 4");
   f.run("PostToolUse", "gh pr view 7");
   f.update({ fail: true });
@@ -107,9 +146,11 @@ test("prompts show shared-login feedback once, retain failures, and isolate sess
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Edited comment/);
   assert.equal(f.run("UserPromptSubmit", "", "comment-watch.mjs", "other-session"), null);
   const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
-  assert.ok(calls.some(call => call.args.some(arg => arg.includes("ArentInc/other")) && call.config === ""));
-  assert.ok(calls.some(call => call.config === path.join(os.homedir(), ".config", "gh-personal")));
-  writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: "~/custom-gh" } } }));
+  assert.ok(calls.some(call => call.args.some(arg => arg.includes("ArentInc/other")) && call.config === undefined));
+  assert.ok(calls.some(call => call.config === folder));
+  const customFolder = path.join(f.cwd, "custom-gh");
+  mkdirSync(customFolder);
+  writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: customFolder } } }));
   f.run("UserPromptSubmit");
   assert.match(readFileSync(f.calls, "utf8"), /custom-gh/);
   writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ commentWatch: false }));
@@ -315,6 +356,7 @@ test("polls use one issue request and three PR requests in parallel", (t) => {
   assert.equal(calls.length, 5);
   assert.ok(Math.max(...calls.map(call => call.start)) - Math.min(...calls.map(call => call.start)) < 200);
   assert.ok(calls.every(call => call.args.includes("--paginate")));
+  assert.ok(calls.every(call => !call.args.includes("--slurp")));
   f.rows[0].body = "Retry this item";
   f.update({ failEndpoint: "issues/4/comments" });
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /shawrylk\/example#4 could not be checked; retry on the next prompt/);

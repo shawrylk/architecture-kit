@@ -8,6 +8,14 @@ import { fileURLToPath } from "node:url";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test("help describes full checks, previews, and readiness", () => {
+  const run = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
+  assert.equal(run.status, 0);
+  assert.match(run.stdout, /qc check --full \[--os <linux\|windows>\]/);
+  assert.match(run.stdout, /qc ci-preview \[--os <linux\|windows\|both>\]/);
+  assert.match(run.stdout, /qc ready-check/);
+});
+
 test("help describes the operator pause commands and exit 5", () => {
   const run = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
   assert.equal(run.status, 0);

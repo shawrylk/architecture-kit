@@ -7,16 +7,49 @@ import path from "node:path";
 
 const GH_TIMEOUT_MS = 20_000;
 
-/** A branch that flattens API pages from `gh api --paginate --slurp`, or returns null for an unreadable list. */
-export function parseApiList(text, key) {
+/** Reads the consecutive JSON values printed by `gh api --paginate`. */
+export function parsePages(text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  const pages = [];
+  const scalar = /(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/y;
+  let offset = 0;
   try {
-    const parsed = JSON.parse(text);
-    const pages = Array.isArray(parsed) ? parsed : [parsed];
-    if (!pages.every((page) => Array.isArray(page?.[key]))) return null;
-    return pages.flatMap((page) => page[key]);
+    while (offset < text.length) {
+      if (/\s/.test(text[offset])) { offset++; continue; }
+      const start = offset;
+      if ('{["'.includes(text[offset])) {
+        let depth = 0;
+        let quoted = false;
+        let escaped = false;
+        do {
+          const char = text[offset++];
+          if (quoted) {
+            if (escaped) escaped = false;
+            else if (char === "\\") escaped = true;
+            else if (char === '"') quoted = false;
+          } else if (char === '"') quoted = true;
+          else if (char === "{" || char === "[") depth++;
+          else if (char === "}" || char === "]") depth--;
+        } while (offset < text.length && (depth > 0 || quoted));
+        if (depth !== 0 || quoted) return null;
+      } else {
+        scalar.lastIndex = offset;
+        if (!scalar.exec(text)) return null;
+        offset = scalar.lastIndex;
+      }
+      pages.push(JSON.parse(text.slice(start, offset)));
+    }
+    return pages;
   } catch {
     return null;
   }
+}
+
+/** Flattens API object pages, or returns null for an unreadable list. */
+export function parseApiList(text, key) {
+  const pages = parsePages(text);
+  if (!pages || !pages.every((page) => Array.isArray(page?.[key]))) return null;
+  return pages.flatMap((page) => page[key]);
 }
 
 /** Expands a leading `~`, `~/`, or `~\` in each value, as a shell does for an assignment. */
