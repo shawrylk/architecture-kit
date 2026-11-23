@@ -31,6 +31,8 @@ claude plugin marketplace add shawrylk/architecture-kit
 claude plugin install architecture@architecture-kit
 ```
 
+To split the open issues across several PCs, read [Split work across PCs](docs/fleet.md).
+
 The plugin depends on [ai-chat-assistant](https://github.com/shawrylk/ai-chat-assistant),
 which has its own pinned entry in the marketplace.
 
