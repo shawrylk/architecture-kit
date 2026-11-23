@@ -63,9 +63,9 @@ function fixture(t) {
         const endpoint = args.at(-1);
         if (/issues\\/7$/.test(endpoint)) result = { pull_request: {} };
         else if (/issues\\/\\d+$/.test(endpoint)) result = {};
-        else result = [data.rows.filter(row => endpoint.includes(row.endpoint)).map(({endpoint, ...row}) => row)];
+        else result = [[], data.rows.filter(row => endpoint.includes(row.endpoint)).map(({endpoint, ...row}) => row)];
       }
-      return {status: 0, stdout: JSON.stringify(result)};
+      return {status: 0, stdout: args.includes('--paginate') ? result.map(page => JSON.stringify(page)).join('\\n') : JSON.stringify(result)};
     };
     cp.execFile = (program, args, options, callback) => {
       const data = JSON.parse(readFileSync(process.env.DATA, 'utf8'));
@@ -339,6 +339,7 @@ test("polls use one issue request and three PR requests in parallel", (t) => {
   assert.equal(calls.length, 5);
   assert.ok(Math.max(...calls.map(call => call.start)) - Math.min(...calls.map(call => call.start)) < 200);
   assert.ok(calls.every(call => call.args.includes("--paginate")));
+  assert.ok(calls.every(call => !call.args.includes("--slurp")));
   f.rows[0].body = "Retry this item";
   f.update({ failEndpoint: "issues/4/comments" });
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /shawrylk\/example#4 could not be checked; retry on the next prompt/);

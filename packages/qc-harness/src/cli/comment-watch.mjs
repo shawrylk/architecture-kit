@@ -10,7 +10,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { originOf } from "./git-read.mjs";
 import { ghCalls, ghCommand, ghMerges } from "./gh-merge-command.mjs";
-import { expandHome, runGhAsync } from "./gh-run.mjs";
+import { expandHome, parsePages, runGhAsync } from "./gh-run.mjs";
 import { commandWords } from "./shell-command.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -148,7 +148,8 @@ function github(root, config, deadline, run) {
     if (timeoutMs <= 0) throw new Error("deadline");
     const text = await run(args, { cwd: root, env, timeoutMs });
     if (text === null) throw new Error("gh");
-    const result = JSON.parse(text);
+    const result = args.includes("--paginate") ? parsePages(text) : JSON.parse(text);
+    if (result === null) throw new Error("pages");
     return result;
   };
 }
@@ -156,7 +157,7 @@ function github(root, config, deadline, run) {
 async function comments(item, gh) {
   const prefix = `repos/${item.repo}`;
   const list = async (endpoint) => {
-    const pages = await gh(item.repo, ["api", "--paginate", "--slurp", `${prefix}/${endpoint}?per_page=100`]);
+    const pages = await gh(item.repo, ["api", "--paginate", `${prefix}/${endpoint}?per_page=100`]);
     if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error("pages");
     return pages.flat().map(row => ({ ...row, endpoint: `${prefix}/${endpoint}` }));
   };

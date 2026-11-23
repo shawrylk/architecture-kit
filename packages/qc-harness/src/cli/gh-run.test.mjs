@@ -4,7 +4,22 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
-import { expandHome, parseApiList, runGh, runGhResult } from "./gh-run.mjs";
+import { expandHome, parseApiList, parsePages, runGh, runGhResult } from "./gh-run.mjs";
+
+test("parsePages reads two array pages printed back to back", () => {
+  const first = [{ body: 'braces } [ and "quoted"', path: "a\\b" }];
+  assert.deepEqual(parsePages(`${JSON.stringify(first)}\n[2]`), [first, [2]]);
+});
+
+test("parsePages reads two object pages printed back to back", () => {
+  assert.deepEqual(parsePages('{"check_runs":[1]}{"check_runs":[2]}'), [{ check_runs: [1] }, { check_runs: [2] }]);
+});
+
+test("parsePages returns null for a torn page", () => {
+  for (const text of [null, "", " ", "not JSON", '[1]\n[{"body":"unfinished', "[1]{}junk", "[1,]", "{]"]) {
+    assert.equal(parsePages(text), null);
+  }
+});
 
 test("runGh captures a failed-run log larger than one MB", () => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-gh-large-"));
@@ -14,14 +29,14 @@ test("runGh captures a failed-run log larger than one MB", () => {
     assert.equal(result.status, 0);
     assert.equal(result.stdout.length, 2 * 1024 * 1024);
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
 test("parseApiList combines every page and rejects incomplete or malformed pages", () => {
-  assert.deepEqual(parseApiList('[{"check_runs":[1]},{"check_runs":[2]}]', "check_runs"), [1, 2]);
+  assert.deepEqual(parseApiList('{"check_runs":[1]}\n{"check_runs":[2]}', "check_runs"), [1, 2]);
   assert.deepEqual(parseApiList('{"workflow_runs":[]}', "workflow_runs"), []);
-  for (const text of [null, "not JSON", "{}", '[{"check_runs":[]},{}]']) assert.equal(parseApiList(text, "check_runs"), null);
+  for (const text of [null, "not JSON", "{}", '{"check_runs":[]}\n{}']) assert.equal(parseApiList(text, "check_runs"), null);
 });
 
 test("expandHome expands a leading ~ the way the shell would, and leaves every other value", () => {
@@ -67,6 +82,6 @@ test("the real gh test skips with a reason when gh is absent from PATH", () => {
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /# SKIP gh is not on PATH/);
   } finally {
-    rmSync(cwd, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });

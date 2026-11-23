@@ -115,7 +115,7 @@ function pullRequestWatcher(number, { repo, gh, now, requiredChecks }) {
     for (const [name, state] of states) if (state === "queued" && !queuedSince.has(name)) queuedSince.set(name, at);
     if ([...queuedSince.values()].some((since) => at - since > QUEUED_LIMIT_MS)) return { state: "queued", detail: head, code: EXIT.QUEUED };
     if (states.length > 0 && states.every(([, state]) => state === "passed")) {
-      const workflows = parseApiList(gh(["api", `repos/${repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate", "--slurp"]), "workflow_runs");
+      const workflows = parseApiList(gh(["api", `repos/${repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate"]), "workflow_runs");
       const checkNames = view.statusCheckRollup.filter((entry) => entry.__typename !== "StatusContext" && entry.context === undefined).map((entry) => entry.name);
       if (workflows === null || pendingCiReason(checkNames, workflows.filter((run) => run.head_sha === head), requiredChecks)) return null;
       return { state: "passed", detail: head, code: EXIT.PASSED, runs: workflows.filter((run) => run.head_sha === head) };
@@ -142,7 +142,7 @@ function runWatcher({ workflow, branch, sha }, { repo, gh }) {
   return () => {
     const head = sha ? (pinnedHead ??= gh(headArgs)?.trim()) : gh(headArgs)?.trim();
     if (!head) return null;
-    const listArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(branch)}&head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate", "--slurp"];
+    const listArgs = ["api", `repos/${repo ?? "{owner}/{repo}"}/actions/workflows/${encodeURIComponent(workflow)}/runs?branch=${encodeURIComponent(branch)}&head_sha=${encodeURIComponent(head)}&per_page=100`, "--paginate"];
     const runs = parseApiList(gh(listArgs), "workflow_runs")?.filter((run) => typeof run.head_sha === "string" && run.head_sha.toLowerCase() === head.toLowerCase());
     if (!runs?.length || pendingCiReason([], runs)) return null;
     const latest = runs[0];
@@ -218,7 +218,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
         try {
           const root = checkoutRootOf(cwd);
           if (root) {
-            const runs = event.runs ?? (event.prHead ? parseApiList(read(["api", `repos/${parsed.repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(event.prHead)}&per_page=100`, "--paginate", "--slurp"]), "workflow_runs") : []) ?? [];
+            const runs = event.runs ?? (event.prHead ? parseApiList(read(["api", `repos/${parsed.repo ?? "{owner}/{repo}"}/actions/runs?head_sha=${encodeURIComponent(event.prHead)}&per_page=100`, "--paginate"]), "workflow_runs") : []) ?? [];
             for (const run of runs) {
               if (!run.head_branch || !run.head_sha || run.head_sha !== event.detail) continue;
               const repository = repoOfSpelling(run.head_repository?.full_name ?? run.repository?.full_name ?? parsed.repo ?? originOf(root) ?? "");

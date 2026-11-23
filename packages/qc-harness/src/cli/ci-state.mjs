@@ -23,12 +23,12 @@ export function ciState(sha, cwd, { gh = runGh, origin = originOf, requiredCheck
   if (typeof sha !== "string" || sha === "") return unknown("there is no commit to ask about");
   const repo = origin(cwd, ORIGIN_TIMEOUT_MS);
   if (repo === null) return unknown("the checkout has no readable origin");
-  const out = gh(["api", `repos/${repo}/commits/${sha}/check-runs?per_page=100&filter=all`, "--paginate", "--slurp"], { cwd, timeoutMs: GH_TIMEOUT_MS });
+  const out = gh(["api", `repos/${repo}/commits/${sha}/check-runs?per_page=100&filter=all`, "--paginate"], { cwd, timeoutMs: GH_TIMEOUT_MS });
   if (out === null) return unknown("gh failed or timed out");
   const runs = parseApiList(out, "check_runs");
   if (runs === null) return unknown("gh answered with no readable check_runs list");
   let state = checkRunsState(runs, { requiredChecks });
-  const workflows = gh(["api", `repos/${repo}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`, "--paginate", "--slurp"], { cwd, timeoutMs: GH_TIMEOUT_MS });
+  const workflows = gh(["api", `repos/${repo}/actions/runs?head_sha=${encodeURIComponent(sha)}&per_page=100`, "--paginate"], { cwd, timeoutMs: GH_TIMEOUT_MS });
   const workflowRuns = parseApiList(workflows, "workflow_runs");
   if (workflowRuns === null && state.reason === null) return unknown("gh answered with no readable workflow_runs list");
   if (workflowRuns !== null) state = checkRunsState(runs, {
