@@ -306,6 +306,8 @@ test("--affected with one changed gate file runs that gate's test file and not a
     'const url = "http://x"; await import("./bridge.mjs");',
     "const text = '/* literal */'; await import('./bridge.mjs');",
     'const text = `http://x /* literal */`; await import("./bridge.mjs");',
+    'const pattern = /[//]/; export { value } from "./gate.mjs";',
+    'const text = `${`//`}`; export { value } from "./gate.mjs";',
     'const text = "escaped \\" // literal"; await import("./bridge.mjs");',
     "const target = './bridge' + '.mjs'; await import(target);",
     "const target = './bridge' + '.mjs'; if (false) require(target);",
@@ -328,7 +330,7 @@ test("--affected with one changed gate file runs that gate's test file and not a
   assert.match(run.stdout, /gate\.test\.mjs/);
   assert.match(run.stdout, /consumer\.test\.mjs/);
   assert.match(run.stdout, /TREE SCAN/);
-  for (const index of forms.keys()) assert.match(run.stdout, new RegExp(`FORM ${index}\\b`));
+  assert.deepEqual([...forms.keys()].filter((index) => !new RegExp(`FORM ${index}\\b`).test(run.stdout)), [], run.stdout);
   for (const extension of ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]) assert.match(run.stdout, new RegExp(`GRAPH ${extension}\\b`));
   assert.doesNotMatch(run.stdout, /unrelated\.test\.mjs|FULL SUITE/);
   const omittedReaders = [

@@ -132,13 +132,15 @@ async function importingTests(root, changed) {
           else readers.set(target, [...(readers.get(target) ?? []), file]);
         } else if (!value.startsWith("node:")) uncertain = true;
       };
-      // Keep literals intact while replacing comment trivia with whitespace between tokens.
-      const source = text.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, (token) => token.startsWith("/") ? " " : token);
-      for (const match of source.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2]);
-      for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*/g)) {
-        const literal = /^(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1\s*(?=[,)])/.exec(source.slice(match.index + match[0].length));
-        if (literal) add(literal[2]);
-        else uncertain = true;
+      // Retain original matches when comment stripping misreads regexes or nested templates.
+      const stripped = text.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, (token) => token.startsWith("/") ? " " : token);
+      for (const source of new Set([text, stripped])) {
+        for (const match of source.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2]);
+        for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*/g)) {
+          const literal = /^(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1\s*(?=[,)])/.exec(source.slice(match.index + match[0].length));
+          if (literal) add(literal[2]);
+          else uncertain = true;
+        }
       }
       if (uncertain) uncertainFiles.add(file);
     }
