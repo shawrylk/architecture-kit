@@ -24,10 +24,15 @@ test("overview prints at most 60 lines on a repo with 200 files", async (t) => {
   const { root, git, put } = fixture(t);
   for (let i = 0; i < 200; i++) put(`src/mod/file${i}.mjs`, "x\n".repeat(i + 1));
   put("docs/architecture.md", "# Architecture\n" + "## Module\n".repeat(20));
+  put("docs/large.md", "docs\n".repeat(500));
   put("package-lock.json", "x\n".repeat(300));
   put("src/binary.bin", Buffer.from([0, 255, 10]));
+  put("src/binary.mjs", Buffer.from([0, 255, 10]));
   put("src/line\nbreak.mjs", "x\n".repeat(250));
   git(["add", "."]); git(["commit", "-qm", "files"]);
+  put("src/mod/file0.mjs", "changed\n");
+  put("docs/large.md", "updated docs\n".repeat(500));
+  git(["add", "."]); git(["commit", "-qm", "touch source and docs"]);
   put(".git/qc/ledger.jsonl", [
     { type: "ci-failure", id: "local", repository: "local/repo", branch: "main", test: "broken\ntest" },
     { type: "ci-failure", id: "foreign", repository: "other/repo", branch: "main", test: "foreign failure" },
@@ -40,9 +45,12 @@ test("overview prints at most 60 lines on a repo with 200 files", async (t) => {
   for (const section of ["Modules", "Largest", "Churn", "CI failures", "Debt"]) assert.ok(lines.includes(section));
   assert.ok(lines.every((line) => line.length <= 100));
   for (const section of output.split(/^(?:Modules|Largest|Churn|CI failures|Debt)$/m).slice(1)) assert.ok(section.trim().split("\n").length <= 10);
-  assert.match(output, /src\/line break.mjs/);
+  const sectionRows = (name, next) => output.split(`${name}\n`)[1].split(`\n${next}\n`)[0].split("\n");
+  assert.deepEqual(sectionRows("Largest", "Churn").slice(0, 2), ["- src/line break.mjs: 250 lines", "- src/mod/file199.mjs: 200 lines"]);
+  assert.deepEqual(sectionRows("Churn", "CI failures").slice(0, 2), ["- src/mod/file0.mjs: 2 touches", "- src/line break.mjs: 1 touches"]);
+  assert.doesNotMatch(sectionRows("Largest", "Churn").join("\n") + sectionRows("Churn", "CI failures").join("\n"), /docs\//);
   assert.match(output, /broken test/);
-  assert.doesNotMatch(output, /package-lock|binary.bin|foreign failure|fixed failure/);
+  assert.doesNotMatch(output, /package-lock|binary\.(?:bin|mjs)|foreign failure|fixed failure/);
 });
 
 test("debt file skips an item whose title is already an open issue", async (t) => {
@@ -63,6 +71,7 @@ test("debt file skips an item whose title is already an open issue", async (t) =
 
 test("debt due counts first-parent milestone merges and resets after filing", async (t) => {
   const { root, git, put } = fixture(t), output = [];
+  const base = git(["rev-parse", "HEAD"]);
   const check = () => debtDue(root, { log: (line) => output.push(line) });
   assert.equal(await check(), 1); assert.equal(output.pop(), "not due: 0 of 10");
   git(["commit", "-q", "--allow-empty", "-m", "mention milestone/not-a-merge"]);
@@ -73,12 +82,30 @@ test("debt due counts first-parent milestone merges and resets after filing", as
   git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
   assert.equal(await check(), 1); assert.equal(output.pop(), "not due: 0 of 10");
   for (let i = 0; i < 10; i++) {
+    const branch = `feature/milestone/${i}`;
+    git(["checkout", "-qb", branch]);
+    git(["commit", "-q", "--allow-empty", "-m", "feature"]);
+    git(["checkout", "-q", "main"]);
+    git(["merge", "--no-ff", "-qm", `Merge branch '${branch}'`, branch]);
+  }
+  git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  assert.equal(await check(), 1); assert.equal(output.pop(), "not due: 0 of 10");
+  for (let i = 0; i < 10; i++) {
     git(["checkout", "-qb", `milestone/${i}`]);
-    put("src/hot/file.mjs", `${i}\n`); git(["add", "."]); git(["commit", "-qm", "change"]);
-    git(["checkout", "-q", "main"]); git(["merge", "--no-ff", "-qm", "Merge branch 'milestone/repeated'", `milestone/${i}`]);
+    put("src/hot/file.mjs", `${i}\n`);
+    put("docs/hottest.md", `${i}\n`);
+    put("src/aaa/binary.mjs", Buffer.from([0, i]));
+    put("src/deleted/file.ts", `${i}\n`);
+    if (i === 0) put("src/cold/file.ts", "cold\n");
+    git(["add", "."]); git(["commit", "-qm", "change"]);
+    git(["checkout", "-q", "main"]); git(["merge", "--no-ff", "-qm", (i % 2 ? "Merge pull request #1 from local/milestone/2026-11-23-1" : "Merge branch 'milestone/2026-11-23-1'"), `milestone/${i}`]);
     git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
     if (i === 8) { assert.equal(await check(), 1); assert.equal(output.pop(), "not due: 9 of 10"); }
   }
+  git(["rm", "-q", "src/deleted/file.ts"]); git(["commit", "-qm", "remove old source"]);
+  git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  git(["checkout", "-q", "--detach", base]);
+  put("src/checkout-only/file.ts", "checkout only\n");
   assert.equal(await check(), 0); assert.equal(output.pop(), "due: src/hot");
   put("report.md", "## Debt\nNone.\n- Ignored\n");
   await fileDebt(root, "report.md", { gh: () => "[]" });
@@ -102,5 +129,7 @@ test("debt commands preserve the watermark on errors and due exits 3", async (t)
   const errors = [];
   assert.equal(await debtDue(root, { error: (line) => errors.push(line) }), 3);
   assert.ok(errors.length);
-  assert.equal(await debtDue(root, { git: () => { throw new Error("git failed"); }, error: () => {} }), 3);
+  rmSync(mark);
+  assert.equal(await debtDue(root, { git: () => { throw new Error("git failed"); }, error: (line) => errors.push(line) }), 3);
+  assert.equal(errors.at(-1), "debt: git failed");
 });

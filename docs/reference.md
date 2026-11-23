@@ -1092,6 +1092,7 @@ Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
 `qc overview` prints `Modules`, `Largest`, `Churn`, `CI failures`, and `Debt`.
 Each section has at most 10 items, each on one line cut to 100 characters; the whole output stays under 60 lines.
 Modules come from `docs/architecture.md` headings, largest files use line counts, and churn counts file touches over 90 days.
+Largest and Churn rank only source files: `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx`.
 Rankings skip lockfiles and binary files. CI failures are unresolved records for the current branch and repository.
 Debt lists open issues with the `debt` label; a GitHub error appears as an unavailable item.
 
@@ -1100,7 +1101,8 @@ The title ends at the first full stop and is cut to 80 characters; the full item
 It reads up to 1000 open issue titles once, skips duplicates, and files each new item with the `debt` label.
 After every item succeeds, it saves the current `origin/main` SHA to `<git common dir>/qc/debt-review.json`, shared by worktrees.
 An error preserves the previous watermark. The workflow ledger is unchanged.
-`qc debt due` counts first-parent merge commits on `origin/main` after that SHA whose subjects name a `milestone/` branch, or from the first commit without a watermark.
+`qc debt due` counts first-parent merge commits on `origin/main` after that SHA whose subjects end with `from <owner>/milestone/<YYYY-MM-DD>-<n>` or exactly match `Merge branch 'milestone/<YYYY-MM-DD>-<n>'`, or from the first commit without a watermark.
+It ranks source files using `git log origin/main`, keeps only paths in `git ls-tree -r --name-only origin/main`, and checks text content from that ref without reading checkout files.
 At 10 merges it prints `due: <module>` (the top churn file's folder) and exits 0; otherwise it prints `not due: <n> of 10` and exits 1. Operational errors exit 3.
 Review prompts, including retries, carry the spec's five checks: architecture and design, failing inputs, useful tests, simpler code, and out-of-scope items under `## Debt`.
 
