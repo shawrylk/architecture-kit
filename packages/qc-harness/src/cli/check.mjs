@@ -995,7 +995,13 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
   if (enabled(config.gates, "plain-language")) {
     // Its own roots and its own extensions: a language rule asks which language, this one asks how
     // plainly, and a repository answers the two questions over different parts of its tree.
-    const prose = await citableFiles(config, tree, config.plainLanguage.roots);
+    const { roots, extensions, exclude } = config.plainLanguage;
+    const extension = new RegExp(`\\.(${extensions.join("|")})$`);
+    const excluded = exclude.map((pattern) => new RegExp(pattern));
+    const files = roots
+      .flatMap((root) => tree.under(root))
+      .filter((file) => extension.test(file) && !excluded.some((pattern) => pattern.test(file)));
+    const prose = await readEach(config.root, files);
     problems.push(...checkPlainLanguage(prose, config.plainLanguage));
     lines.push(`OK  prose        ${prose.length} file(s) in short sentences, the active voice and the approved words`);
   }
