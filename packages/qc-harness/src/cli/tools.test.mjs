@@ -29,7 +29,7 @@ test("screens uses the POSIX npm launcher and preserves argv and the caller's en
   assert.equal(await runTool("screens", argv, options), 0);
   assert.deepEqual(calls, [["/opt/node/bin/node", [
     "/opt/node/lib/node_modules/npm/bin/npx-cli.js", "--yes", "-p",
-    "github:shawrylk/qc-screens#fd718fd131fef2af4f64d0d25e41675dc12bbe94", "qc-screens", ...argv,
+    "github:shawrylk/qc-screens#886c303508f4406f397b2221b470115c3cb89589", "qc-screens", ...argv,
   ], { stdio: "inherit", env: { PATH: "/bin", CUSTOM: "kept", npm_config_allow_git: "all" } }]]);
   assert.deepEqual(options.env, { PATH: "/bin", CUSTOM: "kept" });
 });
@@ -45,7 +45,7 @@ test("stack installs both pinned packages with the Windows npm launcher and keep
   assert.deepEqual(calls, [[options.execPath, [
     "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npx-cli.js", "--yes", "-p",
     "github:shawrylk/qc-stack#e34c270d92e3995b2e512f6eb690ea3cb0bc4699", "-p",
-    "github:shawrylk/qc-screens#fd718fd131fef2af4f64d0d25e41675dc12bbe94", "qc-stack",
+    "github:shawrylk/qc-screens#886c303508f4406f397b2221b470115c3cb89589", "qc-stack",
     "status", "app", "--timeout", "1500",
   ], { stdio: "inherit", env: { npm_config_allow_git: "none" } }]]);
   const emptyPolicy = capture({ env: { npm_config_allow_git: "" } });
