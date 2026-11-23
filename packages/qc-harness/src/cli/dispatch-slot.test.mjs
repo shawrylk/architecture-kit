@@ -106,15 +106,6 @@ test("the default and omitted limits hold three claims and refuse the fourth", (
   }
 });
 
-test("a limit of 3 holds three claims and refuses the fourth, naming the three holders", (t) => {
-  const dir = sessionDir(t);
-  for (const id of ["use-1", "use-2", "use-3"]) assert.equal(claimSlot(dir, withSlots(3), Date.now(), id), null);
-  const refused = claimSlot(dir, withSlots(3), Date.now(), "use-4");
-  assert.equal(refused.limit, 3);
-  assert.deepEqual(refused.holders.map((holder) => holder.id).sort(), ["use-1", "use-2", "use-3"]);
-  assert.equal(claimFiles(dir).length, 3);
-});
-
 test("a stop frees its own holder's claim only, so one slot opens and the others stay", (t) => {
   const dir = sessionDir(t);
   const three = withSlots(3);

@@ -189,7 +189,21 @@ test("the default and custom parallel limits state the rule directly; one keeps 
   }
   assert.equal(decide(start(defaults, "startup")).hookSpecificOutput.additionalContext, BASE);
   const serial = decide(start(one, "startup")).hookSpecificOutput.additionalContext;
-  assert.match(serial, /Run one implementer at a time: a hook refuses a second\. Name a model on any other dispatch/);
+  assert.equal(
+    serial,
+    "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
+    "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
+    "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
+    "whole branch. " +
+    "Run one implementer at a time: a hook refuses a second. Name a model on any other dispatch, and " +
+    "write each brief to a file and name its path on a prompt line `Brief: <path>`; a dispatch with no such line, or a missing file, is refused. " +
+    "Name the worktree on a prompt line `Worktree: <path>`; a reviewer whose worktree, branch, or head the gate cannot read is refused. A reviewer starts with " +
+    "`VERDICT: <APPROVED|CHANGES_REQUIRED> <sha>`, and a merge passes `--match-head-commit <sha>`. " +
+    "Ask the user the product questions first, in one question, and record the answers under `## Product decisions` in each brief. " +
+    "Review a head only once CI on it is green, with the base merged in: fix a CI failure first, and merge `origin/<base>` at Step 0 of a fix round. " +
+    "A PR gets one branch review. After it, review each fix round once, by its increment: add `Reviewed: <sha>`, the last head a branch review named." +
+      modelsLine({ models: runtimeModels.codex, runtime: "codex" }) + CODEX_LINE,
+  );
   assert.doesNotMatch(serial, /implementers at once|one over the limit/);
 });
 
