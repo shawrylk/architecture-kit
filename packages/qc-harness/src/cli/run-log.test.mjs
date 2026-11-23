@@ -50,3 +50,24 @@ test("run log redacts every branch, PR and workflow text field", (t) => {
   assert.equal(runs.length, secrets.length);
   for (const row of runs) for (const field of ["branch", "pr", "run"]) assert.equal(row[field], "[REDACTED]");
 });
+
+test("run log redacts embedded hosts and addresses while retaining ordinary branches", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-hosts-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const file = path.join(dir, "runs.jsonl");
+  const values = [
+    "topic/private.example.com_release", "topic/10.20.30.40", "topic/fe80::1", "fix/readme.md",
+    "feat/249-run-metrics", "release/1.2.3",
+  ];
+  for (const value of values) {
+    appendRun(file, { kind: "ci", time: "2026-11-21T00:00:00Z", result: "pass", minutes: 1,
+      branch: value, pr: value, run: value });
+  }
+  const { runs } = readRuns(file);
+  assert.equal(runs.length, values.length);
+  for (const [index, row] of runs.entries()) {
+    for (const field of ["branch", "pr", "run"]) {
+      assert.equal(row[field], index < 4 ? "[REDACTED]" : values[index]);
+    }
+  }
+});

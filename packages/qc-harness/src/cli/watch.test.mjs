@@ -443,7 +443,7 @@ test("watch logs only final CI events with head, target, result and elapsed minu
   const failed = pages([{ workflow_runs: [{ head_sha: RUN_HEAD, status: "completed", conclusion: "failure" }] }]);
   assert.equal((await watch(["--run", `ci.yml@topic@${RUN_HEAD}`], { cwd: dir, gh: stubGh([failed]).gh })).code, 5);
   rows = readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
-  assert.deepEqual({ ...rows[1], time: null }, { kind: "ci", time: null, run: `ci.yml@topic@${RUN_HEAD}`, head: RUN_HEAD, result: "fail", minutes: 0 });
+  assert.deepEqual({ ...rows[1], time: null }, { kind: "ci", time: null, run: "[REDACTED]", head: RUN_HEAD, result: "fail", minutes: 0 });
   assert.equal((await watch(["--pr", "1", "--max", "1"], { cwd: dir, gh: stubGh([null]).gh })).code, 4);
   const wrapper = path.join(dir, "wrapper.log");
   writeFileSync(wrapper, "exit 0\n");
