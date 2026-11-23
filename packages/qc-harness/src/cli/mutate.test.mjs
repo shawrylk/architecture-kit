@@ -52,15 +52,11 @@ test("no survivor when a test fails on the mutant", async (t) => {
     assert.deepEqual(diagnostics, [], "workspace baseline must pass");
   }
   for (const locked of [false, true]) {
-    const related = fixture(t, { testSource: "import assert from 'node:assert/strict'; import { answer } from './bridge.mjs'; assert.equal(answer, true);\n" });
-    const testSource = readFileSync(path.join(related.worktree, "value.test.mjs"), "utf8");
-    rmSync(path.join(related.worktree, "value.test.mjs"));
-    const file = locked ? "locked.mjs" : "acceptance.test.mjs";
-    writeFileSync(path.join(related.worktree, file), testSource);
-    writeFileSync(path.join(related.worktree, "bridge.mjs"), "export { answer } from './value.mjs';\n");
+    const related = fixture(t, { testSource: "import assert from 'node:assert/strict'; import { answer } from './value.mjs'; assert.equal(answer, true);\n" });
+    writeFileSync(path.join(related.worktree, "locked.test.mjs"), "import './value.mjs';\n");
     const diagnostics = [];
-    assert.deepEqual(await runMutation({ ...related, files: locked ? [file] : [], say: (line) => diagnostics.push(line) }), { survived: [], skippedLines: 0 });
-    assert.equal(diagnostics.length, locked ? 0 : 1, "only locked tests run");
+    assert.deepEqual(await runMutation({ ...related, files: ["locked.test.mjs", ...(locked ? related.files : [])], say: (line) => diagnostics.push(line) }), { survived: [], skippedLines: 0 }, "an unlocked sibling kills the mutant too");
+    assert.deepEqual(diagnostics, [], "locked and sibling baseline must pass");
   }
 });
 

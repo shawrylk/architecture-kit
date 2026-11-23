@@ -68,13 +68,15 @@ function safePath(root, file) {
   return target;
 }
 
-function changedLines(worktree, base) {
+function changedLines(worktree, base, siblings) {
   const untracked = new Set(names(git(worktree, "ls-files", "--others", "--exclude-standard", "-z")));
   const files = new Set([...names(git(worktree, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=d", base, "--")), ...untracked]);
   const result = [];
   for (const file of files) {
     if (!/\.(?:js|mjs|cjs)$/.test(file) || testFile(file)) continue;
     const source = readFileSync(safePath(worktree, file), "utf8");
+    const sibling = file.replace(/\.(js|mjs|cjs)$/, ".test.$1");
+    if (existsSync(path.join(worktree, sibling))) siblings.push(sibling);
     const lines = source.split("\n"), masks = codeMask(source).split("\n");
     const changed = new Set(untracked.has(file) ? lines.keys() : []);
     if (!untracked.has(file)) {
@@ -159,10 +161,11 @@ export async function runMutation({ worktree, base, maxLines = 10, budgetMs = 18
   let root, checkout, lines = [];
   try {
     worktree = realpathSync(worktree);
-    lines = changedLines(worktree, base);
+    const siblings = [];
+    lines = changedLines(worktree, base, siblings);
     if (!lines.length) return empty;
     const allFiles = [...new Set(names(git(worktree, "ls-files", "--cached", "--others", "--exclude-standard", "-z")))].filter((file) => existsSync(path.join(worktree, file)));
-    const tests = [...new Set(files ?? Object.keys(readLockedTests(worktree) ?? {}))];
+    const tests = [...new Set([...(files ?? Object.keys(readLockedTests(worktree) ?? {})), ...siblings])];
     if (!tests.length) { say("mutation: no test file; no mutation coverage"); return empty; }
     for (const file of tests) safePath(worktree, file);
     command ??= load(worktree).tests.command;

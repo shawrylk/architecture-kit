@@ -913,10 +913,10 @@ Implement runs without a branch lock keep their existing exit behavior and do no
 
 After both checks pass on a completed implement run, the runner checks mutants on changed JavaScript source lines
 in `.js`, `.mjs` and `.cjs` files. TypeScript, JSX and test files are excluded.
-It uses the frozen `tests.command` and merge base from #222, running only the locked test files.
+It uses the frozen `tests.command` and merge base from #222, running the locked test files plus each changed source file's existing sibling test (`x.test.js`, `x.test.mjs` or `x.test.cjs`), each test file once.
 The comparison complements, negated `if` conditions, boolean swaps and `return undefined` replacements skip comments and strings.
 The check runs a baseline, then one mutant at a time in a detached temporary worktree containing the current files.
-Each mutant must pass `node --check` before the locked tests run. A syntax-error mutant is skipped and never counted as killed.
+Each mutant must pass `node --check` before the selected tests run. A syntax-error mutant is skipped and never counted as killed.
 Dependency links into the issue checkout resolve to the same paths in the temporary worktree, so workspace imports read the mutants.
 A link to a folder outside the repository stays as it is. A package there that links back into the issue checkout reads the original files, so a survivor in that path can be false (#232).
 It restores each file between changed lines and removes the temporary worktree in `finally`; the issue checkout is untouched.
