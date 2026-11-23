@@ -53,6 +53,24 @@ test("two finished branches → one milestone branch, one PR body with both Refs
   assert.ok(!args.includes("--draft"));
   assert.match(args[args.indexOf("--body") + 1], /Refs #1\nRefs #2/);
   assert.equal(git(f.root, "rev-parse", "HEAD"), git(f.root, "rev-parse", "@{upstream}"));
+  { // generated files settle once
+    const f = fixture(t);
+    let runs = 0;
+    f.config.generated.command = "generate";
+    f.config.generated.globs = ["generated.txt"];
+    assert.equal(await runMilestone(f.config, [], { ...f.io, run: () => { runs++; writeFileSync(path.join(f.root, "generated.txt"), "generated output\n"); return 0; } }), 0);
+    assert.equal(runs, 1);
+    assert.equal(git(f.root, "show", "HEAD:generated.txt"), "generated output");
+    assert.equal(git(f.root, "log", "-1", "--format=%s"), "chore: regenerate the generated files");
+    assert.equal(git(f.root, "rev-parse", "HEAD"), git(f.root, "rev-parse", "@{upstream}"));
+  }
+  { // local-date numbering skips occupied local and remote ordinals
+    const f = fixture(t);
+    git(f.root, "branch", "milestone/2026-01-02-1", "main");
+    git(f.root, "push", "-q", "origin", "main:refs/heads/milestone/2026-01-02-2");
+    assert.equal(await runMilestone(f.config, [], { ...f.io, now: new Date(2026, 0, 2, 0, 5) }), 0);
+    assert.equal(git(f.root, "branch", "--show-current"), "milestone/2026-01-02-3");
+  }
 });
 
 test("a branch without an APPROVED verdict is not collected", (t) => {
@@ -68,6 +86,17 @@ test("one conflicting branch is left out and the other two merge", async (t) => 
   for (const n of [0, 2]) git(f.root, "merge-base", "--is-ancestor", f.members[n].sha, "HEAD");
   assert.match(readFileSync(path.join(f.root, "shared.txt"), "utf8"), /1/);
   assert.match(created(f.calls)[0].at(-1), /Refs #3/);
+  { // all conflicts return success without a push or PR and restore the original branch
+    const f = fixture(t, { conflict: true });
+    appendRecord(ledgerFileOf(f.root), { type: "verdict", sha: f.members[2].sha, kind: "codex", verdict: "CHANGES_REQUIRED" });
+    file(f.root, "shared.txt", "new base\n");
+    f.config.worktree.base = "main";
+    assert.equal(await runMilestone(f.config, [], f.io), 0);
+    assert.equal(git(f.root, "branch", "--show-current"), "main");
+    assert.equal(f.calls.length, 0);
+    assert.equal(git(f.root, "branch", "-r", "--list", "origin/milestone/*"), "");
+    assert.equal(f.output.filter((s) => s.startsWith("Left out:")).length, 2);
+  }
 });
 
 test("--drop rebuilds without the named branch", async (t) => {
@@ -82,6 +111,39 @@ test("--drop rebuilds without the named branch", async (t) => {
   git(f.root, "cat-file", "-e", "HEAD:1.txt");
   assert.equal(created(f.calls).length, 1);
   assert.ok(f.calls.some((a) => a[1] === "edit" && !a.at(-1).includes("Refs #2")));
+
+  // Reproduce interruption after the leased push, before the replacement state is saved.
+  const interrupted = fixture(t);
+  assert.equal(await runMilestone(interrupted.config, [], interrupted.io), 0);
+  const name = git(interrupted.root, "branch", "--show-current");
+  const manifest = path.join(interrupted.root, ".git", "qc", "milestones", `${name.slice(10)}.json`);
+  const old = JSON.parse(readFileSync(manifest, "utf8"));
+  assert.equal(await runMilestone(interrupted.config, ["--drop", "feat/2-member"], interrupted.io), 0);
+  const pushed = git(interrupted.root, "rev-parse", "HEAD");
+  git(interrupted.root, "switch", "-qc", "saved-replay", pushed);
+  git(interrupted.root, "branch", "-f", name, old.head);
+  git(interrupted.root, "switch", "-q", name);
+  old.pendingDrop = { target: "feat/2-member", head: pushed, replay: "saved-replay" };
+  writeFileSync(manifest, JSON.stringify(old));
+  // A retry must recognize the already published replay and make no second push.
+  writeFileSync(path.join(interrupted.root, ".git", "hooks", "pre-push"), "#!/usr/bin/env node\nprocess.exit(1);\n", { mode: 0o755 });
+  assert.equal(await runMilestone(interrupted.config, ["--drop", "feat/2-member"], interrupted.io), 0);
+  assert.equal(git(interrupted.root, "branch", "--show-current"), name);
+  assert.equal(git(interrupted.root, "rev-parse", "HEAD"), pushed);
+  const recovered = JSON.parse(readFileSync(manifest, "utf8"));
+  assert.equal(recovered.phase, "done");
+  assert.equal(recovered.publishedSha, pushed);
+  assert.ok(!recovered.pendingDrop);
+  assert.ok(!recovered.members.some((m) => m.branch === "feat/2-member"));
+  { // drop recovers a GitHub body update failure without another push
+    const f = fixture(t);
+    assert.equal(await runMilestone(f.config, [], f.io), 0);
+    assert.equal(await runMilestone(f.config, ["--drop", "feat/2-member"], { ...f.io, gh: () => null }), 1);
+    const head = git(f.root, "rev-parse", "HEAD");
+    assert.equal(await runMilestone(f.config, [], f.io), 0);
+    assert.equal(git(f.root, "rev-parse", "HEAD"), head);
+    assert.ok(f.calls.some((a) => a[1] === "edit" && !a.at(-1).includes("Refs #2")));
+  }
 });
 
 test("collection pins pushed heads, ignores local-only/stale approvals and honors revocation and scopes", (t) => {
@@ -92,6 +154,11 @@ test("collection pins pushed heads, ignores local-only/stale approvals and honor
   git(f.root, "push", "-q", "origin", f.members[0].branch);
   appendRecord(ledgerFileOf(f.root), { type: "verdict", sha: f.members[1].sha, kind: "codex", verdict: "CHANGES_REQUIRED", scope: "security" });
   assert.deepEqual(collectFinished(f.config).map((m) => m.branch), [f.members[2].branch]);
+  { // failed fetch refuses stale candidates
+    const f = fixture(t);
+    git(f.root, "remote", "set-url", "origin", path.join(f.root, "missing"));
+    assert.throws(() => collectFinished(f.config), /fetch/);
+  }
 });
 
 test("dry-run changes no refs or files and no candidates is a successful no-op", async (t) => {
@@ -103,12 +170,15 @@ test("dry-run changes no refs or files and no candidates is a successful no-op",
   rmSync(ledgerFileOf(f.root));
   assert.equal(await runMilestone(f.config, [], f.io), 0);
   assert.match(f.output.join("\n"), /nothing to merge/);
-});
-
-test("failed fetch refuses stale candidates", (t) => {
-  const f = fixture(t);
-  git(f.root, "remote", "set-url", "origin", path.join(f.root, "missing"));
-  assert.throws(() => collectFinished(f.config), /fetch/);
+  { // a concurrent milestone refuses before switching branches
+    const f = fixture(t);
+    const dir = path.join(f.root, ".git", "qc", "milestones");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "lock"), JSON.stringify({ pid: process.pid }));
+    assert.equal(await runMilestone(f.config, [], f.io), 1);
+    assert.equal(git(f.root, "branch", "--show-current"), "main");
+    assert.equal(f.calls.length, 0);
+  }
 });
 
 test("publication failure resumes the same branch and PR creation without another batch", async (t) => {
@@ -118,48 +188,27 @@ test("publication failure resumes the same branch and PR creation without anothe
   assert.equal(await runMilestone(f.config, [], f.io), 0);
   assert.equal(git(f.root, "branch", "--show-current"), branch);
   assert.equal(created(f.calls).length, 1);
-});
-
-test("drop refuses a moved published ref and preserves recoverable state", async (t) => {
-  const f = fixture(t);
-  assert.equal(await runMilestone(f.config, [], f.io), 0);
-  const branch = git(f.root, "branch", "--show-current");
-  const published = git(f.root, "rev-parse", "HEAD");
-  file(f.root, "someone.txt", "moved\n");
-  git(f.root, "push", "-q", "origin", branch);
-  assert.equal(await runMilestone(f.config, ["--drop", "feat/2-member"], f.io), 1);
-  assert.equal(git(f.root, "rev-parse", "HEAD"), git(f.root, "rev-parse", `origin/${branch}`));
-  assert.notEqual(git(f.root, "rev-parse", "HEAD"), published);
-});
-
-test("generated files settle once", async (t) => {
-  const f = fixture(t);
-  let runs = 0;
-  f.config.generated.command = "generate";
-  assert.equal(await runMilestone(f.config, [], { ...f.io, run: () => { runs++; return 0; } }), 0);
-  assert.equal(runs, 1);
-});
-
-test("all conflicts return success without a push or PR and restore the original branch", async (t) => {
-  const f = fixture(t, { conflict: true });
-  appendRecord(ledgerFileOf(f.root), { type: "verdict", sha: f.members[2].sha, kind: "codex", verdict: "CHANGES_REQUIRED" });
-  file(f.root, "shared.txt", "new base\n");
-  f.config.worktree.base = "main";
-  assert.equal(await runMilestone(f.config, [], f.io), 0);
-  assert.equal(git(f.root, "branch", "--show-current"), "main");
-  assert.equal(f.calls.length, 0);
-  assert.equal(git(f.root, "branch", "-r", "--list", "origin/milestone/*"), "");
-  assert.equal(f.output.filter((s) => s.startsWith("Left out:")).length, 2);
-});
-
-test("drop recovers a GitHub body update failure without another push", async (t) => {
-  const f = fixture(t);
-  assert.equal(await runMilestone(f.config, [], f.io), 0);
-  assert.equal(await runMilestone(f.config, ["--drop", "feat/2-member"], { ...f.io, gh: () => null }), 1);
-  const head = git(f.root, "rev-parse", "HEAD");
-  assert.equal(await runMilestone(f.config, [], f.io), 0);
-  assert.equal(git(f.root, "rev-parse", "HEAD"), head);
-  assert.ok(f.calls.some((a) => a[1] === "edit" && !a.at(-1).includes("Refs #2")));
+  { // an unfinished clean build resumes from pinned members
+    const f = fixture(t);
+    f.config.generated.command = "generate";
+    assert.equal(await runMilestone(f.config, [], { ...f.io, run: () => 1 }), 1);
+    const branch = git(f.root, "branch", "--show-current");
+    assert.equal(await runMilestone(f.config, [], { ...f.io, run: () => 0 }), 0);
+    assert.equal(git(f.root, "branch", "--show-current"), branch);
+    assert.equal(created(f.calls).length, 1);
+  }
+  { // a rejected initial push resumes the same built milestone
+    const f = fixture(t);
+    const hook = path.join(f.root, ".git", "hooks", "pre-push");
+    writeFileSync(hook, "#!/usr/bin/env node\nprocess.exit(1);\n", { mode: 0o755 });
+    assert.equal(await runMilestone(f.config, [], f.io), 1);
+    const branch = git(f.root, "branch", "--show-current");
+    rmSync(hook);
+    git(f.root, "switch", "-q", "main");
+    assert.equal(await runMilestone(f.config, [], f.io), 0);
+    assert.equal(git(f.root, "rev-parse", `origin/${branch}`), git(f.root, "rev-parse", branch));
+    assert.equal(created(f.calls).length, 1);
+  }
 });
 
 test("a lease race cannot overwrite another writer and retains the pinned replay", async (t) => {
@@ -175,45 +224,15 @@ test("a lease race cannot overwrite another writer and retains the pinned replay
   const state = JSON.parse(readFileSync(path.join(f.root, ".git", "qc", "milestones", `${branch.slice(10)}.json`), "utf8"));
   assert.equal(state.publishedSha, original);
   assert.equal(state.pendingDrop.target, "feat/2-member");
-});
-
-test("an unfinished clean build resumes from pinned members", async (t) => {
-  const f = fixture(t);
-  f.config.generated.command = "generate";
-  assert.equal(await runMilestone(f.config, [], { ...f.io, run: () => 1 }), 1);
-  const branch = git(f.root, "branch", "--show-current");
-  assert.equal(await runMilestone(f.config, [], { ...f.io, run: () => 0 }), 0);
-  assert.equal(git(f.root, "branch", "--show-current"), branch);
-  assert.equal(created(f.calls).length, 1);
-});
-
-test("local-date numbering skips occupied local and remote ordinals", async (t) => {
-  const f = fixture(t);
-  git(f.root, "branch", "milestone/2026-01-02-1", "main");
-  git(f.root, "push", "-q", "origin", "main:refs/heads/milestone/2026-01-02-2");
-  assert.equal(await runMilestone(f.config, [], { ...f.io, now: new Date(2026, 0, 2, 0, 5) }), 0);
-  assert.equal(git(f.root, "branch", "--show-current"), "milestone/2026-01-02-3");
-});
-
-test("a concurrent milestone refuses before switching branches", async (t) => {
-  const f = fixture(t);
-  const dir = path.join(f.root, ".git", "qc", "milestones");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(path.join(dir, "lock"), JSON.stringify({ pid: process.pid }));
-  assert.equal(await runMilestone(f.config, [], f.io), 1);
-  assert.equal(git(f.root, "branch", "--show-current"), "main");
-  assert.equal(f.calls.length, 0);
-});
-
-test("a rejected initial push resumes the same built milestone", async (t) => {
-  const f = fixture(t);
-  const hook = path.join(f.root, ".git", "hooks", "pre-push");
-  writeFileSync(hook, "#!/usr/bin/env node\nprocess.exit(1);\n", { mode: 0o755 });
-  assert.equal(await runMilestone(f.config, [], f.io), 1);
-  const branch = git(f.root, "branch", "--show-current");
-  rmSync(hook);
-  git(f.root, "switch", "-q", "main");
-  assert.equal(await runMilestone(f.config, [], f.io), 0);
-  assert.equal(git(f.root, "rev-parse", `origin/${branch}`), git(f.root, "rev-parse", branch));
-  assert.equal(created(f.calls).length, 1);
+  { // drop refuses a moved published ref and preserves recoverable state
+    const f = fixture(t);
+    assert.equal(await runMilestone(f.config, [], f.io), 0);
+    const branch = git(f.root, "branch", "--show-current");
+    const published = git(f.root, "rev-parse", "HEAD");
+    file(f.root, "someone.txt", "moved\n");
+    git(f.root, "push", "-q", "origin", branch);
+    assert.equal(await runMilestone(f.config, ["--drop", "feat/2-member"], f.io), 1);
+    assert.equal(git(f.root, "rev-parse", "HEAD"), git(f.root, "rev-parse", `origin/${branch}`));
+    assert.notEqual(git(f.root, "rev-parse", "HEAD"), published);
+  }
 });

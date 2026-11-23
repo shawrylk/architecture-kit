@@ -20,6 +20,7 @@ import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
 import { globMatcher } from "../glob.mjs";
 import { MILESTONE_PATTERN } from "./milestone.mjs";
 import { integrationLane } from "./integration-lane.mjs";
+import { checkMergeTrees } from "./integrate-tree.mjs";
 import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
 import { promotionBranchName } from "./promotion-branch.mjs";
 import { pauseRefusal, holdRefusal } from "./pause.mjs";
@@ -180,6 +181,7 @@ function milestoneLane(workflow, records, pr, sha, deadline) {
   if (commits === null) return { problem: "cannot read milestone history" };
   const kinds = ["codex", workflow.review.merge];
   const generated = globMatcher(policy.config?.generated?.globs ?? defaults.generated.globs);
+  const merges = [];
   let heads = 0;
   for (const line of commits.split("\n").filter(Boolean)) {
     const [commit, ...parents] = line.split(" ");
@@ -188,8 +190,7 @@ function milestoneLane(workflow, records, pr, sha, deadline) {
       if (decidingVerdictFor(records, member, kinds)?.verdict !== "APPROVED") return { problem: `milestone member ${member} holds no APPROVED review` };
       const missing = dispatchedScopesFor(records, member).find((scope) => decidingVerdictFor(records.filter((r) => (r.scope ?? null) === scope), member, kinds)?.verdict !== "APPROVED");
       if (missing !== undefined) return { problem: `milestone member ${member} holds no APPROVED review of scope ${missing}` };
-      const resolved = git(root, "diff-tree", "--cc", "-r", "--no-commit-id", "--name-only", commit);
-      if (resolved === null || resolved !== "") return { problem: `milestone merge ${commit} was hand-resolved after review` };
+      merges.push(commit);
       heads++;
     } else if (parents.length === 1) {
       const subject = git(root, "show", "-s", "--format=%s", commit);
@@ -199,7 +200,9 @@ function milestoneLane(workflow, records, pr, sha, deadline) {
       }
     } else return { problem: `milestone commit ${commit} is not a two-parent merge` };
   }
-  return heads ? { problem: null, heads } : { problem: "milestone has no approved members" };
+  if (!heads) return { problem: "milestone has no approved members" };
+  const problem = checkMergeTrees(root, merges.reverse(), { ...policy.config, generated: { globs: policy.config?.generated?.globs ?? defaults.generated.globs } }, git);
+  return problem ? { problem: `milestone ${problem}` } : { problem: null, heads };
 }
 
 /** The branch that tries the direct lane, then the integration lane, against the PR base policy within one shared deadline. */

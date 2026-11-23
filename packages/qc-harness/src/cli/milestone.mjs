@@ -123,30 +123,58 @@ function bodyOf(state, config) {
   return postBody([...new Set(state.members.map((m) => `Refs #${m.issue}`))].join("\n"), config);
 }
 
-/** Publish once; retries after a GitHub failure reuse the published head and PR. */
+/** Publish either a first build or a saved drop; every step can resume after interruption. */
 export function publishMilestone(config, state, { say = console.log, gh = runGh } = {}) {
   const root = config.root;
-  const head = state.head;
+  const drop = state.pendingDrop;
+  const editing = Boolean(drop) || state.phase === "drop-published";
+  const next = drop ? { ...state, head: drop.head, members: state.members.filter((m) => m.branch !== drop.target) } : { ...state };
+  const head = next.head;
   const remote = tryGit(root, ["rev-parse", "--verify", `refs/remotes/origin/${state.name}`]).out.trim();
-  if (remote && remote !== head) throw new Error(`published milestone ${state.name} moved; saved state retained`);
-  if (!remote) git(root, ["push", "origin", `${head}:refs/heads/${state.name}`]);
+  const local = git(root, ["rev-parse", `refs/heads/${state.name}`]).trim();
+  if (local !== head && (!drop || local !== state.publishedSha)) throw new Error("local milestone moved; saved state retained");
+  if (remote !== head) {
+    if (drop) {
+      if (!state.publishedSha || remote !== state.publishedSha) throw new Error("published milestone moved; refusing drop, saved state retained");
+      git(root, ["push", `--force-with-lease=refs/heads/${state.name}:${state.publishedSha}`, "origin", `${head}:refs/heads/${state.name}`]);
+    } else {
+      if (remote) throw new Error(`published milestone ${state.name} moved; saved state retained`);
+      git(root, ["push", "origin", `${head}:refs/heads/${state.name}`]);
+    }
+  }
+  next.publishedSha = head;
+  next.phase = editing ? "drop-published" : "published";
+  if (drop) {
+    if (git(root, ["branch", "--show-current"]).trim() === state.name) git(root, ["reset", "--hard", head]);
+    else {
+      git(root, ["branch", "-f", state.name, head]);
+      git(root, ["switch", "-q", state.name]);
+    }
+    if (tryGit(root, ["show-ref", "--verify", "--quiet", `refs/heads/${drop.replay}`]).ok) git(root, ["branch", "-D", drop.replay]);
+  }
+  save(root, next);
   git(root, ["branch", "--set-upstream-to", `origin/${state.name}`, state.name]);
-  state.publishedSha = head;
-  state.phase = "published";
-  save(root, state);
-  if (gh(["pr", "view", state.name, "--json", "number"], { cwd: root }) === null) {
+  if (editing) {
+    if (gh(["pr", "edit", state.name, "--body", bodyOf(next, config)], { cwd: root }) === null) throw new Error("gh pr edit failed; run qc milestone to resume");
+  } else if (gh(["pr", "view", state.name, "--json", "number"], { cwd: root }) === null) {
     const pr = gh(["pr", "create", "--head", state.name, "--base", state.baseBranch,
-      "--title", redactOutput(`feat: milestone ${state.name.slice(10)}`), "--body", bodyOf(state, config)], { cwd: root });
+      "--title", redactOutput(`feat: milestone ${state.name.slice(10)}`), "--body", bodyOf(next, config)], { cwd: root });
     if (pr === null) throw new Error("gh pr create failed; run qc milestone again to resume");
     say(`pr     ${pr.trim()}`);
   }
-  state.phase = "done";
-  save(root, state);
+  delete next.pendingDrop;
+  next.phase = "done";
+  save(root, next);
 }
 
-/** Rebuild on a temporary local branch, then replace only the exact published remote head. */
+/** Rebuild once on a temporary branch, then use the common publication/recovery path. */
 export function dropMilestone(config, state, target, { say = console.log, run = runShell, gh = runGh } = {}) {
   const root = config.root;
+  if (state.pendingDrop) {
+    if (state.pendingDrop.target !== target) throw new Error(`finish pending drop of ${state.pendingDrop.target} first`);
+    publishMilestone(config, state, { say, gh });
+    return 0;
+  }
   if (!state.members.some((m) => m.branch === target)) throw new Error(`${target} is not a member of ${state.name}`);
   const remote = git(root, ["rev-parse", `refs/remotes/origin/${state.name}`]).trim();
   if (!state.publishedSha || remote !== state.publishedSha) throw new Error("published milestone moved; refusing drop, saved state retained");
@@ -154,25 +182,14 @@ export function dropMilestone(config, state, target, { say = console.log, run = 
   if (local !== state.publishedSha) throw new Error("local milestone moved; refusing drop, saved state retained");
   const start = git(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).trim();
   const replay = `qc-milestone-replay-${process.pid}-${Date.now()}`;
-  const next = { ...state, members: state.members.filter((m) => m.branch !== target), phase: "replaying" };
+  const next = { ...state, members: state.members.filter((m) => m.branch !== target) };
   git(root, ["switch", "-q", "-c", replay, state.base]);
   try {
     const members = buildMilestone(config, next, { say, run });
     if (members.length !== next.members.length) throw new Error("drop replay conflicted; original publication retained");
-    next.head = git(root, ["rev-parse", "HEAD"]).trim();
-    state.pendingDrop = { target, head: next.head, replay };
+    state.pendingDrop = { target, head: git(root, ["rev-parse", "HEAD"]).trim(), replay };
     save(root, state);
-    git(root, ["push", `--force-with-lease=refs/heads/${state.name}:${state.publishedSha}`, "origin", `${next.head}:refs/heads/${state.name}`]);
-    next.publishedSha = next.head;
-    next.phase = "drop-published";
-    delete next.pendingDrop;
-    save(root, next);
-    git(root, ["branch", "-f", state.name, next.head]);
-    git(root, ["switch", "-q", state.name]);
-    git(root, ["branch", "-D", replay]);
-    if (gh(["pr", "edit", state.name, "--body", bodyOf(next, config)], { cwd: root }) === null) throw new Error("gh pr edit failed; run qc milestone to resume");
-    next.phase = "done";
-    save(root, next);
+    publishMilestone(config, state, { say, gh });
     return 0;
   } catch (error) {
     if (tryGit(root, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).ok) git(root, ["merge", "--abort"]);
@@ -222,17 +239,13 @@ export async function runMilestone(config, argv, { say = console.log, run = runS
       }
       return dropMilestone(config, state, options.drop, io);
     }
-    const unfinished = saved.filter((s) => s.phase !== "done");
+    const unfinished = saved.filter((s) => s.phase !== "done" || s.pendingDrop);
     const selected = unfinished.find((s) => s.name === current);
     const pending = selected ? [selected] : unfinished;
     if (pending.length > 1) throw new Error("multiple unfinished milestones; switch to the one to recover");
     if (pending.length === 1) {
       const state = pending[0];
-      if (state.pendingDrop) throw new Error(`retry --drop ${state.pendingDrop.target}; saved replay ${state.pendingDrop.replay}`);
-      if (state.phase === "drop-published") {
-        if (gh(["pr", "edit", state.name, "--body", bodyOf(state, config)], { cwd: root }) === null) throw new Error("gh pr edit failed");
-        state.phase = "done"; save(root, state);
-      } else if (state.head) publishMilestone(config, state, io);
+      if (state.head || state.pendingDrop) publishMilestone(config, state, io);
       else {
         git(root, ["switch", "-q", state.name]);
         const history = lines(git(root, ["log", "--first-parent", "--format=%P", "HEAD", "--not", state.base]));
