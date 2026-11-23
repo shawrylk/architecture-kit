@@ -4,6 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "no
 import os from "node:os";
 import path from "node:path";
 import { ledgerFileOf, readLedger, shaMatches } from "./ledger.mjs";
+import { redactOutput } from "./output-redaction.mjs";
 
 /** Refuses ambiguous ownership and manifest changes without a dependency design. */
 export function validatePaths(brief) {
@@ -67,14 +68,117 @@ export function verificationPolicy(brief, settings) {
 export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 1000 }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    let tail = "";
+    const lines = [];
+    let nextLine = 0;
     let timedOut = false;
     let timer;
-    const record = (chunk) => { tail = (tail + chunk).slice(-64 * 1024); };
+    const emitLine = (line, order = nextLine++) => {
+      const text = line.trim() ? redactOutput(line.replace(/\r$/, "")) : "";
+      lines.push({ text, order });
+      lines.sort((a, b) => a.order - b.order);
+      let blanks = 0;
+      for (let index = 0; index < lines.length; index++) {
+        blanks = lines[index].text ? 0 : blanks + 1;
+        if (blanks > 10) lines.splice(index--, 1);
+      }
+      if (lines.length > 200) lines.shift();
+    };
+    const recorder = () => {
+      let group = null;
+      let blankOrders = [];
+      const heldEntries = () => [
+        ...(group ? [group] : []),
+        ...blankOrders.map((order) => ({ text: "", order })),
+      ];
+      const emit = (line) => {
+        const entry = { text: line.replace(/\r$/, ""), order: nextLine++ };
+        if (!entry.text.trim()) {
+          blankOrders.push(entry.order);
+          if (blankOrders.length > 10) blankOrders.shift();
+          return;
+        }
+        const entries = heldEntries();
+        const redacted = redactOutput([...entries.map(({ text }) => text), entry.text].join("\n")).split("\n");
+        for (let index = 0; index < redacted.length - 1; index++) emitLine(redacted[index], entries[index].order);
+        // Keep completion order when a held line is emitted after another stream's lines.
+        group = { text: redacted.at(-1), order: entry.order };
+        blankOrders = [];
+      };
+      let buffer = "";
+      let end = "";
+      let dropping = false;
+      let prefix = "";
+      const consume = (value, discard = false) => {
+        const length = value.length;
+        const inSpan = Boolean(end);
+        let lastMarker = 0;
+        if (discard && prefix) emit(prefix);
+        let output = discard ? "" : prefix;
+        prefix = "";
+        while (value || end) {
+          if (end) {
+            const index = value.indexOf(end);
+            if (index < 0) {
+              if (!discard) prefix = output;
+              return lastMarker;
+            }
+            value = value.slice(index + end.length);
+            lastMarker = length - value.length;
+            end = "";
+          } else {
+            const begin = /-----BEGIN ([A-Z ]*PRIVATE KEY)-----/.exec(value);
+            if (!begin) {
+              if (!discard) output += value;
+              break;
+            }
+            if (discard) emit("[REDACTED]");
+            else output += value.slice(0, begin.index) + "[REDACTED]";
+            // Match the BEGIN label, as in output-redaction.mjs:7.
+            end = `-----END ${begin[1]}-----`;
+            value = value.slice(begin.index + begin[0].length);
+            lastMarker = length - value.length;
+          }
+        }
+        if (!discard && (output || !inSpan)) emit(output);
+        return lastMarker;
+      };
+      return {
+        record(chunk) {
+          buffer += chunk;
+          let newline;
+          while ((newline = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, newline);
+            consume(line, dropping || newline >= 64 * 1024);
+            buffer = buffer.slice(newline + 1);
+            dropping = false;
+          }
+          if (buffer.length > 64 * 1024 || dropping) {
+            // Retain enough overlap to recognize a BEGIN or matching END split across chunks.
+            const lastMarker = consume(buffer, true);
+            // Never scan a complete marker twice when it falls inside the overlap.
+            buffer = buffer.slice(Math.max(lastMarker, buffer.length - 100));
+            dropping = true;
+          }
+        },
+        flush() {
+          if (buffer) consume(buffer, dropping);
+          if (prefix) emit(prefix);
+          const entries = heldEntries();
+          const redacted = redactOutput(entries.map(({ text }) => text).join("\n")).split("\n");
+          for (let index = 0; index < entries.length && index < redacted.length; index++) emitLine(redacted[index], entries[index].order);
+          group = null;
+          blankOrders = [];
+          buffer = "";
+          prefix = "";
+        },
+      };
+    };
+    const stdout = recorder();
+    const stderr = recorder();
     const child = spawn(command, [], { cwd, env, shell: true, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.setEncoding("utf8").on("data", record);
-    child.stderr.setEncoding("utf8").on("data", record);
-    child.on("error", (error) => record(error.message));
+    child.stdout.setEncoding("utf8").on("data", stdout.record);
+    child.stderr.setEncoding("utf8").on("data", stderr.record);
+    child.on("error", (error) => stderr.record(error.message));
     timer = setTimeout(() => {
       timedOut = true;
       if (process.platform === "win32") {
@@ -85,8 +189,11 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
     }, timeout);
     child.on("close", (status) => {
       clearTimeout(timer);
-      if (timedOut) record("\ncommand timed out\n");
-      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: tail.trimEnd().split(/\r?\n/).slice(-10).join("\n") });
+      stdout.flush();
+      stderr.flush();
+      if (timedOut) emitLine("command timed out");
+      while (lines.length && !lines.at(-1).text.trim()) lines.pop();
+      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: lines.slice(-10).map(({ text }) => text).join("\n").trimEnd() });
     });
   });
 }
@@ -115,7 +222,7 @@ export async function verifyBrief(settings, { env = process.env, policy, outcome
       }
       if (result.status !== 0) outcome[group] = "fail";
       else if (++passed === commands.length) outcome[group] = "pass";
-      appendFileSync(report, `${command}: exit ${result.status} in ${result.seconds} s\n${result.status !== 0 && result.tail ? result.tail + "\n" : ""}`);
+      appendFileSync(report, `${redactOutput(command)}: exit ${result.status} in ${result.seconds} s\n${result.status !== 0 && result.tail ? redactOutput(result.tail) + "\n" : ""}`);
       if (result.status !== 0) return false;
     }
   }
