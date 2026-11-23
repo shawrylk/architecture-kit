@@ -322,6 +322,8 @@ export const defaults = {
   // Push settled output in merge batches so each push triggers CI.
   integrate: { ciEvery: 3, push: true, branchPattern: "^[a-z]+/[0-9]+-integration$", review: true },
 
+  tests: { maxNewCases: 8, maxExtraCases: 4, command: ["node", "--test"] },
+
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
     related: null,
@@ -769,6 +771,13 @@ export function load(root = process.cwd()) {
   if (e2e !== null && !command(e2e)) throw new TypeError("check.e2e must be a non-empty string or null");
   if (!Array.isArray(commands) || !commands.every(command)) throw new TypeError("check.commands must be an array of non-empty strings");
   if (!command(base)) throw new TypeError("check.base must be a non-empty string");
+  if (!isPlainObject(config.tests)) throw new TypeError("tests must be an object");
+  for (const key of ["maxNewCases", "maxExtraCases"]) {
+    if (!Number.isInteger(config.tests[key]) || config.tests[key] < 0) throw new TypeError(`tests.${key} must be a nonnegative whole number`);
+  }
+  if (!Array.isArray(config.tests.command) || !config.tests.command.length || !config.tests.command.every(command)) {
+    throw new TypeError("tests.command must be a non-empty array of non-empty strings");
+  }
   config.root = root;
   return config;
 }

@@ -389,3 +389,17 @@ for (const [key, values] of Object.entries({ model: [1, "", " "], reviewModel: [
     }
   });
 }
+
+test("locked tests settings default and validate nonnegative whole caps and command argv", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-tests-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  assert.deepEqual(load(root).tests, { maxNewCases: 8, maxExtraCases: 4, command: ["node", "--test"] });
+  for (const tests of [{ maxNewCases: 0, maxExtraCases: 0, command: ["pnpm", "test"] }, { maxNewCases: 12 }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ tests }));
+    assert.deepEqual(load(root).tests, { ...defaults.tests, ...tests });
+  }
+  for (const tests of [null, [], ...["maxNewCases", "maxExtraCases"].flatMap((key) => [-1, 1.5, "8", null].map((v) => ({ [key]: v }))), ...[[], "node --test", [""], [1], ["node", null]].map((command) => ({ command }))]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ tests }));
+    assert.throws(() => load(root), /tests/);
+  }
+});

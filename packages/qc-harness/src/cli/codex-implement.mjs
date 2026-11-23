@@ -16,6 +16,7 @@ import { budgetsOf } from "./context-budgets.mjs";
 import { checkRunCommits, findingName, guardRefs, protectedAllow } from "./commit-guard.mjs";
 import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
+import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCommand, verifyBaseTests } from "./locked-tests.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -376,7 +377,7 @@ function completeReview(settings, started, originalStamp, message, say) {
 
 async function runJob(argv, {
   run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
-  fetch, now = Date.now, sleep,
+  fetch, now = Date.now, sleep, runCheck = runTestCommand,
 } = {}) {
   let settings;
   try {
@@ -404,22 +405,66 @@ async function runJob(argv, {
   let codexLimits;
   let protectedPaths;
   let guardBase;
+  let tests;
+  let testHead;
+  let testBase;
+  let locked;
   try {
     codex = codexSettingsOf(settings.worktree);
     codexLimits = codexLimitsOf(settings.worktree);
     const guardConfig = load(settings.worktree);
     protectedPaths = guardConfig.guard.protectedPaths;
     guardBase = guardConfig.worktree.base;
+    tests = structuredClone(guardConfig.tests);
+    if (["tests", "implement"].includes(settings.role)) {
+      locked = currentBranch(settings.worktree) ? readLockedTests(settings.worktree) : null;
+      if (settings.role === "tests" || locked !== null) {
+        const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+        testHead = git("rev-parse", "--revs-only", "HEAD");
+        if (testHead) testBase = git("merge-base", "HEAD", guardConfig.check.base);
+      }
+    }
     if (settings.maxRuns > codex.maxRuns) throw new Error(`--max-runs exceeds codex.maxRuns limit of ${codex.maxRuns}; got ${settings.maxRuns}`);
   } catch (error) {
     return finish(say, error.message, 1);
   }
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
+  /** Applies frozen policy before accepting either a new or a prewritten marker. */
+  const verifyTests = async ({ policyOnly = false } = {}) => {
+    if (settings.role !== "tests" && (settings.role !== "implement" || locked === null)) return null;
+    try {
+      if (settings.role === "implement") {
+        const { problems } = checkLockedTests(settings.worktree, locked);
+        if (problems.length) return finish(say, `guard refused: ${problems.join("; ")}`, 4);
+        const current = readLockedTests(settings.worktree);
+        if (JSON.stringify(current) !== JSON.stringify(locked)) return finish(say, `guard refused: locked test map changed: ${Object.keys(locked).join(", ")}`, 4);
+      }
+      const cases = addedTestCases(settings.worktree, settings.role === "tests" ? testBase : testHead);
+      const cap = settings.role === "tests" ? "maxNewCases" : "maxExtraCases";
+      if (cases.length > tests[cap]) return finish(say, `guard refused: tests.${cap} limit ${tests[cap]}; got ${cases.length}`, 4);
+      if (policyOnly) return null;
+      if (settings.role === "tests") {
+        const { problems } = await verifyBaseTests(settings.worktree, testBase, cases, tests.command);
+        if (problems.length) return finish(say, `guard refused: ${problems.join("; ")}`, 4);
+        if (isDone(settings.progress)) lockTests(settings.worktree, [...Object.keys(locked ?? {}), ...cases.map((entry) => entry.path)]);
+        return null;
+      }
+    } catch (error) { return finish(say, `guard refused: cannot verify locked tests: ${error.message}`, 4); }
+    try {
+      const files = Object.keys(locked).map((file) => file.replace(/\\/g, "/"));
+      if (files.length && await runTestCommand([...tests.command, ...files], settings.worktree) !== 0) return finish(say, "locked tests failed", 3);
+      if (await runCheck(["npx", "qc", "check"], settings.worktree) !== 0) return finish(say, "qc check failed", 3);
+    } catch (error) { return finish(say, `test run failed: ${error.message}`, 3); }
+    return null;
+  };
   let resetDeadline;
   let boundary;
   let contract;
   for (let count = 1; count <= settings.maxRuns; count += 1) {
-    if (isDone(settings.progress)) return completeReview(settings, started, originalStamp, `done after ${count - 1} run(s)`, say);
+    if (isDone(settings.progress)) {
+      const refused = await verifyTests();
+      return refused ?? completeReview(settings, started, originalStamp, `done after ${count - 1} run(s)`, say);
+    }
     try {
       const branch = currentBranch(settings.worktree);
       const refusal = pauseRefusal(settings.worktree) ?? (branch ? holdRefusal(settings.worktree, branch) : null);
@@ -484,6 +529,8 @@ async function runJob(argv, {
           return 4;
         }
       }
+      const refused = await verifyTests({ policyOnly: true });
+      if (refused !== null) return refused;
     } catch (error) {
       return finish(say, `guard refused: cannot check run commits: ${error.message}`, settings.report ? 3 : 4);
     }
@@ -491,7 +538,13 @@ async function runJob(argv, {
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     const line = limitLineOf(result.tail ?? "", prompt);
     if (!line) clearLimit(limitFileOf(env), say);
-    if (isDone(settings.progress)) return completeReview(settings, started, originalStamp, `done after ${count} run(s)`, say);
+    if (!line || isDone(settings.progress)) {
+      const refused = await verifyTests();
+      if (refused !== null) return refused;
+    }
+    if (isDone(settings.progress)) {
+      return completeReview(settings, started, originalStamp, `done after ${count} run(s)`, say);
+    }
     if (line) {
       const recordedAt = now();
       const reset = resetTimeOf(line, recordedAt);

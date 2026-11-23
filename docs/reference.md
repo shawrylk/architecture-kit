@@ -897,6 +897,20 @@ Invalid manifest JSON fails closed. Changed lines count additions plus deletions
 `codex.maxDiffLines` defaults to `400`; exceeding it exits `4` with “split the issue”. Other shape problems also exit `4` with the path or package name.
 Completion means the last non-empty progress line equals `ALL TASKS DONE` after trimming whitespace.
 
+The tests role counts added lines matching `^\s*(test|it)(\.only|\.skip)?\(` in test files, including untracked files.
+It counts from `git merge-base HEAD <check.base>`, resolved once at job start. More than `tests.maxNewCases` exits `4` and names the cap.
+Each file with new cases runs separately with `tests.command` in a detached temporary worktree at that base.
+Any nonzero exit is red. A file that exits zero refuses the run with exit `4`, naming the file and its new test names.
+The temporary worktree is removed even when verification fails.
+A completed tests run atomically writes `{ path: sha256 }` to `<git common dir>/qc/locked-tests/<encodeURIComponent(branch)>.json`.
+
+With a branch lock, implement freezes the lock hashes and run-start HEAD before launching Codex.
+A changed, renamed, deleted or unsafe locked file, or a rewritten lock map, exits `4`.
+Added test cases count from the run-start HEAD; more than `tests.maxExtraCases` also exits `4` and names the cap.
+The runner executes `tests.command` with the locked file paths appended, then runs `qc check` in the worktree.
+Either command failing exits `3`. Exit `0` requires both commands green and the progress marker, including when the marker already exists at startup.
+Implement runs without a branch lock keep their existing exit behavior and do not run these additional checks or commands.
+
 The runner validates the worktree's brief and Codex settings before launch:
 
 | Setting or requirement | Default or rule |
@@ -915,6 +929,9 @@ The runner validates the worktree's brief and Codex settings before launch:
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
 | `codex.requireApproval` | boolean, default `false`; implement requires Design and Approved when true |
 | `codex.maxDiffLines` | positive whole number, default `400` |
+| `tests.maxNewCases` | nonnegative whole number, default `8`; added cases allowed in a tests job |
+| `tests.maxExtraCases` | nonnegative whole number, default `4`; added cases allowed in an implement job with locked tests |
+| `tests.command` | non-empty argv array of non-empty strings, default `["node", "--test"]`; the runner appends test file paths |
 | Task headings | at most one besides `Product decisions`, `Design`, `Run shape`, `Commit`, `Exit criteria`, `CI failures`, and `Diagnosis` |
 
 With `--review --report <file>`, the runner reads the report only after the progress file marks completion.
