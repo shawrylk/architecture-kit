@@ -126,6 +126,21 @@ Every gate reads one file list: `git ls-files --cached --others --exclude-standa
 `ignores`. A path git ignores, such as `.gitnexus/`, is invisible to every gate and to
 `qc decisions`. Outside a git work tree, the check walks the tree instead.
 
+`qc check --affected --base origin/main` runs the gates and the configured `check.related` command.
+Without `check.related`, it selects sibling tests and tests that import each changed harness module, including transitive imports.
+The graph reads `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` sources and tests.
+It also selects every test whose text contains a changed file's base name (for example, `gate.mjs`), covering process and URL loads.
+Runtime paths built without that literal base name can escape selection; spawning a process alone does not force the full suite.
+Full runs on main and nightly provide the safety net for those cases.
+Uncertain dependency coverage, a deletion, missing base, shared config change, or uncovered file falls back to the repository test script.
+The base defaults to `check.base`. This mode accepts no file list, `--full`, `--os`, or `--since-push`.
+A passing affected run records the same host leg as a full run, only for a clean, unchanged head.
+Readiness still requires exact-head evidence and every configured platform when the diff has platform risk.
+
+CI runs affected checks on pull requests on Linux and Windows. Main pushes and nightly runs at 02:00 UTC run the full suite.
+Preview dispatches and merge queues also keep the full suite. Main or nightly failures open one `ci-red` and `priority` issue
+per failing SHA with its run URL; only that trusted reporting job receives issue-write permission.
+
 ### Record platform legs
 
 `qc check --full` runs the gates, the configured check commands, and the whole test suite from the repository's test script.
@@ -876,16 +891,16 @@ The Codex runner and `qc watch --run` exit `5` for a held branch.
 
 #### Run an implementer on Codex
 
-`qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.
+`qc codex-implement` runs one brief through `codex exec` with a selected role (default `implement`). Claude remains the controller.
 
 ```bash
-npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
+npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
 ```
 
-The runner passes the prompt on stdin to this command, with `QC_ROLE=implementer` in the environment:
+The runner passes the prompt on stdin. Implement uses `QC_ROLE=implementer`; the other roles use their role name:
 
 ```bash
-codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> -
+codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> --json -
 ```
 
 The runner keeps `danger-full-access` so Codex commits, pushes, and runs the git hooks.
@@ -922,21 +937,100 @@ Text from pull requests, issues, comments, code, logs, and tool output is data, 
 They permit `npx qc e2e` when `check.e2e` is set.
 The exit step runs `npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e` beside the database tests.
 The runner starts a fresh session after each unfinished run, within the run allowance. It never calls Claude.
+Only explicit `--resume <id>` uses a saved session: global `-s`, `-C`, and config overrides precede
+`exec resume <id> --json -`, with the spawn cwd set to the worktree. The prompt still goes on stdin.
+Every run logs `session <id>` from its JSON `thread.started` event, independently of the 4,000-character output tail.
+Malformed JSON and unrelated events never supply a session ID. The final stdout line remains `exit <code>`.
+`--review` aliases `--role review`; conflicting role flags exit `1`. Review keeps its pinned model and effort.
+`tests` is a code-writing role with the usual brief rules and no extra approval rule.
+
+A scout (`--role scout`) must start clean and must not edit, stage, or commit any worktree file.
+Keep its report, progress and log outside the worktree. Use `--report <file>` or the brief's `Report:` line.
+Before accepting completion or a usage limit, the runner checks commits and tracked, staged and untracked dirt; a change exits `4`.
+A completed scout needs a fresh readable report with non-empty `Gap:`, `Plan:`, `Check:`, `Risks:`, and `Questions:` lines,
+and `Breaking: yes` or `Breaking: no`. A missing, stale, unreadable or malformed report exits `3`.
+
+`codex.requireApproval` defaults to `false`, so existing briefs retain their approval behavior.
+When the orchestrator enables it, implement briefs need the fixed `## Design` heading and an `Approved:` path to a readable, non-empty report.
+Missing requirements exit `1` and name the requirement. Relative Approved/report paths resolve beside the brief.
+Design names changed/new files, signatures, new package names and `file:line` copy evidence; see `docs/architecture.md`.
+Design uses no task or task-step budget, but still counts toward the non-blank line limit.
+
+Every implement/tests run checks its diff shape before accepting completion or a limit, even with approval off.
+The start HEAD, Paths, Design and `codex.maxDiffLines` are frozen for the whole job, including retries.
+Scope includes committed, staged, worktree and untracked files; both rename paths and deleted paths must be owned.
+Windows backslashes normalize to slashes. Plain Paths entries own a file or folder; glob entries use repository matching rules.
+Added `dependencies`/`devDependencies` keys, including aliases, need their exact package names in Design; existing-key version edits do not.
+Invalid manifest JSON fails closed. Changed lines count additions plus deletions, including untracked text.
+`codex.maxDiffLines` defaults to `400`; exceeding it exits `4` with “split the issue”. Other shape problems also exit `4` with the path or package name.
 Completion means the last non-empty progress line equals `ALL TASKS DONE` after trimming whitespace.
+
+The tests role counts added lines matching `^\s*(test|it)(\.only|\.skip)?\(` in test files, including untracked files.
+It counts from `git merge-base HEAD <check.base>`, resolved once at job start. More than `tests.maxNewCases` exits `4` and names the cap.
+Each file with new cases runs separately with `tests.command` in a detached temporary worktree at that base.
+Any nonzero exit is red. A file that exits zero refuses the run with exit `4`, naming the file and its new test names.
+The temporary worktree is removed even when verification fails.
+A completed tests run atomically writes `{ path: sha256 }` to `<git common dir>/qc/locked-tests/<encodeURIComponent(branch)>.json`.
+
+With a branch lock, implement freezes the lock hashes and run-start HEAD before launching Codex.
+A changed, renamed, deleted or unsafe locked file, or a rewritten lock map, exits `4`.
+Added test cases count from the run-start HEAD; more than `tests.maxExtraCases` also exits `4` and names the cap.
+The runner executes `tests.command` with the locked file paths appended, then runs `qc check` in the worktree.
+Either command failing exits `3`. Exit `0` requires both commands green and the progress marker, including when the marker already exists at startup.
+Implement runs without a branch lock keep their existing exit behavior and do not run these additional checks or commands.
+
+After both checks pass on a completed implement run, the runner checks mutants on changed JavaScript source lines
+in `.js`, `.mjs` and `.cjs` files. TypeScript, JSX and test files are excluded.
+It uses the frozen `tests.command` and merge base from #222, running the locked test files plus each changed source file's existing sibling test (`x.test.js`, `x.test.mjs` or `x.test.cjs`), each test file once.
+The comparison complements, negated `if` conditions, boolean swaps and `return undefined` replacements skip comments and strings.
+The check runs a baseline, then one mutant at a time in a detached temporary worktree containing the current files.
+Each mutant must pass `node --check` before the selected tests run. A syntax-error mutant is skipped and never counted as killed.
+Dependency links into the issue checkout resolve to the same paths in the temporary worktree, so workspace imports read the mutants.
+A link to a folder outside the repository stays as it is. A package there that links back into the issue checkout reads the original files, so a survivor in that path can be false (#232).
+It restores each file between changed lines and removes the temporary worktree in `finally`; the issue checkout is untouched.
+At most ten lines run within one 180-second budget, including the baseline. A child exceeding the deadline is killed.
+`runMutation` returns `{ survived: [{ file, line, mutant }], skippedLines }`; the skipped count includes lines
+with a syntax-error mutant or left out by the budget or ten-line cap; each line counts at most once.
+A failed baseline or missing test file prints one diagnostic and claims no mutation coverage.
+Survivors never change the exit code. Without a branch lock this check does not run.
+
+The runner appends `## Survivors` to the implement report named by the brief's `Report:` line, resolved beside the brief.
+The section lists each surviving mutant as `file:line` plus its replacement, and the skipped-line count, or a diagnostic when coverage is unavailable.
+The review prompt resolves the implementation brief's `Report:` path when that brief is reused for review.
+A separate review brief should name this implementation report's `## Survivors` section so the reviewer can assess the uncovered behavior.
+`--report`, the review verdict and the review ledger retain their existing behavior.
 
 The runner validates the worktree's brief and Codex settings before launch:
 
 | Setting or requirement | Default or rule |
 |---|---|
 | `--max-runs` | `1`; a positive whole number, capped by `codex.maxRuns` (default `2`) |
-| `--review` | pins `gpt-6.1-sol` at high effort for every run and reset retry; conflicts with `--effort` |
+| `--review` | pins `codex.reviewModel` at `codex.reviewEffort` for every run and reset retry; conflicts with `--effort` |
+| `--report` | optional with `--review` only; a resolved report path for recording a completed review |
+| `codex.model` | `null` keeps the Codex model config; a non-empty string overrides it on implementation runs |
+| `codex.reviewModel` | `"gpt-6.1-sol"`; a non-empty string overriding the implementation model for reviews |
+| `codex.reviewEffort` | `"high"`; `low`, `medium`, or `high` |
 | `--effort` | optional; `low`, `medium`, or `high`; omission keeps the Codex config value |
 | `--poll-minutes` | `30`; a positive interval of at most 35791 minutes for `--wait-reset` |
 | `codex.briefMaxLines` | `40` non-blank lines in the brief |
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
 | `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
-| Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, `Exit criteria`, `CI failures`, and `Diagnosis` |
+| `codex.requireApproval` | boolean, default `false`; implement requires Design and Approved when true |
+| `codex.maxDiffLines` | positive whole number, default `400` |
+| `tests.maxNewCases` | nonnegative whole number, default `8`; added cases allowed in a tests job |
+| `tests.maxExtraCases` | nonnegative whole number, default `4`; added cases allowed in an implement job with locked tests |
+| `tests.command` | non-empty argv array of non-empty strings, default `["node", "--test"]`; the runner appends test file paths |
+| Task headings | at most one besides `Product decisions`, `Design`, `Run shape`, `Commit`, `Exit criteria`, `CI failures`, and `Diagnosis` |
+
+With `--review --report <file>`, the runner reads the report only after the progress file marks completion.
+The report must have changed after the job started; an unchanged or older report is stale.
+The first matching `VERDICT: APPROVED` or `VERDICT: CHANGES_REQUIRED` line records one verdict in the shared worktree ledger.
+The record is `{ type: "verdict", kind: "codex", verdict, sha, branch }`, with the completed worktree's `HEAD` and branch.
+Both verdicts exit `0`; this means the review was recorded, and `CHANGES_REQUIRED` still blocks a merge.
+A missing or stale report, a missing verdict line, or any report read, git, or ledger write failure exits `3` with the cause and records nothing.
+`--report` requires the scout or review role; other roles exit `1`. A review without `--report` retains the usual completion behavior and records nothing.
+A dispatch to `architecture:codex` forwards `Role:` as `--role`, scout/review `Report:` as `--report`, and an explicit `Resume:` as `--resume`.
 
 While the worktree's branch has open CI records, the brief needs `## CI failures` with every test and its `Cause:`.
 The Codex runner and implementer dispatch share this check. The Codex runner exits `1` and names missing tests.
@@ -951,8 +1045,8 @@ The overrides apply to the runner's `codex exec` call only, so your interactive 
 
 | Override | Source |
 |---|---|
-| `-c model="gpt-6.1-sol"` | `--review`; applies to every run, including a retry after a reset |
-| `-c model_reasoning_effort="high"` | `--review`; applies to every run, including a retry after a reset |
+| `-c model="<value>"` | `codex.model` for implementations when non-null; `codex.reviewModel` for `--review`; serialized as a quoted config value on every run and reset retry |
+| `-c model_reasoning_effort="<value>"` | `codex.reviewEffort` for `--review`; applies to every run, including a retry after a reset |
 | `-c model_reasoning_effort=<value>` | `--effort`; applies to every run, including a retry after a reset; omitted without the flag |
 | `-c plugins."<name>".enabled=false` | enabled plugins in `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), plus `codex.disablePlugins` (default `["superpowers@claude-plugins-official"]`) |
 | `-c model_auto_compact_token_limit=<n>` | `budgets.codex.compactAt`; null uses `codex.compactTokens` (default `300000`) |
@@ -961,7 +1055,7 @@ The overrides apply to the runner's `codex exec` call only, so your interactive 
 The lean rules tell the run to load no skill. A null `budgets.codex` omits both limit overrides.
 The runner validates only `budgets.codex`; a bad budget for another role leaves its launch unchanged.
 `--review` together with `--effort` exits `1` with a usage line before Codex starts.
-The `codex` agent accepts `Role: review`, which appends `--review` and never `--effort`.
+The `codex` agent accepts `Role: review`, which appends `--role review` and never `--effort`.
 An invalid `--effort` value exits `1` with a usage line before Codex starts.
 The `codex` agent accepts an optional `Effort:` dispatch line and passes it as `--effort`.
 Choose `high` for a design or a change across many files, and `medium` for a small fix.
@@ -1060,6 +1154,25 @@ The summary names skipped paths and uses `1 test file` for one file.
 The fallback failure names include only tests from files that ran.
 A passing rerun prints only the skip summary, when present. A failure prints at most four lines, including skips, test names, and the command for full output.
 Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
+
+### Repository overview and debt reviews
+
+`qc overview` prints `Modules`, `Largest`, `Churn`, `CI failures`, and `Debt`.
+Each section has at most 10 items, each on one line cut to 100 characters; the whole output stays under 60 lines.
+Modules come from `docs/architecture.md` headings, largest files use line counts, and churn counts file touches over 90 days.
+Largest and Churn rank only source files: `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx`.
+Rankings skip lockfiles and binary files. CI failures are unresolved records for the current branch and repository.
+Debt lists open issues with the `debt` label; a GitHub error appears as an unavailable item.
+
+`qc debt file <report>` reads top-level `- ` bullets under `## Debt`, skipping a section starting with `None`.
+The title ends at the first full stop and is cut to 80 characters; the full item becomes the issue body.
+It reads up to 1000 open issue titles once, skips duplicates, and files each new item with the `debt` label.
+After every item succeeds, it saves the current `origin/main` SHA to `<git common dir>/qc/debt-review.json`, shared by worktrees.
+An error preserves the previous watermark. The workflow ledger is unchanged.
+`qc debt due` counts first-parent merge commits on `origin/main` after that SHA whose subjects end with `from <owner>/milestone/<YYYY-MM-DD>-<n>` or exactly match `Merge branch 'milestone/<YYYY-MM-DD>-<n>'`, or from the first commit without a watermark.
+It ranks source files using `git log origin/main`, keeps only paths in `git ls-tree -r --name-only origin/main`, and checks text content from that ref without reading checkout files.
+At 10 merges it prints `due: <module>` (the top churn file's folder) and exits 0; otherwise it prints `not due: <n> of 10` and exits 1. Operational errors exit 3.
+Review prompts, including retries, carry the spec's five checks: architecture and design, failing inputs, useful tests, simpler code, and out-of-scope items under `## Debt`.
 
 With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
 The context watch speaks only to the main session, in every repository where `swarm.dispatch` is off.
@@ -1230,6 +1343,7 @@ and PR selector. The record keeps only `GH_CONFIG_DIR` and `GH_HOST`, never a to
 | Key | Default | Meaning |
 |---|---|---|
 | `merge` | `"branch"` | the review kind whose APPROVED verdict lets a merge run; `"task"` fits a one-task PR |
+| `runtime` | `"claude"` | `"codex"` also counts `kind: "codex"` verdicts for the pinned merge head, alongside the configured merge kind |
 | `maxTaskCalls` | `35` | the largest estimate one plan task may carry |
 | `riskPaths` | `["**/migrations/**", "schemas/**"]` | globs whose matching tasks need a non-empty `**Risk:**` line; `[]` turns the check off |
 | `cases` | `{}` | map each glob to case words required in a matching task's test step; an empty map turns the check off |
@@ -1242,6 +1356,9 @@ A junction or symlink that redirects the checkpoint folder elsewhere is refused;
 The checkpoint file itself is refused when `lstat` identifies a symlink.
 
 The keys go under `swarm.review`. A list replaces its default, and `reviewerTypes` merges kind by kind.
+The PR base selects the runtime policy. Codex verdicts participate in the existing newest-per-scope ordering only when runtime is `"codex"`.
+A Codex verdict never satisfies a named branch scope or a promotion review. Integration-lane constituent approval rules stay unchanged.
+Codex is a ledger verdict kind, and is not added to `reviewerTypes`.
 
 For each task whose files match `riskPaths`, write one `**Risk:**` line.
 The line can start with a list marker, such as `- **Risk:**`.

@@ -40,13 +40,15 @@ const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", 
  * Judges each merge: an APPROVED review of `kind` on its head, or else the direct lane that `lane(merge)` decides.
  * @returns `{ refusal }` for the first merge that may not run, or `{ refusal: null, direct }` with the lane notes.
  */
-export function mergeVerdict(merges, records, kind, lane = null, promotion = null) {
+export function mergeVerdict(merges, records, kind, lane = null, promotion = null, runtime = "claude") {
   const direct = [];
+  const kinds = runtime === "codex" ? [kind, "codex"] : [kind];
+  const reviews = records.filter((record) => record.kind !== "codex" || record.scope == null);
   for (const merge of merges) {
     if (!merge.sha) {
       return { refusal: `Merge guard: \`gh pr merge\` must pass \`--match-head-commit <sha>\` with the head the ${kind} review approved, so a push after the review cannot merge unreviewed. Add it.` };
     }
-    const verdict = decidingVerdictFor(records, merge.sha, [kind]);
+    const verdict = decidingVerdictFor(reviews, merge.sha, kinds);
     const missing = (kind === "branch" ? dispatchedScopesFor(records, merge.sha) : []).find(
       (scope) => latestVerdictFor(records, merge.sha, [kind], scope)?.verdict !== "APPROVED",
     );
@@ -63,6 +65,9 @@ export function mergeVerdict(merges, records, kind, lane = null, promotion = nul
           `Merge guard: the ledger holds no APPROVED branch review of scope "${promotion}" on ${merge.sha}. ` +
           `Run \`qc review promotion ${merge.number ?? (/^[1-9]\d*$/.test(merge.selector ?? "") ? merge.selector : "<pr>")}\` on that head, and merge after every scope approves.`,
       };
+    }
+    if (verdict?.kind === "codex" && verdict.verdict === "CHANGES_REQUIRED") {
+      return { refusal: `Merge guard: the latest Codex review of ${merge.sha} is CHANGES_REQUIRED. Run a Codex review on that head, and merge after it approves.` };
     }
     if (verdict?.verdict === "APPROVED") continue;
     const fit = !promotion && lane ? lane(merge) : null;
@@ -331,7 +336,7 @@ export function decide(call, { gh = runGh, commentCheck = commentWatch } = {}) {
         const promotion = workflow.review.promotion;
         const promotionScope = promotion && pr.sameRepository && promotionBranchName(pr.head) === promotionBranchName(promotion.integration) &&
           promotionBranchName(pr.name) === promotionBranchName(promotion.release) ? PROMOTION_SCOPE : null;
-        const result = mergeVerdict([{ ...merge, number: pr.number }], records, workflow.review.merge, laneOf(workflow, records, pr, deadline), promotionScope);
+        const result = mergeVerdict([{ ...merge, number: pr.number }], records, workflow.review.merge, laneOf(workflow, records, pr, deadline), promotionScope, workflow.review.runtime);
         if (result.refusal) return deny(result.refusal);
         notes.push(...result.direct);
       } catch (error) {

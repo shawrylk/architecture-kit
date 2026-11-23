@@ -10,7 +10,7 @@ import { rememberSession, reviewSettings, sessionDirOf, workflowAt, workflowOf }
 /** One git checkout per config; `null` writes no config. The last folder is outside any checkout. */
 function folders(t, configs) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-workflow-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const dirs = configs.map((config, index) => {
     const dir = path.join(base, String(index));
     mkdirSync(dir);
@@ -213,4 +213,14 @@ test("the enforcement keys default on, and a repository switches each one off", 
     [off.oneBranchReview, off.codeReviewSkills, off.requireGreen, off.requireBase, off.productDecisions, off.roundFindings, off.roundFiles],
     [false, [], false, false, false, 0, 0],
   );
+});
+
+test("review runtime defaults to Claude and accepts Codex without changing reviewer types", () => {
+  assert.equal(reviewSettings({ dispatch: {} }).runtime, "claude");
+  const policy = reviewSettings({ dispatch: {}, review: { runtime: "codex" } });
+  assert.equal(policy.runtime, "codex");
+  assert.deepEqual(policy.reviewerTypes, reviewDefaults.reviewerTypes);
+  for (const runtime of [null, "", "other", 1]) {
+    assert.throws(() => reviewSettings({ dispatch: {}, review: { runtime } }), /swarm\.review\.runtime/);
+  }
 });

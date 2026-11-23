@@ -24,7 +24,7 @@ const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", en
 /** A primary checkout with one commit, and a linked worktree of it on feat/1-x. */
 function repo(t) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-ledger-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const main = path.join(base, "main");
   git(base, "init", "-q", "-b", "main", main);
   for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"]]) {
@@ -48,7 +48,7 @@ test("a linked worktree and its primary checkout share one ledger", (t) => {
 
 test("a folder with no .git has no ledger", (t) => {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-ledger-none-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   assert.equal(commonDirOf(base), null);
   assert.equal(ledgerFileOf(base), null);
 });
@@ -118,7 +118,7 @@ test("qc ledger prints one line per record, and a branch keeps only its own", (t
 
 test("an append after a torn last line keeps the new record whole", (t) => {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-ledger-torn-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const file = path.join(base, "ledger.jsonl");
   appendRecord(file, { type: "stop", role: "implementer" });
   appendFileSync(file, '{"type":"stop","role":"tor');
@@ -193,4 +193,13 @@ test("the deciding verdict on a sha is a CHANGES_REQUIRED that is the newest of 
   assert.equal(decidingVerdictFor([v("APPROVED", "x"), v("CHANGES_REQUIRED", "y")], sha, ["branch"]).verdict, "CHANGES_REQUIRED");
   assert.equal(decidingVerdictFor([v("CHANGES_REQUIRED", "y"), v("APPROVED", "y")], sha, ["branch"]).verdict, "APPROVED");
   assert.equal(decidingVerdictFor([v("APPROVED")], sha, ["task"]), null);
+});
+
+test("Codex verdicts share the worktree ledger and only count when selected", (t) => {
+  const { main, linked } = repo(t);
+  const sha = git(linked, "rev-parse", "HEAD");
+  appendRecord(ledgerFileOf(linked), { type: "verdict", kind: "codex", verdict: "CHANGES_REQUIRED", sha, branch: "feat/1-x" });
+  const records = readLedger(ledgerFileOf(main));
+  assert.equal(decidingVerdictFor(records, sha, ["branch"]), null);
+  assert.equal(decidingVerdictFor(records, sha, ["branch", "codex"]).verdict, "CHANGES_REQUIRED");
 });

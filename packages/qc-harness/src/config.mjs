@@ -26,6 +26,9 @@ export const defaults = {
   // `qc codex-implement`. `compactTokens` is the backstop that compacts a runaway session; one item
   // runs in a fresh session and should finish under 200K.
   codex: {
+    model: null,
+    reviewModel: "gpt-6.1-sol",
+    reviewEffort: "high",
     compactTokens: 300000,
     disablePlugins: ["superpowers@claude-plugins-official"],
     envAllow: [],
@@ -33,6 +36,8 @@ export const defaults = {
     briefMaxLines: 40,
     briefMaxSteps: 6,
     maxRuns: 2,
+    requireApproval: false,
+    maxDiffLines: 400,
   },
 
   throwawayDb: {
@@ -340,6 +345,8 @@ export const defaults = {
 
   // Push settled output in merge batches so each push triggers CI.
   integrate: { ciEvery: 3, push: true, branchPattern: "^[a-z]+/[0-9]+-integration$", review: true },
+
+  tests: { maxNewCases: 8, maxExtraCases: 4, command: ["node", "--test"] },
 
   check: {
     // The kit appends changed paths; for example, "pnpm exec vitest related --run". Null keeps this off.
@@ -656,6 +663,7 @@ export const promotionDefaults = { surfaces: ["infra/**", "**/migrations/**", ".
 // What each key of `swarm.review` means when a repository omits it. The workflow checks run only while
 // `swarm.dispatch` is on, so this section alone turns nothing on.
 export const reviewDefaults = {
+  runtime: "claude",
   // Require a promotion review only when the repository chooses its branch pair.
   promotion: null,
   // The review kind whose APPROVED verdict lets `gh pr merge` run: "branch" or "task".
@@ -730,6 +738,14 @@ export function load(root = process.cwd()) {
   if (typeof config.merge.holdLabel !== "string" || !config.merge.holdLabel.trim() || config.merge.holdLabel !== config.merge.holdLabel.trim()) {
     throw new TypeError("merge.holdLabel must be a non-empty string without surrounding whitespace");
   }
+  if (isPlainObject(config.codex)) {
+    for (const key of ["model", "reviewModel"]) {
+      const value = config.codex[key];
+      if (key === "model" && value === null) continue;
+      if (typeof value !== "string" || !value.trim()) throw new TypeError(`codex.${key} must be a non-empty string${key === "model" ? " or null" : ""}`);
+    }
+    if (!["low", "medium", "high"].includes(config.codex.reviewEffort)) throw new TypeError("codex.reviewEffort must be low, medium, or high");
+  }
   if (isPlainObject(config.codex) && (!Array.isArray(config.codex.envAllow)
     || !config.codex.envAllow.every((name) => typeof name === "string" && name.length > 0 && name === name.trim()))) {
     throw new TypeError("codex.envAllow must be an array of non-empty strings without surrounding whitespace");
@@ -785,6 +801,13 @@ export function load(root = process.cwd()) {
   if (e2e !== null && !command(e2e)) throw new TypeError("check.e2e must be a non-empty string or null");
   if (!Array.isArray(commands) || !commands.every(command)) throw new TypeError("check.commands must be an array of non-empty strings");
   if (!command(base)) throw new TypeError("check.base must be a non-empty string");
+  if (!isPlainObject(config.tests)) throw new TypeError("tests must be an object");
+  for (const key of ["maxNewCases", "maxExtraCases"]) {
+    if (!Number.isInteger(config.tests[key]) || config.tests[key] < 0) throw new TypeError(`tests.${key} must be a nonnegative whole number`);
+  }
+  if (!Array.isArray(config.tests.command) || !config.tests.command.length || !config.tests.command.every(command)) {
+    throw new TypeError("tests.command must be a non-empty array of non-empty strings");
+  }
   config.root = root;
   return config;
 }

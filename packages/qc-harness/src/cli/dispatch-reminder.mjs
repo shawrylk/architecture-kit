@@ -23,6 +23,10 @@ export const REMINDER =
 export const CODEX_LINE =
   " Implementer work runs on Codex first through `qc codex-implement --brief <file> --worktree <path> --progress <file>`; " +
   "load the `architecture:codex` skill before the first dispatch. " +
+  "Use --role scout for read-only research, --role tests for tests, and --role review (or --review) for review. " +
+  "When codex.requireApproval is true, an implement brief needs ## Design and Approved: <scout report>; the orchestrator enables it. " +
+  "Every implement/tests run checks Paths, Design dependency names, and codex.maxDiffLines (default 400); split larger issues. " +
+  "Forward --resume <session id> only when requested; each run logs its actual session id. " +
   "On exit 2 (a Codex limit), dispatch the same brief to an architecture:sdd-implementer (sonnet). " +
   "Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other; " +
   "the guard refuses a codex dispatch while `qc codex status` shows a limit and requires `Runtime: claude <reason>` for an implementer dispatch while Codex is free. " +
@@ -117,6 +121,8 @@ function decideSessionStart(call, env) {
   }
   const explore = exploreLine(cwd);
   if (!dispatch) return explore === "" ? null : context("SessionStart", explore.trim());
+  if (env.QC_ROLE === "scout") return context("SessionStart", `scout worker mode: Work inline. Do not edit, stage, or commit worktree files. Write only the external report and progress; include Gap:, Plan:, Check:, Risks:, Questions:, Breaking: yes|no.${explore}`);
+  if (["tests", "review"].includes(env.QC_ROLE)) return context("SessionStart", `${env.QC_ROLE} worker mode: Work inline. Follow the brief's role and exit criteria. Start no helper agents.${explore}`);
   if (env.QC_ROLE === "implementer") return context("SessionStart", `${WORKER_NOTE}${explore}`);
   return context("SessionStart", `${REMINDER}${modelsLine(dispatch)}${CODEX_LINE}${slotsLine(dispatch)}${directLine(cwd)}${explore}`);
 }

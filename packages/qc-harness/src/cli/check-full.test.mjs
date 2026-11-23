@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runFullCheck } from "./check.mjs";
+import { runAffectedCheck, runFullCheck } from "./check.mjs";
 
 function fixture(overrides = {}) {
   const records = [], calls = [];
@@ -129,4 +129,24 @@ test('the parent records its temporary view without suppressing evidence in nest
   assert.deepEqual(records, []);
   assert.equal(await runFullCheck({ ...config, root: 'another-fixture' }, [], options), 0);
   assert.equal(records.length, 1);
+});
+
+
+test('affected checks preserve gate and command failures and record only a clean unchanged supported head', async () => {
+  for (const stage of ['pass', 'gates', 'commands', 'gate error', 'command error', 'dirty', 'checkout dirtied', 'head changed', 'unsupported']) {
+    let heads = 0, statuses = 0;
+    const { options, records } = fixture({
+      ...(stage === 'gates' ? { gates: async () => ({ problems: [{ path: 'a', rule: 'bad', detail: 'bad' }], lines: [] }) } : {}),
+      ...(stage === 'commands' ? { commands: async () => 7 } : {}),
+      ...(stage === 'gate error' ? { gates: async () => { throw new Error('gate error'); } } : {}),
+      ...(stage === 'command error' ? { commands: async () => { throw new Error('command error'); } } : {}),
+      ...(stage === 'dirty' ? { git: (...args) => args[0] === 'status' ? ' M a' : 'head' } : {}),
+      ...(stage === 'checkout dirtied' ? { git: (...args) => args[0] === 'status' ? (statuses++ ? ' M a' : '') : 'head' } : {}),
+      ...(stage === 'head changed' ? { git: (...args) => args[0] === 'status' ? '' : String(heads++) } : {}),
+      ...(stage === 'unsupported' ? { platform: 'darwin' } : {}),
+    });
+    const code = await runAffectedCheck(config, { base: 'main' }, options);
+    assert.equal(code, ['gates', 'gate error', 'command error', 'unsupported'].includes(stage) ? 1 : stage === 'commands' ? 7 : 0);
+    assert.deepEqual(records, stage === 'pass' ? [{ type: 'leg', os: 'windows', head: 'head', source: 'local' }] : []);
+  }
 });

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,7 +37,7 @@ test("an invalid feature switch pattern prints a config error without a stack tr
 
 function fixture(t, check = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "qc-check-commands-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   git(root, "init", "-q", "-b", "main");
   git(root, "config", "user.name", "QC test");
   git(root, "config", "user.email", "qc@example.test");
@@ -56,14 +56,14 @@ function fixture(t, check = {}) {
 }
 
 function check(root, args = [], input, env = process.env) {
-  return spawnSync(process.execPath, [qc, "check", ...args], { cwd: root, encoding: "utf8", input, env });
+  return spawnSync(process.execPath, [qc, "check", ...args], { cwd: root, encoding: "utf8", input, env: { ...env, NODE_TEST_CONTEXT: undefined } });
 }
 
 // Fixture fragment with commits before and after the push.
 function sincePushFixture(t, config, { push = true, changes = true } = {}) {
   const root = fixture(t, config);
   const origin = mkdtempSync(path.join(tmpdir(), "qc-check-origin-"));
-  t.after(() => rmSync(origin, { recursive: true, force: true }));
+  t.after(() => rmSync(origin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   git(origin, "init", "-q", "--bare");
   git(root, "remote", "add", "origin", origin);
   writeFileSync(path.join(root, "early.mjs"), "export {};\n");
@@ -179,7 +179,7 @@ test("repository commands run in order and stop with the failing command's exit 
 
 test("commands resolve PATH shims and preserve literal arguments and exit codes", (t) => {
   const bin = mkdtempSync(path.join(tmpdir(), "qc command shims "));
-  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  t.after(() => rmSync(bin, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const source = 'require("node:fs").writeFileSync("args.json", JSON.stringify(process.argv.slice(3))); console.log("shim output"); process.exit(Number(process.argv[2]));\n';
   if (process.platform === "win32") {
     writeFileSync(path.join(bin, "shim.cjs"), source);
@@ -267,4 +267,81 @@ test("related excludes staged deletions and receives the new path of a staged re
   const run = check(root);
   assert.equal(run.status, 0, run.stderr);
   assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"), "utf8")), ["renamed file.mjs"]);
+});
+
+
+test("--affected with one changed gate file runs that gate's test file and not an unrelated one", (t) => {
+  const root = fixture(t);
+  const dir = "packages/qc-harness/src/gates";
+  mkdirSync(path.join(root, dir), { recursive: true });
+  const put = (file, text) => writeFileSync(path.join(root, dir, file), text);
+  put("gate.mjs", "export const value = 1;\n");
+  put("bridge.mjs", "export { value } from './gate.mjs';\n");
+  for (const extension of ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]) {
+    put(`reader.${extension}`, "export { value } from './gate.mjs';\n");
+    put(`reader-${extension}.test.mjs`, `if (false) import('./reader.${extension}'); console.log('GRAPH ${extension}');\n`);
+  }
+  for (const [name, source] of [["gate", ""], ["consumer", "import './bridge.mjs';"], ["unrelated", "throw Error('unrelated ran');"]]) {
+    put(`${name}.test.mjs`, `${source} console.log("${name}.test.mjs");\n`);
+  }
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: node('console.log("FULL SUITE")') } }));
+  git(root, "add", "."); git(root, "commit", "-qm", "test: seed affected graph");
+  const base = git(root, "rev-parse", "HEAD").trim();
+  put("gate.mjs", "export const value = 2;\n");
+  git(root, "add", "."); git(root, "commit", "-qm", "test: change gate");
+  let run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /gate\.test\.mjs/);
+  assert.match(run.stdout, /consumer\.test\.mjs/);
+  for (const extension of ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]) assert.match(run.stdout, new RegExp(`GRAPH ${extension}\\b`));
+  assert.doesNotMatch(run.stdout, /unrelated\.test\.mjs|FULL SUITE/);
+  const omittedReaders = [
+    ["consumer.test.js", "import { value } from './gate.mjs'; if (value !== 1) throw Error('JS READER');"],
+    ["runtime.test.mjs", "import { spawnSync } from 'node:child_process'; const run = spawnSync(process.execPath, ['--input-type=module', '-e', `import { value } from ${JSON.stringify(new URL('./gate.mjs', import.meta.url).href)}; process.exit(value === 1 ? 0 : 1)`]); if (run.status !== 0) throw Error('RUNTIME READER');"],
+  ];
+  const omittedRuns = omittedReaders.map(([file, source]) => {
+    put(file, source);
+    const result = check(root, ["--affected", "--base", base]);
+    rmSync(path.join(root, dir, file), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    return result;
+  });
+  assert.deepEqual(omittedRuns.map(({ status }) => status), [1, 1], omittedRuns.map(({ stdout, stderr }) => stdout + stderr).join("\n"));
+  for (const result of omittedRuns) assert.doesNotMatch(result.stdout, /unrelated\.test\.mjs|FULL SUITE/);
+  put("dynamic.test.mjs", "const target = './gate.mjs'; await import(target); console.log('DYNAMIC COVERED');\n");
+  git(root, "add", ".");
+  run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stderr); assert.match(run.stdout, /DYNAMIC COVERED/);
+  git(root, "reset", "--hard", "HEAD");
+  for (const args of [["--affected", "--full"], ["--affected", "--since-push"], ["--affected", "--os", "linux"], ["--affected", "gate.mjs"], ["--affected", "--base"], ["--base", base]]) {
+    run = check(root, args);
+    assert.equal(run.status, 1, JSON.stringify(args));
+    assert.match(run.stderr, /qc check:/);
+  }
+  for (const file of ["shared.json", `${dir}/orphan.mjs`]) {
+    writeFileSync(path.join(root, file), "{}\n"); git(root, "add", file);
+    run = check(root, ["--affected", "--base", base]);
+    assert.equal(run.status, 0, run.stderr); assert.match(run.stdout, /FULL SUITE/);
+    git(root, "reset", "--hard", "HEAD");
+  }
+  git(root, "mv", `${dir}/gate.mjs`, `${dir}/renamed.mjs`);
+  run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stderr); assert.match(run.stdout, /FULL SUITE/);
+  git(root, "reset", "--hard", "HEAD");
+  git(root, "rm", `${dir}/gate.mjs`);
+  run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stderr); assert.match(run.stdout, /FULL SUITE/);
+  git(root, "reset", "--hard", "HEAD");
+  run = check(root, ["--affected", "--base", "missing-ref"]);
+  assert.equal(run.status, 0, run.stderr); assert.match(run.stdout, /FULL SUITE/);
+  const configFile = path.join(root, "qc.config.json");
+  const settings = JSON.parse(readFileSync(configFile, "utf8"));
+  settings.check.related = record;
+  writeFileSync(configFile, JSON.stringify(settings));
+  run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(root, "args.json"))), [`${dir}/gate.mjs`]);
+  assert.doesNotMatch(run.stdout, /FULL SUITE/);
+  settings.check.related = node("process.exit(7)");
+  writeFileSync(configFile, JSON.stringify(settings));
+  assert.equal(check(root, ["--affected", "--base", base]).status, 7);
 });

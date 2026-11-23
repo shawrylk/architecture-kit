@@ -12,6 +12,7 @@ const USAGE = `qc — architecture gates
 
   qc check [file...] [--files-from <path|->] [--since-push]
                            every structural gate; files given, or listed NUL-separated in a file or on stdin, take the fast path
+  qc check --affected [--base <ref>]  gates and affected tests; records a clean host leg
   qc check --full [--os <linux|windows>]
                            the gates and whole test suite; a clean pass records a platform leg
   qc ci-preview [--os <linux|windows|both>]
@@ -39,10 +40,13 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
+  qc overview              modules, largest files, churn, CI failures, and debt; at most 60 lines
+  qc debt file <report>    file unseen debt items as issues and reset the review watermark
+  qc debt due              name the module due after 10 milestone merges; exit 1 when not due, 3 on error
   qc ci-failures --run <id> | --rerun [--branch <branch>]
                            record a failed run, or rerun the open test files before a push
   qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
-  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
+  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
                            --effort overrides the Codex config for every run; omitting it keeps the config value; exit 5 when paused
@@ -89,6 +93,21 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "overview" || command === "debt") {
+    const valid = command === "overview" ? rest.length === 0 :
+      (rest[0] === "file" && rest.length === 2) || (rest[0] === "due" && rest.length === 1);
+    if (!valid) { console.error("usage: qc overview | qc debt file <report> | qc debt due"); process.exitCode = 1; return; }
+    const { buildOverview, fileDebt, debtDue } = await import("./overview.mjs");
+    try {
+      if (command === "overview") process.stdout.write(await buildOverview(process.cwd()));
+      else if (rest[0] === "file") await fileDebt(process.cwd(), rest[1]);
+      else process.exitCode = await debtDue(process.cwd());
+    } catch (error) {
+      console.error(`qc ${command}: ${String(error.message).replace(/\s+/g, " ")}`);
+      process.exitCode = 3;
+    }
+    return;
+  }
   if (command === "user-config") {
     const { runUserConfig } = await import("./user-config.mjs");
     process.exit(await runUserConfig(rest));
@@ -185,6 +204,15 @@ async function main() {
       return;
     }
     case "check": {
+      if (rest.includes("--affected") || rest.includes("--base")) {
+        const args = rest.filter((arg) => arg !== "--affected");
+        if (rest.filter((arg) => arg === "--affected").length !== 1 || !(args.length === 0 || (args.length === 2 && args[0] === "--base" && args[1] && !args[1].startsWith("-")))) {
+          console.error("qc check: --affected accepts only --base <ref>"); process.exitCode = 1; return;
+        }
+        const { runAffectedCheck } = await import("./check.mjs");
+        process.exitCode = await runAffectedCheck(config, { base: args[1] ?? config.check.base }, { write: console.error });
+        return;
+      }
       if (rest.includes("--full")) {
         const { runFullCheck } = await import("./check.mjs");
         process.exitCode = await runFullCheck(config, rest.filter((arg) => arg !== "--full"));

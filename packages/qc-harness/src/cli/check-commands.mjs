@@ -1,5 +1,8 @@
 // A pipeline that runs repository commands after the architecture checks pass.
 
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { repoFiles } from "./repo-files.mjs";
 import { execFileSync } from "node:child_process";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
 
@@ -38,7 +41,7 @@ function commandWords(command) {
   return words;
 }
 
-export function changedFiles(root, base, sincePush, command = "qc e2e") {
+export function changedFiles(root, base, sincePush, command = "qc e2e", affected = false) {
   const git = (...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   let ref = base;
   if (sincePush) {
@@ -61,7 +64,7 @@ export function changedFiles(root, base, sincePush, command = "qc e2e") {
     console.log(`WARN  merge base with ${ref} is unavailable; running ${command} without file arguments`);
     return null;
   }
-  return git("diff", "--cached", "--name-only", "-z", "--no-renames", "--diff-filter=d", mergeBase, "--").split("\0").filter(Boolean);
+  return git("diff", "--cached", "--name-only", "-z", "--no-renames", ...(affected ? [] : ["--diff-filter=d"]), mergeBase, "--").split("\0").filter(Boolean);
 }
 
 export async function runCommand(root, command, files = []) {
@@ -79,13 +82,13 @@ export async function runCommand(root, command, files = []) {
   }
 }
 
-export async function runCheckCommands(config, { sincePush = false } = {}) {
-  const { commands, base } = config.check;
+export async function runCheckCommands(config, { sincePush = false, affected = false, base = config.check.base } = {}) {
+  const { commands } = config.check;
   const related = sincePush ? config.check.sincePush ?? config.check.related : config.check.related;
-  if (related !== null) {
-    const files = changedFiles(config.root, base, sincePush, "related tests");
+  if (affected || related !== null) {
+    const files = changedFiles(config.root, base, sincePush, "related tests", affected);
     if (files === null || files.length > 0) {
-      const code = await runCommand(config.root, related, files ?? []);
+      const code = related !== null ? await runCommand(config.root, related, files ?? []) : await affectedTests(config.root, files);
       if (code !== 0) return code;
     }
   }
@@ -94,4 +97,66 @@ export async function runCheckCommands(config, { sincePush = false } = {}) {
     if (code !== 0) return code;
   }
   return 0;
+}
+
+
+async function affectedTests(root, changed) {
+  const selected = changed === null ? null : await importingTests(root, changed);
+  if (selected?.length && selected.join(" ").length < 24000) return runCommand(root, `"${process.execPath}" --test`, selected);
+  const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+  if (!pkg.scripts?.test) { console.log("SKIP  no test script"); return 0; }
+  const manager = existsSync(path.join(root, "pnpm-lock.yaml")) ? "pnpm" : existsSync(path.join(root, "yarn.lock")) ? "yarn" : "npm";
+  return runCommand(root, `${manager} test`);
+}
+
+async function importingTests(root, changed) {
+  const extension = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+  const isTest = (file) => /\.test\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
+  if (changed.some((file) => !file.startsWith("packages/qc-harness/src/") || !extension.test(file) || !existsSync(path.join(root, file)))) return null;
+  try {
+    const { default: ts } = await import("typescript");
+    const files = (await repoFiles(root)).filter((file) => extension.test(file));
+    const known = new Set(files), readers = new Map(), uncertainFiles = new Set();
+    const tests = new Set(), mentions = new Map(changed.map((file) => [file, new Set()]));
+    for (const file of files) {
+      const text = readFileSync(path.join(root, file), "utf8");
+      if (isTest(file)) for (const changedFile of changed) {
+        if (text.includes(path.posix.basename(changedFile))) mentions.get(changedFile).add(file);
+      }
+      const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+      if (source.parseDiagnostics.length) return null;
+      let uncertain = false;
+      const visit = (node) => {
+        let spec = node.moduleSpecifier;
+        if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || node.expression.getText(source) === "require")) {
+          spec = node.arguments[0];
+          if (!spec || !ts.isStringLiteralLike(spec)) uncertain = true;
+        }
+        if (spec && ts.isStringLiteralLike(spec)) {
+          const value = spec.text;
+          if (value.startsWith(".")) {
+            const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), value));
+            if (!known.has(target)) uncertain = true;
+            else readers.set(target, [...(readers.get(target) ?? []), file]);
+          } else if (!value.startsWith("node:")) uncertain = true;
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      if (uncertain) uncertainFiles.add(file);
+    }
+    // Unknown loaders can read any changed module; cover their readers too, or run the full suite.
+    for (const file of new Set([...changed, ...uncertainFiles])) {
+      const seen = new Set([file]), queue = [file], covered = new Set(mentions.get(file));
+      const sibling = file.replace(extension, (suffix) => `.test${suffix}`);
+      if (known.has(sibling)) covered.add(sibling);
+      for (const next of queue) {
+        if (isTest(next)) covered.add(next);
+        for (const reader of readers.get(next) ?? []) if (!seen.has(reader)) { seen.add(reader); queue.push(reader); }
+      }
+      if (!covered.size) return null;
+      for (const test of covered) tests.add(test);
+    }
+    return [...tests].sort();
+  } catch { return null; }
 }
