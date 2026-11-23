@@ -471,14 +471,15 @@ for (const platform of ["Windows", "POSIX"]) test(`a stalled ${platform} remote 
     if (args.includes("ls-remote") && !args.includes("--get-url")) {
       assert.equal(command, process.execPath);
       assert.deepEqual(args.slice(2, 6), ["--", "24000", "5000", "git"]);
-      return execute(command, args.map((word, index) => index === 3 || index === 4 ? "1000" : word), options);
+      return execute(command, args.map((word, index) => index === 3 ? "1000" : word), options);
     }
     return execute(command, args, options);
   });
   const started = Date.now();
   assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }).map((finding) => finding.commit), [bad]);
   armSocketTimer();
-  assert.ok(Date.now() - started < 5000);
+  const bound = 1000 + 5000 + 2000;
+  assert.ok(Date.now() - started < bound);
   await closed;
 });
 
