@@ -12,7 +12,7 @@ function sessionDir(t, session = "s") {
   return slotDirOf(session, tmp);
 }
 
-const settings = { ...dispatchDefaults, slotMinutes: 1 };
+const settings = { ...dispatchDefaults, slotMinutes: 1, implementerSlots: 1 };
 const withSlots = (implementerSlots) => ({ ...settings, implementerSlots });
 const IMPLEMENTER = "sdd-implementer";
 
@@ -91,14 +91,19 @@ test("a claim whose settings cannot be written is released, and the error reache
   assert.deepEqual(claimFiles(dir), []);
 });
 
-test("the default limit is 1, and a second holder is refused with the limit and the first holder", (t) => {
-  const dir = sessionDir(t);
-  assert.equal(dispatchDefaults.implementerSlots, 1);
-  assert.equal(claimSlot(dir, settings, Date.now(), "use-1"), null);
-  const refused = claimSlot(dir, settings, Date.now(), "use-2");
-  assert.equal(refused.limit, 1);
-  assert.deepEqual(refused.holders.map((holder) => holder.id), ["use-1"]);
-  assert.deepEqual(claimFiles(dir).length, 1);
+test("the default and omitted limits hold three claims and refuse the fourth", (t) => {
+  assert.equal(dispatchDefaults.implementerSlots, 3);
+  for (const implementerSlots of [dispatchDefaults.implementerSlots, undefined]) {
+    const dir = sessionDir(t);
+    const defaults = { ...settings, implementerSlots };
+    for (const id of ["use-1", "use-2", "use-3"]) assert.equal(claimSlot(dir, defaults, Date.now(), id), null);
+    const refused = claimSlot(dir, defaults, Date.now(), "use-4");
+    assert.equal(refused.limit, 3);
+    assert.deepEqual(refused.holders.map((holder) => holder.id).sort(), ["use-1", "use-2", "use-3"]);
+    assert.equal(claimFiles(dir).length, 3);
+    const recorded = JSON.parse(readFileSync(path.join(dir, "settings.json"), "utf8"));
+    assert.equal(recorded.implementerSlots, 3);
+  }
 });
 
 test("a limit of 3 holds three claims and refuses the fourth, naming the three holders", (t) => {
@@ -216,7 +221,7 @@ test("a repeat of one holder's claim leaves its slot alone and takes no second s
   assert.deepEqual(claimFiles(dir), ["slot-0.claim"]);
 });
 
-test("the stop and the start read the limit recorded at the claim, and a record with no limit means 1", (t) => {
+test("the stop and the start read the limit recorded at the claim, and a record with no limit means 3", (t) => {
   const dir = sessionDir(t);
   claimSlot(dir, withSlots(2), Date.now(), "use-1");
   reclaimSlot(dir, IMPLEMENTER, Date.now(), "agent-1");
@@ -225,5 +230,8 @@ test("the stop and the start read the limit recorded at the claim, and a record 
   const { implementerTypes, slotMinutes } = settings;
   writeFileSync(path.join(dir, "settings.json"), JSON.stringify({ implementerTypes, slotMinutes }));
   reclaimSlot(dir, IMPLEMENTER, Date.now(), "agent-3");
+  reclaimSlot(dir, IMPLEMENTER, Date.now(), "agent-4");
+  assert.equal(claimFiles(dir).length, 3);
+  assert.equal(releaseSlot(dir, IMPLEMENTER, "agent-3"), true);
   assert.equal(claimFiles(dir).length, 2);
 });
