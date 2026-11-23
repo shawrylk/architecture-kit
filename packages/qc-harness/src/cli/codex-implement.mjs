@@ -451,7 +451,7 @@ async function runJob(argv, {
       }
     } catch (error) { return finish(say, `guard refused: cannot verify locked tests: ${error.message}`, 4); }
     try {
-      const files = Object.keys(locked).map((file) => file.replace(/\\/g, "/"));
+      const files = Object.keys(locked).map((file) => path.resolve(settings.worktree, file.replace(/\\/g, "/")));
       if (files.length && await runTestCommand([...tests.command, ...files], settings.worktree) !== 0) return finish(say, "locked tests failed", 3);
       if (await runCheck(["npx", "qc", "check"], settings.worktree) !== 0) return finish(say, "qc check failed", 3);
     } catch (error) { return finish(say, `test run failed: ${error.message}`, 3); }

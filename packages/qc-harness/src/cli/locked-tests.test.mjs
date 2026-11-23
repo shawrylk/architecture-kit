@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -64,6 +64,10 @@ test("nine new cases in a tests run → exit 4 naming the cap 8", async (t) => {
   counted.git("commit", "-qm", "registrations");
   assert.deepEqual(addedTestCases(counted.worktree, counted.base).map((entry) => entry.name), ["only", "skip", "plain"]);
   assert.deepEqual(addedTestCases(counted.worktree, counted.git("rev-parse", "HEAD")), []);
+  const option = fixture(t, "tests");
+  assert.equal(await option.run(() => writeFileSync(path.join(option.worktree, "--acceptance.test.mjs"), source(1, true))), 4);
+  assert.match(option.messages.join("\n"), /--acceptance.test.mjs.*acceptance 0/);
+  assert.equal(existsSync(option.lock), false);
   const { lockTests } = await import("./locked-tests.mjs");
   const linked = path.join(counted.root, "linked");
   counted.git("worktree", "add", "-qb", "other/tests", linked);
@@ -82,6 +86,20 @@ test("a new test that passes on the base → exit 4 naming the test", async (t) 
   writeFileSync(path.join(green.worktree, "value.mjs"), "export const value = true;\n");
   green.git("add", "."); green.git("commit", "-qm", "implementation");
   assert.equal(await green.run(() => writeFileSync(green.file, "import test from 'node:test';\nimport { value } from './value.mjs';\ntest('requires implementation', () => { if (!value) throw Error('base red'); });\n")), 0);
+  const escaped = fixture(t, "tests");
+  const outside = path.join(escaped.root, "outside");
+  mkdirSync(outside);
+  symlinkSync(outside, path.join(escaped.worktree, "suite"), "dir");
+  escaped.git("add", "."); escaped.git("commit", "-qm", "base symlink");
+  escaped.git("branch", "-f", "base", "HEAD");
+  rmSync(path.join(escaped.worktree, "suite"));
+  mkdirSync(path.join(escaped.worktree, "suite", "created-outside"), { recursive: true });
+  writeFileSync(path.join(escaped.worktree, "suite", "created-outside", "a.test.mjs"), source(1));
+  const { verifyBaseTests } = await import("./locked-tests.mjs");
+  await assert.rejects(verifyBaseTests(escaped.worktree, escaped.git("rev-parse", "base"), [{ path: "suite/created-outside/a.test.mjs", name: "acceptance 0" }]), /unsafe base test path/);
+  assert.equal(existsSync(path.join(outside, "created-outside")), false);
+  assert.equal(existsSync(escaped.lock), false);
+  assert.equal(escaped.git("worktree", "list", "--porcelain").match(/^worktree /gm).length, 1);
   const custom = fixture(t, "tests", { tests: { command: [process.execPath, "probe.mjs"] } });
   writeFileSync(path.join(custom.worktree, "probe.mjs"), "import { appendFileSync } from 'node:fs';\nappendFileSync(process.argv[2] + '.ran', 'yes');\nprocess.exit(7);\n");
   custom.git("add", "."); custom.git("commit", "-qm", "custom runner");
@@ -115,6 +133,15 @@ test("locked file renamed → exit 4", async (t) => {
 
 test("marker written but a locked test fails → exit 3, not 0", async (t) => {
   for (const existing of [false, true]) {
+    const option = fixture(t);
+    const optionFile = path.join(option.worktree, "--acceptance.test.mjs");
+    writeFileSync(optionFile, source(1, true));
+    option.git("add", "."); option.git("commit", "-qm", "option-like test");
+    mkdirSync(path.dirname(option.lock), { recursive: true });
+    writeFileSync(option.lock, JSON.stringify({ "--acceptance.test.mjs": createHash("sha256").update(readFileSync(optionFile)).digest("hex") }));
+    if (existing) writeFileSync(option.progress, DONE_MARKER);
+    assert.equal(await option.run(), 0);
+    assert.equal(option.checks.length, 1);
     const f = fixture(t);
     writeFileSync(f.file, source(1)); f.git("add", "."); f.git("commit", "-qm", "tests"); f.seal();
     if (existing) writeFileSync(f.progress, DONE_MARKER);
@@ -132,7 +159,7 @@ test("marker written but a locked test fails → exit 3, not 0", async (t) => {
   writeFileSync(path.join(custom.worktree, "probe.mjs"), "import { writeFileSync } from 'node:fs';\nwriteFileSync('args.json', JSON.stringify(process.argv.slice(2)));\n");
   writeFileSync(custom.file, source(1)); custom.git("add", "."); custom.git("commit", "-qm", "custom runner"); custom.seal();
   assert.equal(await custom.run(), 0);
-  assert.deepEqual(JSON.parse(readFileSync(path.join(custom.worktree, "args.json"))), ["--literal", "acceptance.test.mjs"]);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(custom.worktree, "args.json"))), ["--literal", custom.file]);
   assert.equal(custom.checks.length, 1);
   const incomplete = fixture(t);
   writeFileSync(incomplete.file, source(1, true)); incomplete.git("add", "."); incomplete.git("commit", "-qm", "tests"); incomplete.seal();

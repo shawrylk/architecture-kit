@@ -104,15 +104,23 @@ export async function verifyBaseTests(worktree, base, cases, command = ["node", 
   const checkout = path.join(root, "base");
   try {
     git(worktree, "worktree", "add", "--detach", checkout, base);
-    for (const file of new Set(cases.map((entry) => entry.path))) {
+    const baseRoot = realpathSync(checkout);
+    // Validate all existing parents before creating any destination directories.
+    const targets = [...new Set(cases.map((entry) => entry.path))].map((file) => {
       const source = safeFile(worktree, file);
-      const destination = path.join(checkout, file);
-      // Refuse a base-tree symlink in any destination parent.
+      const destination = path.resolve(checkout, file);
+      for (let parent = path.dirname(destination); parent !== checkout; parent = path.dirname(parent)) {
+        if (!lstatSync(parent, { throwIfNoEntry: false })) continue;
+        const relative = path.relative(baseRoot, realpathSync(parent));
+        if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error(`unsafe base test path: ${file}`);
+      }
+      if (lstatSync(destination, { throwIfNoEntry: false })?.isSymbolicLink()) throw new Error(`unsafe base test path: ${file}`);
+      return { file, source, destination };
+    });
+    for (const { file, source, destination } of targets) {
       mkdirSync(path.dirname(destination), { recursive: true });
-      const relative = path.relative(realpathSync(checkout), realpathSync(path.dirname(destination)));
-      if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || (existsSync(destination) && lstatSync(destination).isSymbolicLink())) throw new Error(`unsafe base test path: ${file}`);
       copyFileSync(source, destination);
-      if (await runTestCommand([...command, file], checkout) === 0) {
+      if (await runTestCommand([...command, destination], checkout) === 0) {
         problems.push(`${file}: passes on the base: ${cases.filter((entry) => entry.path === file).map((entry) => entry.name).join(", ")}`);
       }
     }
