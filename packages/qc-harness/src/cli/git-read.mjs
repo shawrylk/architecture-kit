@@ -20,7 +20,8 @@ export function gitOutWithin(timeoutMs, cwd, ...args) {
  */
 export function gitStatusWithin(timeoutMs, cwd, ...args) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
-  const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true, timeout: timeoutMs, env });
+  // A diff against an old base can pass the 1 MB default buffer.
+  const result = spawnSync("git", args, { cwd, encoding: "utf8", windowsHide: true, timeout: timeoutMs, env, maxBuffer: 1 << 26 });
   if (result.error) return { error: result.error.code === "ETIMEDOUT" ? `git timed out after ${timeoutMs} ms` : result.error.message };
   if (result.signal) return { error: `git ended on ${result.signal}` };
   return { status: result.status, stdout: (result.stdout ?? "").trim() };

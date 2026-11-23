@@ -196,5 +196,5 @@ Each rule, gate, and switch has a case that must fail.
 The harness watches issues and PRs you use, including closed issues, and shows new comments on each prompt.
 Merges wait until your session sees comments on the PR and the issues its body links.
 Set `"commentWatch": false` in `qc.config.json` to disable the watch and merge gate.
-Use `github.configDirs` to map repository owners to gh configuration directories; `shawrylk` defaults to `~/.config/gh-personal`.
+Use `github.configDirs` to map repository owners to gh configuration directories; `shawrylk` defaults to `~/.config/gh-personal`. If the mapped folder does not exist after home expansion, the watcher uses the default gh login.
 Other owners use the default gh account. Failed prompt checks add a note; failed merge checks require a retry.

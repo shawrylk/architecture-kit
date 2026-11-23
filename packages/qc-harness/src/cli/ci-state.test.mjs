@@ -9,7 +9,7 @@ const SHA = "a".repeat(40);
 const run = (name, status, conclusion = null) => ({ name, status, conclusion });
 const reply = (...runs) => JSON.stringify({ total_count: runs.length, check_runs: runs, workflow_runs: [] });
 
-const ciGh = (checks, workflows) => (args) => args[1].includes("/actions/runs") ? JSON.stringify(workflows) : reply(...checks);
+const ciGh = (checks, workflows) => (args) => args[1].includes("/actions/runs") ? (Array.isArray(workflows) ? workflows : [workflows]).map(page => JSON.stringify(page)).join("\n") : reply(...checks);
 
 test("unfinished workflows on the head are pending before checks exist and after checks pass", () => {
   for (const status of ["queued", "in_progress", "waiting", "pending", "requested"]) {
@@ -22,7 +22,7 @@ test("unfinished workflows on the head are pending before checks exist and after
       assert.equal(state.unknown, null);
       assert.equal(state.reason, `CI on aaaaaaa: CI is ${status}`);
       assert.ok(calls[1].args.includes("--paginate"));
-      assert.ok(calls[1].args.includes("--slurp"));
+      assert.ok(!calls[1].args.includes("--slurp"));
       assert.equal(calls[1].args[1], `repos/o/r/actions/runs?head_sha=${SHA}&per_page=100`);
       assert.ok(calls[0].options.timeoutMs + calls[1].options.timeoutMs + 1000 < 10000);
     }
@@ -45,14 +45,14 @@ test("a failed check wins over queued workflows and missing required checks", ()
 });
 
 test("unreadable workflow lists keep a green-looking head unknown", () => {
-  for (const answer of [null, "not JSON", "{}", '[{"workflow_runs":[]},{}]']) {
+  for (const answer of [null, "not JSON", "{}", '{"workflow_runs":[]}\n{}']) {
     const gh = (args) => args[1].includes("/actions/runs") ? answer : reply(run("lint", "completed", "success"));
     assert.match(ciState(SHA, "/c", { gh, origin: () => "o/r" }).unknown ?? "", /gh/);
   }
 });
 
 test("unreadable workflows preserve pending and failed checks", () => {
-  for (const answer of [null, "not JSON", "{}", '[{"workflow_runs":[]},{}]']) {
+  for (const answer of [null, "not JSON", "{}", '{"workflow_runs":[]}\n{}']) {
     for (const [status, conclusion] of [["in_progress", null], ["completed", "failure"]]) {
       const gh = (args) => args[1].includes("/actions/runs") ? answer : reply(run("build", status, conclusion));
       assert.deepEqual(ciState(SHA, "/c", { gh, origin: () => "o/r" }), {
@@ -75,7 +75,7 @@ test("workflow paths let a newer suite supersede a cancelled suite", () => {
 
 test("ciState uses caller-required checks and ignores invalid checkout configuration", (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-ci-required-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ ci: null }));
   for (const checks of [[], [run("lint", "completed", "success")]]) {
     const state = ciState(SHA, cwd, { gh: ciGh(checks, [{ workflow_runs: [] }]), origin: () => "o/r", requiredChecks: ["build"] });
@@ -96,14 +96,14 @@ test("ciState reads every check-run page", () => {
   const calls = [];
   const gh = (args) => {
     calls.push(args);
-    return JSON.stringify([
+    return [
       { check_runs: [run("lint", "completed", "success")] },
       { check_runs: [run("build", "completed", "failure")] },
-    ]);
+    ].map(page => JSON.stringify(page)).join("\n");
   };
   assert.equal(ciState(SHA, "/c", { gh, origin: () => "o/r" }).reason, "CI on aaaaaaa: build ended failure");
   assert.ok(calls[0].includes("--paginate"));
-  assert.ok(calls[0].includes("--slurp"));
+  assert.ok(!calls[0].includes("--slurp"));
   assert.match(calls[0][1], /[?&]filter=all(?:&|$)/);
 });
 

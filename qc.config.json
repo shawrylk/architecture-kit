@@ -3,6 +3,7 @@
   "featureRoots": [],
   "codex": { "model": "gpt-6.1-sol" },
   "swarm": { "review": { "runtime": "codex" } },
+  "ready": { "platforms": ["linux", "windows"] },
   "docs": {
     "root": "packages/qc-harness/templates/docs",
     "decisions": "packages/qc-harness/templates/docs/decisions.md",
