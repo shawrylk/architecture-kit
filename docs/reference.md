@@ -129,8 +129,14 @@ Every gate reads one file list: `git ls-files --cached --others --exclude-standa
 `qc check --affected --base origin/main` runs the gates and the configured `check.related` command.
 Without `check.related`, it selects sibling tests and tests that import each changed harness module, including transitive imports.
 The graph reads `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` sources and tests.
+It scans text for static imports, re-exports, bare imports, literal `import()` calls, and literal `require()` calls using only built-ins.
+It scans both the original text and a version with block and line comments replaced by spaces, using the union of their import matches.
+The comment strip attempts to preserve literals and allows whitespace between tokens; the original scan retains imports when regexes or nested templates confuse the strip.
+Non-literal loader arguments and bare package specifiers in either scan make dependency coverage uncertain; matches inside comments or strings can add tests.
 It also selects every test whose text contains a changed file's base name (for example, `gate.mjs`), covering process and URL loads.
+Every affected selection includes all `packages/qc-harness/src/gates/*.test.mjs` files because they can scan the whole tree without importing changed modules.
 Runtime paths built without that literal base name can escape selection; spawning a process alone does not force the full suite.
+Imports missed by both text scans are also an accepted selection limit; this scan is not a JavaScript lexer.
 Full runs on main and nightly provide the safety net for those cases.
 Uncertain dependency coverage, a deletion, missing base, shared config change, or uncovered file falls back to the repository test script.
 The base defaults to `check.base`. This mode accepts no file list, `--full`, `--os`, or `--since-push`.

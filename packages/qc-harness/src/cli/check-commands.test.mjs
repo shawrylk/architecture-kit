@@ -272,14 +272,50 @@ test("related excludes staged deletions and receives the new path of a staged re
 
 test("--affected with one changed gate file runs that gate's test file and not an unrelated one", (t) => {
   const root = fixture(t);
-  const dir = "packages/qc-harness/src/gates";
+  const dir = "packages/qc-harness/src/cli";
   mkdirSync(path.join(root, dir), { recursive: true });
   const put = (file, text) => writeFileSync(path.join(root, dir, file), text);
+  const gates = path.join(root, "packages/qc-harness/src/gates");
+  mkdirSync(gates, { recursive: true });
+  writeFileSync(path.join(gates, "tree-scan.test.mjs"), "console.log('TREE SCAN');\n");
   put("gate.mjs", "export const value = 1;\n");
-  put("bridge.mjs", "export { value } from './gate.mjs';\n");
+  put("bridge.mjs", "export { value, value as default } from './gate.mjs';\n");
   for (const extension of ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]) {
     put(`reader.${extension}`, "export { value } from './gate.mjs';\n");
     put(`reader-${extension}.test.mjs`, `if (false) import('./reader.${extension}'); console.log('GRAPH ${extension}');\n`);
+  }
+  const forms = [
+    "import value from './bridge.mjs';",
+    'import { value }\nfrom "./bridge.mjs";',
+    "import * as values from './bridge.mjs';",
+    "export { value } from './bridge.mjs';",
+    'export * from "./bridge.mjs";',
+    "import './bridge.mjs';",
+    'await import("./bridge.mjs");',
+    "if (false) require('./bridge.mjs');",
+    "await import(`./bridge.mjs`);",
+    '// import "node:comment\nimport "./bridge.mjs";',
+    'export { value } from /* comment */ "./gate.mjs";',
+    'export const { value } = await import /* comment */ ("./gate.mjs");',
+    'const target = "./" + "gate" + ".mjs"; export const { value } = await import /* comment */ (target);',
+    'import /* comment */ "./bridge.mjs";',
+    'export { value } from // comment\n "./bridge.mjs";',
+    'await import // comment\n ( /* comment */ "./bridge.mjs" /* comment */ );',
+    'if (false) require /* comment */ ( "./bridge.mjs" );',
+    'const target = "./" + "bridge" + ".mjs"; if (false) require // comment\n (target);',
+    'const url = "http://x"; await import("./bridge.mjs");',
+    "const text = '/* literal */'; await import('./bridge.mjs');",
+    'const text = `http://x /* literal */`; await import("./bridge.mjs");',
+    'const pattern = /[//]/; export { value } from "./gate.mjs";',
+    'const text = `${`//`}`; export { value } from "./gate.mjs";',
+    'const text = "escaped \\" // literal"; await import("./bridge.mjs");',
+    "const target = './bridge' + '.mjs'; await import(target);",
+    "const target = './bridge' + '.mjs'; if (false) require(target);",
+    "if (false) require('package');",
+  ];
+  for (const [index, source] of forms.entries()) {
+    put(`form-${index}.mjs`, source);
+    put(`form-${index}.test.mjs`, `import './form-${index}.mjs'; console.log('FORM ${index}');\n`);
   }
   for (const [name, source] of [["gate", ""], ["consumer", "import './bridge.mjs';"], ["unrelated", "throw Error('unrelated ran');"]]) {
     put(`${name}.test.mjs`, `${source} console.log("${name}.test.mjs");\n`);
@@ -293,6 +329,8 @@ test("--affected with one changed gate file runs that gate's test file and not a
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.match(run.stdout, /gate\.test\.mjs/);
   assert.match(run.stdout, /consumer\.test\.mjs/);
+  assert.match(run.stdout, /TREE SCAN/);
+  assert.deepEqual([...forms.keys()].filter((index) => !new RegExp(`FORM ${index}\\b`).test(run.stdout)), [], run.stdout);
   for (const extension of ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]) assert.match(run.stdout, new RegExp(`GRAPH ${extension}\\b`));
   assert.doesNotMatch(run.stdout, /unrelated\.test\.mjs|FULL SUITE/);
   const omittedReaders = [
@@ -307,7 +345,7 @@ test("--affected with one changed gate file runs that gate's test file and not a
   });
   assert.deepEqual(omittedRuns.map(({ status }) => status), [1, 1], omittedRuns.map(({ stdout, stderr }) => stdout + stderr).join("\n"));
   for (const result of omittedRuns) assert.doesNotMatch(result.stdout, /unrelated\.test\.mjs|FULL SUITE/);
-  put("dynamic.test.mjs", "const target = './gate.mjs'; await import(target); console.log('DYNAMIC COVERED');\n");
+  put("dynamic.test.mjs", "const target = './' + 'gate' + '.mjs'; await import(target); if (false) require(target); console.log('DYNAMIC COVERED');\n");
   git(root, "add", ".");
   run = check(root, ["--affected", "--base", base]);
   assert.equal(run.status, 0, run.stderr); assert.match(run.stdout, /DYNAMIC COVERED/);

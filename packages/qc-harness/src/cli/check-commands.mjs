@@ -114,35 +114,34 @@ async function importingTests(root, changed) {
   const isTest = (file) => /\.test\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
   if (changed.some((file) => !file.startsWith("packages/qc-harness/src/") || !extension.test(file) || !existsSync(path.join(root, file)))) return null;
   try {
-    const { default: ts } = await import("typescript");
     const files = (await repoFiles(root)).filter((file) => extension.test(file));
     const known = new Set(files), readers = new Map(), uncertainFiles = new Set();
-    const tests = new Set(), mentions = new Map(changed.map((file) => [file, new Set()]));
+    const tests = new Set(files.filter((file) => /^packages\/qc-harness\/src\/gates\/[^/]+\.test\.mjs$/.test(file)));
+    const mentions = new Map(changed.map((file) => [file, new Set()]));
     for (const file of files) {
       const text = readFileSync(path.join(root, file), "utf8");
       if (isTest(file)) for (const changedFile of changed) {
         if (text.includes(path.posix.basename(changedFile))) mentions.get(changedFile).add(file);
       }
-      const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
-      if (source.parseDiagnostics.length) return null;
       let uncertain = false;
-      const visit = (node) => {
-        let spec = node.moduleSpecifier;
-        if (ts.isCallExpression(node) && (node.expression.kind === ts.SyntaxKind.ImportKeyword || node.expression.getText(source) === "require")) {
-          spec = node.arguments[0];
-          if (!spec || !ts.isStringLiteralLike(spec)) uncertain = true;
-        }
-        if (spec && ts.isStringLiteralLike(spec)) {
-          const value = spec.text;
-          if (value.startsWith(".")) {
-            const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), value));
-            if (!known.has(target)) uncertain = true;
-            else readers.set(target, [...(readers.get(target) ?? []), file]);
-          } else if (!value.startsWith("node:")) uncertain = true;
-        }
-        ts.forEachChild(node, visit);
+      const add = (value) => {
+        if (/\\|\$\{/.test(value)) { uncertain = true; return; }
+        if (value.startsWith(".")) {
+          const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), value));
+          if (!known.has(target)) uncertain = true;
+          else readers.set(target, [...(readers.get(target) ?? []), file]);
+        } else if (!value.startsWith("node:")) uncertain = true;
       };
-      visit(source);
+      // Retain original matches when comment stripping misreads regexes or nested templates.
+      const stripped = text.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, (token) => token.startsWith("/") ? " " : token);
+      for (const source of new Set([text, stripped])) {
+        for (const match of source.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2]);
+        for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*/g)) {
+          const literal = /^(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1\s*(?=[,)])/.exec(source.slice(match.index + match[0].length));
+          if (literal) add(literal[2]);
+          else uncertain = true;
+        }
+      }
       if (uncertain) uncertainFiles.add(file);
     }
     // Unknown loaders can read any changed module; cover their readers too, or run the full suite.
