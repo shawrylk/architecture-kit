@@ -147,6 +147,9 @@ test("Verify failure returns exit 7 with ordered proof and only the last ten out
       },
     }), 7);
     assert.deepEqual(output, ["exit 7"]);
+    const [metrics] = readFileSync(path.join(f.worktree, ".git", "qc", "runs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(metrics.verify, "fail");
+    assert.equal(metrics.live, null);
     const text = readFileSync(report, "utf8");
     assert.match(text, /## Runner proof/);
     assert.ok(text.includes(`${first}: exit 0 in `));
@@ -2106,4 +2109,99 @@ test("implement completion mutates only after green locked runner tests and appe
     writeFileSync(reviewOutput.progress, DONE_MARKER);
     return { status: 0 };
   } }), 0);
+});
+
+test("each Codex invocation logs tokens across turns and retries, metadata, and every exit", async (t) => {
+  const f = setup(t);
+  const report = path.join(f.dir, "metrics-report.md");
+  const fake = path.join(f.dir, "metrics-codex.mjs");
+  writeFileSync(f.brief, VALID_BRIEF.replace("# Brief", "# Brief: fix #249") + `\nIssue: #249\nReport: \`${report}\`\nVerify: \`node --version\`\nLive: \`node --version\`\n`);
+  writeFileSync(report, "VERDICT: APPROVED\n- [P1] one\n- [P2] two\n");
+  writeFileSync(fake, `
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+for await (const chunk of process.stdin) {}
+const event = JSON.stringify({type:'turn.completed',usage:{input_tokens:12,output_tokens:3}});
+process.stdout.write(event.slice(0, 10));
+await new Promise(r => setTimeout(r, 10));
+process.stdout.write(event.slice(10) + '\\n');
+console.log('x'.repeat(5000));
+process.stdout.write(JSON.stringify({type:'turn.completed',usage:{input_tokens:8,output_tokens:2}}));
+if (existsSync(${JSON.stringify(path.join(f.dir, "attempt"))})) appendFileSync(${JSON.stringify(f.progress)}, ${JSON.stringify(DONE_MARKER + "\n")});
+else writeFileSync(${JSON.stringify(path.join(f.dir, "attempt"))}, '1');
+`);
+  const file = path.join(f.worktree, ".git", "qc", "runs.jsonl");
+  const options = { codexCommand: [process.execPath, fake], say: quiet, out: quiet };
+  assert.equal(await runCodexImplement([...f.argv, "--max-runs", "2", "--effort", "high"], options), 0);
+  let rows = readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(rows.length, 1);
+  assert.deepEqual({ ...rows[0], time: null, branch: null, minutes: null }, {
+    kind: "codex", time: null, branch: null, issue: 249, role: "fix", effort: "high", exit: 0,
+    refusal: null, inputTokens: 40, outputTokens: 10, minutes: null,
+    verify: "pass", live: "pass", verdict: "APPROVED", findings: 2,
+  });
+  assert.ok(Number.isFinite(Date.parse(rows[0].time)));
+  assert.equal(rows[0].branch, spawnSync("git", ["branch", "--show-current"], { cwd: f.worktree, encoding: "utf8" }).stdout.trim());
+  assert.equal(rows[0].minutes * 10, Math.round(rows[0].minutes * 10));
+  assert.ok(!readFileSync(file, "utf8").includes(f.dir));
+  writeFileSync(f.progress, "");
+  for (const [exit, run] of [
+    [1, async () => { throw new Error("launch failed"); }],
+    [4, async () => { writeFileSync(path.join(f.worktree, "outside.txt"), "outside"); return { status: 0 }; }],
+  ]) {
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run }), exit);
+    rows = readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(rows.at(-1).exit, exit);
+    assert.equal(rows.at(-1).inputTokens, 0);
+    assert.equal(rows.at(-1).verify, null);
+    assert.equal(rows.at(-1).live, null);
+  }
+  assert.equal(rows.length, 3);
+  assert.match(rows.at(-1).refusal, /diff shape refused/);
+  assert.ok(rows.at(-1).refusal.length <= 120);
+  rmSync(path.join(f.worktree, "outside.txt"), { force: true, recursive: true, maxRetries: 5, retryDelay: 100 });
+  writeFileSync(f.brief, VALID_BRIEF + `\nIssue: 249\nReport: \`${report}\`\nVerify: \`node --version\`\nLive: \`node -e "process.exit(8)"\`\n`);
+  writeFileSync(f.progress, `${DONE_MARKER}\n`);
+  assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => assert.fail("already done") }), 7);
+  rows = readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(rows.at(-1).role, "implement");
+  assert.equal(rows.at(-1).verify, "pass");
+  assert.equal(rows.at(-1).live, "fail");
+});
+
+test("run logging records preflight failures and warns once without changing the exit", async (t) => {
+  const f = setup(t);
+  writeFileSync(f.brief, "# Invalid brief\n");
+  assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet }), 1);
+  const folder = path.join(f.worktree, ".git", "qc");
+  const rows = readFileSync(path.join(folder, "runs.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].issue, null);
+  assert.equal(rows[0].exit, 1);
+  assert.equal(rows[0].verdict, null);
+  assert.equal(rows[0].findings, null);
+  writeFileSync(f.brief, VALID_BRIEF);
+  const secrets = [
+    `AKIA${"A".repeat(16)}`, `aws_secret_access_key=${"a".repeat(40)}`,
+    `ghp_${"a".repeat(36)}`, `github_pat_${"a".repeat(40)}`,
+    "-----BEGIN PRIVATE KEY-----", `sk-ant-${"a".repeat(20)}`,
+    `xoxb-${"a".repeat(10)}`, `npm_${"a".repeat(36)}`,
+  ];
+  for (const secret of secrets) {
+    assert.equal(await runCodexImplement(f.argv, {
+      say: quiet, out: quiet, run: async () => { throw new Error(`guard refused: ${secret} ${f.dir} ../private/file ${os.hostname()}\nsecond line`); },
+    }), 1);
+    const last = JSON.parse(readFileSync(path.join(folder, "runs.jsonl"), "utf8").trim().split("\n").at(-1));
+    for (const privateText of [secret, f.dir, "../private/file", os.hostname(), "second line"]) assert.ok(!last.refusal.includes(privateText), last.refusal);
+    assert.ok(last.refusal.includes("[REDACTED]"));
+    assert.ok(last.refusal.length <= 120);
+  }
+  writeFileSync(f.brief, "# Invalid brief\n");
+  rmSync(path.join(folder, "runs.jsonl"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  mkdirSync(path.join(folder, "runs.jsonl"));
+  const warnings = [];
+  const output = [];
+  assert.equal(await runCodexImplement(f.argv, { say: quiet, warn: line => warnings.push(line), out: line => output.push(line) }), 1);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /cannot write run log/);
+  assert.deepEqual(output, ["exit 1"]);
 });

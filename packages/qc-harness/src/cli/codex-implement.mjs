@@ -3,6 +3,8 @@
 
 import { execFileSync } from "node:child_process";
 import { appendRecord, ledgerFileOf } from "./ledger.mjs";
+import { appendRun, runLogFileOf } from "./run-log.mjs";
+import { redactOutput } from "./output-redaction.mjs";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
@@ -261,6 +263,8 @@ function spawnRun({ args, input, env, log, cwd }, codexCommand) {
     let tail = Buffer.alloc(0);
     let pending = "";
     let session;
+    let inputTokens = 0;
+    let outputTokens = 0;
     const capture = (chunk, json) => {
       writeSync(fd, chunk);
       tail = Buffer.concat([tail, chunk]).subarray(-TAIL_CHARS);
@@ -271,6 +275,10 @@ function spawnRun({ args, input, env, log, cwd }, codexCommand) {
       for (const line of lines) {
         try {
           const event = JSON.parse(line);
+          if (event.type === "turn.completed") {
+            inputTokens += tokenCount(event.usage?.input_tokens);
+            outputTokens += tokenCount(event.usage?.output_tokens);
+          }
           if (event.type === "thread.started" && typeof event.thread_id === "string" && /^[a-zA-Z0-9_-]+$/.test(event.thread_id)) session = event.thread_id;
         } catch { /* Non-JSON output remains in the log, without inventing a session. */ }
       }
@@ -288,7 +296,7 @@ function spawnRun({ args, input, env, log, cwd }, codexCommand) {
     child.on("close", (status) => {
       if (pending) capture(Buffer.from("\n"), true);
       closeSync(fd);
-      resolve({ status, tail: tail.toString("utf8"), session });
+      resolve({ status, tail: tail.toString("utf8"), session, inputTokens, outputTokens });
     });
   });
 }
@@ -297,6 +305,19 @@ function spawnRun({ args, input, env, log, cwd }, codexCommand) {
 const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${line}
 `, resolve));
 
+const tokenCount = (value) => Number.isFinite(value) && value >= 0 ? value : 0;
+
+/** Keep refusal diagnostics local without copying host names, credentials or absolute paths. */
+function refusalSummary(message, root) {
+  let text = redactOutput(message.split(/\r?\n/)[0].replace(/^qc codex-implement: /, ""));
+  if (root) text = text.split(root + path.sep).join("");
+  text = text.split(os.hostname()).join("[host]");
+  text = text.replace(/(?:[a-z]+:\/\/|\\\\)[^\s"'`]+/gi, "[host]");
+  text = text.replace(/(?:(?:\.\.[\\/])+|~[\\/]|[A-Za-z]:[\\/]|(?<![\w.])\/)[^\s"'`,;)]*/g, "[path]");
+  text = text.replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?=[:/\s]|$)/gi, "[host]");
+  return text.slice(0, 120);
+}
+
 /**
  * The last stdout line is `exit <code>` on every path, so a redirect of the runner into a wrapper log carries
  * the end of the job for `qc watch --codex`, in any shell.
@@ -304,12 +325,44 @@ const writeLine = (line) => new Promise((resolve) => process.stdout.write(`${lin
  * @param out `(line) => Promise|void` writes the `exit` line; the default writes to stdout.
  * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs, 4 guard refused, 5 paused.
  */
-export async function runCodexImplement(argv, { out = writeLine, ...options } = {}) {
+export async function runCodexImplement(argv, { out = writeLine, warn = console.error, ...options } = {}) {
+  const clock = options.now ?? Date.now;
+  const started = clock();
+  const metrics = { inputTokens: 0, outputTokens: 0, verify: null, live: null, refusal: null };
+  const say = options.say ?? ((line) => console.error(line));
+  const report = (line) => {
+    if (metrics.refusal === null && /refused:/.test(line)) metrics.refusal = line;
+    say(line);
+  };
   let code;
   try {
-    code = await runJob(argv, options);
+    code = await runJob(argv, { ...options, say: report, metrics });
   } catch (error) {
-    code = finish(options.say ?? ((line) => console.error(line)), error.message, 1);
+    code = finish(report, error.message, 1);
+  }
+  try {
+    const settings = metrics.settings;
+    const worktreeIndex = argv.indexOf("--worktree");
+    const root = settings?.worktree ?? (worktreeIndex >= 0 ? argv[worktreeIndex + 1] : undefined) ?? process.cwd();
+    let verdict = null;
+    let findings = null;
+    try {
+      if (metrics.report) {
+        const text = readFileSync(metrics.report, "utf8");
+        verdict = /^(?:VERDICT:[ \t]*)?(APPROVED|CHANGES_REQUIRED)[ \t]*$/.exec(text.split(/\r?\n/)[0])?.[1] ?? null;
+        findings = text.split(/\r?\n/).filter((line) => line.startsWith("- [P")).length;
+      }
+    } catch { /* An absent report has no verdict or finding count. */ }
+    appendRun(runLogFileOf(root), {
+      kind: "codex", time: new Date(clock()).toISOString(), branch: currentBranch(root),
+      issue: metrics.issue ?? null, role: metrics.role ?? settings?.role ?? "implement", effort: metrics.effort ?? null,
+      exit: code, refusal: metrics.refusal === null ? null : refusalSummary(metrics.refusal, root),
+      inputTokens: metrics.inputTokens, outputTokens: metrics.outputTokens,
+      minutes: Math.round(Math.max(0, clock() - started) / 6000) / 10,
+      verify: metrics.verify, live: metrics.live, verdict, findings,
+    });
+  } catch {
+    warn("qc codex-implement: cannot write run log");
   }
   await out(`exit ${code}`);
   return code;
@@ -393,11 +446,21 @@ function completeReview(settings, started, originalStamp, message, say) {
 
 async function runJob(argv, {
   run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
-  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation,
+  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation, metrics,
 } = {}) {
   let settings;
   try {
     settings = parseArgs(argv);
+    metrics.settings = settings;
+    metrics.role = settings.role;
+    metrics.effort = settings.effort ?? null;
+    try {
+      const brief = readFileSync(settings.brief, "utf8");
+      const issue = /^Issue:[ \t]*#?(\d+)[ \t]*\r?$/m.exec(brief)?.[1];
+      metrics.issue = issue && Number.isSafeInteger(Number(issue)) ? Number(issue) : null;
+      if (/^#[ \t]+.*\bfix\b/i.test(brief)) metrics.role = "fix";
+      metrics.report = settings.report ?? briefPath(brief, "Report", settings.brief) ?? `${settings.progress}.report.md`;
+    } catch { /* Preflight still reports an unreadable brief through its normal exit. */ }
   } catch (error) {
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
     return 1;
@@ -427,6 +490,7 @@ async function runJob(argv, {
   let locked;
   try {
     codex = codexSettingsOf(settings.worktree);
+    if (settings.review) metrics.effort = codex.reviewEffort;
     codexLimits = codexLimitsOf(settings.worktree);
     const guardConfig = load(settings.worktree);
     protectedPaths = guardConfig.guard.protectedPaths;
@@ -487,7 +551,28 @@ async function runJob(argv, {
   };
   const verifiedCompletion = async (message) => {
     try {
-      if (!await verifyBrief(settings, { env, policy })) return finish(say, "verify failed", 7);
+      let offset = 0;
+      try { offset = readFileSync(policy.report, "utf8").length; } catch { /* A new report starts at zero. */ }
+      const passed = await verifyBrief(settings, { env, policy });
+      if (!settings.review) {
+        let proof = "";
+        try { proof = readFileSync(policy.report, "utf8").slice(offset); } catch { /* No proof means no command ran. */ }
+        let remaining = proof;
+        for (const group of ["verify", "live"]) {
+          if (!policy[group].length) continue;
+          for (const command of policy[group]) {
+            const prefix = `\n${command}: exit `;
+            const index = remaining.indexOf(prefix);
+            const status = index < 0 ? null : /^(\d+) in [\d.]+ s(?:\r?\n|$)/.exec(remaining.slice(index + prefix.length));
+            if (!status) break;
+            remaining = remaining.slice(index + prefix.length + status[0].length - 1);
+            metrics[group] = status[1] === "0" ? "pass" : "fail";
+            if (metrics[group] === "fail") break;
+          }
+          if (metrics[group] === "fail") break;
+        }
+      }
+      if (!passed) return finish(say, "verify failed", 7);
     } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
     if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
     return completeReview(settings, started, originalStamp, message, say);
@@ -552,6 +637,8 @@ async function runJob(argv, {
     } catch (error) {
       runError = error;
     }
+    metrics.inputTokens += tokenCount(result?.inputTokens);
+    metrics.outputTokens += tokenCount(result?.outputTokens);
     if (result?.session) say(`qc codex-implement: session ${result.session}`);
     try {
       if (settings.role === "scout") {

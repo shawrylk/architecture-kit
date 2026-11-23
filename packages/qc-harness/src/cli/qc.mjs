@@ -40,6 +40,7 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
+  qc metrics [--since <YYYY-MM-DD>]  local Codex and CI run totals for the last seven days
   qc overview              modules, largest files, churn, CI failures, and debt; at most 60 lines
   qc debt file <report>    file unseen debt items as issues and reset the review watermark
   qc debt due              name the module due after 10 milestone merges; exit 1 when not due, 3 on error
@@ -174,6 +175,10 @@ async function main() {
   if (command === "fleet") {
     const { runFleet } = await import("./fleet.mjs");
     process.exit(await runFleet(rest));
+  }
+  if (command === "metrics") {
+    const { runMetrics } = await import("./metrics.mjs");
+    process.exit(runMetrics(rest));
   }
   // The watcher handles unreadable configuration so the wait can continue.
   if (command === "watch") {
