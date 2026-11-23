@@ -604,7 +604,7 @@ export const dispatchDefaults = {
   // A slot with no stop expires after this many minutes.
   slotMinutes: 60,
   // How many implementers run at once in a session. Each needs paths of its own, and a worktree.
-  implementerSlots: 1,
+  implementerSlots: 3,
   // The model families each type's named `model` may carry, over the runtime's own in `runtimeModels`.
   models: {},
 };

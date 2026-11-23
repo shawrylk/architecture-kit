@@ -127,7 +127,9 @@ export function ghMerges(command, parse) {
     if (!merge) continue;
     // The repository comes from a PR URL first, then -R or --repo (the one written last), then GH_REPO. GH_REPO is no setting to keep.
     const { GH_REPO: fromEnv, ...settings } = env;
-    merge.repo = PR_URL.exec(merge.selector ?? "")?.[1] ?? merge.repo ?? repo ?? fromEnv ?? null;
+    const url = PR_URL.exec(merge.selector ?? "");
+    if (url) merge.host = new URL(merge.selector).host;
+    merge.repo = url?.[1] ?? merge.repo ?? repo ?? fromEnv ?? null;
     merges.push({ ...merge, env: settings });
   }
   return merges;

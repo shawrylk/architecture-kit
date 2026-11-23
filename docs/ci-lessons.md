@@ -53,3 +53,9 @@ Rule: Use a quote-free fixture path on Windows and retain quoted-path coverage o
 Symptom: writeFileSync fails with ENOENT for the newline path on Windows.
 Cause: Windows forbids newlines in file names.
 Rule: Create newline-named fixture files and run their associated assertions only outside Windows.
+
+## merge guard names unseen PR and linked issue comments until a prompt acknowledges them
+
+Symptom: the guard denies with "gh returned no base commit" on ubuntu-latest.
+Cause: the fake `gh` in `comment-watch.test.mjs` had no answer for the new `git/ref/heads` call. The affected test selection missed this file, because it runs the guard in a child process.
+Rule: When a change adds a `gh` call, search every test file for a fake `gh` and give it an answer.

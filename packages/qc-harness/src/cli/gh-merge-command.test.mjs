@@ -178,6 +178,10 @@ test("the repository of a merge comes from a PR URL, GH_REPO, an attached -R, or
   const repoOf = (command, parse = segmentsOf) => ghMerges(command, parse)[0].repo;
   assert.equal(repoOf("gh pr merge https://github.com/o/r/pull/5 --match-head-commit abc1234"), "o/r");
   assert.equal(repoOf("gh pr merge https://ghe.example.com/o/r/pull/5/files"), "o/r");
+  assert.equal(ghMerges("gh pr merge https://ghe.example.com/o/r/pull/60", segmentsOf)[0].host, "ghe.example.com");
+  for (const selector of ["60", "feat/x"]) {
+    assert.equal(ghMerges(`gh pr merge ${selector}`, segmentsOf)[0].host, undefined);
+  }
   assert.equal(repoOf("GH_REPO=o/r gh pr merge 5"), "o/r");
   assert.equal(repoOf("export GH_REPO=o/r && gh pr merge 5"), "o/r");
   assert.equal(repoOf(String.raw`$env:GH_REPO = "o/r"; gh pr merge 5`, powershellSegments), "o/r");

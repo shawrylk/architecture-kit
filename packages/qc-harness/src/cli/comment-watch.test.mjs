@@ -55,6 +55,7 @@ function fixture(t) {
       appendFileSync(process.env.CALLS, JSON.stringify({args, config: options.env.GH_CONFIG_DIR}) + '\\n');
       const data = JSON.parse(readFileSync(process.env.DATA, 'utf8'));
       if (data.fail || args.some(arg => arg.includes(data.failEndpoint ?? 'NEVER_MATCH'))) return { status: 1, stderr: 'TOKEN_MUST_STAY_SECRET' };
+      if (args[0] === 'api' && args[1].includes('/git/ref/heads/') && args.at(-2) === '--jq' && args.at(-1) === '.object.sha') return { status: 0, stdout: data.baseOid };
       let result;
       if (args[0] === 'pr') result = { baseRefName: 'main', baseRefOid: data.baseOid, labels: [], number: 7, body: data.body ?? 'Fixes #4; https://github.com/ArentInc/other/issues/8', commits: data.commits ?? [] };
       else if (args[1] === 'user') result = { login: 'self' };

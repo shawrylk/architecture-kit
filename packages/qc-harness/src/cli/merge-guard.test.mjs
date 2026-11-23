@@ -174,7 +174,18 @@ test("a pause read error refuses merges and waits for the operator", (t) => {
 /** A gh stand-in that logs each call and answers with `answer`. */
 function fakeGh(answer) {
   const calls = [];
-  return { calls, gh: (args, options) => (calls.push({ args, options }), typeof answer === "function" ? answer(args) : answer) };
+  let baseTip = null;
+  return { calls, gh: (args, options) => {
+    calls.push({ args, options });
+    if (args[0] === "api" && args[1].includes("/git/ref/heads/")) return baseTip;
+    const result = typeof answer === "function" ? answer(args) : answer;
+    if (args[0] === "pr" && args.at(-1) === "baseRefName,headRefName,number,isCrossRepository,labels" && result) {
+      const { baseRefOid, ...pr } = JSON.parse(result);
+      baseTip = baseRefOid ?? null;
+      return JSON.stringify(pr);
+    }
+    return result;
+  } };
 }
 
 const MERGED = JSON.stringify({
@@ -232,6 +243,72 @@ test("a merge passes only on an APPROVED review of the configured kind for its s
   assert.match(denied(decide(shell(ws.on, command))) ?? "", /the latest is CHANGES_REQUIRED/);
 });
 
+test("an approved merge passes with gh 2.45 rejecting baseRefOid in pr view", (t) => {
+  const ws = workspace(t);
+  appendRecord(ws.ledgerOf(ws.on), verdict("branch", "APPROVED"));
+  const results = [];
+  for (const [selector, name, endpoint, host] of [
+    ["60", "main", "repos/{owner}/{repo}/git/ref/heads/main", null],
+    ["https://ghe.example.com/o/r/pull/60", "main", "repos/o/r/git/ref/heads/main", "ghe.example.com"],
+    ["60", "release#1", "repos/{owner}/{repo}/git/ref/heads/release%231", null],
+  ]) {
+    const gh = (args) => {
+      if (args[0] === "pr") {
+        if (args.at(-1).split(",").includes("baseRefOid")) throw new Error('Unknown JSON field: "baseRefOid"');
+        return JSON.stringify({ baseRefName: name, headRefName: "feat/62-x", number: 60, isCrossRepository: false, labels: [] });
+      }
+      assert.deepEqual(args, ["api", endpoint, ...(host ? ["--hostname", host] : []), "--jq", ".object.sha"]);
+      return bases.get(ws.on);
+    };
+    results.push({ selector, name, result: decide(shell(ws.on, `gh pr merge ${selector} --match-head-commit ${SHA}`), { gh }) });
+  }
+  assert.deepEqual(results.map(({ result }) => result), [null, null, null], JSON.stringify(results));
+});
+
+test("a failed PR or base-tip lookup names only the first error line before the deadline", (t) => {
+  const ws = workspace(t);
+  const command = shell(ws.on, `gh pr merge 60 --match-head-commit ${SHA}`);
+  for (const failing of ["pr", "api"]) {
+    const gh = (args) => {
+      if (args[0] === failing) throw new Error("gh: authentication failed\nsecret diagnostic details");
+      return prView(bases.get(ws.on));
+    };
+    const reason = denied(decide(command, { gh }));
+    assert.match(reason, /gh: authentication failed/);
+    assert.doesNotMatch(reason, /time budget|secret diagnostic details/);
+  }
+});
+
+test("a missing or empty base tip keeps an approved merge closed", (t) => {
+  const ws = workspace(t);
+  appendRecord(ws.ledgerOf(ws.on), verdict("branch", "APPROVED"));
+  for (const tip of [null, "", "\n "]) {
+    const gh = (args) => args[0] === "pr" ? prView(bases.get(ws.on)) : tip;
+    const reason = denied(decide(shell(ws.on, `gh pr merge 60 --match-head-commit ${SHA}`), { gh }));
+    assert.match(reason, /base/);
+    assert.doesNotMatch(reason, /time budget/);
+  }
+});
+
+test("the PR and base-tip lookups share one deadline", (t) => {
+  const ws = workspace(t);
+  const start = Date.now();
+  const clock = t.mock.method(Date, "now", () => start);
+  const timeouts = [];
+  const gh = (args, options) => {
+    timeouts.push(options.timeoutMs);
+    if (args[0] === "pr") {
+      clock.mock.mockImplementation(() => start + 100);
+      return prView(bases.get(ws.on));
+    }
+    clock.mock.mockImplementation(() => start + 60_000);
+    throw new Error("lookup timed out\nmore details");
+  };
+  assert.match(denied(decide(shell(ws.on, `gh pr merge 60 --match-head-commit ${SHA}`), { gh })), /within the time budget/);
+  assert.equal(timeouts.length, 2);
+  assert.equal(timeouts[1], timeouts[0] - 100);
+});
+
 test("a short sha in upper case matches the full sha the review approved", (t) => {
   const ws = workspace(t);
   appendRecord(ws.ledgerOf(ws.on), verdict("branch", "APPROVED", SHA.toUpperCase()));
@@ -266,8 +343,13 @@ test("an API merge reads the endpoint PR's base and settings before enforcing di
   const { gh, calls } = fakeGh(prView(base));
   const command = "GH_CONFIG_DIR=account gh api --hostname ghe.example.com -X PUT repos/other/project/pulls/23/merge";
   assert.equal(decide(shell(dir, command), { gh }), null);
-  assert.deepEqual(calls[0].args, ["pr", "view", "23", "-R", "other/project", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"]);
+  assert.deepEqual(calls[0].args, ["pr", "view", "23", "-R", "other/project", "--json", "baseRefName,headRefName,number,isCrossRepository,labels"]);
   assert.deepEqual(calls[0].options.env, { GH_CONFIG_DIR: "account", GH_HOST: "ghe.example.com" });
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args, ["api", "repos/other/project/git/ref/heads/main", "--jq", ".object.sha"]);
+  assert.deepEqual(calls[1].options.env, calls[0].options.env);
+  assert.equal(calls[1].options.cwd, dir);
+  assert.ok(calls[1].options.timeoutMs > 0 && calls[1].options.timeoutMs <= calls[0].options.timeoutMs);
 });
 
 test("an API merge passes when the base has no config and denies an unreadable PR or base", (t) => {
@@ -286,8 +368,11 @@ test("a placeholder REST merge reads its PR base with the inline or current repo
   for (const [prefix, repo] of [["", null], ["GH_REPO=other/project ", "other/project"]]) {
     const { gh, calls } = fakeGh(prView(base));
     assert.equal(decide(shell(dir, `${prefix}gh api -X PUT repos/{owner}/{repo}/pulls/5/merge`), { gh }), null);
-    assert.deepEqual(calls[0].args, ["pr", "view", "5", ...(repo ? ["-R", repo] : []), "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"]);
+    assert.deepEqual(calls[0].args, ["pr", "view", "5", ...(repo ? ["-R", repo] : []), "--json", "baseRefName,headRefName,number,isCrossRepository,labels"]);
     assert.deepEqual(calls[0].options.env, {});
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].args, ["api", `repos/${repo || "{owner}/{repo}"}/git/ref/heads/main`, "--jq", ".object.sha"]);
+    assert.deepEqual(calls[1].options.env, {});
   }
   gitIn(dir, "add", ".");
   gitIn(dir, "commit", "-q", "-m", "enable dispatch");
@@ -358,8 +443,9 @@ test("a REST endpoint with a fragment reads the PR base policy", (t) => {
   for (const tool of ["Bash", "PowerShell"]) {
     const { gh, calls } = fakeGh(prView(base));
     assert.equal(decide(shell(dir, "gh api 'repos/o/r/pulls/1/merge#x' -X PUT", "PreToolUse", tool), { gh }), null);
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].args, ["pr", "view", "1", "-R", "o/r", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"]);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[0].args, ["pr", "view", "1", "-R", "o/r", "--json", "baseRefName,headRefName,number,isCrossRepository,labels"]);
+    assert.deepEqual(calls[1].args, ["api", "repos/o/r/git/ref/heads/main", "--jq", ".object.sha"]);
   }
 });
 
@@ -685,7 +771,7 @@ function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true, obj
   return { dir, head: git("rev-parse", "HEAD"), base: git("rev-parse", "origin/main"), ledger: path.join(dir, ".git", "qc", "ledger.jsonl") };
 }
 
-/** What `gh pr view --json baseRefName,baseRefOid` answers for a PR into `main` whose base commit is `oid`. */
+/** PR details and the base tip that fakeGh serves through separate view and ref requests. */
 const prView = (oid, name = "main", head) => JSON.stringify({ baseRefName: name, baseRefOid: oid, headRefName: head, isCrossRepository: false, labels: [] });
 
 test("a hold label refuses manual and approved merges with dispatch on or off", (t) => {
@@ -873,7 +959,7 @@ test("a small head with no review merges through the direct lane, with a note", 
   const { gh, calls } = fakeGh(prViewWithHead(base, "feat/7-integration"));
   const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh });
   assert.equal(denied(output), null);
-  assert.deepEqual(calls[0].args, ["pr", "view", "7", "--json", "baseRefName,baseRefOid,headRefName,number,isCrossRepository,labels"]);
+  assert.deepEqual(calls[0].args, ["pr", "view", "7", "--json", "baseRefName,headRefName,number,isCrossRepository,labels"]);
   assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /merges through the direct lane, with 2 of 20 lines in 1 of 2 files and no review/);
   assert.match(denied(decide(shell(dir, "gh pr merge 7 --squash"))) ?? "", /--match-head-commit <sha>/);
 });
