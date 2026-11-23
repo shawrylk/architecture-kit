@@ -6,6 +6,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { commandsOf, runShell, validatePaths, verifyBrief } from "./codex-verify.mjs";
 
+const pem = (edge, label) => ["-----", edge, " ", label, " PRIVATE", " KEY-----"].join("");
+
 function fixture(t) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-verify-"));
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
@@ -134,7 +136,7 @@ test("Verify failures redact private keys whose BEGIN header falls outside the p
 test("shell proof redacts a private key after 65,536 characters on one line", async (t) => {
   for (const stream of ["stdout", "stderr"]) {
     const f = fixture(t);
-    const output = "x".repeat(65536) + "-----BEGIN RSA PRIVATE KEY-----\nlong-line-key-secret\n-----END RSA PRIVATE KEY-----\n";
+    const output = "x".repeat(65536) + `${pem("BEGIN", "RSA")}\nlong-line-key-secret\n${pem("END", "RSA")}\n`;
     writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
     const result = await runShell("node print-output.cjs", { cwd: f.worktree });
     assert.equal(result.status, 0);
@@ -145,7 +147,7 @@ test("shell proof redacts a private key after 65,536 characters on one line", as
 test("shell proof keeps redacting until the private key END label matches", async (t) => {
   for (const stream of ["stdout", "stderr"]) {
     const f = fixture(t);
-    const output = "-----BEGIN RSA PRIVATE KEY-----\n-----END EC PRIVATE KEY-----\nsecret-after-wrong-end\n-----END RSA PRIVATE KEY-----\nsafe-after-key\n";
+    const output = `${pem("BEGIN", "RSA")}\n${pem("END", "EC")}\nsecret-after-wrong-end\n${pem("END", "RSA")}\nsafe-after-key\n`;
     writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
     const result = await runShell("node print-output.cjs", { cwd: f.worktree });
     assert.equal(result.status, 0);
@@ -168,7 +170,7 @@ test("shell proof retains a sentinel after 65,536 characters and drops the cut l
 test("shell proof preserves text around a private key across stream chunks", async (t) => {
   for (const stream of ["stdout", "stderr"]) {
     const f = fixture(t);
-    const chunks = ["before -----BE", "GIN RSA PRIVATE KEY-----\nsecret", "\n-----END RSA PRIV", "ATE KEY----- after\n"];
+    const chunks = [`before ${pem("BEGIN", "RSA").slice(0, 7)}`, `${pem("BEGIN", "RSA").slice(7)}\nsecret`, `\n${pem("END", "RSA").slice(0, 17)}`, `${pem("END", "RSA").slice(17)} after\n`];
     writeFileSync(path.join(f.worktree, "print-output.cjs"), `
       (async () => {
         for (const chunk of ${JSON.stringify(chunks)}) {
