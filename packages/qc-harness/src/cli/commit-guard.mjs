@@ -74,7 +74,7 @@ const remoteReadScript = `
   child.on("close", (code) => process.exit(code ?? 1));
   setTimeout(() => {
     if (process.platform === "win32") {
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 1000 });
+      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 5000 });
       child.kill();
     } else {
       try { process.kill(-child.pid, "SIGKILL"); } catch {}
@@ -102,7 +102,7 @@ function git(root, args, input) {
   const directory = root === null ? mkdtempSync(path.join(os.tmpdir(), "qc-guard-base-")) : null;
   try {
     return execFileSync(remote ? process.execPath : "git",
-      remote ? ["-e", remoteReadScript, "--", "29000", "git", ...words] : words, {
+      remote ? ["-e", remoteReadScript, "--", "24000", "git", ...words] : words, {
       encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, windowsHide: true,
       ...(directory === null ? {} : { cwd: directory }),
       ...(remote ? { timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" } } : {}),
