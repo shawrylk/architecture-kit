@@ -373,3 +373,15 @@ test("extraExemptHelpers defaults to an empty list, and exemptHelpers keeps the 
   assert.deepEqual(config.tenantPredicate.extraExemptHelpers, []);
   assert.equal(config.tenantPredicate.exemptHelpers.length, 2);
 });
+test("ready platforms default to Linux and reject invalid or empty platforms", (t) => {
+  assert.deepEqual(defaults.ready.platforms, ["linux"]);
+  const root = mkdtempSync(path.join(tmpdir(), "qc-ready-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.deepEqual(load(root).ready.platforms, ["linux"]);
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ ready: { platforms: ["linux", "windows"] } }));
+  assert.deepEqual(load(root).ready.platforms, ["linux", "windows"]);
+  for (const ready of [null, [], { platforms: [] }, { platforms: ["mac"] }, { platforms: ["linux", "linux"] }, { platforms: "linux" }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ ready }));
+    assert.throws(() => load(root), /ready/);
+  }
+});

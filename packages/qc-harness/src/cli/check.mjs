@@ -3,6 +3,11 @@
 
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { appendLeg, gitText, hostOS } from "./legs.mjs";
+import { runCheckCommands, runCommand } from "./check-commands.mjs";
 import { checkFeatureAnatomy, checkNoEmptyBlock } from "../gates/eight-blocks.mjs";
 import { checkCitations, checkDocPaths, checkSelfContained, definedIds } from "../gates/citations.mjs";
 import { checkAgreement, declaredValues } from "../gates/registry-agreement.mjs";
@@ -80,6 +85,74 @@ const INFRA_SKIP = [".lock.hcl"];
 const PATHSPEC_BUDGET = 8_000;
 
 const read = (file) => readFile(file, "utf8").catch(() => null);
+
+function nodeMajor(root) {
+  const engines = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")).engines?.node;
+  const major = /\d+/.exec(engines ?? "")?.[0];
+  if (!major) throw new Error("package.json engines.node must name a Node major");
+  return major;
+}
+
+function testSuite(root) {
+  const manager = existsSync(path.join(root, "pnpm-lock.yaml")) ? "pnpm" : existsSync(path.join(root, "yarn.lock")) ? "yarn" : "npm";
+  return runCommand(root, `${manager} test`);
+}
+
+export async function runFullCheck(config, args = [], options = {}) {
+  const write = options.write ?? console.log;
+  const git = options.git ?? ((...words) => gitText(config.root, ...words));
+  const spawn = options.spawn ?? spawnSync;
+  const record = options.record ?? appendLeg;
+  const host = hostOS(options.platform);
+  const target = args.length === 0 ? host : args.length === 2 && args[0] === "--os" ? args[1] : null;
+  if (!["linux", "windows"].includes(target) || (target !== host && !(host === "windows" && target === "linux"))) {
+    write("check --full accepts --os linux or --os windows; cross-platform runs need Windows and target Linux");
+    return 1;
+  }
+  try {
+    const head = git("rev-parse", "HEAD");
+    const clean = git("status", "--porcelain", "--untracked-files=all") === "";
+    let code;
+    if (target !== host) {
+      const major = (options.nodeMajor ?? nodeMajor)(config.root);
+      const opts = { cwd: config.root, stdio: "inherit", windowsHide: true };
+      const docker = spawn("docker", ["info"], { ...opts, stdio: "ignore" });
+      const cli = path.relative(config.root, fileURLToPath(new URL("./qc.mjs", import.meta.url))).split(path.sep).join("/");
+      const quotedCli = `'${cli.replace(/'/g, "'\\''")}'`;
+      const command = `if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; else npm ci; fi && node ${quotedCli} check --full`;
+      // A temporary view gives Linux its own dependencies without exporting Git variables into test fixtures.
+      const linuxView = `qc_tree=$(mktemp -d /tmp/qc-platform.XXXXXX) && trap 'rm -rf "$qc_tree"' EXIT && git -c core.autocrlf=false -c core.eol=lf --git-dir="$QC_PLATFORM_GIT_DIR" archive --format=tar --output="$qc_tree/source.tar" '${head.replace(/'/g, "'\\''")}' && tar -xf "$qc_tree/source.tar" -C "$qc_tree" && rm "$qc_tree/source.tar" && printf 'gitdir: %s\\n' "$QC_PLATFORM_GIT_DIR" > "$qc_tree/.git" && cd "$qc_tree" && export QC_PLATFORM_LEG_PARENT="$qc_tree" && `;
+      const common = path.resolve(config.root, git("rev-parse", "--git-common-dir"));
+      const gitDir = path.resolve(config.root, git("rev-parse", "--absolute-git-dir"));
+      if (docker.status === 0) {
+        const containerGitDir = path.posix.join("/qc-git", path.relative(common, gitDir).split(path.sep).join("/"));
+        code = spawn("docker", ["run", "--rm", "--mount", `type=bind,source=${config.root},target=/workspace`, "--mount", `type=bind,source=${common},target=/qc-git`, "-e", `QC_PLATFORM_GIT_DIR=${containerGitDir}`, "-w", "/workspace", `node:${major}`, "sh", "-lc", `${linuxView}corepack enable && ${command}`], opts).status ?? 1;
+      } else {
+        const convert = (value) => {
+          const converted = spawn("wsl", ["--exec", "wslpath", "-u", value], { ...opts, stdio: "pipe", encoding: "utf8" });
+          if (converted.status !== 0 || !converted.stdout?.trim()) throw new Error("Linux check needs Docker or WSL");
+          return converted.stdout.trim();
+        };
+        const wslRoot = convert(config.root);
+        const wslGit = convert(gitDir);
+        const wslCommand = `test "$(node -p 'process.versions.node.split(String.fromCharCode(46))[0]')" = ${major} && ${command}`;
+        code = spawn("wsl", ["--cd", wslRoot, "--exec", "env", `QC_PLATFORM_GIT_DIR=${wslGit}`, "sh", "-lc", `${linuxView}${wslCommand}`], opts).status ?? 1;
+      }
+    } else {
+      const { problems, lines } = await (options.gates ?? runCheck)(config);
+      for (const line of lines) write(line);
+      for (const problem of problems) write(`FAIL  ${problem.feature ?? problem.path}  ${problem.rule}: ${problem.detail}`);
+      if (problems.length > 0) return 1;
+      code = await (options.commands ?? runCheckCommands)(config);
+      if (code === 0) code = await (options.suite ?? testSuite)(config.root);
+    }
+    if (code !== 0) return code;
+    if (process.env.QC_PLATFORM_LEG_PARENT !== config.root && clean && git("rev-parse", "HEAD") === head && git("status", "--porcelain", "--untracked-files=all") === "") {
+      record(config.root, { type: "leg", os: target, head, source: "local" });
+    }
+    return 0;
+  } catch (error) { write(`check --full: ${error.message}`); return 1; }
+}
 
 /** A problem names a path a reader can open — forward slashes always, since every gate splits on "/". */
 const relativeTo = (root) => (file) => (path.relative(root, file) || file).split(path.sep).join("/");

@@ -11,6 +11,7 @@ export const CONFIG_FILE = "qc.config.json";
 export const defaults = {
   commentWatch: true,
   github: { configDirs: { shawrylk: "~/.config/gh-personal" } },
+  ready: { platforms: ["linux"] },
   checkpoint: { maxAgeMinutes: 30 },
   post: { aiLabel: true },
   ci: { requiredChecks: [] },
@@ -747,6 +748,10 @@ export function load(root = process.cwd()) {
     throw new TypeError("integrate.branchPattern must be a valid regular expression");
   }
   if (typeof review !== "boolean") throw new TypeError("integrate.review must be a boolean");
+  if (!isPlainObject(config.ready) || !Array.isArray(config.ready.platforms) || config.ready.platforms.length === 0 ||
+      config.ready.platforms.some((os) => !["linux", "windows"].includes(os)) || new Set(config.ready.platforms).size !== config.ready.platforms.length) {
+    throw new TypeError("ready.platforms must be a non-empty array of distinct linux and windows platforms");
+  }
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
   const { related, sincePush, e2e, commands, base } = config.check;
   const command = (value) => typeof value === "string" && value.trim().length > 0;
