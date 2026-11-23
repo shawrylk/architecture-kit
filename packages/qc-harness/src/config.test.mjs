@@ -416,3 +416,15 @@ test("ready platforms default to Linux and reject invalid or empty platforms", (
     assert.throws(() => load(root), /ready/);
   }
 });
+
+test("milestones default to three local times and validate HH:MM", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-milestones-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  assert.deepEqual(load(root).milestones.times, ["11:00", "16:00", "21:00"]);
+  for (const milestones of [null, [], false, { times: null }, { times: "11:00" }, { times: ["24:00"] }, { times: ["1:00"] }, { times: ["12:60"] }, { times: [1] }]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ milestones }));
+    assert.throws(() => load(root), /milestones/);
+  }
+  writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ milestones: { times: ["00:00", "23:59"] } }));
+  assert.deepEqual(load(root).milestones.times, ["00:00", "23:59"]);
+});

@@ -2380,3 +2380,42 @@ pnpm test   # every rule, every gate, every knob, each with a case that must fai
 
 The screen tests that launch Google Chrome skip when it is not installed. Set `QC_REQUIRE_CHROME=1`
 to make them fail instead, as CI does. CI also scaffolds a repository from an empty directory and requires a green `qc check`.
+
+### Milestone pull requests
+
+`qc milestone` fetches `origin` and collects pushed issue branches whose heads are not already
+in `origin/main`. Each pinned head needs an `APPROVED` deciding verdict of kind `codex` or
+`swarm.review.merge`. A newer refusal, including one in another scope, excludes that head.
+Local unpushed commits and approvals of older heads do not qualify.
+
+The command starts `milestone/<YYYY-MM-DD>-<n>` from `worktree.base`, using the machine's local
+date and the next unused ordinal across local and origin branches. It shares `qc integrate`'s
+author checks, migration renumbering and generated-file conflict handling. A conflicting branch
+is aborted individually and reported as `Left out:`; clean branches continue. Generated files
+settle once, then one push opens one ready pull request with a `Refs #<n>` line for every member.
+No candidates, or a batch whose members all conflict, exits 0 without publication.
+`qc milestone --dry-run` reads advertised remote heads and lists eligible branches without
+changing Git refs, files or GitHub; fetch first if remote objects are not available locally.
+An operator pause blocks publication with exit 5.
+
+`milestones.times` defaults to `["11:00", "16:00", "21:00"]`, with local `HH:MM` validation.
+The orchestrator should register a recurring job at each configured local time to run
+`npx qc milestone`. This configuration describes the schedule; the CLI does not install a daemon.
+Task branches need no pull requests. The ready milestone PR starts CI for the batch.
+The merge guard admits milestone names through the integration lane only when every member head
+still holds its approval and the aggregate contains no unreviewed edits. `integrate.review: false`
+disables that lane. Existing integration patterns and ordinary branch policies keep their meaning.
+
+Run `qc milestone --drop <branch>` to rebuild the current milestone without a member. From another
+branch, the command requires one uniquely matching open milestone PR with saved local state.
+The manifest in `<git-common-dir>/qc/milestones/` stores the original base, ordered branch/SHA/issue
+members and published SHA; the ledger format is unchanged. Replay uses these pins even if source
+branches or the base have moved. The same PR body is updated. The only force push is the replacement,
+using `--force-with-lease=refs/heads/<milestone>:<saved-published-sha>`; a moved remote is refused.
+
+A failed publication resumes with `qc milestone`, reusing its branch and any existing PR.
+A failed PR body update also resumes without another push. A failed drop retains the original
+manifest and replay branch; restore the expected published ref through the repository's recovery
+process, then retry the same `--drop`. Inspect unexpected local commits before retrying, and commit
+or stash working-tree changes first. Shared Git state serializes milestone jobs across worktrees;
+a live owner refuses another run, and a dead owner's lock can be reclaimed.

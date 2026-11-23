@@ -82,12 +82,43 @@ function pullRequestBase(root, ref) {
 }
 
 /** Branch: read a Git identity and require its email. */
-function identityEmail(root, role) {
+export function identityEmail(root, role) {
   const variable = `GIT_${role.toUpperCase()}_IDENT`;
   const identity = git(root, ["var", variable]).trim();
   const email = /<([^<>]+)> \d+ [+-]\d{4}$/.exec(identity)?.[1];
   if (!email) throw new Error(`git var ${variable} returned no ${role} email`);
   return email;
+}
+
+/** Merge one branch without pushing or regenerating; leave conflicts for the caller to handle. */
+export function mergeStep(config, branch, { base, email = identityEmail(config.root, "author"), say = () => {} } = {}) {
+  const root = config.root;
+  const dir = posixDir(config.paths?.migrations);
+  const generated = globMatcher(config.generated?.globs ?? []);
+  const others = [...new Set(lines(git(root, ["log", "--format=%ae", `${base}..${branch}`, "--"])))].filter((author) => author !== email);
+  if (others.length > 0) throw new Error(`refuse branch ${branch}: authors differ from effective Git author email ${email}: ${others.join(", ")}`);
+  if (tryGit(root, ["merge-base", "--is-ancestor", branch, "HEAD"]).ok) {
+    say(`skip   ${branch}: already merged`);
+    return { skipped: true };
+  }
+  const merged = tryGit(root, ["merge", "--no-ff", "--no-commit", branch]);
+  if (!merged.ok) {
+    const conflicts = lines(git(root, ["diff", "--name-only", "--diff-filter=U"]));
+    if (conflicts.length === 0) throw new Error(`git merge ${branch}: ${merged.err}`);
+    const byHand = conflicts.filter((file) => !generated(file));
+    if (byHand.length > 0) {
+      say(conflictReport(branch, byHand));
+      return { conflict: byHand };
+    }
+    git(root, ["checkout", "--ours", "--", ...conflicts]);
+    git(root, ["add", "--", ...conflicts]);
+  }
+  if (dir) {
+    for (const { from, to } of renumber(root, dir, { onto: "HEAD", branch: "MERGE_HEAD" }).plan) say(`rename ${dir}/${from} -> ${to}`);
+  }
+  git(root, ["commit", "-q", "--no-edit"]);
+  say(`merge  ${branch}`);
+  return { merged: true };
 }
 
 /** `qc integrate`. @returns the exit code */
@@ -124,8 +155,6 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
       if (tryGit(root, ["rev-parse", "-q", "--verify", `refs/heads/${name}`]).ok) git(root, ["switch", "-q", name]);
       else git(root, ["switch", "-q", "-c", name, base]);
     }
-    const dir = posixDir(config.paths?.migrations);
-    const generated = globMatcher(config.generated?.globs ?? []);
     const ciEvery = config.integrate?.ciEvery ?? 3;
     let merges = 0;
     let pushed = false;
@@ -173,29 +202,9 @@ export async function runIntegrate(config, argv, { say = (line) => console.log(l
     }
 
     for (const branch of options.branches) {
-      const others = [...new Set(lines(git(root, ["log", "--format=%ae", `${base}..${branch}`, "--"])))].filter((author) => author !== email);
-      if (others.length > 0) throw new Error(`refuse branch ${branch}: authors differ from effective Git author email ${email}: ${others.join(", ")}`);
-      if (tryGit(root, ["merge-base", "--is-ancestor", branch, "HEAD"]).ok) {
-        say(`skip   ${branch}: already merged`);
-        continue;
-      }
-      const merged = tryGit(root, ["merge", "--no-ff", "--no-commit", branch]);
-      if (!merged.ok) {
-        const conflicts = lines(git(root, ["diff", "--name-only", "--diff-filter=U"]));
-        if (conflicts.length === 0) throw new Error(`git merge ${branch}: ${merged.err}`);
-        const byHand = conflicts.filter((file) => !generated(file));
-        if (byHand.length > 0) {
-          say(conflictReport(branch, byHand));
-          return 1;
-        }
-        git(root, ["checkout", "--ours", "--", ...conflicts]);
-        git(root, ["add", "--", ...conflicts]);
-      }
-      if (dir) {
-        for (const { from, to } of renumber(root, dir, { onto: "HEAD", branch: "MERGE_HEAD" }).plan) say(`rename ${dir}/${from} -> ${to}`);
-      }
-      git(root, ["commit", "-q", "--no-edit"]);
-      say(`merge  ${branch}`);
+      const result = mergeStep(config, branch, { base, email, say });
+      if (result.conflict) return 1;
+      if (result.skipped) continue;
       merges += 1;
       if (merges === ciEvery) {
         settle();

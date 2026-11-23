@@ -205,3 +205,21 @@ Run `qc ready-check` before `gh pr ready`.
 6. Confirm that the pull request shows `MERGED` and that its head is in the base. After a squash, confirm that the base holds the change.
 7. Close each issue that the pull request names with `Refs`.
 8. Remove the worktree with `npx qc worktree remove <name>` from the main checkout.
+
+## Milestone batches
+
+Read `milestones.times` (default local times `11:00`, `16:00`, `21:00`) and register recurring
+orchestrator jobs that run `npx qc milestone` at those times. Use `--dry-run` to inspect the batch.
+Only pushed issue heads with an APPROVED deciding `codex` or `swarm.review.merge` verdict join.
+The command creates `milestone/<local-YYYY-MM-DD>-<n>`, leaves out conflicts, settles once, pushes
+once and opens one ready PR containing each member's `Refs` line. CI runs on that milestone PR.
+Merge it through the integration lane only while every member head remains approved.
+
+Use `npx qc milestone --drop <branch>` to replay the current milestone's pinned original base and
+members without that branch and update the same PR. Outside that milestone checkout, exactly one
+matching open milestone with shared Git state must exist. Replacement uses a force-with-lease
+pinned to the saved published SHA; never replace it with an unleased push. State lives under
+`<git-common-dir>/qc/milestones/`, outside tracked files, with no new ledger fields.
+Retry `qc milestone` after publication or PR-body failures; retry the same `--drop` after a failed
+replacement. Preserve the manifest and replay refs on failure, inspect unexpected local commits,
+and resolve a moved published ref through the repository's recovery process before retrying.

@@ -2,6 +2,7 @@ import { defaults, merge } from "../config.mjs";
 import { globMatcher } from "../glob.mjs";
 import { configAtBase, gitBy, gitFailed, LANE_BUDGET_MS } from "./direct-lane.mjs";
 import { decidingVerdictFor, shaMatches } from "./ledger.mjs";
+import { checkMergeTrees } from "./integrate-tree.mjs";
 
 export const REGENERATE_SUBJECT = "chore: regenerate the generated files";
 
@@ -55,10 +56,7 @@ export function integrationLane({ root, baseOid, headBranch, sha, records, kinds
 
   const merges = git(root, "log", "--merges", "--format=%H", sha, "--not", baseOid, ...heads);
   if (merges === null) return failure("git cannot read the merges after the integration reviews");
-  for (const commit of merges.split("\n").filter(Boolean)) {
-    const resolved = git(root, "diff-tree", "--cc", "-r", "--no-commit-id", "--name-only", commit);
-    if (resolved === null) return failure(`git cannot read merge ${commit.slice(0, 7)}`);
-    if (resolved !== "") return { applies: true, problem: `merge ${commit.slice(0, 7)} was hand-resolved after the last review` };
-  }
+  const problem = checkMergeTrees(root, merges.split("\n").filter(Boolean).reverse(), merge(defaults, policy.config ?? {}), git);
+  if (problem) return { applies: true, problem };
   return { applies: true, problem: null, heads: heads.length };
 }

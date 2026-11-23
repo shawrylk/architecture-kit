@@ -9,6 +9,7 @@ import { appendRecord, readLedger } from "./ledger.mjs";
 import { decide as decideMerge, mergeVerdict, namedIssues } from "./merge-guard.mjs";
 import { recordRun, resolveFailures } from "./ci-failures.mjs";
 import { holdBranch } from "./pause.mjs";
+import { mergeStep } from "./integrate.mjs";
 
 const HOOK = fileURLToPath(new URL("./merge-guard.mjs", import.meta.url));
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -665,11 +666,11 @@ test("with swarm.dispatch off, a merge whose command failed after GitHub merged 
 });
 
 /** A checkout with the checks on, `origin/main` at its first commit, and a small fix on `feat/1-x`. `tracked: false` keeps the config out of that commit. */
-function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true } = {}) {
+function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true, objectFormat = "sha1" } = {}) {
   const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-merge-lane-")));
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
-  git("init", "-q", "-b", "main");
+  git("init", "-q", "-b", "main", `--object-format=${objectFormat}`);
   for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"]]) git("config", key, value);
   if (tracked) writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify(config));
   writeFileSync(path.join(dir, "a.ts"), "one\ntwo\n");
@@ -841,22 +842,33 @@ test("a promotion approval cannot bypass a dispatched scope", () => {
 
 const prViewWithHead = (oid, head) => JSON.stringify({ ...JSON.parse(prView(oid)), headRefName: head });
 
-function integrationMergeRepo(t, { integrate, kind = "branch", unreviewed = false, runtime = "claude" } = {}) {
-  const repo = laneRepo(t, { swarm: { dispatch: {}, direct: false, review: { runtime } }, ...(integrate ? { integrate } : {}) });
+function integrationMergeRepo(t, { integrate, kind = "branch", unreviewed = false, runtime = "claude", migrations = false, generated = false, objectFormat = "sha1" } = {}) {
+  const repo = laneRepo(t, { swarm: { dispatch: {}, direct: false, review: { runtime } }, ...(integrate ? { integrate } : {}), ...(migrations ? { paths: { migrations: "db" } } : {}), ...(generated ? { generated: { globs: ["generated.txt"] } } : {}) }, { objectFormat });
   const { dir, base, ledger } = repo;
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
   git("branch", "-m", "task/7-a");
+  if (migrations) {
+    mkdirSync(path.join(dir, "db"));
+    writeFileSync(path.join(dir, "db/0001_a.sql"), "select 1;\n");
+    git("add", "."); git("commit", "-qm", "migration a");
+    repo.head = git("rev-parse", "HEAD");
+  }
   git("switch", "-q", "-c", "feat/7-integration", base);
   git("merge", "--no-ff", "-m", "merge a", "task/7-a");
   appendRecord(ledger, { ...verdict(kind, "APPROVED", repo.head), scope: "a" });
   git("switch", "-q", "-c", "task/7-b", base);
   writeFileSync(path.join(dir, "b.ts"), "feature b\n");
-  git("add", "b.ts");
+  if (migrations) {
+    mkdirSync(path.join(dir, "db"));
+    writeFileSync(path.join(dir, "db/0001_b.sql"), "select 2;\n");
+  }
+  git("add", ".");
   git("commit", "-q", "-m", "add b");
   const taskHead = git("rev-parse", "HEAD");
   if (!unreviewed) appendRecord(ledger, { ...verdict(kind, "APPROVED", taskHead), scope: "b" });
   git("switch", "-q", "feat/7-integration");
-  git("merge", "--no-ff", "-m", "merge b", "task/7-b");
+  if (migrations) mergeStep({ root: dir, paths: { migrations: "db" } }, "task/7-b", { base, email: git("config", "user.email"), say: () => {} });
+  else git("merge", "--no-ff", "-m", "merge b", "task/7-b");
   return { ...repo, head: git("rev-parse", "HEAD") };
 }
 
@@ -1174,4 +1186,46 @@ test("Codex constituent verdicts do not satisfy the integration lane", (t) => {
   const { dir, head, base } = integrationMergeRepo(t, { kind: "codex", runtime: "codex" });
   const output = decide(shell(dir, `gh pr merge 7 --match-head-commit ${head}`), { gh: fakeGh(prViewWithHead(base, "feat/7-integration")).gh });
   assert.match(denied(output), /integration lane .*does not apply: .*holds? no APPROVED review/);
+});
+
+test("a milestone validates approved member trees, migrations and aggregate policy", (t) => {
+  const failures = [];
+  for (const mode of ["branch", "sha256", "codex", "missing", "revoked", "disabled", "unreviewed commit", "tampered merge", "migrations", "generated"]) {
+    const repo = integrationMergeRepo(t, { objectFormat: mode === "sha256" ? "sha256" : "sha1", kind: mode === "codex" ? "codex" : "branch", unreviewed: mode === "missing", migrations: mode === "migrations", generated: mode === "generated", ...(mode === "disabled" ? { integrate: { review: false } } : {}) });
+    let head = repo.head;
+    const git = (...args) => execFileSync("git", args, { cwd: repo.dir, encoding: "utf8", stdio: "pipe" }).trim();
+    if (mode === "revoked") appendRecord(repo.ledger, verdict("codex", "CHANGES_REQUIRED", git("rev-parse", "HEAD^2")));
+    if (mode === "unreviewed commit") {
+      writeFileSync(path.join(repo.dir, "extra.txt"), "extra"); git("add", "."); git("commit", "-qm", "extra"); head = git("rev-parse", "HEAD");
+    }
+    if (mode === "tampered merge") {
+      git("restore", "--source=HEAD^2", "--staged", "--worktree", "a.ts");
+      git("rm", "b.ts"); git("commit", "--amend", "--no-edit", "-q"); head = git("rev-parse", "HEAD");
+      assert.equal(git("diff-tree", "--cc", "-r", "--no-commit-id", "--name-only", head), "");
+    }
+    if (mode === "migrations") {
+      assert.equal(git("show", "HEAD:db/0002_b.sql"), "select 2;");
+      assert.throws(() => git("show", "HEAD:db/0001_b.sql"));
+    }
+    if (mode === "generated") {
+      writeFileSync(path.join(repo.dir, "generated.txt"), "generated output\n");
+      git("add", "."); git("commit", "-qm", "chore: regenerate the generated files"); head = git("rev-parse", "HEAD");
+    }
+    const accepted = ["branch", "sha256", "codex", "migrations", "generated"].includes(mode);
+    if (!accepted) appendRecord(repo.ledger, verdict("branch", "APPROVED", head));
+    const branches = ["milestone/2026-11-23-1", ...(["sha256", "tampered merge", "migrations", "generated"].includes(mode) ? ["feat/7-integration"] : [])];
+    for (const branch of branches) {
+      // Exercise the integration tree check without an aggregate approval bypass.
+      if (branch === "feat/7-integration" && !accepted) rmSync(repo.ledger);
+      if (branch === "feat/7-integration" && !accepted) {
+        for (const member of [git("rev-parse", "HEAD^1^2"), git("rev-parse", "HEAD^2")]) appendRecord(repo.ledger, verdict("branch", "APPROVED", member));
+      }
+      const output = decide(shell(repo.dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(prViewWithHead(repo.base, branch)).gh });
+      if (accepted) {
+        if (denied(output) !== null) failures.push({ mode, branch, reason: denied(output) });
+        else assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /integration lane/, mode);
+      } else if (!/milestone|integration lane/.test(denied(output) ?? "")) failures.push({ mode, branch, reason: denied(output) });
+    }
+  }
+  assert.deepEqual(failures, []);
 });
