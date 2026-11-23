@@ -768,6 +768,20 @@ A failed fixture commit stops the run. Agent runs record refused commit exit cod
 An agent refusal records `hookCommit.passed: false`.
 See [Agent eval](../evals/agents/README.md) for the commands and result fields.
 
+#### Split issues across PCs
+
+Fleet uses a local file and a shared node list to assign free issues, with no server or GitHub writes.
+See [Fleet setup and takeover](fleet.md) for three PCs, file paths, size limits and dead-PC recovery.
+
+| Command | Result |
+|---|---|
+| `qc fleet init --self <id> --nodes <id:weight:size,...> [--force]` | Create local fleet settings; refuse replacement without `--force` |
+| `qc fleet next [--repo <o/r>] [--all]` | Print this PC's oldest five free issue numbers, or all; exit 3 when empty |
+| `qc fleet status [--repo <o/r>]` | Show each node's weight, maxSize, active state and free issues, then taken and unassigned counts; at most 15 lines |
+
+`--repo` defaults to origin. `QC_FLEET_FILE` overrides the local settings path; a missing file turns fleet off.
+Keep `nodes` identical on every PC and change only `self`. Set a dead node's `active` to false on all PCs to redistribute its work.
+
 #### Share the machine between agents
 
 Several agents on one machine can each start a heavy run at once and stall it. Wrap each heavy

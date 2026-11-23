@@ -57,6 +57,9 @@ const USAGE = `qc — architecture gates
   qc codex status         print whether Codex is free or limited, with the expiry time and its source
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
+  qc fleet init --self <id> --nodes <id:weight:size,...> [--force]
+  qc fleet next [--repo <o/r>] [--all]
+  qc fleet status [--repo <o/r>]
   qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]
                            block until the first event among the items, print one EVENT line; exit 0 done, 1 bad input, 4 bound (default 55 minutes), 5 failed, 6 queued past 15 minutes
   qc screens --map <json> --targets <left,right> --out <dir> [--only <names>] [--changed <target>]
@@ -167,6 +170,10 @@ async function main() {
   if (command === "gate-slot") {
     const { runGateSlot } = await import("./gate-slot.mjs");
     process.exit(await runGateSlot(rest));
+  }
+  if (command === "fleet") {
+    const { runFleet } = await import("./fleet.mjs");
+    process.exit(await runFleet(rest));
   }
   // The watcher handles unreadable configuration so the wait can continue.
   if (command === "watch") {
