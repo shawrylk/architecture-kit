@@ -230,10 +230,11 @@ const promptFor = (settings, codex) => {
   const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
   const rules = lessonRules(settings.worktree, load(settings.worktree).lessons);
   const lessons = rules.length ? `\n\nCI lesson rules (newest first):\n${rules.join("\n")}` : "";
+  const implementationReport = settings.role === "review" ? briefPath(brief, "Report", settings.brief) : null;
   const roleRule = settings.role === "scout"
     ? `\n\nRole: scout. Do not edit, stage, or commit worktree files. Write a fresh report to ${settings.report} with Gap:, Plan:, Check:, Risks:, Questions:, and Breaking: yes|no. Keep report, progress and logs outside the worktree.`
     : settings.role === "review"
-      ? "\n\nRole: review. Assess the implementation report's ## Survivors section named in the brief."
+      ? `\n\nRole: review. Assess the implementation report's ## Survivors section${implementationReport && implementationReport !== settings.report ? ` at ${implementationReport}` : " named in the brief"}.`
       : `\n\nRole: ${settings.role}.`;
   return `${preamble}\n\n${brief}${roleRule}${lessons}${continuationNote(settings.progress)}`;
 };
@@ -469,7 +470,7 @@ async function runJob(argv, {
       if (!report) { say("mutation: no Report: path in brief; cannot append survivors"); return; }
       const rows = result.survived.map(({ file, line, mutant }) => `- ${file}:${line}: ${JSON.stringify(mutant)}`);
       mkdirSync(path.dirname(report), { recursive: true });
-      appendFileSync(report, `\n## Survivors\n\n${diagnostics.length ? diagnostics.join("\n") : rows.length ? rows.join("\n") : "No survivors."}\n${result.skippedLines} lines skipped by the budget or ten-line cap.\n`);
+      appendFileSync(report, `\n## Survivors\n\n${diagnostics.length ? diagnostics.join("\n") : rows.length ? rows.join("\n") : "No survivors."}\n${result.skippedLines} lines skipped by syntax errors, the budget or ten-line cap.\n`);
     } catch (error) { say(`mutation: ${error.message.replace(/[\r\n]+/g, " ")}; no mutation coverage`); }
   };
   let resetDeadline;

@@ -1892,15 +1892,18 @@ if (fs.readFileSync(${JSON.stringify(f.progress)}, 'utf8').split('run').length >
 
 test("implement completion mutates only after green locked runner tests and appends survivors to the brief report", async (t) => {
   const { lockTests } = await import("./locked-tests.mjs");
-  for (const mode of ["new", "prewritten", "no-lock", "check-fails", "locked-fails"]) {
+  let handoff;
+  for (const mode of ["new", "prewritten", "fresh", "fresh-prewritten", "no-lock", "check-fails", "locked-fails"]) {
     const f = setup(t);
-    const report = path.join(f.dir, "implement-report.md");
+    const fresh = mode.startsWith("fresh");
+    const prewritten = mode.endsWith("prewritten");
+    const report = path.join(f.dir, fresh ? "new/implement-report.md" : "implement-report.md");
     writeFileSync(f.brief, `${VALID_BRIEF}Report: ${report}\n`);
-    writeFileSync(report, "Implementation details\n");
+    if (!fresh) writeFileSync(report, "Implementation details\n");
     commitFile(f, "qc.config.json", JSON.stringify({ check: { base: "HEAD" }, tests: { command: [process.execPath, "--test"] } }));
     const frozenBase = commitFile(f, "acceptance.test.mjs", mode === "locked-fails" ? "process.exit(1);\n" : "process.exit(0);\n");
     if (mode !== "no-lock") lockTests(f.worktree, ["acceptance.test.mjs"]);
-    if (mode === "prewritten") writeFileSync(f.progress, DONE_MARKER);
+    if (prewritten) writeFileSync(f.progress, DONE_MARKER);
     const events = [];
     const exit = await runCodexImplement(f.argv, {
       say: quiet, out: quiet,
@@ -1916,17 +1919,22 @@ test("implement completion mutates only after green locked runner tests and appe
         assert.deepEqual(options.command, [process.execPath, "--test"]);
         assert.deepEqual(options.files, ["acceptance.test.mjs"]);
         assert.equal(options.base, frozenBase);
-        return { survived: [{ file: "src/example.mjs", line: 2, mutant: "return undefined;" }], skippedLines: 3 };
+        return { survived: fresh ? [] : [{ file: "src/example.mjs", line: 2, mutant: "return undefined;" }], skippedLines: 3 };
       },
     });
     assert.equal(exit, ["check-fails", "locked-fails"].includes(mode) ? 3 : 0);
-    if (["new", "prewritten"].includes(mode)) {
-      assert.deepEqual(events, mode === "new" ? ["codex", "check", "mutation"] : ["check", "mutation"]);
+    if (["new", "prewritten"].includes(mode) || fresh) {
+      assert.deepEqual(events, prewritten ? ["check", "mutation"] : ["codex", "check", "mutation"]);
       const text = readFileSync(report, "utf8");
-      assert.match(text, /^Implementation details\n/);
       assert.match(text, /## Survivors/);
-      assert.match(text, /src\/example\.mjs:2/);
-      assert.match(text, /return undefined;/);
+      if (fresh) {
+        assert.match(text, /No survivors\./);
+        handoff = { brief: readFileSync(f.brief, "utf8"), report };
+      } else {
+        assert.match(text, /^Implementation details\n/);
+        assert.match(text, /src\/example\.mjs:2/);
+        assert.match(text, /return undefined;/);
+      }
       assert.match(text, /3.*skipped/i);
     } else {
       assert.ok(!events.includes("mutation"));
@@ -1934,12 +1942,21 @@ test("implement completion mutates only after green locked runner tests and appe
     }
   }
   const review = reviewFixture(t);
-  writeFileSync(review.brief, `${VALID_BRIEF}Implementation report: ../implement-report.md\n`);
+  writeFileSync(review.brief, handoff.brief);
   assert.equal(await runCodexImplement(review.argv, { say: quiet, out: quiet, run: async ({ input }) => {
     assert.match(input, /implementation report's ## Survivors/);
-    assert.match(input, /Implementation report: \.\.\/implement-report\.md/);
+    assert.ok(input.includes(`Assess the implementation report's ## Survivors section at ${handoff.report}`));
+    assert.match(readFileSync(handoff.report, "utf8"), /No survivors\./);
     writeFileSync(review.report, "VERDICT: APPROVED\n");
     writeFileSync(review.progress, DONE_MARKER);
+    return { status: 0 };
+  } }), 0);
+  const reviewOutput = reviewFixture(t);
+  writeFileSync(reviewOutput.brief, `${VALID_BRIEF}Report: ${reviewOutput.report}\n`);
+  assert.equal(await runCodexImplement(reviewOutput.argv, { say: quiet, out: quiet, run: async ({ input }) => {
+    assert.ok(!input.includes(`section at ${reviewOutput.report}`), "the review output is not the implementation report");
+    writeFileSync(reviewOutput.report, "VERDICT: APPROVED\n");
+    writeFileSync(reviewOutput.progress, DONE_MARKER);
     return { status: 0 };
   } }), 0);
 });

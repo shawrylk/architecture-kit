@@ -911,20 +911,24 @@ The runner executes `tests.command` with the locked file paths appended, then ru
 Either command failing exits `3`. Exit `0` requires both commands green and the progress marker, including when the marker already exists at startup.
 Implement runs without a branch lock keep their existing exit behavior and do not run these additional checks or commands.
 
-After both checks pass on a completed implement run, the runner checks mutants on changed JS and TS source lines.
-It uses the frozen `tests.command` and merge base from #222, with locked test files and related tests
-(sibling tests or tests importing changed modules, including transitive imports). Test files themselves are not mutated.
+After both checks pass on a completed implement run, the runner checks mutants on changed JavaScript source lines
+in `.js`, `.mjs` and `.cjs` files. TypeScript, JSX and test files are excluded.
+It uses the frozen `tests.command` and merge base from #222, running only the locked test files.
 The comparison complements, negated `if` conditions, boolean swaps and `return undefined` replacements skip comments and strings.
 The check runs a baseline, then one mutant at a time in a detached temporary worktree containing the current files.
+Each mutant must pass `node --check` before the locked tests run. A syntax-error mutant is skipped and never counted as killed.
+Dependency links into the issue checkout resolve to the same paths in the temporary worktree, so workspace imports read the mutants.
 It restores each file between changed lines and removes the temporary worktree in `finally`; the issue checkout is untouched.
 At most ten lines run within one 180-second budget, including the baseline. A child exceeding the deadline is killed.
 `runMutation` returns `{ survived: [{ file, line, mutant }], skippedLines }`; the skipped count includes lines
-left out by the budget or ten-line cap. A failed baseline or missing test file prints one diagnostic and claims no mutation coverage.
+with a syntax-error mutant or left out by the budget or ten-line cap; each line counts at most once.
+A failed baseline or missing test file prints one diagnostic and claims no mutation coverage.
 Survivors never change the exit code. Without a branch lock this check does not run.
 
 The runner appends `## Survivors` to the implement report named by the brief's `Report:` line, resolved beside the brief.
 The section lists each surviving mutant as `file:line` plus its replacement, and the skipped-line count, or a diagnostic when coverage is unavailable.
-Name this implementation report's `## Survivors` section in the review brief so the reviewer can assess the uncovered behavior.
+The review prompt resolves the implementation brief's `Report:` path when that brief is reused for review.
+A separate review brief should name this implementation report's `## Survivors` section so the reviewer can assess the uncovered behavior.
 `--report`, the review verdict and the review ledger retain their existing behavior.
 
 The runner validates the worktree's brief and Codex settings before launch:
