@@ -85,17 +85,15 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
     };
     const recorder = () => {
       let group = null;
-      let blankLines = 0;
-      let blankOrder = 0;
+      let blankOrders = [];
       const heldEntries = () => [
         ...(group ? [group] : []),
-        ...Array.from({ length: blankLines }, (_, index) => ({ text: "", order: blankOrder + index })),
+        ...blankOrders.map((order) => ({ text: "", order })),
       ];
       const emit = (line) => {
         const entry = { text: line.replace(/\r$/, ""), order: nextLine++ };
         if (!entry.text.trim()) {
-          if (!blankLines) blankOrder = entry.order;
-          blankLines = Math.min(10, blankLines + 1);
+          if (blankOrders.length < 10) blankOrders.push(entry.order);
           return;
         }
         const entries = heldEntries();
@@ -103,7 +101,7 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
         for (let index = 0; index < redacted.length - 1; index++) emitLine(redacted[index], entries[index].order);
         // Keep completion order when a held line is emitted after another stream's lines.
         group = { text: redacted.at(-1), order: entry.order };
-        blankLines = 0;
+        blankOrders = [];
       };
       let buffer = "";
       let end = "";
@@ -168,7 +166,7 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
           const redacted = redactOutput(entries.map(({ text }) => text).join("\n")).split("\n");
           for (let index = 0; index < entries.length && index < redacted.length; index++) emitLine(redacted[index], entries[index].order);
           group = null;
-          blankLines = 0;
+          blankOrders = [];
           buffer = "";
           prefix = "";
         },

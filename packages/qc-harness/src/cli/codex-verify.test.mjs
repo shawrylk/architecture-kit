@@ -46,6 +46,23 @@ test("shell verification supports operators, worktree cwd, output tails and nonz
   assert.ok(result.seconds >= 0);
 });
 
+test("shell proof preserves each held blank line's order across streams", async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.worktree, "print-order.cjs"), `
+    const wait = () => new Promise((resolve) => setTimeout(resolve, 100));
+    (async () => {
+      process.stdout.write("first\\n\\n");
+      await wait();
+      process.stderr.write("middle\\n");
+      await wait();
+      process.stdout.write("\\nend\\n");
+    })();
+  `);
+  const result = await runShell("node print-order.cjs", { cwd: f.worktree });
+  assert.equal(result.status, 0);
+  assert.equal(result.tail, "first\n\nmiddle\n\nend");
+});
+
 test("a timed out shell command fails and terminates its process tree", async (t) => {
   const f = fixture(t);
   writeFileSync(path.join(f.worktree, "descendant.cjs"), 'require("node:fs").writeFileSync("descendant.pid", String(process.pid)); setInterval(() => {}, 1000);');
