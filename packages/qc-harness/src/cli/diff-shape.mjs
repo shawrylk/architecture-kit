@@ -44,10 +44,11 @@ function manifest(text, file) {
 }
 
 /** Branch: new dependency keys (including aliases) need their exact names in Design. */
-function dependencyProblems(file, original, versions, design) {
+function dependencyProblems(file, originalOf, versions, design) {
   const problems = new Set();
   const approved = new Set((design.match(/[@\w][@\w./-]*/g) ?? []).flatMap((name) => [name, name.replace(/\.+$/, "")]));
-  for (const text of versions) {
+  for (const { text, tip } of versions) {
+    const original = originalOf(tip);
     const current = manifest(text, file);
     for (const section of ["dependencies", "devDependencies"]) {
       for (const name of Object.keys(current[section] ?? {})) {
@@ -91,7 +92,7 @@ export function checkDiffShape({ worktree, base, baseRef, paths, design = "", ma
   const changed = new Set();
   const totals = new Map();
   const versions = new Map();
-  const collect = (args, revision) => {
+  const collect = (args, revision, versionTip) => {
     const files = splitNames(git("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--name-only", "-z", ...args, "--"));
     changedLines(git("diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", ...args, "--"), totals);
     for (const file of files) {
@@ -100,18 +101,21 @@ export function checkDiffShape({ worktree, base, baseRef, paths, design = "", ma
       const exists = splitNames(git("ls-tree", "-r", "--name-only", "-z", revision, "--", file)).includes(file);
       if (exists) {
         const list = versions.get(file) ?? [];
-        list.push(git("show", `${revision}:${file}`)); versions.set(file, list);
+        list.push({ text: git("show", `${revision}:${file}`), tip: versionTip }); versions.set(file, list);
       }
     }
   };
-  for (const commit of commits) collect([boundaryOf(commit).boundary, commit], commit);
+  for (const commit of commits) {
+    const commitBoundary = tip ? boundaryOf(commit) : { boundary };
+    collect([commitBoundary.boundary, commit], commit, commitBoundary.tip);
+  }
   collect(["--cached", boundary]);
   collect([boundary]);
   const staged = splitNames(git("diff", "--cached", "--no-renames", "--name-only", "-z", boundary, "--"));
   for (const file of staged.filter((name) => path.posix.basename(name) === "package.json")) {
     const entries = splitNames(git("ls-files", "-z", "--", file));
     if (entries.includes(file)) {
-      const list = versions.get(file) ?? []; list.push(git("show", `:${file}`)); versions.set(file, list);
+      const list = versions.get(file) ?? []; list.push({ text: git("show", `:${file}`), tip }); versions.set(file, list);
     }
   }
   const untracked = splitNames(git("ls-files", "--others", "--exclude-standard", "-z"));
@@ -127,23 +131,29 @@ export function checkDiffShape({ worktree, base, baseRef, paths, design = "", ma
   const problems = [...changed].filter((file) => !owns(normalize(file))).map((file) => `${file}: outside Paths`);
   for (const file of [...changed].filter((name) => path.posix.basename(name) === "package.json")) {
     try {
-      const original = {};
-      // A merge tree can contain conflict markers; read dependency keys from its parents instead.
-      for (const revision of [base || empty, ...(tip ? [tip] : [])]) {
-        const exists = splitNames(git("ls-tree", "-r", "--name-only", "-z", revision, "--", file)).includes(file);
-        if (!exists) continue;
-        const value = manifest(git("show", `${revision}:${file}`), file);
-        for (const section of ["dependencies", "devDependencies"]) {
-          original[section] = { ...original[section], ...value[section] };
+      const originals = new Map();
+      const originalOf = (versionTip) => {
+        if (originals.has(versionTip)) return originals.get(versionTip);
+        const original = {};
+        // A merge tree can contain conflict markers; read dependency keys from its parents instead.
+        for (const revision of [base || empty, ...(versionTip ? [versionTip] : [])]) {
+          const exists = splitNames(git("ls-tree", "-r", "--name-only", "-z", revision, "--", file)).includes(file);
+          if (!exists) continue;
+          const value = manifest(git("show", `${revision}:${file}`), file);
+          for (const section of ["dependencies", "devDependencies"]) {
+            original[section] = { ...original[section], ...value[section] };
+          }
         }
-      }
+        originals.set(versionTip, original);
+        return original;
+      };
       const list = versions.get(file) ?? [];
       try {
         const target = path.join(worktree, file);
         if (lstatSync(target).isSymbolicLink()) throw new Error(`${file}: package manifest must be a regular file`);
-        list.push(readFileSync(target, "utf8"));
+        list.push({ text: readFileSync(target, "utf8"), tip });
       } catch (error) { if (error.code !== "ENOENT") throw error; }
-      problems.push(...dependencyProblems(file, original, list, design));
+      problems.push(...dependencyProblems(file, originalOf, list, design));
     } catch (error) { problems.push(error.message); }
   }
   const lines = [...totals.values()].reduce((sum, count) => sum + count, 0);

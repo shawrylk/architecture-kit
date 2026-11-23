@@ -99,6 +99,32 @@ test("two base merges use separate boundaries and count only two owned lines", (
   }
 });
 
+function removedBaseDependencyFixture(t, ownDependencies = {}) {
+  const f = baseMergeFixture(t);
+  f.git("merge", "--no-edit", "incoming");
+  f.write("package.json", JSON.stringify({ name: "own-change", devDependencies: { "base-tool": "1", ...ownDependencies } }));
+  f.commit();
+  f.git("checkout", "-q", "incoming");
+  f.write("package.json", "{}\n"); f.commit();
+  f.git("checkout", "-q", "run");
+  assert.throws(() => f.git("merge", "--no-edit", "incoming"));
+  f.write("package.json", JSON.stringify({ name: "own-change", devDependencies: ownDependencies }));
+  f.commit();
+  return f;
+}
+
+test("upstream devDependency added and removed across two merges uses each manifest's baseline", (t) => {
+  const f = removedBaseDependencyFixture(t);
+  assert.deepEqual(f.check(f.base, ["package.json"], { baseRef: f.baseRef }), []);
+});
+
+test("upstream devDependency removed after two merges still rejects an own devDependency", (t) => {
+  const f = removedBaseDependencyFixture(t, { "own-tool": "1" });
+  assert.deepEqual(f.check(f.base, ["package.json"], { baseRef: f.baseRef }), [
+    "package.json: added devDependencies own-tool is absent from Design",
+  ]);
+});
+
 test("base merge still refuses 401 own lines in Paths", (t) => {
   for (const state of ["committed", "staged", "working"]) {
     const f = baseMergeFixture(t);
