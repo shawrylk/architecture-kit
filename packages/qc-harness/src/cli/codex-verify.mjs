@@ -93,7 +93,8 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
       const emit = (line) => {
         const entry = { text: line.replace(/\r$/, ""), order: nextLine++ };
         if (!entry.text.trim()) {
-          if (blankOrders.length < 10) blankOrders.push(entry.order);
+          blankOrders.push(entry.order);
+          if (blankOrders.length > 10) blankOrders.shift();
           return;
         }
         const entries = heldEntries();
