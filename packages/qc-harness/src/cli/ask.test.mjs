@@ -1,0 +1,40 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { askIssue, runAsk } from "./ask.mjs";
+
+test("ask creates a missing needs-user label and posts one question on the explicit issue", () => {
+  for (const exists of [false, true]) {
+    const calls = [];
+    const question = "Which option?\nKeep the existing data?";
+    assert.equal(runAsk(["--issue", "227", question], {
+      repo: "local/repo", say: () => {},
+      gh: (args) => { calls.push(args); return args[1] === "list" ? JSON.stringify(exists ? [{ name: "needs-user" }] : []) : ""; },
+    }), 0);
+    assert.equal(calls.filter((args) => args[0] === "label" && args[1] === "create").length, exists ? 0 : 1);
+    assert.ok(calls.every((args) => args[args.indexOf("-R") + 1] === "local/repo"));
+    assert.deepEqual(calls.filter((args) => args[0] === "issue"), [
+      ["issue", "edit", "227", "--add-label", "needs-user", "-R", "local/repo"],
+      ["issue", "comment", "227", "--body", question, "-R", "local/repo"],
+    ]);
+  }
+});
+
+test("ask rejects malformed arguments before calling GitHub", () => {
+  for (const args of [[], ["--issue", "0", "why?"], ["--issue", "2x", "why?"], ["--issue", "2", " "], ["--issue", "2", "why?", "extra"], ["--issue", "2", "--unknown"]]) {
+    assert.equal(runAsk(args, { gh: () => assert.fail("invalid arguments reached gh"), warn: () => {} }), 1);
+  }
+});
+
+test("ask exits 1 with the first GitHub error line and stops after the failed call", () => {
+  for (let failAt = 0; failAt < 4; failAt++) {
+    const warnings = [];
+    let calls = 0;
+    assert.equal(runAsk(["--issue", "227", "Which option?"], {
+      repo: "local/repo", warn: (line) => warnings.push(line),
+      gh: () => { if (calls++ === failAt) throw new Error("GitHub unavailable\nprivate details"); return "[]"; },
+    }), 1);
+    assert.equal(calls, failAt + 1);
+    assert.deepEqual(warnings, ["GitHub unavailable"]);
+  }
+  assert.throws(() => askIssue(227, "Why?", { repo: "local/repo", gh: () => null }), /gh/);
+});

@@ -4,7 +4,8 @@ import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { appendRecord, ledgerFileOf, readLedger, shaMatches } from "./ledger.mjs";
 import { runGhResult } from "./gh-run.mjs";
-import { holdBranch, holdRefusal } from "./pause.mjs";
+import { holdRefusal } from "./pause.mjs";
+import { askIssue } from "./ask.mjs";
 import { load } from "../config.mjs";
 import { isAncestor, originOf, repoOfSpelling } from "./git-read.mjs";
 
@@ -77,6 +78,7 @@ function readGh(args, root) {
 export function recordRun(root, { id, branch, head, repository }, { gh = (args) => readGh(args, root), warn = console.error, repo } = {}) {
   const file = ledgerFileOf(root);
   if (!file) return [];
+  repository = repoOfSpelling(repository ?? repo ?? originOf(root) ?? "");
   let log;
   try {
     log = gh(["run", "view", String(id), "--log-failed", ...(repo ? ["-R", repo] : [])]);
@@ -86,7 +88,6 @@ export function recordRun(root, { id, branch, head, repository }, { gh = (args) 
     return null;
   }
   const records = recordsOf(root);
-  repository = repoOfSpelling(repository ?? repo ?? originOf(root) ?? "");
   const added = [];
   for (const failure of parseFailedLog(log)) {
     const key = JSON.stringify([repository, String(id), branch, head, failure.job, failure.file, failure.test]);
@@ -95,7 +96,27 @@ export function recordRun(root, { id, branch, head, repository }, { gh = (args) 
     appendRecord(file, record);
     added.push(record);
   }
-  if (repository && repository === originOf(root) && added.some((failure) => repeatCount(root, branch, failure) >= 3)) holdBranch(root, branch, "the same CI test failed on three heads in a row");
+  const repeated = added.find((failure) => repeatCount(root, branch, failure) === 3);
+  if (repository && repository === originOf(root) && repeated) {
+    try {
+      const prs = JSON.parse(gh(["pr", "list", "--state", "all", "--head", branch, "--json", "body,isCrossRepository", "-R", repository]));
+      const reference = /\b(?:refs|close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([\w.-]+\/[\w.-]+))?#([1-9]\d*)\b/gi;
+      const issue = prs.filter((pr) => !pr.isCrossRepository).flatMap((pr) => [...(pr.body ?? "").matchAll(reference)])
+        .find((match) => !match[1] || match[1].toLowerCase() === repository.toLowerCase())?.[2];
+      if (!issue) {
+        warn(`ci-failures: no linked issue in the PR for ${branch}; cannot ask about three failing heads`.replace(/[\r\n]+/g, " "));
+      } else {
+        const marker = `<!-- qc-ci-question:${Buffer.from(branch).toString("base64url")}:${head} -->`;
+        const pages = JSON.parse(gh(["api", `repos/${repository}/issues/${issue}/comments`, "--paginate", "--slurp"]));
+        if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error("cannot read issue comments");
+        if (!pages.flat().some((comment) => comment.body?.includes(marker))) {
+          askIssue(issue, `The CI test ${repeated.test} on branch ${branch} has failed on three heads in a row. How should we proceed?\n\n${marker}`, { cwd: root, repo: repository, gh });
+        }
+      }
+    } catch (error) {
+      warn(`ci-failures: gh failed: ${String(error.message).split(/\r?\n/)[0]}`);
+    }
+  }
   return added;
 }
 
