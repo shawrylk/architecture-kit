@@ -30,9 +30,19 @@ test("help describes the Codex limit expiry time", () => {
   assert.match(run.stdout, /qc codex status[^\n]*with the expiry time and its source/);
 });
 
+test("overview and debt commands advertise usage and propagate exits", (t) => {
+  const root = fixture(t, "{}");
+  const run = (args) => spawnSync(process.execPath, [qc, ...args], { cwd: root, encoding: "utf8" });
+  const help = run(["help"]);
+  for (const command of ["qc overview", "qc debt file <report>", "qc debt due"]) assert.ok(help.stdout.includes(command));
+  for (const args of [["overview", "extra"], ["debt"], ["debt", "file"], ["debt", "due", "extra"]]) assert.equal(run(args).status, 1);
+  assert.equal(run(["debt", "due"]).status, 3);
+  assert.equal(run(["debt", "file", "missing.md"]).status, 3);
+});
+
 function fixture(t, contents) {
   const root = mkdtempSync(path.join(tmpdir(), "qc-cli-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   writeFileSync(path.join(root, "qc.config.json"), contents);
   return root;
 }
@@ -64,4 +74,20 @@ test("an error after loading config keeps its stack trace", (t) => {
   assert.match(run.stderr, /ENOENT/);
   assert.match(run.stderr, /^\s+at /m);
   assert.doesNotMatch(run.stderr, /qc: invalid qc\.config\.json:/);
+});
+
+test("milestone help and dispatch expose dry-run and drop", (t) => {
+  const help = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
+  assert.match(help.stdout, /qc milestone.*--dry-run.*--drop/);
+  const root = fixture(t, "{}");
+  const result = spawnSync(process.execPath, [qc, "milestone", "--unknown"], { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /qc milestone/);
+});
+
+test("milestone names pass the commit-time branch check without widening issue branch patterns", async () => {
+  const { branchNameRefusal } = await import("./work-order-guard.mjs");
+  const settings = { pattern: "^[a-z]+/[0-9]+-", allow: ["main"] };
+  assert.equal(branchNameRefusal("milestone/2026-11-23-1", settings), null);
+  for (const branch of ["milestone/wrong", "milestone/2026-11-23-0", "feat/wrong"]) assert.match(branchNameRefusal(branch, settings) ?? "", /names no issue/);
 });

@@ -132,7 +132,7 @@ test("writeLimit refuses a symbolic link for its state folder", async (t) => {
 test("writeLimit replaces a state-file link without changing its target", async (t) => {
   const { writeLimit, readLimit } = await limit();
   const { dir, file } = setup(t);
-  mkdirSync(path.dirname(file));
+  mkdirSync(path.dirname(file), { mode: 0o700 });
   const target = path.join(dir, "target.txt");
   writeFileSync(target, "keep");
   linkSync(target, file);

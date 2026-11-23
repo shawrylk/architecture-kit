@@ -15,7 +15,7 @@ const KEY = "swarm.review";
 const MERGE_KINDS = ["branch", "task"];
 const SWITCH_KEYS = ["oneBranchReview", "requireGreen", "requireBase", "productDecisions"];
 const LIMIT_KEYS = ["roundFindings", "roundFiles"];
-const REVIEW_KEYS = ["merge", "maxTaskCalls", "riskPaths", "cases", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", "promotion", ...SWITCH_KEYS, ...LIMIT_KEYS];
+const REVIEW_KEYS = ["runtime", "merge", "maxTaskCalls", "riskPaths", "cases", "controllerPaths", "reviewerTypes", "plannerTypes", "codeReviewSkills", "promotion", ...SWITCH_KEYS, ...LIMIT_KEYS];
 const STATE_FILE = "state.json";
 
 const isNameList = (value) => Array.isArray(value) && value.every((name) => typeof name === "string" && name !== "");
@@ -32,6 +32,7 @@ export function reviewSettings(swarm = {}) {
   const unknown = Object.keys(raw).find((key) => !REVIEW_KEYS.includes(key));
   if (unknown !== undefined) throw new Error(`${KEY}.${unknown} in qc.config.json is not a review setting; the keys are ${REVIEW_KEYS.join(", ")}`);
   const merged = merge(reviewDefaults, raw);
+  if (!["claude", "codex"].includes(merged.runtime)) throw wrong("runtime", merged.runtime, "claude or codex");
   let promotion = merged.promotion;
   if (promotion !== null) {
     if (typeof promotion !== "object" || Array.isArray(promotion)) throw wrong("promotion", promotion, "an object or null");
@@ -71,7 +72,7 @@ export function reviewSettings(swarm = {}) {
     if (!Number.isInteger(merged[key]) || merged[key] < 0) throw wrong(key, merged[key], "a whole number, 0 or more");
   }
   const enforcement = Object.fromEntries([...SWITCH_KEYS, ...LIMIT_KEYS].map((key) => [key, merged[key]]));
-  return { merge: mergeKind, maxTaskCalls, riskPaths: merged.riskPaths, cases: merged.cases, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, promotion, ...enforcement, implementerTypes: dispatch.implementerTypes };
+  return { runtime: merged.runtime, merge: mergeKind, maxTaskCalls, riskPaths: merged.riskPaths, cases: merged.cases, controllerPaths, reviewerTypes, plannerTypes, codeReviewSkills, promotion, ...enforcement, implementerTypes: dispatch.implementerTypes };
 }
 
 /** The workflow branch reads the PR base through `git`, or the checkout when `git` is absent; null while dispatch is off. */

@@ -1,6 +1,8 @@
 {
   "//": "The kit is bound by the kit. A rule it ships and cannot itself satisfy is not a rule.",
   "featureRoots": [],
+  "codex": { "model": "gpt-6.1-sol" },
+  "swarm": { "review": { "runtime": "codex" } },
   "ready": { "platforms": ["linux", "windows"] },
   "docs": {
     "root": "packages/qc-harness/templates/docs",

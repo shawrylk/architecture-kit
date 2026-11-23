@@ -1,22 +1,25 @@
 // `qc codex-implement`: run one brief through `codex exec` as an implementer, and start a fresh session
 // after each stop until the progress file says it is done. It never calls Claude; exit 2 hands the brief back.
 
+import { execFileSync } from "node:child_process";
+import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { load } from "../config.mjs";
+import { checkDiffShape } from "./diff-shape.mjs";
 import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, parsePollMinutes, waitForCodexReset } from "./codex-reset.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { checkRunCommits, findingName, guardRefs, protectedAllow } from "./commit-guard.mjs";
 import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
+import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCommand, verifyBaseTests } from "./locked-tests.mjs";
+import { runMutation } from "./mutate.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
-export const REVIEW_MODEL = "gpt-6.1-sol";
-export const REVIEW_EFFORT = "high";
 const DEFAULT_MAX_RUNS = 1;
 const TAIL_CHARS = 4000;
 const LIMIT = /usage limit|spend cap|rate limit|hit your limit/i;
@@ -48,10 +51,10 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
 }
 
 const USAGE =
-  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
-  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs, 4 guard refused, 5 paused";
+  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
+  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs or report failure, 4 guard or diff shape refused, 5 paused";
 
-const FLAGS = { "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
+const FLAGS = { "--role": "role", "--resume": "resume", "--report": "report", "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
 
 /** @returns the settings with resolved paths; throws an Error naming the bad or missing flag. */
 export function parseArgs(argv) {
@@ -69,7 +72,12 @@ export function parseArgs(argv) {
   const maxRuns = found.maxRuns === undefined ? DEFAULT_MAX_RUNS : Number(found.maxRuns);
   if (!Number.isInteger(maxRuns) || maxRuns < 1) throw new Error(`--max-runs must be a positive integer, got ${found.maxRuns}`);
   if (found.effort !== undefined && !["low", "medium", "high"].includes(found.effort)) throw new Error("--effort must be low, medium, or high");
-  if (found.review && found.effort !== undefined) throw new Error("--review cannot be combined with --effort");
+  if (found.review && found.role !== undefined && found.role !== "review") throw new Error("--review conflicts with --role");
+  const role = found.role ?? (found.review ? "review" : "implement");
+  if (!["scout", "tests", "implement", "review"].includes(role)) throw new Error("--role must be scout, tests, implement, or review");
+  if (found.resume !== undefined && (!found.resume.trim() || found.resume.startsWith("-") || /[\r\n]/.test(found.resume))) throw new Error("--resume needs a session id");
+  if (role === "review" && found.effort !== undefined) throw new Error("--review cannot be combined with --effort");
+  if (found.report !== undefined && !["scout", "review"].includes(role)) throw new Error("--report requires --review or --role scout");
   const progress = path.resolve(found.progress);
   return {
     brief: path.resolve(found.brief),
@@ -78,7 +86,10 @@ export function parseArgs(argv) {
     log: path.resolve(found.log ?? `${progress}.log`),
     maxRuns,
     effort: found.effort,
-    review: found.review ?? false,
+    role,
+    resume: found.resume,
+    review: role === "review",
+    report: found.report === undefined ? undefined : path.resolve(path.dirname(path.resolve(found.brief)), found.report),
     waitReset: found.waitReset ?? false,
     maxHours: parseMaxHours(found.maxHours),
     pollMinutes: parsePollMinutes(found.pollMinutes),
@@ -88,7 +99,7 @@ export function parseArgs(argv) {
 const isDone = (progress) => existsSync(progress) && readFileSync(progress, "utf8").trimEnd().split(/\r?\n/).at(-1).trim() === DONE_MARKER;
 
 const FIXED_PREAMBLE = "The brief carries every rule. Load no skill. Write no `Grammar:` line.";
-const FIXED_HEADINGS = new Set(["Product decisions", "Run shape", "Commit", "Exit criteria", "CI failures", "Diagnosis"]);
+const FIXED_HEADINGS = new Set(["Product decisions", "Run shape", "Commit", "Exit criteria", "CI failures", "Diagnosis", "Design"]);
 
 const LEAN_RULES = [
   "Lean rules for every session. They cut repeated reading and helper agents. Never drop a security, tenant, data, or correctness check that this brief asks for.",
@@ -158,10 +169,11 @@ function pluginOverrides(env, disablePlugins) {
 function codexSettingsOf(worktree) {
   const codex = load(worktree).codex;
   if (!codex || typeof codex !== "object" || Array.isArray(codex)) throw new Error("codex in qc.config.json must be an object");
-  for (const key of ["compactTokens", "briefMaxLines", "briefMaxSteps", "maxRuns"]) {
+  for (const key of ["compactTokens", "briefMaxLines", "briefMaxSteps", "maxRuns", "maxDiffLines"]) {
     const value = codex[key];
     if (!Number.isInteger(value) || value < 1) throw new Error(`codex.${key} in qc.config.json must be a positive whole number, got ${JSON.stringify(value)}`);
   }
+  if (typeof codex.requireApproval !== "boolean") throw new Error("codex.requireApproval in qc.config.json must be a boolean");
   if (typeof codex.preamble !== "string") throw new Error("codex.preamble in qc.config.json must be a string");
   if (!Array.isArray(codex.disablePlugins) || !codex.disablePlugins.every((name) => typeof name === "string" && name.trim())) {
     throw new Error("codex.disablePlugins in qc.config.json must be an array of non-empty strings");
@@ -170,12 +182,20 @@ function codexSettingsOf(worktree) {
 }
 
 /** Branch: refuses briefs that exceed the session limits. */
-function validateBrief(brief, codex) {
+function validateBrief(brief, codex, settings) {
   const lines = brief.split(/\r?\n/);
   const nonBlank = lines.filter((line) => line.trim()).length;
   if (nonBlank > codex.briefMaxLines) throw new Error(`codex.briefMaxLines limit is ${codex.briefMaxLines} non-blank lines; got ${nonBlank}`);
   if (!lines.some((line) => /^## Product decisions\s*$/.test(line))) throw new Error("## Product decisions is required: at least 1 heading");
   if (!lines.some((line) => /^Paths:[ \t]*\S/.test(line))) throw new Error("Paths: is required: at least 1 line naming owned files or folders");
+  if (codex.requireApproval && settings.role === "implement") {
+    if (!/^## Design[ \t]*\r?$/m.test(brief)) throw new Error("## Design is required for implement when codex.requireApproval is true");
+    const approved = briefPath(brief, "Approved", settings.brief);
+    if (!approved) throw new Error("Approved: is required for implement when codex.requireApproval is true");
+    try {
+      if (!readFileSync(approved, "utf8").trim()) throw new Error("empty approval report");
+    } catch { throw new Error(`Approved: must name a readable, non-empty approval report: ${approved}`); }
+  }
   let tasks = 0;
   let steps = 0;
   let inTask = false;
@@ -203,42 +223,68 @@ function codexLimitsOf(worktree) {
 /** The brief is read again for each run, so an edit reaches the next session. */
 const promptFor = (settings, codex) => {
   const brief = readFileSync(settings.brief, "utf8");
-  validateBrief(brief, codex);
+  validateBrief(brief, codex, settings);
   const branch = currentBranch(settings.worktree);
   const refusal = ciBriefRefusal(settings.worktree, branch, brief);
   if (refusal) throw new Error(refusal);
   const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
   const rules = lessonRules(settings.worktree, load(settings.worktree).lessons);
   const lessons = rules.length ? `\n\nCI lesson rules (newest first):\n${rules.join("\n")}` : "";
-  return `${preamble}\n\n${brief}${lessons}${continuationNote(settings.progress)}`;
+  const implementationReport = settings.role === "review" ? briefPath(brief, "Report", settings.brief) : null;
+  const roleRule = settings.role === "scout"
+    ? `\n\nRole: scout. Do not edit, stage, or commit worktree files. Write a fresh report to ${settings.report} with Gap:, Plan:, Check:, Risks:, Questions:, and Breaking: yes|no. Keep report, progress and logs outside the worktree.`
+    : settings.role === "review"
+      ? `\n\nRole: review. Assess the implementation report's ## Survivors section${implementationReport && implementationReport !== settings.report ? ` at ${implementationReport}` : " named in the brief"}.`
+      : `\n\nRole: ${settings.role}.`;
+  const checklist = settings.role === "review" ? `
+
+Review checklist:
+1. Does the diff fit \`docs/architecture.md\` and the \`## Design\` part?
+2. Which input gives a wrong result? Give \`file:line\` and the input.
+3. Do the tests prove the issue? Name any test that adds nothing.
+4. Is there a simpler way with less code?
+5. Put debt outside the scope under \`## Debt\`, not under findings.` : "";
+  return `${preamble}\n\n${brief}${roleRule}${checklist}${lessons}${continuationNote(settings.progress)}`;
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
-function spawnRun({ command, args, input, env, log }, codexCommand) {
+function spawnRun({ args, input, env, log, cwd }, codexCommand) {
   const [bin, ...prefix] = codexCommand;
   mkdirSync(path.dirname(log), { recursive: true });
-  const start = existsSync(log) ? statSync(log).size : 0;
   const fd = openSync(log, "a");
   return new Promise((resolve, reject) => {
     let child;
+    let tail = Buffer.alloc(0);
+    let pending = "";
+    let session;
+    const capture = (chunk, json) => {
+      writeSync(fd, chunk);
+      tail = Buffer.concat([tail, chunk]).subarray(-TAIL_CHARS);
+      if (!json) return;
+      pending += chunk.toString("utf8");
+      const lines = pending.split("\n");
+      pending = lines.pop().slice(-65536);
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line);
+          if (event.type === "thread.started" && typeof event.thread_id === "string" && /^[a-zA-Z0-9_-]+$/.test(event.thread_id)) session = event.thread_id;
+        } catch { /* Non-JSON output remains in the log, without inventing a session. */ }
+      }
+    };
     try {
-      child = spawn(bin, [...prefix, ...args], { env, stdio: ["pipe", fd, fd], windowsHide: true });
-    } catch (error) {
-      closeSync(fd);
-      reject(error);
-      return;
-    }
-    child.on("error", (error) => {
-      reject(error);
-    });
+      child = spawn(bin, [...prefix, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    } catch (error) { closeSync(fd); reject(error); return; }
+    child.stdout.on("data", (chunk) => capture(chunk, true));
+    child.stderr.on("data", (chunk) => capture(chunk, false));
+    child.on("error", reject);
     child.stdin.on("error", (error) => {
       if (error.code !== "EPIPE" && error.code !== "EOF") reject(error);
     });
     child.stdin.end(input);
     child.on("close", (status) => {
+      if (pending) capture(Buffer.from("\n"), true);
       closeSync(fd);
-      const text = readFileSync(log, "utf8");
-      resolve({ status, tail: Buffer.from(text).subarray(Math.max(start, Buffer.byteLength(text) - TAIL_CHARS)).toString("utf8") });
+      resolve({ status, tail: tail.toString("utf8"), session });
     });
   });
 }
@@ -265,9 +311,85 @@ export async function runCodexImplement(argv, { out = writeLine, ...options } = 
   return code;
 }
 
+/** Report metadata distinguishes an unchanged old report even if its timestamp is in the future. */
+function reportStamp(file) {
+  try {
+    const stat = statSync(file, { bigint: true });
+    return `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** Fragment: resolves report/approval paths beside the brief, accepting template backticks. */
+function briefPath(brief, label, file) {
+  const raw = new RegExp(`^${label}:[ \t]*(.+)$`, "m").exec(brief)?.[1].trim().replace(/^`(.*)`$/, "$1");
+  return raw ? path.resolve(path.dirname(file), raw) : undefined;
+}
+
+/** Fragment: freezes the initial ownership and dependency design across retries. */
+function diffContract(brief) {
+  const paths = [...brief.matchAll(/^Paths:[ \t]*(.+)$/gm)].flatMap((match) => {
+    const quoted = [...match[1].matchAll(/`([^`]+)`/g)];
+    return quoted.length ? quoted.map((entry) => entry[1]) : match[1].split(",").map((entry) => entry.trim()).filter(Boolean);
+  });
+  const design = /^## Design[ \t]*\r?\n([\s\S]*?)(?=^## |$(?![\s\S]))/m.exec(brief)?.[1] ?? "";
+  return { paths, design };
+}
+
+/** Fragment: this worktree's HEAD history also detects commits later reset away. */
+function scoutReflog(worktree) {
+  const options = { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] };
+  if (!execFileSync("git", ["rev-parse", "--revs-only", "HEAD"], options).trim()) return "";
+  return execFileSync("git", ["reflog", "show", "--format=%H", "HEAD"], options);
+}
+
+function scoutDirt(worktree) {
+  return execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+/** Branch: a scout is complete only with a fresh report and all six labels. */
+function completeScout(settings, started, originalStamp, message, say) {
+  try {
+    const stamp = reportStamp(settings.report);
+    if (stamp === null) throw new Error(`missing scout report: ${settings.report}`);
+    if (stamp === originalStamp || statSync(settings.report).mtimeMs < started) throw new Error(`stale scout report: ${settings.report}`);
+    const text = readFileSync(settings.report, "utf8");
+    for (const label of ["Gap", "Plan", "Check", "Risks", "Questions"]) {
+      if (!new RegExp(`^${label}:[ \t]*\\S`, "m").test(text)) throw new Error(`scout report requires ${label}:`);
+    }
+    if (!/^Breaking:[ \t]*(yes|no)[ \t]*\r?$/m.test(text)) throw new Error("scout report requires Breaking: yes|no");
+    return finish(say, message, 0);
+  } catch (error) { return finish(say, `cannot accept scout report: ${error.message}`, 3); }
+}
+
+/** Records a completed review once; every report, git or ledger error remains a failed job. */
+function completeReview(settings, started, originalStamp, message, say) {
+  if (settings.role === "scout") return completeScout(settings, started, originalStamp, message, say);
+  if (!settings.report) return finish(say, message, 0);
+  try {
+    const stamp = reportStamp(settings.report);
+    if (stamp === null) throw new Error(`missing review report: ${settings.report}`);
+    if (stamp === originalStamp || statSync(settings.report).mtimeMs < started) throw new Error(`stale review report: ${settings.report}`);
+    const text = readFileSync(settings.report, "utf8");
+    const verdict = /^[ \t]*VERDICT:[ \t]*(APPROVED|CHANGES_REQUIRED)[ \t]*\r?$/m.exec(text)?.[1];
+    if (!verdict) throw new Error(`review report has no VERDICT: line: ${settings.report}`);
+    const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    const sha = git("rev-parse", "--verify", "HEAD^{commit}");
+    const branch = git("symbolic-ref", "--quiet", "--short", "HEAD");
+    const ledger = ledgerFileOf(settings.worktree);
+    if (!ledger) throw new Error("cannot find the worktree ledger");
+    appendRecord(ledger, { type: "verdict", kind: "codex", verdict, sha, branch });
+    return finish(say, `${message}; recorded ${verdict} on ${sha}`, 0);
+  } catch (error) {
+    return finish(say, `cannot record review verdict: ${error.message}`, 3);
+  }
+}
+
 async function runJob(argv, {
   run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
-  fetch, now = Date.now, sleep,
+  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation,
 } = {}) {
   let settings;
   try {
@@ -276,24 +398,99 @@ async function runJob(argv, {
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
     return 1;
   }
+  const started = Date.now();
+  let originalStamp;
+  try {
+    if (settings.role === "scout") {
+      settings.report ??= briefPath(readFileSync(settings.brief, "utf8"), "Report", settings.brief);
+      if (!settings.report) return finish(say, "scout requires --report or Report:", 1);
+      for (const file of [settings.report, settings.progress, settings.log]) {
+        const relative = path.relative(settings.worktree, file);
+        if (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) return finish(say, "scout report, progress and log must be outside the worktree", 1);
+      }
+    }
+    if (settings.report) originalStamp = reportStamp(settings.report);
+  } catch (error) {
+    return finish(say, `cannot stat review report: ${error.message}`, 3);
+  }
   let codex;
   let codexLimits;
   let protectedPaths;
   let guardBase;
+  let tests;
+  let testHead;
+  let testBase;
+  let locked;
   try {
     codex = codexSettingsOf(settings.worktree);
     codexLimits = codexLimitsOf(settings.worktree);
     const guardConfig = load(settings.worktree);
     protectedPaths = guardConfig.guard.protectedPaths;
     guardBase = guardConfig.worktree.base;
+    tests = structuredClone(guardConfig.tests);
+    if (["tests", "implement"].includes(settings.role)) {
+      locked = currentBranch(settings.worktree) ? readLockedTests(settings.worktree) : null;
+      if (settings.role === "tests" || locked !== null) {
+        const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+        testHead = git("rev-parse", "--revs-only", "HEAD");
+        if (testHead) testBase = git("merge-base", "HEAD", guardConfig.check.base);
+      }
+    }
     if (settings.maxRuns > codex.maxRuns) throw new Error(`--max-runs exceeds codex.maxRuns limit of ${codex.maxRuns}; got ${settings.maxRuns}`);
   } catch (error) {
     return finish(say, error.message, 1);
   }
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
+  /** Applies frozen policy before accepting either a new or a prewritten marker. */
+  const verifyTests = async ({ policyOnly = false } = {}) => {
+    if (settings.role !== "tests" && (settings.role !== "implement" || locked === null)) return null;
+    try {
+      if (settings.role === "implement") {
+        const { problems } = checkLockedTests(settings.worktree, locked);
+        if (problems.length) return finish(say, `guard refused: ${problems.join("; ")}`, 4);
+        const current = readLockedTests(settings.worktree);
+        if (JSON.stringify(current) !== JSON.stringify(locked)) return finish(say, `guard refused: locked test map changed: ${Object.keys(locked).join(", ")}`, 4);
+      }
+      const cases = addedTestCases(settings.worktree, settings.role === "tests" ? testBase : testHead);
+      const cap = settings.role === "tests" ? "maxNewCases" : "maxExtraCases";
+      if (cases.length > tests[cap]) return finish(say, `guard refused: tests.${cap} limit ${tests[cap]}; got ${cases.length}`, 4);
+      if (policyOnly) return null;
+      if (settings.role === "tests") {
+        const { problems } = await verifyBaseTests(settings.worktree, testBase, cases, tests.command);
+        if (problems.length) return finish(say, `guard refused: ${problems.join("; ")}`, 4);
+        if (isDone(settings.progress)) lockTests(settings.worktree, [...Object.keys(locked ?? {}), ...cases.map((entry) => entry.path)]);
+        return null;
+      }
+    } catch (error) { return finish(say, `guard refused: cannot verify locked tests: ${error.message}`, 4); }
+    try {
+      const files = Object.keys(locked).map((file) => path.resolve(settings.worktree, file.replace(/\\/g, "/")));
+      if (files.length && await runTestCommand([...tests.command, ...files], settings.worktree) !== 0) return finish(say, "locked tests failed", 3);
+      if (await runCheck(["npx", "qc", "check"], settings.worktree) !== 0) return finish(say, "qc check failed", 3);
+    } catch (error) { return finish(say, `test run failed: ${error.message}`, 3); }
+    return null;
+  };
+  const mutationReport = async () => {
+    if (settings.role !== "implement" || locked === null) return;
+    const diagnostics = [];
+    try {
+      const result = await mutate({ worktree: settings.worktree, base: testBase, command: tests.command, files: Object.keys(locked), say: (line) => { diagnostics.push(line); say(line); } });
+      const report = briefPath(readFileSync(settings.brief, "utf8"), "Report", settings.brief);
+      if (!report) { say("mutation: no Report: path in brief; cannot append survivors"); return; }
+      const rows = result.survived.map(({ file, line, mutant }) => `- ${file}:${line}: ${JSON.stringify(mutant)}`);
+      mkdirSync(path.dirname(report), { recursive: true });
+      appendFileSync(report, `\n## Survivors\n\n${diagnostics.length ? diagnostics.join("\n") : rows.length ? rows.join("\n") : "No survivors."}\n${result.skippedLines} lines skipped by syntax errors, the budget or ten-line cap.\n`);
+    } catch (error) { say(`mutation: ${error.message.replace(/[\r\n]+/g, " ")}; no mutation coverage`); }
+  };
   let resetDeadline;
+  let boundary;
+  let contract;
   for (let count = 1; count <= settings.maxRuns; count += 1) {
-    if (isDone(settings.progress)) return finish(say, `done after ${count - 1} run(s)`, 0);
+    if (isDone(settings.progress)) {
+      const refused = await verifyTests();
+      if (refused !== null) return refused;
+      await mutationReport();
+      return completeReview(settings, started, originalStamp, `done after ${count - 1} run(s)`, say);
+    }
     try {
       const branch = currentBranch(settings.worktree);
       const refusal = pauseRefusal(settings.worktree) ?? (branch ? holdRefusal(settings.worktree, branch) : null);
@@ -304,42 +501,77 @@ async function runJob(argv, {
     let prompt;
     try {
       prompt = promptFor(settings, codex);
+      contract ??= diffContract(readFileSync(settings.brief, "utf8"));
     } catch (error) {
       return finish(say, `cannot prepare the brief: ${error.message}`, 1);
     }
     const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
     const limits = codexLimits === null ? [] : ["-c", `model_auto_compact_token_limit=${codexLimits.compactAt}`, "-c", `tool_output_token_limit=${codexLimits.toolOutputTokens}`];
-    const effort = settings.review ? ["-c", `model="${REVIEW_MODEL}"`, "-c", `model_reasoning_effort="${REVIEW_EFFORT}"`] : settings.effort === undefined ? [] : ["-c", `model_reasoning_effort=${settings.effort}`];
-    const args = ["exec", "-s", "danger-full-access", "-C", settings.worktree, ...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, ...effort, "-"];
+    const model = settings.review ? codex.reviewModel : codex.model;
+    const modelArgs = model === null ? [] : ["-c", `model=${JSON.stringify(model)}`];
+    const effort = settings.review ? ["-c", `model_reasoning_effort=${JSON.stringify(codex.reviewEffort)}`] : settings.effort === undefined ? [] : ["-c", `model_reasoning_effort=${settings.effort}`];
+    const globalArgs = ["-s", "danger-full-access", "-C", settings.worktree];
+    const overrides = [...helperOff, ...pluginOverrides(env, codex.disablePlugins), ...limits, ...modelArgs, ...effort];
+    const args = settings.resume
+      ? [...globalArgs, ...overrides, "exec", "resume", settings.resume, "--json", "-"]
+      : ["exec", ...globalArgs, ...overrides, "--json", "-"];
     const allow = protectedAllow(readFileSync(settings.brief, "utf8"));
     const childEnv = Object.fromEntries(Object.entries(codexEnvironment(env, codex.envAllow)).filter(([name]) => name.toUpperCase() !== "QC_PROTECTED_ALLOW"));
     let before;
     try {
       before = guardRefs(settings.worktree);
+      if (!boundary) {
+        boundary = before;
+        if (settings.role === "scout") boundary.reflog = scoutReflog(settings.worktree);
+      }
+      if (settings.role === "scout" && scoutDirt(settings.worktree)) return finish(say, "guard refused: scout requires a clean worktree (tracked, staged and untracked)", 4);
     } catch (error) {
-      return finish(say, `guard refused: cannot capture the commit boundary: ${error.message}`, 4);
+      return finish(say, `guard refused: cannot capture the commit boundary: ${error.message}`, settings.report ? 3 : 4);
     }
     let result;
     let runError;
     try {
-      result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...childEnv, QC_ROLE: "implementer", QC_PROTECTED_ALLOW: allow.join(",") }, log: settings.log });
+      result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...childEnv, QC_ROLE: settings.role === "implement" ? "implementer" : settings.role, QC_PROTECTED_ALLOW: allow.join(",") }, log: settings.log, cwd: settings.worktree });
     } catch (error) {
       runError = error;
     }
+    if (result?.session) say(`qc codex-implement: session ${result.session}`);
     try {
+      if (settings.role === "scout") {
+        const after = guardRefs(settings.worktree);
+        if (after.head !== boundary.head || after.branch !== boundary.branch || scoutReflog(settings.worktree) !== boundary.reflog || scoutDirt(settings.worktree)) {
+          return finish(say, "guard refused: scout changed commits or tracked, staged, or untracked worktree files", 4);
+        }
+      }
       const findings = checkRunCommits(settings.worktree, before, { protectedPaths, role: "implementer", allow, base: guardBase, branch: before.branch });
       if (findings.length) {
         for (const finding of findings) say(`qc codex-implement: guard refused: ${findingName(finding)}`);
         return 4;
       }
+      if (["implement", "tests"].includes(settings.role)) {
+        const { problems } = checkDiffShape({ worktree: settings.worktree, base: boundary.head, ...contract, maxDiffLines: codex.maxDiffLines });
+        if (problems.length) {
+          for (const problem of problems) say(`qc codex-implement: diff shape refused: ${problem}`);
+          return 4;
+        }
+      }
+      const refused = await verifyTests({ policyOnly: true });
+      if (refused !== null) return refused;
     } catch (error) {
-      return finish(say, `guard refused: cannot check run commits: ${error.message}`, 4);
+      return finish(say, `guard refused: cannot check run commits: ${error.message}`, settings.report ? 3 : 4);
     }
     if (runError) return finish(say, `codex did not run: ${runError.message}`, 1);
     say(`qc codex-implement: run ${count} ended with status ${result.status}`);
     const line = limitLineOf(result.tail ?? "", prompt);
     if (!line) clearLimit(limitFileOf(env), say);
-    if (isDone(settings.progress)) return finish(say, `done after ${count} run(s)`, 0);
+    if (!line || isDone(settings.progress)) {
+      const refused = await verifyTests();
+      if (refused !== null) return refused;
+    }
+    if (isDone(settings.progress)) {
+      await mutationReport();
+      return completeReview(settings, started, originalStamp, `done after ${count} run(s)`, say);
+    }
     if (line) {
       const recordedAt = now();
       const reset = resetTimeOf(line, recordedAt);

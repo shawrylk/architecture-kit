@@ -13,12 +13,15 @@ import { fileURLToPath } from "node:url";
 import { defaults, PROMOTION_SCOPE } from "../config.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
-import { configAtBase, LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
+import { configAtBase, gitBy, LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
 import { runGh, runGhAsync } from "./gh-run.mjs";
 import { gitOutWithin, originOf, repoOfSpelling } from "./git-read.mjs";
+import { globMatcher } from "../glob.mjs";
+import { MILESTONE_PATTERN } from "./milestone.mjs";
 import { integrationLane } from "./integration-lane.mjs";
-import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
+import { checkMergeTrees } from "./integrate-tree.mjs";
+import { appendRecord, decidingVerdictFor, readLedger } from "./ledger.mjs";
 import { promotionBranchName } from "./promotion-branch.mjs";
 import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { lessonRefusal, resolvedFailures } from "./ci-failures.mjs";
@@ -40,29 +43,17 @@ const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", 
  * Judges each merge: an APPROVED review of `kind` on its head, or else the direct lane that `lane(merge)` decides.
  * @returns `{ refusal }` for the first merge that may not run, or `{ refusal: null, direct }` with the lane notes.
  */
-export function mergeVerdict(merges, records, kind, lane = null, promotion = null) {
+export function mergeVerdict(merges, records, kind, lane = null, promotion = null, runtime = "claude") {
   const direct = [];
+  const kinds = runtime === "codex" ? [kind, "codex"] : [kind];
+  const reviews = records.filter((record) => record.kind !== "codex" || record.scope == null);
   for (const merge of merges) {
     if (!merge.sha) {
       return { refusal: `Merge guard: \`gh pr merge\` must pass \`--match-head-commit <sha>\` with the head the ${kind} review approved, so a push after the review cannot merge unreviewed. Add it.` };
     }
-    const verdict = decidingVerdictFor(records, merge.sha, [kind]);
-    const missing = (kind === "branch" ? dispatchedScopesFor(records, merge.sha) : []).find(
-      (scope) => latestVerdictFor(records, merge.sha, [kind], scope)?.verdict !== "APPROVED",
-    );
-    if (missing !== undefined) {
-      return {
-        refusal:
-          `Merge guard: the ledger holds no APPROVED ${kind} review of scope "${missing}" on ${merge.sha}, and a review of that scope was dispatched. ` +
-          `Dispatch ${REVIEWER[kind]} with \`Scope: ${missing}\` on that head, and merge after every scope approves.`,
-      };
-    }
-    if (promotion && kind === "branch" && latestVerdictFor(records, merge.sha, ["branch"], promotion)?.verdict !== "APPROVED") {
-      return {
-        refusal:
-          `Merge guard: the ledger holds no APPROVED branch review of scope "${promotion}" on ${merge.sha}. ` +
-          `Run \`qc review promotion ${merge.number ?? (/^[1-9]\d*$/.test(merge.selector ?? "") ? merge.selector : "<pr>")}\` on that head, and merge after every scope approves.`,
-      };
+    const verdict = decidingVerdictFor(reviews, merge.sha, kinds);
+    if (verdict?.kind === "codex" && verdict.verdict === "CHANGES_REQUIRED") {
+      return { refusal: `Merge guard: the latest Codex review of ${merge.sha} is CHANGES_REQUIRED. Run a Codex review on that head, and merge after it approves.` };
     }
     if (verdict?.verdict === "APPROVED") continue;
     const fit = !promotion && lane ? lane(merge) : null;
@@ -161,6 +152,40 @@ function apiPrOf({ endpoint, env, nodeId }) {
   return { selector: match[3], repo, env: settings };
 }
 
+/** A milestone must retain an approval on every pinned member, even if its aggregate head was reviewed. */
+function milestoneLane(workflow, records, pr, sha, deadline) {
+  const git = gitBy(deadline - Date.now());
+  const policy = configAtBase(workflow.root, pr.oid, git, "the PR base");
+  if (policy.problem) return { problem: policy.problem };
+  if ((policy.config?.integrate?.review ?? defaults.integrate.review) !== true) return { problem: "milestone integration lane disabled by integrate.review" };
+  if (!pr.sameRepository) return { problem: "milestone must belong to the same repository" };
+  const root = workflow.root;
+  const commits = git(root, "log", "--first-parent", "--format=%H %P", sha, "--not", pr.oid);
+  if (commits === null) return { problem: "cannot read milestone history" };
+  const kinds = workflow.review.runtime === "codex" ? [workflow.review.merge, "codex"] : [workflow.review.merge];
+  const generated = globMatcher(policy.config?.generated?.globs ?? defaults.generated.globs);
+  const merges = [];
+  let heads = 0;
+  for (const line of commits.split("\n").filter(Boolean)) {
+    const [commit, ...parents] = line.split(" ");
+    if (parents.length === 2) {
+      const member = parents[1];
+      if (decidingVerdictFor(records, member, kinds)?.verdict !== "APPROVED") return { problem: `milestone member ${member} holds no APPROVED review` };
+      merges.push(commit);
+      heads++;
+    } else if (parents.length === 1) {
+      const subject = git(root, "show", "-s", "--format=%s", commit);
+      const files = git(root, "diff-tree", "--root", "-r", "--no-commit-id", "--raw", "-z", "--no-renames", commit);
+      if (subject !== "chore: regenerate the generated files" || files === null || !files.split("\0").filter((_, i) => i % 2 === 1).every(generated)) {
+        return { problem: `milestone commit ${commit} is outside approved members` };
+      }
+    } else return { problem: `milestone commit ${commit} is not a two-parent merge` };
+  }
+  if (!heads) return { problem: "milestone has no approved members" };
+  const problem = checkMergeTrees(root, merges.reverse(), { ...policy.config, generated: { globs: policy.config?.generated?.globs ?? defaults.generated.globs } }, git);
+  return problem ? { problem: `milestone ${problem}` } : { problem: null, heads };
+}
+
 /** The branch that tries the direct lane, then the integration lane, against the PR base policy within one shared deadline. */
 function laneOf(workflow, records, pr, deadline) {
   const { direct, directProblem, base } = workflow;
@@ -174,6 +199,12 @@ function laneOf(workflow, records, pr, deadline) {
     return { problem: null, note: `Merge guard: ${merge.sha} merges through the direct lane, with ${sizeLine(fit.size, fit.direct)} and ${reviewed}.` };
   };
   return (merge) => {
+    if (pr?.head && MILESTONE_PATTERN.test(pr.head)) {
+      const result = milestoneLane(workflow, records, pr, merge.sha, deadline);
+      return result.problem === null
+        ? { problem: null, note: `Merge guard: ${merge.sha} merges through the integration lane of ${pr.head}, with ${result.heads} reviewed heads.` }
+        : result;
+    }
     const fit = directLane ? directLane(merge) : null;
     if (fit?.problem === null) return fit;
     if (pr === null || !pr.head) return fit;
@@ -328,10 +359,14 @@ export function decide(call, { gh = runGh, commentCheck = commentWatch } = {}) {
         workflow = policy.workflow;
         if (!workflow) continue;
         const records = readLedger(workflow.ledger);
+        if (merge.sha && MILESTONE_PATTERN.test(pr.head ?? "")) {
+          const fit = milestoneLane(workflow, records, pr, merge.sha, deadline);
+          if (fit.problem !== null) return deny(`Merge guard: milestone integration lane does not apply: ${fit.problem}.`);
+        }
         const promotion = workflow.review.promotion;
         const promotionScope = promotion && pr.sameRepository && promotionBranchName(pr.head) === promotionBranchName(promotion.integration) &&
           promotionBranchName(pr.name) === promotionBranchName(promotion.release) ? PROMOTION_SCOPE : null;
-        const result = mergeVerdict([{ ...merge, number: pr.number }], records, workflow.review.merge, laneOf(workflow, records, pr, deadline), promotionScope);
+        const result = mergeVerdict([{ ...merge, number: pr.number }], records, workflow.review.merge, laneOf(workflow, records, pr, deadline), promotionScope, workflow.review.runtime);
         if (result.refusal) return deny(result.refusal);
         notes.push(...result.direct);
       } catch (error) {

@@ -99,6 +99,21 @@ function testSuite(root) {
   return runCommand(root, `${manager} test`);
 }
 
+const cleanHead = (git) => git("status", "--porcelain", "--untracked-files=all") === "";
+
+async function checkGates(config, options, write) {
+  const { problems, lines } = await (options.gates ?? runCheck)(config);
+  for (const line of lines) write(line);
+  for (const problem of problems) write(`FAIL  ${problem.feature ?? problem.path}  ${problem.rule}: ${problem.detail}`);
+  return problems.length === 0;
+}
+
+function recordCleanLeg(config, git, head, clean, os, record = appendLeg) {
+  if (process.env.QC_PLATFORM_LEG_PARENT !== config.root && clean && git("rev-parse", "HEAD") === head && cleanHead(git)) {
+    record(config.root, { type: "leg", os, head, source: "local" });
+  }
+}
+
 export async function runFullCheck(config, args = [], options = {}) {
   const write = options.write ?? console.log;
   const git = options.git ?? ((...words) => gitText(config.root, ...words));
@@ -112,7 +127,7 @@ export async function runFullCheck(config, args = [], options = {}) {
   }
   try {
     const head = git("rev-parse", "HEAD");
-    const clean = git("status", "--porcelain", "--untracked-files=all") === "";
+    const clean = cleanHead(git);
     let code;
     if (target !== host) {
       const major = (options.nodeMajor ?? nodeMajor)(config.root);
@@ -140,19 +155,29 @@ export async function runFullCheck(config, args = [], options = {}) {
         code = spawn("wsl", ["--cd", wslRoot, "--exec", "env", `QC_PLATFORM_GIT_DIR=${wslGit}`, "sh", "-lc", `${linuxView}${wslCommand}`], opts).status ?? 1;
       }
     } else {
-      const { problems, lines } = await (options.gates ?? runCheck)(config);
-      for (const line of lines) write(line);
-      for (const problem of problems) write(`FAIL  ${problem.feature ?? problem.path}  ${problem.rule}: ${problem.detail}`);
-      if (problems.length > 0) return 1;
+      if (!await checkGates(config, options, write)) return 1;
       code = await (options.commands ?? runCheckCommands)(config);
       if (code === 0) code = await (options.suite ?? testSuite)(config.root);
     }
     if (code !== 0) return code;
-    if (process.env.QC_PLATFORM_LEG_PARENT !== config.root && clean && git("rev-parse", "HEAD") === head && git("status", "--porcelain", "--untracked-files=all") === "") {
-      record(config.root, { type: "leg", os: target, head, source: "local" });
-    }
+    recordCleanLeg(config, git, head, clean, target, record);
     return 0;
   } catch (error) { write(`check --full: ${error.message}`); return 1; }
+}
+
+export async function runAffectedCheck(config, selection = {}, options = {}) {
+  const write = options.write ?? console.log;
+  const git = options.git ?? ((...words) => gitText(config.root, ...words));
+  const os = hostOS(options.platform);
+  try {
+    if (!["linux", "windows"].includes(os)) throw new Error("unsupported platform");
+    const head = git("rev-parse", "HEAD"), clean = cleanHead(git);
+    if (!await checkGates(config, options, write)) return 1;
+    const code = await (options.commands ?? runCheckCommands)(config, { ...selection, affected: true });
+    if (code !== 0) return code;
+    recordCleanLeg(config, git, head, clean, os, options.record);
+    return 0;
+  } catch (error) { write(`qc check: ${error.message}`); return 1; }
 }
 
 /** A problem names a path a reader can open — forward slashes always, since every gate splits on "/". */

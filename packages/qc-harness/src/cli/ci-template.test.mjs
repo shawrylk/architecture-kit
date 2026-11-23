@@ -44,7 +44,7 @@ for (const [name, file] of [["template", WORKFLOW], ["kit", KIT_WORKFLOW]]) {
     assert.deepEqual(evaluate("workflow_dispatch", "linux"), ["ubuntu-latest"]);
     assert.deepEqual(evaluate("workflow_dispatch", "windows"), ["windows-latest"]);
     assert.deepEqual(evaluate("workflow_dispatch", "both"), ["ubuntu-latest", "windows-latest"]);
-    const normal = name === "template" ? ["ubuntu-latest"] : ["ubuntu-latest", "windows-latest"];
+    const normal = ["ubuntu-latest", "windows-latest"];
     assert.deepEqual(evaluate("pull_request", ""), normal);
     assert.deepEqual(evaluate("push", ""), normal);
     assert.deepEqual(evaluate("merge_group", ""), normal);
@@ -71,4 +71,46 @@ test("the policy checks of a pull request are opt-in, not steps of the template"
   const text = runs();
   assert.doesNotMatch(text, /qc pr-check|qc prose/);
   assert.doesNotMatch(readFileSync(WORKFLOW, "utf8"), /^\s*# - run:/m);
+});
+
+
+test("the CI template runs --affected on pull_request and pnpm test on push to main and on schedule", async () => {
+  for (const file of [WORKFLOW, KIT_WORKFLOW]) {
+    const workflow = parse(readFileSync(file, "utf8"));
+    assert.deepEqual(workflow.on.schedule, [{ cron: "0 2 * * *" }]);
+    assert.deepEqual(workflow.permissions, { contents: "read" });
+    const steps = workflow.jobs.gates.steps;
+    if (file === KIT_WORKFLOW) {
+      assert.doesNotMatch(readFileSync(file, "utf8"), /\bnpx\s+qc\b/);
+    }
+    const affected = steps.find((step) => /check --affected --base origin\/main/.test(step.run ?? ""));
+    assert.equal(affected.if, "github.event_name == 'pull_request'");
+    const full = steps.find((step) => /pnpm test|run test/.test(step.run ?? ""));
+    assert.equal(full.if, "github.event_name != 'pull_request'");
+    const job = workflow.jobs['report-failure'];
+    assert.equal(job.needs, 'gates');
+    assert.deepEqual(job.concurrency, { group: 'ci-red-${{ github.sha }}', 'cancel-in-progress': false });
+    assert.equal(job.if, "${{ always() && needs.gates.result == 'failure' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'schedule') }}");
+    assert.equal(job.permissions.issues, 'write');
+    assert.equal(workflow.jobs.gates.permissions?.issues, undefined);
+    const script = job.steps.find((step) => step.uses?.startsWith('actions/github-script@')).with.script;
+    const calls = [], issues = [];
+    const github = { rest: { issues: {
+      async createLabel(args) { calls.push(args); },
+      async listForRepo() { return { data: issues }; },
+      async create(args) { calls.push(args); issues.push({ title: args.title }); },
+    } }, async paginate(fn, args) { return (await fn(args)).data; } };
+    const context = { repo: { owner: 'owner', repo: 'repo' }, sha: 'abc123', serverUrl: 'https://github.com', runId: 42 };
+    const run = new (Object.getPrototypeOf(async function() {}).constructor)('github', 'context', script);
+    await run(github, context); await run(github, context);
+    const created = calls.filter((args) => args.body);
+    assert.equal(created.length, 1);
+    assert.deepEqual(created[0].labels, ['ci-red', 'priority']);
+    assert.match(created[0].body, /abc123/);
+    assert.match(created[0].body, /https:\/\/github.com\/owner\/repo\/actions\/runs\/42/);
+    github.rest.issues.createLabel = async () => { throw Object.assign(Error('exists'), { status: 422 }); };
+    await run(github, context); assert.equal(calls.filter((args) => args.body).length, 1);
+    github.rest.issues.createLabel = async () => { throw Object.assign(Error('denied'), { status: 403 }); };
+    await assert.rejects(run(github, context), /denied/);
+  }
 });
