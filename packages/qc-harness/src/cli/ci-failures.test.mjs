@@ -54,7 +54,7 @@ test("records the repository and asks only for failures from the local origin", 
   assert.equal(holdRefusal(root, "main"), null);
   const calls = [];
   for (const [id, head] of [[4, "ddddddd"], [5, "eeeeeee"], [6, "fffffff"]]) {
-    recordRun(root, { id, branch: "main", head }, { gh: (args) => { calls.push(args); return args[0] === "run" ? tap : args[1]?.endsWith("/pulls") ? JSON.stringify([{ body: "Refs #227", state: "open", head: { ref: "main" } }]) : "[]"; } });
+    recordRun(root, { id, branch: "main", head }, { gh: (args) => { calls.push(args); return args[0] === "run" ? tap : args[1]?.endsWith("/pulls") ? JSON.stringify([{ body: "Refs #227", state: "open", head: { ref: "main", repo: { full_name: "local/repo" } } }]) : "[]"; } });
   }
   assert.ok(calls.some((args) => args[1] === "repos/local/repo/commits/fffffff/pulls"));
   assert.equal(readLedger(ledgerFileOf(root)).at(-1).repository, "local/repo");
@@ -229,7 +229,7 @@ test("three red heads → a needs-user question, and no hold record", (t) => {
   const gh = (args) => {
     calls.push(args);
     if (args[0] === "run") return tap;
-    if (args[1] === `repos/local/repo/commits/${currentHead}/pulls`) return JSON.stringify([{ body: "Refs #227", state: "open", head: { ref: "feat/test", sha: currentHead } }]);
+    if (args[1] === `repos/local/repo/commits/${currentHead}/pulls`) return JSON.stringify([{ body: "Refs #227", state: "open", head: { ref: "feat/test", repo: { full_name: "local/repo" }, sha: currentHead } }]);
     if (args[0] === "api") return JSON.stringify([comments]);
     if (args[1] === "comment") comments.push({ body: args[args.indexOf("--body") + 1] });
     return "[]";
@@ -548,9 +548,10 @@ test("CI questions use only PR issue references and diagnose missing issues or G
     const gh = (args) => {
       if (args[0] === "run") return tap;
       if (args[1] === `repos/local/repo/commits/${head}/pulls`) return JSON.stringify([
-        { body: "Closes #12", state: "closed", head: { ref: "feat/test", sha: "0000000" } },
-        { body: "Refs #13", state: "open", head: { ref: "other", sha: head } },
-        { body: mode === "old PR" ? "No linked issue" : "Refs #227", state: "open", head: { ref: "feat/test", sha: mode === "advanced PR" ? "ddddddd" : head } },
+        { body: "Closes #12", state: "closed", head: { ref: "feat/test", repo: { full_name: "local/repo" }, sha: "0000000" } },
+        { body: "Refs #13", state: "open", head: { ref: "other", repo: { full_name: "local/repo" }, sha: head } },
+        ...(mode === "advanced PR" ? [{ body: "Refs #13", state: "open", head: { ref: "feat/test", repo: { full_name: "fork/repo" }, sha: "ddddddd" } }] : []),
+        { body: mode === "old PR" ? "No linked issue" : "Refs #227", state: "open", head: { ref: "feat/test", repo: { full_name: "local/repo" }, sha: mode === "advanced PR" ? "ddddddd" : head } },
       ]);
       if (args[0] === "api") return JSON.stringify([comments]);
       if (args[0] === "issue" && args[1] === "comment") {
@@ -587,7 +588,7 @@ test("CI questions use only PR issue references and diagnose missing issues or G
     const gh = (args) => {
       calls.push(args);
       if (args[0] === "run") return tap;
-      if (args[1] === "repos/local/repo/commits/ccccccc/pulls") return JSON.stringify([{ body, state: "open", head: { ref: "feature-without-number", sha: "ccccccc" } }]);
+      if (args[1] === "repos/local/repo/commits/ccccccc/pulls") return JSON.stringify([{ body, state: "open", head: { ref: "feature-without-number", repo: { full_name: "local/repo" }, sha: "ccccccc" } }]);
       return "[]";
     };
     for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "feature-without-number", head }, { gh, warn: (line) => warnings.push(line) });

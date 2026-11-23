@@ -108,7 +108,7 @@ export function recordRun(root, { id, branch, head, repository }, { gh = (args) 
     try {
       const prs = JSON.parse(gh(["api", `repos/${repository}/commits/${head}/pulls`]));
       const reference = /\b(?:refs|close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+(?:([\w.-]+\/[\w.-]+))?#([1-9]\d*)\b/gi;
-      const pr = prs.find((pr) => pr.state === "open" && pr.head?.ref === branch);
+      const pr = prs.find((pr) => pr.state === "open" && pr.head?.repo?.full_name === repository && pr.head?.ref === branch);
       const issue = [...(pr?.body ?? "").matchAll(reference)]
         .find((match) => !match[1] || match[1].toLowerCase() === repository.toLowerCase())?.[2];
       if (!issue) {
