@@ -16,6 +16,10 @@ test("the direct lane owns its review path default and accepts replacements", ()
   assert.deepEqual(directSettings({ direct: { reviewPaths: ["local/**"] } }).reviewPaths, ["local/**"]);
 });
 
+test("throwaway database schema command defaults to null", () => {
+  assert.equal(defaults.throwawayDb.schemaCommand, null);
+});
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 test("lessons settings default and validate the file and rerun command", (t) => {
