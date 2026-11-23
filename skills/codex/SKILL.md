@@ -105,3 +105,10 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 - Stop when the PR body says "no merge is authorized", when `qc pause --status` shows a pause, or when the `merge.holdLabel` label is set.
 - Merge with `gh pr merge <n> --merge --match-head-commit <sha>`. Never use `--admin` or a force-push.
 - Confirm `MERGED`, close each issue the PR names with `Refs`, and remove each worktree with `npx qc worktree remove <name>`.
+
+## Fleet
+
+- A fleet file (see `docs/fleet.md`) splits the open issues across PCs. Without one, skip this section.
+- Work only the issues that `npx qc fleet next` prints. Exit `3` means this PC has no free issue: stop and report.
+- Push the issue branch right after `qc worktree add`, before the scout, so the other PCs see the issue as taken.
+- Each PC merges only the heads it reviewed, because the ledger is local. Never name a PC in a branch, a commit, or a comment.
