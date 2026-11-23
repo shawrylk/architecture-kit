@@ -10,6 +10,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { recordRun, resolveFailures } from "./ci-failures.mjs";
 import { originOf, repoOfSpelling } from "./git-read.mjs";
 import { holdRefusal } from "./pause.mjs";
+import { appendRun, runLogFileOf } from "./run-log.mjs";
 
 const DEFAULT_MAX_MINUTES = 55;
 const DEFAULT_INTERVAL_SECONDS = 60;
@@ -170,6 +171,7 @@ const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @returns the exit code: 0 an item finished well, 4 the bound passed, 5 a check or run failed, 6 a job stayed queued.
  */
 export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep, requiredChecks, cwd = process.cwd() } = {}) {
+  const started = now();
   let parsed;
   try {
     parsed = parseWatchArgs(argv);
@@ -208,15 +210,24 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
     }
   }
   const watchers = [
-    ...parsed.prs.map((number) => ({ item: `pr:${number}`, poll: pullRequestWatcher(number, context) })),
+    ...parsed.prs.map((number) => ({ target: { pr: number }, item: `pr:${number}`, poll: pullRequestWatcher(number, context) })),
     ...parsed.codex.map((file) => ({ item: `codex:${file}`, poll: codexWatcher(file) })),
-    ...parsed.runs.map((entry) => ({ item: `run:${entry.workflow}@${entry.branch}${entry.sha ? `@${entry.sha}` : ""}`, poll: runWatcher(entry, context) })),
+    ...parsed.runs.map((entry) => ({ target: { run: `${entry.workflow}@${entry.branch}${entry.sha ? `@${entry.sha}` : ""}` }, item: `run:${entry.workflow}@${entry.branch}${entry.sha ? `@${entry.sha}` : ""}`, poll: runWatcher(entry, context) })),
   ];
-  const deadline = now() + parsed.maxMinutes * 60_000;
+  const deadline = started + parsed.maxMinutes * 60_000;
   for (;;) {
-    for (const { item, poll } of watchers) {
+    for (const { item, poll, target } of watchers) {
       const event = poll();
       if (event) {
+        if (target && ["passed", "failed"].includes(event.state)) {
+          try {
+            appendRun(runLogFileOf(cwd), {
+              kind: "ci", time: new Date(now()).toISOString(), ...target, head: event.detail,
+              result: event.state === "passed" ? "pass" : "fail",
+              minutes: Math.round(Math.max(0, now() - started) / 6000) / 10,
+            });
+          } catch { warn("watch: cannot write run log"); }
+        }
         try {
           const root = checkoutRootOf(cwd);
           if (root) {

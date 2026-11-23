@@ -1173,6 +1173,36 @@ With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker n
 The runner's prompt requires tests first, the touched tests, one local check, and the brief's commit and push rules.
 The session writes the done marker only after the exit criteria hold. A session that needs more context writes notes and ends its turn.
 
+#### Local run metrics
+
+| Resource | Meaning |
+|---|---|
+| `<git common dir>/qc/runs.jsonl` | Append-only local Codex and CI run lines, shared by every worktree; created on the first run |
+| `qc metrics [--since <YYYY-MM-DD>]` | Summarize local runs in at most 15 lines; default since is seven days ago |
+| `refusal` | Fixed id: `guard:<rule>` (guard rule matching `^[a-z0-9-]{1,40}$`), `diff-shape`, `brief:<rule>`, `reviewed`, or `other`; null when no refusal |
+| `branch`, `pr`, `run` | Allowlist: `branch` matches `^[A-Za-z0-9_-]+(\/[A-Za-z0-9_-]+)*$` and is at most 100 characters; `run` is `<workflow>@<branch>[@<sha>]`, with workflow matching `^[A-Za-z0-9_-]+\.ya?ml$`, the same branch rules, and optional SHA matching `^[0-9a-f]{7,40}$`; both text values must pass secret redaction unchanged. `pr` must be a positive safe integer. Every other supplied value becomes `[REDACTED]`, including `release/1.2.3` and `fix/readme.md` |
+
+The Codex runner appends one line on every exit, including launch errors and guard refusals.
+It records the time, branch, issue number from `Issue:`, role, effort, exit, fixed `refusal` id,
+input and output tokens, minutes, structured Verify and Live outcomes, first-line
+report verdict, and count of findings starting with `- [P`. A brief title containing the word
+`fix` records the role as `fix`. Tokens sum every `turn.completed` event across this invocation's
+turns and retries, using zero when no usage is present. Unrun verification groups have null outcomes.
+The allowlist above restricts stored branch, PR, and workflow fields. Briefs and prompts are not recorded.
+A write failure prints one warning to stderr and leaves the exit code unchanged.
+
+`qc watch --pr` and `--run` append a CI line when the item passes or fails, with its PR number or
+workflow target, head, result, and minutes since the watch started. Bounds, queued events, and
+`--codex` items add no CI line. A write failure warns and preserves the event's exit code.
+
+Metrics shows each active role's run count, exit 0 rate, exit 4 rate, and mean input tokens, with
+changes against the immediately preceding period of equal length. Rate changes use percentage
+points; unavailable comparisons show `n/a`. Dates use UTC and the current period ends now.
+It then lists the three most frequent refusal rules, the three issues with the most fix runs,
+and the CI pass rate and mean minutes when present. With no runs it prints `no runs recorded`
+and exits 0. Malformed lines are skipped and counted in one final `skipped N bad lines` line.
+The command uses Node built-ins, reads no configuration, and sends nothing off the machine.
+
 #### Wait on CI with bounds
 
 `npx qc watch --pr <n>` waits on the checks of a pull request and prints one `EVENT` line on the

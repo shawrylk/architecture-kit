@@ -429,3 +429,24 @@ test("the watch helper isolates its ledger and holds in a temporary checkout", a
   } });
   assert.equal(calls, 1, "the helper must call the supplied run function");
 });
+
+test("watch logs only final CI events with head, target, result and elapsed minutes", async (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-watch-metrics-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  assert.equal(spawnSync("git", ["init", "-q", dir]).status, 0);
+  const file = path.join(dir, ".git", "qc", "runs.jsonl");
+  const done = rollup(RUN_HEAD, check("build", "COMPLETED", "SUCCESS"));
+  const { gh } = stubGh([rollup(RUN_HEAD, check("build", "IN_PROGRESS")), done]);
+  assert.equal((await watch(["--pr", "249"], { cwd: dir, gh, time: fakeClock() })).code, 0);
+  let rows = readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual({ ...rows[0], time: null }, { kind: "ci", time: null, pr: 249, head: RUN_HEAD, result: "pass", minutes: 1 });
+  const failed = pages([{ workflow_runs: [{ head_sha: RUN_HEAD, status: "completed", conclusion: "failure" }] }]);
+  assert.equal((await watch(["--run", `ci.yml@topic@${RUN_HEAD}`], { cwd: dir, gh: stubGh([failed]).gh })).code, 5);
+  rows = readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual({ ...rows[1], time: null }, { kind: "ci", time: null, run: `ci.yml@topic@${RUN_HEAD}`, head: RUN_HEAD, result: "fail", minutes: 0 });
+  assert.equal((await watch(["--pr", "1", "--max", "1"], { cwd: dir, gh: stubGh([null]).gh })).code, 4);
+  const wrapper = path.join(dir, "wrapper.log");
+  writeFileSync(wrapper, "exit 0\n");
+  assert.equal((await watch(["--codex", wrapper], { cwd: dir })).code, 0);
+  assert.equal(readFileSync(file, "utf8").trim().split("\n").length, 2);
+});
