@@ -37,7 +37,7 @@ const USAGE = `qc — architecture gates
   qc ci-failures --run <id> | --rerun [--branch <branch>]
                            record a failed run, or rerun the open test files before a push
   qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
-  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
+  qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
                            --effort overrides the Codex config for every run; omitting it keeps the config value; exit 5 when paused

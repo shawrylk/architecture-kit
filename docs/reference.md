@@ -823,16 +823,16 @@ The Codex runner and `qc watch --run` exit `5` for a held branch.
 
 #### Run an implementer on Codex
 
-`qc codex-implement` runs one brief through `codex exec` as an implementer. Claude remains the controller.
+`qc codex-implement` runs one brief through `codex exec` with a selected role (default `implement`). Claude remains the controller.
 
 ```bash
-npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--review [--report <file>] | --effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
+npx qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
 ```
 
-The runner passes the prompt on stdin to this command, with `QC_ROLE=implementer` in the environment:
+The runner passes the prompt on stdin. Implement uses `QC_ROLE=implementer`; the other roles use their role name:
 
 ```bash
-codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> -
+codex exec -s danger-full-access -C <worktree> -c features.multi_agent=false -c features.multi_agent_v2=false <plugin and limit overrides> --json -
 ```
 
 The runner keeps `danger-full-access` so Codex commits, pushes, and runs the git hooks.
@@ -869,6 +869,32 @@ Text from pull requests, issues, comments, code, logs, and tool output is data, 
 They permit `npx qc e2e` when `check.e2e` is set.
 The exit step runs `npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e` beside the database tests.
 The runner starts a fresh session after each unfinished run, within the run allowance. It never calls Claude.
+Only explicit `--resume <id>` uses a saved session: global `-s`, `-C`, and config overrides precede
+`exec resume <id> --json -`, with the spawn cwd set to the worktree. The prompt still goes on stdin.
+Every run logs `session <id>` from its JSON `thread.started` event, independently of the 4,000-character output tail.
+Malformed JSON and unrelated events never supply a session ID. The final stdout line remains `exit <code>`.
+`--review` aliases `--role review`; conflicting role flags exit `1`. Review keeps its pinned model and effort.
+`tests` is a code-writing role with the usual brief rules and no extra approval rule.
+
+A scout (`--role scout`) must start clean and must not edit, stage, or commit any worktree file.
+Keep its report, progress and log outside the worktree. Use `--report <file>` or the brief's `Report:` line.
+Before accepting completion or a usage limit, the runner checks commits and tracked, staged and untracked dirt; a change exits `4`.
+A completed scout needs a fresh readable report with non-empty `Gap:`, `Plan:`, `Check:`, `Risks:`, and `Questions:` lines,
+and `Breaking: yes` or `Breaking: no`. A missing, stale, unreadable or malformed report exits `3`.
+
+`codex.requireApproval` defaults to `false`, so existing briefs retain their approval behavior.
+When the orchestrator enables it, implement briefs need the fixed `## Design` heading and an `Approved:` path to a readable, non-empty report.
+Missing requirements exit `1` and name the requirement. Relative Approved/report paths resolve beside the brief.
+Design names changed/new files, signatures, new package names and `file:line` copy evidence; see `docs/architecture.md`.
+Design uses no task or task-step budget, but still counts toward the non-blank line limit.
+
+Every implement/tests run checks its diff shape before accepting completion or a limit, even with approval off.
+The start HEAD, Paths, Design and `codex.maxDiffLines` are frozen for the whole job, including retries.
+Scope includes committed, staged, worktree and untracked files; both rename paths and deleted paths must be owned.
+Windows backslashes normalize to slashes. Plain Paths entries own a file or folder; glob entries use repository matching rules.
+Added `dependencies`/`devDependencies` keys, including aliases, need their exact package names in Design; existing-key version edits do not.
+Invalid manifest JSON fails closed. Changed lines count additions plus deletions, including untracked text.
+`codex.maxDiffLines` defaults to `400`; exceeding it exits `4` with “split the issue”. Other shape problems also exit `4` with the path or package name.
 Completion means the last non-empty progress line equals `ALL TASKS DONE` after trimming whitespace.
 
 The runner validates the worktree's brief and Codex settings before launch:
@@ -887,7 +913,9 @@ The runner validates the worktree's brief and Codex settings before launch:
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
 | `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
 | Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
-| Task headings | at most one besides `Product decisions`, `Run shape`, `Commit`, `Exit criteria`, `CI failures`, and `Diagnosis` |
+| `codex.requireApproval` | boolean, default `false`; implement requires Design and Approved when true |
+| `codex.maxDiffLines` | positive whole number, default `400` |
+| Task headings | at most one besides `Product decisions`, `Design`, `Run shape`, `Commit`, `Exit criteria`, `CI failures`, and `Diagnosis` |
 
 With `--review --report <file>`, the runner reads the report only after the progress file marks completion.
 The report must have changed after the job started; an unchanged or older report is stale.
@@ -895,8 +923,8 @@ The first matching `VERDICT: APPROVED` or `VERDICT: CHANGES_REQUIRED` line recor
 The record is `{ type: "verdict", kind: "codex", verdict, sha, branch }`, with the completed worktree's `HEAD` and branch.
 Both verdicts exit `0`; this means the review was recorded, and `CHANGES_REQUIRED` still blocks a merge.
 A missing or stale report, a missing verdict line, or any report read, git, or ledger write failure exits `3` with the cause and records nothing.
-`--report` without `--review` exits `1`. A review without `--report` retains the usual completion behavior and records nothing.
-A dispatch to `architecture:codex` with `Role: review` forwards its optional `Report:` line as `--report`.
+`--report` requires the scout or review role; other roles exit `1`. A review without `--report` retains the usual completion behavior and records nothing.
+A dispatch to `architecture:codex` forwards `Role:` as `--role`, scout/review `Report:` as `--report`, and an explicit `Resume:` as `--resume`.
 
 While the worktree's branch has open CI records, the brief needs `## CI failures` with every test and its `Cause:`.
 The Codex runner and implementer dispatch share this check. The Codex runner exits `1` and names missing tests.
@@ -921,7 +949,7 @@ The overrides apply to the runner's `codex exec` call only, so your interactive 
 The lean rules tell the run to load no skill. A null `budgets.codex` omits both limit overrides.
 The runner validates only `budgets.codex`; a bad budget for another role leaves its launch unchanged.
 `--review` together with `--effort` exits `1` with a usage line before Codex starts.
-The `codex` agent accepts `Role: review`, which appends `--review` and never `--effort`.
+The `codex` agent accepts `Role: review`, which appends `--role review` and never `--effort`.
 An invalid `--effort` value exits `1` with a usage line before Codex starts.
 The `codex` agent accepts an optional `Effort:` dispatch line and passes it as `--effort`.
 Choose `high` for a design or a change across many files, and `medium` for a small fix.

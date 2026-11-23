@@ -14,6 +14,7 @@ delete process.env.QC_ROLE;
 const BASE = `${REMINDER}${modelsLine({ models: runtimeModels.codex, runtime: "codex" })}${CODEX_LINE}`;
 
 test("CODEX_LINE names the runtime tags, Runtime line, and qc codex status", () => {
+  for (const phrase of [/--role scout/, /codex.requireApproval/, /Approved:/, /## Design/, /codex.maxDiffLines/, /--resume/]) assert.match(CODEX_LINE, phrase);
   for (const text of ["Codex <model> · ", "Claude <model> · ", "Runtime: claude <reason>", "qc codex status"]) {
     assert.ok(CODEX_LINE.includes(text), text);
   }
@@ -296,6 +297,15 @@ test("the controller note makes Codex the first choice, names its skill, and fal
 });
 
 test("QC_ROLE=implementer replaces the controller note with the worker note", (t) => {
+  for (const role of ["scout", "tests", "review"]) {
+    const [on] = checkouts(t, [{ swarm: { dispatch: {} } }]);
+    const text = decide(start(on, "startup"), { QC_ROLE: role }).hookSpecificOutput.additionalContext;
+    assert.match(text, /Work inline/);
+    assert.ok(text.includes(role));
+    assert.doesNotMatch(text, /run a plan with superpowers|make one commit|push once/);
+    if (role === "scout") assert.match(text, /Do not edit, stage, or commit/);
+  }
+
   const [on] = checkouts(t, [{ swarm: { dispatch: {} } }]);
   const text = decide(start(on, "startup"), { QC_ROLE: "implementer" }).hookSpecificOutput.additionalContext;
   assert.equal(text, WORKER_NOTE);
