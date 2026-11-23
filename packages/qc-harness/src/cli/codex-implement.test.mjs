@@ -2167,6 +2167,16 @@ else writeFileSync(${JSON.stringify(path.join(f.dir, "attempt"))}, '1');
   assert.equal(rows.at(-1).live, "fail");
 });
 
+test("bad arguments without a named worktree do not log a run in cwd", (t) => {
+  const f = setup(t);
+  const result = spawnSync(process.execPath, [QC, "codex-implement", "--bad-argument"], {
+    cwd: f.worktree, env: f.gitEnv, encoding: "utf8",
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stdout, /exit 1\s*$/);
+  assert.equal(existsSync(path.join(f.worktree, ".git", "qc", "runs.jsonl")), false);
+});
+
 test("run logging records preflight failures and warns once without changing the exit", async (t) => {
   const f = setup(t);
   writeFileSync(f.brief, "# Invalid brief\n");
