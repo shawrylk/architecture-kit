@@ -17,7 +17,8 @@ export function checkMergeTrees(root, commits, config, git) {
   const replay = (...args) => read(scratch, ...options, ...args);
   try {
     const objects = path.resolve(root, read(root, "rev-parse", "--git-path", "objects"));
-    read(scratch, "init", "-q", "--template=");
+    const objectFormat = read(root, "rev-parse", "--show-object-format");
+    read(scratch, "init", "-q", "--template=", `--object-format=${objectFormat}`);
     mkdirSync(path.join(scratch, ".git", "objects", "info"), { recursive: true });
     writeFileSync(path.join(scratch, ".git", "objects", "info", "alternates"), `${objects}\n`);
     const generated = globMatcher(config.generated?.globs ?? []);

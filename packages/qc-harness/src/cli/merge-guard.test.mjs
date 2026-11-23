@@ -666,11 +666,11 @@ test("with swarm.dispatch off, a merge whose command failed after GitHub merged 
 });
 
 /** A checkout with the checks on, `origin/main` at its first commit, and a small fix on `feat/1-x`. `tracked: false` keeps the config out of that commit. */
-function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true } = {}) {
+function laneRepo(t, config = { swarm: { dispatch: {} } }, { tracked = true, objectFormat = "sha1" } = {}) {
   const dir = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-merge-lane-")));
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
-  git("init", "-q", "-b", "main");
+  git("init", "-q", "-b", "main", `--object-format=${objectFormat}`);
   for (const [key, value] of [["user.name", "qc"], ["user.email", "qc@example.com"], ["commit.gpgsign", "false"]]) git("config", key, value);
   if (tracked) writeFileSync(path.join(dir, "qc.config.json"), JSON.stringify(config));
   writeFileSync(path.join(dir, "a.ts"), "one\ntwo\n");
@@ -842,8 +842,8 @@ test("a promotion approval cannot bypass a dispatched scope", () => {
 
 const prViewWithHead = (oid, head) => JSON.stringify({ ...JSON.parse(prView(oid)), headRefName: head });
 
-function integrationMergeRepo(t, { integrate, kind = "branch", unreviewed = false, runtime = "claude", migrations = false, generated = false } = {}) {
-  const repo = laneRepo(t, { swarm: { dispatch: {}, direct: false, review: { runtime } }, ...(integrate ? { integrate } : {}), ...(migrations ? { paths: { migrations: "db" } } : {}), ...(generated ? { generated: { globs: ["generated.txt"] } } : {}) });
+function integrationMergeRepo(t, { integrate, kind = "branch", unreviewed = false, runtime = "claude", migrations = false, generated = false, objectFormat = "sha1" } = {}) {
+  const repo = laneRepo(t, { swarm: { dispatch: {}, direct: false, review: { runtime } }, ...(integrate ? { integrate } : {}), ...(migrations ? { paths: { migrations: "db" } } : {}), ...(generated ? { generated: { globs: ["generated.txt"] } } : {}) }, { objectFormat });
   const { dir, base, ledger } = repo;
   const git = (...args) => execFileSync("git", args, { cwd: dir, stdio: "pipe", encoding: "utf8" }).trim();
   git("branch", "-m", "task/7-a");
@@ -1190,8 +1190,8 @@ test("Codex constituent verdicts do not satisfy the integration lane", (t) => {
 
 test("a milestone validates approved member trees, migrations and aggregate policy", (t) => {
   const failures = [];
-  for (const mode of ["branch", "codex", "missing", "revoked", "disabled", "unreviewed commit", "tampered merge", "migrations", "generated"]) {
-    const repo = integrationMergeRepo(t, { kind: mode === "codex" ? "codex" : "branch", unreviewed: mode === "missing", migrations: mode === "migrations", generated: mode === "generated", ...(mode === "disabled" ? { integrate: { review: false } } : {}) });
+  for (const mode of ["branch", "sha256", "codex", "missing", "revoked", "disabled", "unreviewed commit", "tampered merge", "migrations", "generated"]) {
+    const repo = integrationMergeRepo(t, { objectFormat: mode === "sha256" ? "sha256" : "sha1", kind: mode === "codex" ? "codex" : "branch", unreviewed: mode === "missing", migrations: mode === "migrations", generated: mode === "generated", ...(mode === "disabled" ? { integrate: { review: false } } : {}) });
     let head = repo.head;
     const git = (...args) => execFileSync("git", args, { cwd: repo.dir, encoding: "utf8", stdio: "pipe" }).trim();
     if (mode === "revoked") appendRecord(repo.ledger, verdict("codex", "CHANGES_REQUIRED", git("rev-parse", "HEAD^2")));
@@ -1211,9 +1211,9 @@ test("a milestone validates approved member trees, migrations and aggregate poli
       writeFileSync(path.join(repo.dir, "generated.txt"), "generated output\n");
       git("add", "."); git("commit", "-qm", "chore: regenerate the generated files"); head = git("rev-parse", "HEAD");
     }
-    const accepted = ["branch", "codex", "migrations", "generated"].includes(mode);
+    const accepted = ["branch", "sha256", "codex", "migrations", "generated"].includes(mode);
     if (!accepted) appendRecord(repo.ledger, verdict("branch", "APPROVED", head));
-    const branches = ["milestone/2026-11-23-1", ...(["tampered merge", "migrations", "generated"].includes(mode) ? ["feat/7-integration"] : [])];
+    const branches = ["milestone/2026-11-23-1", ...(["sha256", "tampered merge", "migrations", "generated"].includes(mode) ? ["feat/7-integration"] : [])];
     for (const branch of branches) {
       // Exercise the integration tree check without an aggregate approval bypass.
       if (branch === "feat/7-integration" && !accepted) rmSync(repo.ledger);
