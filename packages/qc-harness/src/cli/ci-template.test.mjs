@@ -80,6 +80,9 @@ test("the CI template runs --affected on pull_request and pnpm test on push to m
     assert.deepEqual(workflow.on.schedule, [{ cron: "0 2 * * *" }]);
     assert.deepEqual(workflow.permissions, { contents: "read" });
     const steps = workflow.jobs.gates.steps;
+    if (file === KIT_WORKFLOW) {
+      assert.doesNotMatch(readFileSync(file, "utf8"), /\bnpx\s+qc\b/);
+    }
     const affected = steps.find((step) => /check --affected --base origin\/main/.test(step.run ?? ""));
     assert.equal(affected.if, "github.event_name == 'pull_request'");
     const full = steps.find((step) => /pnpm test|run test/.test(step.run ?? ""));

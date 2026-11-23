@@ -57,7 +57,7 @@ jobs:
 
       # Every rule, every gate, every config knob — each with a case that must fail.
       # The hosted runners carry Google Chrome, so a screen test that cannot find it fails here instead of skipping.
-      - run: npx qc check --affected --base origin/main
+      - run: node packages/qc-harness/src/cli/qc.mjs check --affected --base origin/main
         if: github.event_name == 'pull_request'
         env: { QC_REQUIRE_CHROME: "1" }
       - run: pnpm test
