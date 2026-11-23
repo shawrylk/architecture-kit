@@ -27,7 +27,7 @@ test("run lines share the git common directory, append, and count malformed reco
   appendFileSync(file, "bad\nnull\n[]\n{}\n");
   appendRun(file, rows[1]);
   assert.deepEqual(readRuns(file), { runs: rows, skipped: 4 });
-  assert.throws(() => readRuns(path.join(file, "child")));
+  assert.throws(() => readRuns(path.dirname(file)), /EISDIR|EPERM|EACCES/);
 });
 
 
