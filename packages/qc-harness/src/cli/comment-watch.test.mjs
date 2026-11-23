@@ -206,6 +206,7 @@ test("full reads acknowledge only the comment kinds their output contains", (t) 
     ["gh api repos/shawrylk/example/issues/4/comments", [1]],
     ["gh api repos/shawrylk/example/issues/comments/1", [1]],
     ["gh api -X GET repos/shawrylk/example/issues/4", []],
+    ["gh api -X POST repos/shawrylk/example/issues/4/comments", []],
     ["gh pr view 7 --comments", [2, 4]],
     ["gh api repos/shawrylk/example/pulls/7/comments", [3]],
     ["gh api repos/shawrylk/example/pulls/7/reviews", [2]],
@@ -229,6 +230,31 @@ test("full reads acknowledge only the comment kinds their output contains", (t) 
     const remaining = JSON.stringify(f.run("UserPromptSubmit"));
     for (const row of f.rows) assert.equal(remaining.includes(`Comment ${row.id} `), !seen.includes(row.id), command);
   }
+});
+
+for (const command of [
+  "cd /home/shawry/Documents/GitHub/architecture-kit; gh api repos/shawrylk/architecture-kit/issues/236/comments --paginate --jq '.[-1].body' | tail -c 600",
+  "gh api repos/shawrylk/architecture-kit/issues/236/comments --paginate --jq '.[].id'",
+  "gh api repos/shawrylk/architecture-kit/issues/236/comments --paginate -q '.[].id'",
+  "gh api repos/shawrylk/architecture-kit/issues/236/comments --paginate --template '{{range .}}{{.id}}{{end}}'",
+  "gh api repos/shawrylk/architecture-kit/issues/236/comments --paginate -t '{{range .}}{{.id}}{{end}}'",
+  "gh api --template 'repos/other/project/issues/9/comments' repos/shawrylk/architecture-kit/issues/236/comments --paginate",
+]) test(`Bash full reads acknowledge pending stamps: ${command}`, (t) => {
+  const f = fixture(t);
+  f.rows[0].endpoint = "issues/236/comments";
+  f.rows[0].body = "x".repeat(850);
+  f.update();
+  f.run("PostToolUse", "gh issue view 236 -R shawrylk/architecture-kit");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
+  const ledgerPath = path.join(f.cwd, ".git", "qc", `comment-watch-${createHash("sha256").update("session-a").digest("hex")}.jsonl`);
+  const records = () => readFileSync(ledgerPath, "utf8").split("\n").filter(Boolean).map(JSON.parse);
+  const pending = records().flatMap(record => record.pending ?? []);
+  assert.equal(pending.length, 1);
+  assert.ok(!records().some(record => record.seen?.includes(pending[0].stamp)));
+  f.run("PostToolUse", command, "comment-watch.mjs", "session-a", {
+    stdout: "1", stderr: "", interrupted: false, isImage: false,
+  }, "Bash");
+  assert.ok(records().some(record => record.seen?.includes(pending[0].stamp)));
 });
 
 test("review flags preserve the state and body in both shells", (t) => {
