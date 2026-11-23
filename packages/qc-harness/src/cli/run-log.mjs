@@ -1,6 +1,5 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import os from "node:os";
 import { redactOutput } from "./output-redaction.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
@@ -18,18 +17,24 @@ export function runLogFileOf(cwd) {
 export function appendRun(file, record) {
   if (!file) throw new Error("cannot find the git common directory");
   record = { ...record };
+  const allowedBranch = (value) => value.length <= 100 &&
+    /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.exec(value)?.[0] === value;
   for (const field of ["branch", "pr", "run"]) {
+    if (!Object.hasOwn(record, field)) continue;
     const value = record[field];
-    if (typeof value !== "string") continue;
-    const cleaned = redactOutput(value)
-      .replace(/(?:[a-z]+:\/\/|\\\\)[^\s"'`]+/gi, "[REDACTED]");
-    const target = field === "run" ? value.slice(value.indexOf("@") + 1) : value;
-    const checked = target.split(os.hostname()).join("[REDACTED]")
-      .replace(/(?:[a-z]+:\/\/|\\\\)[^\s"'`]+/gi, "[REDACTED]")
-      .replace(/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/gi, "[REDACTED]")
-      .replace(/(?:\d{1,3}\.){3}\d{1,3}/g, "[REDACTED]")
-      .replace(/[a-f0-9]*:[a-f0-9]*:[a-f0-9:]*/gi, "[REDACTED]");
-    if (cleaned !== value || checked !== target) record[field] = "[REDACTED]";
+    let allowed = false;
+    if (field === "pr") {
+      allowed = Number.isSafeInteger(value) && value > 0;
+    } else if (typeof value === "string" && redactOutput(value) === value) {
+      if (field === "branch") allowed = allowedBranch(value);
+      else {
+        const [workflow, branch, sha, ...extra] = value.split("@");
+        allowed = /^[A-Za-z0-9_-]+\.ya?ml$/.exec(workflow)?.[0] === workflow &&
+          branch !== undefined && allowedBranch(branch) && extra.length === 0 &&
+          (sha === undefined || /^[0-9a-f]{7,40}$/.exec(sha)?.[0] === sha);
+      }
+    }
+    if (!allowed) record[field] = "[REDACTED]";
   }
   mkdirSync(path.dirname(file), { recursive: true });
   appendFileSync(file, `${JSON.stringify(record)}\n`);

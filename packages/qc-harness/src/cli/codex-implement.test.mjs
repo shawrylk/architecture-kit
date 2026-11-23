@@ -2215,9 +2215,9 @@ test("refusal metrics store a fixed id instead of brief prose", async (t) => {
   assert.equal(row.refusal, "brief:paths");
 });
 
-test("branch metrics redact tokens and host names", async (t) => {
+test("branch metrics redact tokens and values outside the allowlist", async (t) => {
   const f = setup(t);
-  for (const name of [`topic/ghp_${"a".repeat(36)}`, `topic/${os.hostname()}`, "topic/private.example.com"]) {
+  for (const name of [`topic/ghp_${"a".repeat(36)}`, "topic/\u4f8b\u5b50.\u6d4b\u8bd5", "topic/private.example.com"]) {
     assert.equal(spawnSync("git", ["checkout", "-b", name], { cwd: f.worktree }).status, 0);
     await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => { throw new Error("launch failed"); } });
     const row = JSON.parse(readFileSync(path.join(f.worktree, ".git", "qc", "runs.jsonl"), "utf8").trim().split("\n").at(-1));

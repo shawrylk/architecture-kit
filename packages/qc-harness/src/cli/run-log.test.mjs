@@ -31,55 +31,47 @@ test("run lines share the git common directory, append, and count malformed reco
 });
 
 
-test("run log redacts every branch, PR and workflow text field", (t) => {
+test("run log keeps only allowlisted branch, PR and workflow fields", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-fields-"));
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const file = path.join(dir, "runs.jsonl");
+  const redacted = "[REDACTED]";
   const secrets = [
     `AKIA${"A".repeat(16)}`, `aws_secret_access_key=${"a".repeat(40)}`,
     `ghp_${"a".repeat(36)}`, `github_pat_${"a".repeat(40)}`,
     ["-----BEGIN", "PRIVATE KEY-----"].join(" "), `sk-ant-${"a".repeat(20)}`,
     `xoxb-${"a".repeat(10)}`, `npm_${"a".repeat(36)}`,
-    os.hostname(), "private.example.com", "https://internal/path", "\\\\internal\\share",
+    "private.example.com", "https://internal/path", "\\\\internal\\share",
   ];
-  for (const secret of secrets) {
+  const rejected = [
+    "topic/\u4f8b\u5b50.\u6d4b\u8bd5", "topic/private.example.com_release", "topic/10.20.30.40",
+    "topic/fe80::1", "/tmp/x", "../x", "C:\\x", "a b", "release/1.2.3", "fix/readme.md",
+    "", "topic\n", "topic/", "topic//x", "a".repeat(101), ...secrets.map((secret) => `topic/${secret}`),
+  ];
+  const cases = [
+    ["branch", "feat/249-run-metrics", "feat/249-run-metrics"],
+    ["branch", "a".repeat(100), "a".repeat(100)],
+    ["run", "ci.yml@feat/249-x", "ci.yml@feat/249-x"],
+    ["run", `ci.yml@topic@${"a".repeat(40)}`, `ci.yml@topic@${"a".repeat(40)}`],
+    ["run", "ci.yaml@topic@abcdef0", "ci.yaml@topic@abcdef0"],
+    ["pr", 254, 254],
+    ["pr", Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+    ...rejected.flatMap((value) => [["branch", value, redacted], ["run", `ci.yml@${value}`, redacted]]),
+    ...secrets.map((value) => ["pr", value, redacted]),
+    ...["12", 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, null, true, {}, []]
+      .map((value) => ["pr", value, redacted]),
+    ...["/tmp/ci.yml@feat/x", "ci.yml@topic@abcdef", `ci.yml@topic@${"a".repeat(41)}`,
+      "ci.yml@topic@ABCDEF0", "ci.yml@topic@abcdef0@abcdef0", "ci.txt@topic", "ci.yml\n@topic", "ci.yml@topic@abcdef0\n", "topic", 254]
+      .map((value) => ["run", value, redacted]),
+    ...[254, null, true, {}, []].map((value) => ["branch", value, redacted]),
+  ];
+  for (const [field, value] of cases) {
     appendRun(file, { kind: "ci", time: "2026-11-21T00:00:00Z", result: "pass", minutes: 1,
-      branch: `topic/${secret}`, pr: secret, run: `workflow/${secret}` });
+      [field]: value });
   }
   const { runs } = readRuns(file);
-  assert.equal(runs.length, secrets.length);
-  for (const row of runs) for (const field of ["branch", "pr", "run"]) assert.equal(row[field], "[REDACTED]");
-});
-
-test("run log redacts embedded hosts and addresses while retaining ordinary branches", (t) => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-hosts-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
-  const file = path.join(dir, "runs.jsonl");
-  const values = [
-    "topic/private.example.com_release", "topic/10.20.30.40", "topic/fe80::1", "fix/readme.md",
-    "feat/249-run-metrics", "release/1.2.3",
-  ];
-  for (const value of values) {
-    appendRun(file, { kind: "ci", time: "2026-11-21T00:00:00Z", result: "pass", minutes: 1,
-      branch: value, pr: value, run: value });
+  assert.equal(runs.length, cases.length);
+  for (const [index, [field, value, expected]] of cases.entries()) {
+    assert.equal(runs[index][field], expected, `${field}: ${JSON.stringify(value)}`);
   }
-  const { runs } = readRuns(file);
-  assert.equal(runs.length, values.length);
-  for (const [index, row] of runs.entries()) {
-    for (const field of ["branch", "pr", "run"]) {
-      assert.equal(row[field], index < 4 ? "[REDACTED]" : values[index]);
-    }
-  }
-});
-
-
-test("run log keeps workflow names and checks hosts in the run target", (t) => {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-target-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
-  const file = path.join(dir, "runs.jsonl");
-  const values = ["ci.yml@feat/249-x", "ci.yml@topic/10.20.30.40", "ci.yml@topic/host.example.com"];
-  for (const run of values) {
-    appendRun(file, { kind: "ci", time: "2026-11-21T00:00:00Z", result: "pass", minutes: 1, run });
-  }
-  assert.deepEqual(readRuns(file).runs.map((row) => row.run), [values[0], "[REDACTED]", "[REDACTED]"]);
 });
