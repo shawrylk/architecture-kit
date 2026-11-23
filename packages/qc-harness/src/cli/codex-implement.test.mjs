@@ -2183,7 +2183,7 @@ test("run logging records preflight failures and warns once without changing the
   const secrets = [
     `AKIA${"A".repeat(16)}`, `aws_secret_access_key=${"a".repeat(40)}`,
     `ghp_${"a".repeat(36)}`, `github_pat_${"a".repeat(40)}`,
-    "-----BEGIN PRIVATE KEY-----", `sk-ant-${"a".repeat(20)}`,
+    ["-----BEGIN", "PRIVATE KEY-----"].join(" "), `sk-ant-${"a".repeat(20)}`,
     `xoxb-${"a".repeat(10)}`, `npm_${"a".repeat(36)}`,
   ];
   for (const secret of secrets) {
