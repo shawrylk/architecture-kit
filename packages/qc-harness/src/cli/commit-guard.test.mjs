@@ -450,9 +450,12 @@ for (const platform of ["Windows", "POSIX"]) test(`a stalled ${platform} remote 
     server.stdout.once("data", (chunk) => resolve(Number(chunk.toString().trim())));
   });
   let timer;
+  let armSocketTimer;
   const closed = new Promise((resolve, reject) => {
     server.stdout.on("data", (chunk) => { if (chunk.toString().includes("closed")) resolve(); });
-    timer = setTimeout(() => reject(new Error("the remote transport kept its socket open")), 10_000);
+    armSocketTimer = () => {
+      timer = setTimeout(() => reject(new Error("the remote transport kept its socket open")), 10_000);
+    };
   });
   t.after(() => clearTimeout(timer));
   const r = repo(t);
@@ -467,13 +470,16 @@ for (const platform of ["Windows", "POSIX"]) test(`a stalled ${platform} remote 
   interceptGit(t, (command, args, options, execute) => {
     if (args.includes("ls-remote") && !args.includes("--get-url")) {
       assert.equal(command, process.execPath);
-      return execute(command, args.map((word) => word === "29000" ? "1000" : word), options);
+      assert.deepEqual(args.slice(2, 6), ["--", "24000", "5000", "git"]);
+      return execute(command, args.map((word, index) => index === 3 ? "1000" : word), options);
     }
     return execute(command, args, options);
   });
   const started = Date.now();
   assert.deepEqual(checkRunCommits(r.root, before, { base: "main" }).map((finding) => finding.commit), [bad]);
-  assert.ok(Date.now() - started < 5000);
+  armSocketTimer();
+  const bound = 1000 + 5000 + 2000;
+  assert.ok(Date.now() - started < bound);
   await closed;
 });
 

@@ -68,13 +68,13 @@ let mergeDiffOption;
 // A resource: ends the Git process tree before the synchronous caller's deadline.
 const remoteReadScript = `
   const { spawn, spawnSync } = require("node:child_process");
-  const [deadline, command, ...args] = process.argv.slice(1);
+  const [deadline, cleanupBudget, command, ...args] = process.argv.slice(1);
   const child = spawn(command, args, { stdio: ["ignore", "inherit", "inherit"], windowsHide: true, detached: process.platform !== "win32" });
   child.on("error", () => process.exit(1));
   child.on("close", (code) => process.exit(code ?? 1));
   setTimeout(() => {
     if (process.platform === "win32") {
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: 1000 });
+      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true, timeout: Number(cleanupBudget) });
       child.kill();
     } else {
       try { process.kill(-child.pid, "SIGKILL"); } catch {}
@@ -102,7 +102,7 @@ function git(root, args, input) {
   const directory = root === null ? mkdtempSync(path.join(os.tmpdir(), "qc-guard-base-")) : null;
   try {
     return execFileSync(remote ? process.execPath : "git",
-      remote ? ["-e", remoteReadScript, "--", "29000", "git", ...words] : words, {
+      remote ? ["-e", remoteReadScript, "--", "24000", "5000", "git", ...words] : words, {
       encoding: "utf8", input, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024, windowsHide: true,
       ...(directory === null ? {} : { cwd: directory }),
       ...(remote ? { timeout: 30_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" } } : {}),

@@ -5,6 +5,10 @@ import { commonDirOf } from "./ledger.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
 export const RUN_ROLES = ["scout", "tests", "implement", "review", "fix"];
+export const RUN_FIELDS = Object.freeze([
+  "kind", "time", "branch", "issue", "role", "effort", "exit", "refusal", "inputTokens",
+  "outputTokens", "minutes", "verify", "live", "verdict", "findings", "pr", "run", "head", "result",
+]);
 
 /** @returns the local run log shared by this checkout's worktrees, or null outside git. */
 export function runLogFileOf(cwd) {
@@ -16,17 +20,18 @@ export function runLogFileOf(cwd) {
 /** Append one complete JSON line; the caller owns warnings and exit policy. */
 export function appendRun(file, record) {
   if (!file) throw new Error("cannot find the git common directory");
-  record = { ...record };
+  record = Object.fromEntries(Object.entries(record).filter(([field]) => RUN_FIELDS.includes(field)));
   const allowedBranch = (value) => value.length <= 100 &&
     /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.exec(value)?.[0] === value;
-  for (const field of ["branch", "pr", "run"]) {
+  for (const field of ["branch", "pr", "run", "head"]) {
     if (!Object.hasOwn(record, field)) continue;
     const value = record[field];
     let allowed = false;
     if (field === "pr") {
       allowed = Number.isSafeInteger(value) && value > 0;
     } else if (typeof value === "string" && redactOutput(value) === value) {
-      if (field === "branch") allowed = allowedBranch(value);
+      if (field === "head") allowed = /^[0-9a-f]{7,40}$/.exec(value)?.[0] === value;
+      else if (field === "branch") allowed = allowedBranch(value);
       else {
         const [workflow, branch, sha, ...extra] = value.split("@");
         allowed = /^[A-Za-z0-9_-]+\.ya?ml$/.exec(workflow)?.[0] === workflow &&
