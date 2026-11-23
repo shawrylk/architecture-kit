@@ -73,22 +73,37 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
     let timedOut = false;
     let timer;
     const emitLine = (line, order = nextLine++) => {
-      lines.push({ text: redactOutput(line.replace(/\r$/, "")), order });
+      const text = line.trim() ? redactOutput(line.replace(/\r$/, "")) : "";
+      lines.push({ text, order });
       lines.sort((a, b) => a.order - b.order);
+      let blanks = 0;
+      for (let index = 0; index < lines.length; index++) {
+        blanks = lines[index].text ? 0 : blanks + 1;
+        if (blanks > 10) lines.splice(index--, 1);
+      }
       if (lines.length > 200) lines.shift();
     };
     const recorder = () => {
-      let group = [];
+      let group = null;
+      let blankLines = 0;
+      let blankOrder = 0;
+      const heldEntries = () => [
+        ...(group ? [group] : []),
+        ...Array.from({ length: blankLines }, (_, index) => ({ text: "", order: blankOrder + index })),
+      ];
       const emit = (line) => {
         const entry = { text: line.replace(/\r$/, ""), order: nextLine++ };
         if (!entry.text.trim()) {
-          group.push(entry);
+          if (!blankLines) blankOrder = entry.order;
+          blankLines = Math.min(10, blankLines + 1);
           return;
         }
-        const redacted = redactOutput([...group.map(({ text }) => text), entry.text].join("\n")).split("\n");
-        for (let index = 0; index < redacted.length - 1; index++) emitLine(redacted[index], group[index].order);
+        const entries = heldEntries();
+        const redacted = redactOutput([...entries.map(({ text }) => text), entry.text].join("\n")).split("\n");
+        for (let index = 0; index < redacted.length - 1; index++) emitLine(redacted[index], entries[index].order);
         // Keep completion order when a held line is emitted after another stream's lines.
-        group = [{ text: redacted.at(-1), order: entry.order }];
+        group = { text: redacted.at(-1), order: entry.order };
+        blankLines = 0;
       };
       let buffer = "";
       let end = "";
@@ -149,9 +164,11 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
         flush() {
           if (buffer) consume(buffer, dropping);
           if (prefix) emit(prefix);
-          const redacted = redactOutput(group.map(({ text }) => text).join("\n")).split("\n");
-          for (let index = 0; index < group.length && index < redacted.length; index++) emitLine(redacted[index], group[index].order);
-          group = [];
+          const entries = heldEntries();
+          const redacted = redactOutput(entries.map(({ text }) => text).join("\n")).split("\n");
+          for (let index = 0; index < entries.length && index < redacted.length; index++) emitLine(redacted[index], entries[index].order);
+          group = null;
+          blankLines = 0;
           buffer = "";
           prefix = "";
         },

@@ -179,10 +179,22 @@ test("shell proof keeps AWS label context across blank lines on each stream", as
   }
 });
 
+test("shell proof caps whitespace-only runs before the end sentinel", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      process.${stream}.write((" ".repeat(1024) + "\\n").repeat(20000) + "end-sentinel");
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "\n".repeat(9) + "end-sentinel");
+  }
+});
+
 test("shell proof skips trailing blank lines before taking the tail", async (t) => {
   for (const stream of ["stdout", "stderr"]) {
     const f = fixture(t);
-    const output = "failure-sentinel" + "\n".repeat(12);
+    const output = "failure-sentinel" + "\n".repeat(202);
     writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
     const result = await runShell("node print-output.cjs", { cwd: f.worktree });
     assert.equal(result.status, 0);
