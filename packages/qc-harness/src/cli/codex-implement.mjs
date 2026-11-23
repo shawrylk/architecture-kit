@@ -325,8 +325,11 @@ function diffContract(brief) {
   return { paths, design };
 }
 
+/** Fragment: this worktree's HEAD history also detects commits later reset away. */
 function scoutReflog(worktree) {
-  return execFileSync("git", ["reflog", "show", "--all", "--format=%H"], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const options = { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] };
+  if (!execFileSync("git", ["rev-parse", "--revs-only", "HEAD"], options).trim()) return "";
+  return execFileSync("git", ["reflog", "show", "--format=%H", "HEAD"], options);
 }
 
 function scoutDirt(worktree) {
@@ -465,7 +468,7 @@ async function runJob(argv, {
     try {
       if (settings.role === "scout") {
         const after = guardRefs(settings.worktree);
-        if (after.head !== boundary.head || after.branch !== boundary.branch || JSON.stringify(after.recordedRefs) !== JSON.stringify(boundary.recordedRefs) || scoutReflog(settings.worktree) !== boundary.reflog || scoutDirt(settings.worktree)) {
+        if (after.head !== boundary.head || after.branch !== boundary.branch || scoutReflog(settings.worktree) !== boundary.reflog || scoutDirt(settings.worktree)) {
           return finish(say, "guard refused: scout changed commits or tracked, staged, or untracked worktree files", 4);
         }
       }

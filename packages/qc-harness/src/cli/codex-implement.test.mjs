@@ -1684,6 +1684,23 @@ function approvalConfig(f) {
 }
 
 test("scout run that commits → exit 4", async (t) => {
+  const linked = scoutFixture(t);
+  commitFile(linked, "src/example.mjs", "before\n");
+  const other = path.join(linked.dir, "other");
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", ["-C", cwd, "-c", "user.name=Test", "-c", "user.email=test@example.test", ...args], { encoding: "utf8", env: linked.gitEnv });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  git(linked.worktree, "worktree", "add", "-qb", "other", other);
+  const head = git(linked.worktree, "rev-parse", "HEAD");
+  assert.equal(await runCodexImplement(linked.argv, { say: quiet, out: quiet, run: async () => {
+    git(other, "commit", "--allow-empty", "-qm", "other worktree");
+    assert.equal(git(linked.worktree, "rev-parse", "HEAD"), head);
+    writeFileSync(linked.report, SCOUT_REPORT);
+    writeFileSync(linked.progress, DONE_MARKER);
+    return { status: 0 };
+  } }), 0);
   const f = scoutFixture(t);
   assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async ({ env, input }) => {
     assert.equal(env.QC_ROLE, "scout");
@@ -1693,65 +1710,7 @@ test("scout run that commits → exit 4", async (t) => {
     writeFileSync(f.progress, DONE_MARKER);
     return { status: 2, tail: "usage limit" };
   } }), 4);
-});
-
-test("scout report without Breaking: → exit 3", async (t) => {
-  const f = scoutFixture(t);
-  const messages = [];
-  assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => {
-    writeFileSync(f.report, SCOUT_REPORT.replace("Breaking: no\n", ""));
-    writeFileSync(f.progress, DONE_MARKER);
-    return { status: 0 };
-  } }), 3);
-  assert.match(messages.join("\n"), /Breaking:/);
-});
-
-test("implement brief without Approved: → exit 1 naming Approved:", async (t) => {
-  const f = setup(t);
-  approvalConfig(f);
-  writeFileSync(f.brief, `${VALID_BRIEF}\n## Design\nFiles: src/example.mjs\n`);
-  const messages = [];
-  assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => assert.fail("approval required") }), 1);
-  assert.match(messages.join("\n"), /Approved:/);
-});
-
-test("approval is opt-in; Design is fixed and approval paths resolve beside the brief", async (t) => {
-  for (const approved of [false, true]) {
-    const f = setup(t);
-    if (approved) {
-      approvalConfig(f);
-      writeFileSync(path.join(f.dir, "approved.md"), SCOUT_REPORT);
-      writeFileSync(f.brief, `${VALID_BRIEF}\nApproved: approved.md\n## Design\n1. src/example.mjs\n`);
-    }
-    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
-      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
-    } }), 0);
-  }
-});
-
-for (const [extra, expected] of [
-  ["", /Design/], ["\n## Design\nFiles: src/example.mjs\nApproved: missing.md\n", /Approved:/],
-]) test(`approval refuses missing or unreadable design data ${extra}`, async (t) => {
-  const f = setup(t); approvalConfig(f); writeFileSync(f.brief, VALID_BRIEF + extra);
-  const messages = [];
-  assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => assert.fail("invalid approval") }), 1);
-  assert.match(messages.join("\n"), expected);
-});
-
-test("role defaults, review alias, conflicts and explicit resume", (t) => {
-  const f = setup(t);
-  assert.equal(parseArgs(f.argv).role, "implement");
-  assert.equal(parseArgs([...f.argv, "--review"]).role, "review");
-  assert.equal(parseArgs([...f.argv, "--role", "review"]).review, true);
-  assert.equal(parseArgs([...f.argv, "--review", "--role", "review"]).role, "review");
-  assert.throws(() => parseArgs([...f.argv, "--review", "--role", "scout"]), /conflict|combined/);
-  assert.throws(() => parseArgs([...f.argv, "--role", "unknown"]), /role/);
-  assert.throws(() => parseArgs([...f.argv, "--role", "review", "--effort", "high"]), /effort/);
-  assert.equal(parseArgs([...f.argv, "--resume", "thread-id"]).resume, "thread-id");
-});
-
-for (const kind of ["untracked", "tracked", "staged", "initial dirt", "empty commit"]) {
-  test(`scout refuses ${kind} before completion and limits`, async (t) => {
+  for (const kind of ["untracked", "tracked", "staged", "initial dirt", "empty commit"]) {
     const f = scoutFixture(t);
     if (kind !== "untracked") commitFile(f, "src/example.mjs", "before\n");
     if (kind === "initial dirt") writeFileSync(path.join(f.worktree, "initial.txt"), "dirt\n");
@@ -1769,18 +1728,121 @@ for (const kind of ["untracked", "tracked", "staged", "initial dirt", "empty com
       return { status: 2, tail: "usage limit" };
     } }), 4);
     assert.equal(calls, kind === "initial dirt" ? 0 : 1);
-  });
-}
+  }
+  {
+    const f = scoutFixture(t); const base = commitFile(f, "src/example.mjs", "before\n");
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+      commitFile(f, "src/example.mjs", "after\n");
+      const reset = spawnSync("git", ["-C", f.worktree, "reset", "--hard", base], { encoding: "utf8" });
+      assert.equal(reset.status, 0, reset.stderr);
+      writeFileSync(f.report, SCOUT_REPORT); writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), 4);
+  }
+});
 
-for (const label of ["Gap", "Plan", "Check", "Risks", "Questions", "Breaking"]) {
-  test(`scout report requires ${label} and valid Breaking`, async (t) => {
+test("scout report without Breaking: → exit 3", async (t) => {
+  const f = scoutFixture(t);
+  const messages = [];
+  assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => {
+    writeFileSync(f.report, SCOUT_REPORT.replace("Breaking: no\n", ""));
+    writeFileSync(f.progress, DONE_MARKER);
+    return { status: 0 };
+  } }), 3);
+  assert.match(messages.join("\n"), /Breaking:/);
+  for (const label of ["Gap", "Plan", "Check", "Risks", "Questions", "Breaking"]) {
     const f = scoutFixture(t);
     assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
       writeFileSync(f.report, label === "Breaking" ? SCOUT_REPORT.replace("Breaking: no", "Breaking: perhaps") : SCOUT_REPORT.replace(new RegExp(`^${label}:.*\\n`, "m"), ""));
       writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
     } }), 3);
-  });
-}
+  }
+});
+
+test("implement brief without Approved: → exit 1 naming Approved:", async (t) => {
+  const f = setup(t);
+  approvalConfig(f);
+  writeFileSync(f.brief, `${VALID_BRIEF}\n## Design\nFiles: src/example.mjs\n`);
+  const messages = [];
+  assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => assert.fail("approval required") }), 1);
+  assert.match(messages.join("\n"), /Approved:/);
+  for (const [extra, expected] of [
+    ["", /Design/], ["\n## Design\nFiles: src/example.mjs\nApproved: missing.md\n", /Approved:/],
+  ]) {
+    const f = setup(t); approvalConfig(f); writeFileSync(f.brief, VALID_BRIEF + extra);
+    const messages = [];
+    assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => assert.fail("invalid approval") }), 1);
+    assert.match(messages.join("\n"), expected);
+  }
+});
+
+test("approval is opt-in; Design is fixed and approval paths resolve beside the brief", async (t) => {
+  for (const approved of [false, true]) {
+    const f = setup(t);
+    if (approved) {
+      approvalConfig(f);
+      writeFileSync(path.join(f.dir, "approved.md"), SCOUT_REPORT);
+      writeFileSync(f.brief, `${VALID_BRIEF}\nApproved: approved.md\n## Design\n1. src/example.mjs\n`);
+    }
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), 0);
+  }
+  {
+    for (const role of ["implement", "tests"]) {
+      const f = setup(t);
+      let runs = 0;
+      assert.equal(await runCodexImplement([...f.argv, "--role", role, "--max-runs", "2"], { say: quiet, out: quiet, run: async () => {
+        runs += 1;
+        if (runs === 1) { writeFileSync(f.brief, VALID_BRIEF.replace("src/example.mjs", "outside.mjs")); return { status: 0 }; }
+        writeFileSync(path.join(f.worktree, "outside.mjs"), "safe\n");
+        writeFileSync(f.progress, DONE_MARKER); return { status: 2, tail: "usage limit" };
+      } }), 4);
+    }
+  }
+  {
+    const f = setup(t); approvalConfig(f);
+    assert.equal(await runCodexImplement([...f.argv, "--role", "tests"], { say: quiet, out: quiet, run: async ({ env }) => {
+      assert.equal(env.QC_ROLE, "tests"); writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), 0);
+  }
+  {
+    for (const mode of ["design", "limit"]) {
+      const f = setup(t);
+      writeFileSync(f.brief, `${VALID_BRIEF}Paths: package.json\n## Design\nDependencies: none\n`);
+      let calls = 0;
+      assert.equal(await runCodexImplement([...f.argv, "--max-runs", "2"], { say: quiet, out: quiet, run: async () => {
+        if (++calls === 1) {
+          writeFileSync(f.brief, `${VALID_BRIEF}Paths: package.json\n## Design\nDependencies: added\n`);
+          writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { maxDiffLines: 1000 } }));
+          return { status: 0 };
+        }
+        if (mode === "design") writeFileSync(path.join(f.worktree, "package.json"), '{"dependencies":{"added":"1"}}');
+        else { mkdirSync(path.join(f.worktree, "src")); writeFileSync(path.join(f.worktree, "src/example.mjs"), "line\n".repeat(401)); }
+        writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+      } }), 4);
+      assert.equal(calls, 2);
+    }
+  }
+});
+
+test("role defaults, review alias, conflicts and explicit resume", async (t) => {
+  const f = setup(t);
+  assert.equal(parseArgs(f.argv).role, "implement");
+  assert.equal(parseArgs([...f.argv, "--review"]).role, "review");
+  assert.equal(parseArgs([...f.argv, "--role", "review"]).review, true);
+  assert.equal(parseArgs([...f.argv, "--review", "--role", "review"]).role, "review");
+  assert.throws(() => parseArgs([...f.argv, "--review", "--role", "scout"]), /conflict|combined/);
+  assert.throws(() => parseArgs([...f.argv, "--role", "unknown"]), /role/);
+  assert.throws(() => parseArgs([...f.argv, "--role", "review", "--effort", "high"]), /effort/);
+  assert.equal(parseArgs([...f.argv, "--resume", "thread-id"]).resume, "thread-id");
+  for (const [key, value] of [["requireApproval", "yes"], ["maxDiffLines", 0], ["maxDiffLines", 1.5]]) {
+    const f = setup(t);
+    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { [key]: value } }));
+    const messages = [];
+    assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => assert.fail("bad configuration") }), 1);
+    assert.ok(messages.some((s) => s.includes(`codex.${key}`)));
+  }
+});
 
 test("scout requires a fresh readable report and accepts all six labels", async (t) => {
   for (const mode of ["missing", "stale", "directory", "valid"]) {
@@ -1792,34 +1854,6 @@ test("scout requires a fresh readable report and accepts all six labels", async 
       writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
     } }), mode === "valid" ? 0 : 3);
   }
-});
-
-test("diff shape runs without approval and freezes paths, Design and limits across retries", async (t) => {
-  for (const role of ["implement", "tests"]) {
-    const f = setup(t);
-    let runs = 0;
-    assert.equal(await runCodexImplement([...f.argv, "--role", role, "--max-runs", "2"], { say: quiet, out: quiet, run: async () => {
-      runs += 1;
-      if (runs === 1) { writeFileSync(f.brief, VALID_BRIEF.replace("src/example.mjs", "outside.mjs")); return { status: 0 }; }
-      writeFileSync(path.join(f.worktree, "outside.mjs"), "safe\n");
-      writeFileSync(f.progress, DONE_MARKER); return { status: 2, tail: "usage limit" };
-    } }), 4);
-  }
-});
-
-test("resume places global options before exec and uses cwd, stdin and JSON sessions", async (t) => {
-  const f = setup(t);
-  const messages = [];
-  assert.equal(await runCodexImplement([...f.argv, "--resume", "saved-thread"], { say: (s) => messages.push(s), out: quiet, run: async (call) => {
-    const at = call.args.indexOf("exec");
-    assert.deepEqual(call.args.slice(at, at + 3), ["exec", "resume", "saved-thread"]);
-    assert.equal(call.cwd, f.worktree);
-    assert.ok(call.args.includes("--json"));
-    assert.equal(call.args.at(-1), "-");
-    assert.match(call.input, /Product decisions/);
-    writeFileSync(f.progress, DONE_MARKER); return { status: 0, session: "actual-thread" };
-  } }), 0);
-  assert.match(messages.join("\n"), /session actual-thread/);
 });
 
 test("real child session capture survives a long tail and malformed JSON on retries", async (t) => {
@@ -1840,50 +1874,18 @@ if (fs.readFileSync(${JSON.stringify(f.progress)}, 'utf8').split('run').length >
   assert.equal(await runCodexImplement([...f.argv, "--resume", "saved", "--max-runs", "2"], { codexCommand: [process.execPath, child], say: (s) => messages.push(s), out: quiet }), 0);
   assert.equal(messages.filter((s) => s.includes("session real-id")).length, 2);
   assert.doesNotMatch(messages.join("\n"), /false-id/);
-});
-
-for (const [key, value] of [["requireApproval", "yes"], ["maxDiffLines", 0], ["maxDiffLines", 1.5]]) {
-  test(`invalid codex.${key} refuses before spawn: ${value}`, async (t) => {
+  {
     const f = setup(t);
-    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { [key]: value } }));
     const messages = [];
-    assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => assert.fail("bad configuration") }), 1);
-    assert.ok(messages.some((s) => s.includes(`codex.${key}`)));
-  });
-}
-
-test("scout rejects a commit followed by a reset to the starting HEAD", async (t) => {
-  const f = scoutFixture(t); const base = commitFile(f, "src/example.mjs", "before\n");
-  assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
-    commitFile(f, "src/example.mjs", "after\n");
-    const reset = spawnSync("git", ["-C", f.worktree, "reset", "--hard", base], { encoding: "utf8" });
-    assert.equal(reset.status, 0, reset.stderr);
-    writeFileSync(f.report, SCOUT_REPORT); writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
-  } }), 4);
-});
-
-test("tests role keeps its usual brief rules when approval is enabled", async (t) => {
-  const f = setup(t); approvalConfig(f);
-  assert.equal(await runCodexImplement([...f.argv, "--role", "tests"], { say: quiet, out: quiet, run: async ({ env }) => {
-    assert.equal(env.QC_ROLE, "tests"); writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
-  } }), 0);
-});
-
-test("Design and maxDiffLines cannot be widened between code-writing retries", async (t) => {
-  for (const mode of ["design", "limit"]) {
-    const f = setup(t);
-    writeFileSync(f.brief, `${VALID_BRIEF}Paths: package.json\n## Design\nDependencies: none\n`);
-    let calls = 0;
-    assert.equal(await runCodexImplement([...f.argv, "--max-runs", "2"], { say: quiet, out: quiet, run: async () => {
-      if (++calls === 1) {
-        writeFileSync(f.brief, `${VALID_BRIEF}Paths: package.json\n## Design\nDependencies: added\n`);
-        writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { maxDiffLines: 1000 } }));
-        return { status: 0 };
-      }
-      if (mode === "design") writeFileSync(path.join(f.worktree, "package.json"), '{"dependencies":{"added":"1"}}');
-      else { mkdirSync(path.join(f.worktree, "src")); writeFileSync(path.join(f.worktree, "src/example.mjs"), "line\n".repeat(401)); }
-      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
-    } }), 4);
-    assert.equal(calls, 2);
+    assert.equal(await runCodexImplement([...f.argv, "--resume", "saved-thread"], { say: (s) => messages.push(s), out: quiet, run: async (call) => {
+      const at = call.args.indexOf("exec");
+      assert.deepEqual(call.args.slice(at, at + 3), ["exec", "resume", "saved-thread"]);
+      assert.equal(call.cwd, f.worktree);
+      assert.ok(call.args.includes("--json"));
+      assert.equal(call.args.at(-1), "-");
+      assert.match(call.input, /Product decisions/);
+      writeFileSync(f.progress, DONE_MARKER); return { status: 0, session: "actual-thread" };
+    } }), 0);
+    assert.match(messages.join("\n"), /session actual-thread/);
   }
 });

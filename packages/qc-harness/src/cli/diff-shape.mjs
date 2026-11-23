@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { pathMatcher } from "../glob.mjs";
 
 const normalize = (file) => file.replace(/\\/g, "/").replace(/^\.\//, "");
 const splitNames = (text) => text.split("\0").filter(Boolean);
@@ -10,10 +9,14 @@ const splitNames = (text) => text.split("\0").filter(Boolean);
 function ownership(paths) {
   const patterns = paths.map(normalize).flatMap((file) => {
     const name = file.replace(/\/$/, "");
-    // A plain path may name either a file or a folder.
-    return file.includes("*") ? [file, file.replace(/\*\*\//g, "")] : [name, `${name}/**`];
+    return file.includes("*") ? [file] : [name, `${name}/**`];
+  }).map((glob) => {
+    // Each recursive directory segment can independently consume zero or more folders.
+    const body = glob.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*\*\/|\*\*|\*/g, (token) => token === "**/" ? "(?:[^/]+/)*" : token === "**" ? ".*" : "[^/]*");
+    return new RegExp(`^${body}$`, process.platform === "win32" ? "i" : "");
   });
-  return pathMatcher(patterns);
+  return (file) => patterns.some((pattern) => pattern.test(file));
 }
 
 /** Fragment: parses NUL-delimited numstat without Git's quoted-path ambiguity. */
@@ -43,7 +46,7 @@ function manifest(text, file) {
 /** Branch: new dependency keys (including aliases) need their exact names in Design. */
 function dependencyProblems(file, original, versions, design) {
   const problems = new Set();
-  const approved = new Set(design.match(/[@\w][@\w./-]*/g) ?? []);
+  const approved = new Set((design.match(/[@\w][@\w./-]*/g) ?? []).flatMap((name) => [name, name.replace(/\.+$/, "")]));
   for (const text of versions) {
     const current = manifest(text, file);
     for (const section of ["dependencies", "devDependencies"]) {
