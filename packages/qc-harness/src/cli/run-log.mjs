@@ -1,5 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
+import { redactOutput } from "./output-redaction.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 
@@ -15,6 +17,15 @@ export function runLogFileOf(cwd) {
 /** Append one complete JSON line; the caller owns warnings and exit policy. */
 export function appendRun(file, record) {
   if (!file) throw new Error("cannot find the git common directory");
+  record = { ...record };
+  for (const field of ["branch", "pr", "run"]) {
+    const value = record[field];
+    if (typeof value !== "string") continue;
+    const cleaned = redactOutput(value).split(os.hostname()).join("[REDACTED]")
+      .replace(/(?:[a-z]+:\/\/|\\\\)[^\s"'`]+/gi, "[REDACTED]")
+      .replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?=[:/\s]|$)/gi, "[REDACTED]");
+    if (cleaned !== value) record[field] = "[REDACTED]";
+  }
   mkdirSync(path.dirname(file), { recursive: true });
   appendFileSync(file, `${JSON.stringify(record)}\n`);
 }

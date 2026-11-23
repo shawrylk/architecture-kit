@@ -1179,14 +1179,16 @@ The session writes the done marker only after the exit criteria hold. A session 
 |---|---|
 | `<git common dir>/qc/runs.jsonl` | Append-only local Codex and CI run lines, shared by every worktree; created on the first run |
 | `qc metrics [--since <YYYY-MM-DD>]` | Summarize local runs in at most 15 lines; default since is seven days ago |
+| `refusal` | Fixed id: `guard:<rule>` (guard rule matching `^[a-z0-9-]{1,40}$`), `diff-shape`, `brief:<rule>`, `reviewed`, or `other`; null when no refusal |
 
 The Codex runner appends one line on every exit, including launch errors and guard refusals.
-It records the time, branch, issue number from `Issue:`, role, effort, exit, first refusal line
-(up to 120 characters), input and output tokens, minutes, Verify and Live outcomes, first-line
+It records the time, branch, issue number from `Issue:`, role, effort, exit, fixed `refusal` id,
+input and output tokens, minutes, structured Verify and Live outcomes, first-line
 report verdict, and count of findings starting with `- [P`. A brief title containing the word
 `fix` records the role as `fix`. Tokens sum every `turn.completed` event across this invocation's
 turns and retries, using zero when no usage is present. Unrun verification groups have null outcomes.
-Briefs, prompts, external paths, and host names are not recorded. A write failure prints one warning
+Text fields `branch`, `pr`, and `run` are checked for secrets and host names; a changed field
+is stored as `[REDACTED]`. Briefs, prompts, external paths, and host names are not recorded. A write failure prints one warning
 to stderr and leaves the exit code unchanged.
 
 `qc watch --pr` and `--run` append a CI line when the item passes or fails, with its PR number or

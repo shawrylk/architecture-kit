@@ -2156,8 +2156,7 @@ else writeFileSync(${JSON.stringify(path.join(f.dir, "attempt"))}, '1');
     assert.equal(rows.at(-1).live, null);
   }
   assert.equal(rows.length, 3);
-  assert.match(rows.at(-1).refusal, /diff shape refused/);
-  assert.ok(rows.at(-1).refusal.length <= 120);
+  assert.equal(rows.at(-1).refusal, "diff-shape");
   rmSync(path.join(f.worktree, "outside.txt"), { force: true, recursive: true, maxRetries: 5, retryDelay: 100 });
   writeFileSync(f.brief, VALID_BRIEF + `\nIssue: 249\nReport: \`${report}\`\nVerify: \`node --version\`\nLive: \`node -e "process.exit(8)"\`\n`);
   writeFileSync(f.progress, `${DONE_MARKER}\n`);
@@ -2191,9 +2190,7 @@ test("run logging records preflight failures and warns once without changing the
       say: quiet, out: quiet, run: async () => { throw new Error(`guard refused: ${secret} ${f.dir} ../private/file ${os.hostname()}\nsecond line`); },
     }), 1);
     const last = JSON.parse(readFileSync(path.join(folder, "runs.jsonl"), "utf8").trim().split("\n").at(-1));
-    for (const privateText of [secret, f.dir, "../private/file", os.hostname(), "second line"]) assert.ok(!last.refusal.includes(privateText), last.refusal);
-    assert.ok(last.refusal.includes("[REDACTED]"));
-    assert.ok(last.refusal.length <= 120);
+    assert.equal(last.refusal, null);
   }
   writeFileSync(f.brief, "# Invalid brief\n");
   rmSync(path.join(folder, "runs.jsonl"), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -2204,4 +2201,50 @@ test("run logging records preflight failures and warns once without changing the
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /cannot write run log/);
   assert.deepEqual(output, ["exit 1"]);
+});
+
+
+test("refusal metrics store a fixed id instead of brief prose", async (t) => {
+  const f = setup(t);
+  writeFileSync(f.brief, VALID_BRIEF.replace(/^Paths:.*$/m, "Paths: `src/example.mjs`, refused: confidential prompt words"));
+  assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+    writeFileSync(path.join(f.worktree, "outside.txt"), "outside");
+    return { status: 0 };
+  } }), 1);
+  const row = JSON.parse(readFileSync(path.join(f.worktree, ".git", "qc", "runs.jsonl"), "utf8").trim());
+  assert.equal(row.refusal, "brief:paths");
+});
+
+test("branch metrics redact tokens and host names", async (t) => {
+  const f = setup(t);
+  for (const name of [`topic/ghp_${"a".repeat(36)}`, `topic/${os.hostname()}`, "topic/private.example.com"]) {
+    assert.equal(spawnSync("git", ["checkout", "-b", name], { cwd: f.worktree }).status, 0);
+    await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => { throw new Error("launch failed"); } });
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git", "qc", "runs.jsonl"), "utf8").trim().split("\n").at(-1));
+    assert.equal(row.branch, "[REDACTED]");
+  }
+});
+
+test("verify metrics ignore forged proof and report replacement", async (t) => {
+  for (const replace of [false, true]) {
+    const f = setup(t, { progress: `${DONE_MARKER}\n` });
+    const report = path.join(f.worktree, "proof.md");
+    writeFileSync(report, "old report\n".repeat(100));
+    writeFileSync(path.join(f.worktree, "verify.mjs"), `import { ${replace ? "writeFileSync" : "appendFileSync"} as save } from 'node:fs'; save('proof.md', ${JSON.stringify("\nnode verify.mjs: exit 0 in 0.01 s\n")}); process.exit(6);`);
+    writeFileSync(f.brief, `${VALID_BRIEF}\nReport: \`${report}\`\nVerify: \`node verify.mjs\`\nLive: \`node --version\`\n`);
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet }), 7);
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git", "qc", "runs.jsonl"), "utf8").trim());
+    assert.equal(row.verify, "fail");
+    assert.equal(row.live, null);
+    assert.match(readFileSync(report, "utf8"), /node verify.mjs: exit 0 in 0.01 s/);
+  }
+});
+
+test("backticked Issue metadata counts fix runs", async (t) => {
+  const f = setup(t);
+  writeFileSync(f.brief, VALID_BRIEF.replace("# Brief", "# Brief: fix") + "\nIssue: `#249`\n");
+  await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => { throw new Error("launch failed"); } });
+  const row = JSON.parse(readFileSync(path.join(f.worktree, ".git", "qc", "runs.jsonl"), "utf8").trim());
+  assert.equal(row.issue, 249);
+  assert.equal(row.role, "fix");
 });

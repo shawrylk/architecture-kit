@@ -57,3 +57,17 @@ test("metrics defaults to seven days and routes lazily without loading invalid c
     assert.equal(runMetrics(argv, { cwd: dir, now, say() {}, warn() {} }), 1);
   }
 });
+
+
+test("metrics ranks four refusal ids and fix issues and cuts each at three", (t) => {
+  const { dir, file } = fixture(t);
+  const rows = [];
+  for (const [index, refusal] of ["other", "diff-shape", "guard:protected-path", "reviewed"].entries()) {
+    for (let n = 0; n <= index; n++) rows.push({ kind: "codex", time: "2026-11-20T00:00:00Z", role: "fix", exit: 4, inputTokens: 0, issue: 100 + index, refusal });
+  }
+  writeFileSync(file, rows.map(JSON.stringify).join("\n") + "\n");
+  const lines = [];
+  assert.equal(runMetrics([], { cwd: dir, now, say: line => lines.push(line) }), 0);
+  assert.deepEqual(lines.filter(line => line.startsWith("refusal:")), ["refusal: reviewed — 4", "refusal: guard:protected-path — 3", "refusal: diff-shape — 2"]);
+  assert.deepEqual(lines.filter(line => line.startsWith("fix issue:")), ["fix issue: #103 — 4", "fix issue: #102 — 3", "fix issue: #101 — 2"]);
+});
