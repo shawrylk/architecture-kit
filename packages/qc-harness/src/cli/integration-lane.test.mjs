@@ -153,7 +153,7 @@ test("a failed history read reports a git problem", (t) => {
   assert.match(result.problem, /git cannot/);
 });
 
-test("every dispatched scope blocks until it approves across head changes", (t) => {
+test("a dispatched scope without a verdict does not block an approved head across head changes", (t) => {
   const repo = integrationRepo(t);
   const head = repo.mergeHeads[1];
   const records = [
@@ -165,7 +165,7 @@ test("every dispatched scope blocks until it approves across head changes", (t) 
     return result.applies ? { problem: result.problem, note: "lane" } : null;
   };
   const refusal = (sha) => mergeVerdict([{ sha }], records, "branch", lane).refusal;
-  assert.match(refusal(head), /scope "b"/);
+  assert.equal(refusal(head), null);
   assert.match(refusal(repo.sha) ?? "", /scope "b"/);
   repo.git("switch", "-q", "main");
   repo.baseOid = repo.commit("base-change.txt", "base update\n", "update the base");
