@@ -3,7 +3,7 @@ import test from "node:test";
 import { createHash } from "node:crypto";
 import { watchedItems } from "./comment-watch.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -21,7 +21,7 @@ test("watch detection keeps closed issues, PR output, and body references", () =
 
 test("PowerShell detects explicit repositories, body files, and commit references", (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-comment-detection-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   writeFileSync(path.join(cwd, "body.txt"), "Refs #8");
   for (const tool_name of ["Bash", "PowerShell"]) {
     const items = watchedItems({ cwd, tool_name, tool_input: {
@@ -33,8 +33,9 @@ test("PowerShell detects explicit repositories, body files, and commit reference
 
 function fixture(t) {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-comment-watch-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const env = { ...process.env, GIT_CONFIG_GLOBAL: path.join(cwd, "empty-gitconfig"), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_COUNT: "0" };
+  delete env.GH_CONFIG_DIR;
   writeFileSync(env.GIT_CONFIG_GLOBAL, "");
   for (const args of [["init", "-q"], ["-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "fixture"], ["remote", "add", "origin", "https://github.com/shawrylk/example.git"]]) {
     assert.equal(spawnSync("git", args, { cwd, env }).status, 0);
@@ -90,8 +91,29 @@ function fixture(t) {
   return { cwd, rows, update, run, calls };
 }
 
+for (const exists of [false, true]) {
+  test(`a mapped config folder that ${exists ? "exists sets GH_CONFIG_DIR" : "does not exist leaves GH_CONFIG_DIR unset"}`, (t) => {
+    const f = fixture(t);
+    const folder = path.join(f.cwd, "gh-config");
+    if (exists) mkdirSync(folder);
+    writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: `~/${path.relative(os.homedir(), folder).split(path.sep).join("/")}` } } }));
+    f.run("PostToolUse", "gh pr view 7");
+    f.run("UserPromptSubmit");
+    const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
+    const mapped = calls.filter(call => call.args.some(arg => arg.includes("shawrylk/example")));
+    assert.ok(mapped.length > 0);
+    for (const call of mapped) assert.equal(call.config, exists ? folder : undefined);
+    const unmapped = calls.filter(call => call.args.some(arg => arg.includes("ArentInc/other")));
+    assert.ok(unmapped.length > 0);
+    for (const call of unmapped) assert.equal(call.config, undefined);
+  });
+}
+
 test("prompts show shared-login feedback once, retain failures, and isolate sessions and accounts", (t) => {
   const f = fixture(t);
+  const folder = path.join(f.cwd, "gh-personal");
+  mkdirSync(folder);
+  writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: folder } } }));
   f.run("PostToolUse", "gh issue close 4");
   f.run("PostToolUse", "gh pr view 7");
   f.update({ fail: true });
@@ -107,9 +129,11 @@ test("prompts show shared-login feedback once, retain failures, and isolate sess
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Edited comment/);
   assert.equal(f.run("UserPromptSubmit", "", "comment-watch.mjs", "other-session"), null);
   const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
-  assert.ok(calls.some(call => call.args.some(arg => arg.includes("ArentInc/other")) && call.config === ""));
-  assert.ok(calls.some(call => call.config === path.join(os.homedir(), ".config", "gh-personal")));
-  writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: "~/custom-gh" } } }));
+  assert.ok(calls.some(call => call.args.some(arg => arg.includes("ArentInc/other")) && call.config === undefined));
+  assert.ok(calls.some(call => call.config === folder));
+  const customFolder = path.join(f.cwd, "custom-gh");
+  mkdirSync(customFolder);
+  writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: customFolder } } }));
   f.run("UserPromptSubmit");
   assert.match(readFileSync(f.calls, "utf8"), /custom-gh/);
   writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ commentWatch: false }));

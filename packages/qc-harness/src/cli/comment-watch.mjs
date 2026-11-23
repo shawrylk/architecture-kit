@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Trigger: surface GitHub comments and keep their acknowledgments in a session ledger.
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +10,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { originOf } from "./git-read.mjs";
 import { ghCalls, ghCommand, ghMerges } from "./gh-merge-command.mjs";
-import { runGhAsync } from "./gh-run.mjs";
+import { expandHome, runGhAsync } from "./gh-run.mjs";
 import { commandWords } from "./shell-command.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -142,9 +142,11 @@ function ledger(root, session) {
 function github(root, config, deadline, run) {
   return async (repo, args) => {
     const dir = Object.entries(config.github?.configDirs ?? {}).find(([owner]) => owner.toLowerCase() === repo.split("/")[0].toLowerCase())?.[1];
+    const env = expandHome({ GH_PROMPT_DISABLED: "1", ...(dir ? { GH_CONFIG_DIR: dir } : {}) });
+    if (env.GH_CONFIG_DIR && !existsSync(env.GH_CONFIG_DIR)) delete env.GH_CONFIG_DIR;
     const timeoutMs = deadline - Date.now();
     if (timeoutMs <= 0) throw new Error("deadline");
-    const text = await run(args, { cwd: root, env: { GH_CONFIG_DIR: dir ?? "", GH_PROMPT_DISABLED: "1" }, timeoutMs });
+    const text = await run(args, { cwd: root, env, timeoutMs });
     if (text === null) throw new Error("gh");
     const result = JSON.parse(text);
     return result;
