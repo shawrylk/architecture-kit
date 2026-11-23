@@ -142,6 +142,7 @@ async function importingTests(root, changed) {
       }
       if (uncertain) uncertainFiles.add(file);
     }
+    const namedTests = new Map();
     // Unknown loaders can read any changed module; cover their readers too, or run the full suite.
     for (const file of new Set([...changed, ...uncertainFiles])) {
       const seen = new Set([file]), queue = [file], covered = new Set();
@@ -149,9 +150,13 @@ async function importingTests(root, changed) {
       if (known.has(sibling)) covered.add(sibling);
       for (const next of queue) {
         if (isTest(next)) covered.add(next);
-        else for (const [test, text] of testTexts) {
-          if (text.includes(path.posix.basename(next))) covered.add(test);
+        const basename = path.posix.basename(next);
+        if (!namedTests.has(basename)) {
+          const matches = new Set();
+          for (const [test, text] of testTexts) if (text.includes(basename)) matches.add(test);
+          namedTests.set(basename, matches);
         }
+        for (const test of namedTests.get(basename)) covered.add(test);
         for (const reader of readers.get(next) ?? []) if (!seen.has(reader)) { seen.add(reader); queue.push(reader); }
       }
       if (!covered.size) return null;
