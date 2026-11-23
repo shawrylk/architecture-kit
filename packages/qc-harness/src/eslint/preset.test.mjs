@@ -293,7 +293,7 @@ test("a disable comment silences its rule, and one that silences nothing is an e
 
 test("a comment-style rule warns, and a rule of the reference stack is off until a repository turns it on", () => {
   const rules = emitted(preset({ config: config() }));
-  for (const name of ["no-comment-paragraph", "no-number-in-comment", "no-supersession-trail"]) assert.equal([rules.get(`qc/${name}`)].flat()[0], "warn", name);
+  for (const name of ["no-comment-paragraph", "no-number-in-comment", "no-supersession-trail", "timeless-comment"]) assert.equal([rules.get(`qc/${name}`)].flat()[0], "warn", name);
   for (const name of ["no-offset-pagination", "no-status-literal", "no-promise-then", "signal-last-param", "ime-safe-key"]) assert.equal(rules.get(`qc/${name}`), undefined, name);
   assert.equal([emitted(preset({ config: config({ rules: { "no-offset-pagination": true } }) })).get("qc/no-offset-pagination")].flat()[0], "error");
 });

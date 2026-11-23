@@ -256,6 +256,27 @@ export const defaults = {
     legacyBudget: undefined,
   },
 
+  // Prose a person reads is Simplified Technical English (ASD-STE100), in the Google developer
+  // documentation style. `replace` adds this repository's own vocabulary to the words the gate
+  // ships; a value of null drops one of those. `allow` names a path the rule does not reach.
+  plainLanguage: {
+    // An instruction is held shorter than a description: a reader acts on it while they read it.
+    maxInstructionWords: 20,
+    maxDescriptiveWords: 25,
+    maxParagraphSentences: 6,
+    passive: true,
+    headings: true,
+    links: true,
+    replace: {},
+    properNouns: [],
+    // Markdown is the document. A comment is prose that happens to sit inside code, and reaches a
+    // reader the same way, so it is read by the same rule.
+    extensions: ["md", "tsx?", "[cm]?js", "mjs"],
+    roots: ["docs"],
+    exclude: ["(^|/)node_modules(/|$)", "(^|/)dist(/|$)", "(^|/)\\.git(/|$)", "(^|/)coverage(/|$)"],
+    allow: [],
+  },
+
   // A decision record carries its cost and its rejected alternatives, or it is advocacy.
   adr: {
     root: "docs/decisions",
@@ -301,7 +322,9 @@ export const defaults = {
   scopedSuffixes: ["Repository", "Saga", "UnitOfWork", "UnitOfWorkFactory"],
 
   // A comment is one line of why; reasoning that wants a paragraph is a decision with an id.
-  comments: { maxLines: 2 },
+  // It is also timeless: `timeless` names the phrases that date one, and a list stated here
+  // replaces the rule's own rather than adding to it.
+  comments: { maxLines: 2, timeless: { promises: [], moments: [] } },
 
   // Switching a shipped check off names the decision that says why, or "off-by-design".
   floor: { exemptions: {} },
@@ -446,6 +469,7 @@ export const defaults = {
     "config-floor": false,
     "english-source": false,
     "adr-format": false,
+    "plain-language": false,
     "feature-cli": false,
     // Each reads inputs only a repository can name: its registry, its product roots, its closed
     // sets, its claims. Shipped on, each would also red a consumer's enforcement map on upgrade.
@@ -499,6 +523,7 @@ export const defaults = {
     "registry-literal": true,
     "durable-idempotency-key": true,
     "no-supersession-trail": true,
+    "timeless-comment": true,
   },
 
   // Layer names and their legal import direction. The kit ships the reference set;

@@ -74,6 +74,7 @@ function ruleOptions(config) {
       format: config.idempotency.format,
     },
     "no-supersession-trail": {},
+    "timeless-comment": timelessVocabulary(config),
     "signal-last-param": {},
     "no-offset-pagination": {},
     "no-status-literal": {},
@@ -81,7 +82,16 @@ function ruleOptions(config) {
 }
 
 // Rules on the style of a comment: a finding is advice, so it prints and never fails a change.
-const ADVICE = new Set(["no-comment-paragraph", "no-number-in-comment", "no-supersession-trail"]);
+const ADVICE = new Set(["no-comment-paragraph", "no-number-in-comment", "no-supersession-trail", "timeless-comment"]);
+/** A list a repository states replaces the rule's own; an empty one leaves the rule's defaults. */
+function timelessVocabulary(config) {
+  const stated = config.comments?.timeless ?? {};
+  const out = {};
+  for (const key of ["promises", "moments"]) {
+    if (Array.isArray(stated[key]) && stated[key].length > 0) out[key] = stated[key];
+  }
+  return out;
+}
 
 function entries(config, names) {
   const options = ruleOptions(config);
@@ -99,6 +109,7 @@ function entries(config, names) {
 const UNIVERSAL = [
   "durable-idempotency-key",
   "no-supersession-trail",
+  "timeless-comment",
   "no-comment-paragraph",
   "name-the-pattern",
   "no-number-in-comment",

@@ -43,6 +43,7 @@ import { checkFrontendBoundaries } from "../gates/frontend-boundaries.mjs";
 import { checkTestMirror, mirrorFolders } from "../gates/test-mirror.mjs";
 import { checkCommentStyle } from "../gates/comment-style.mjs";
 import { checkEnglishFiles, checkEnglishSource, checkTranslationPairs } from "../gates/english-source.mjs";
+import { checkPlainLanguage } from "../gates/plain-language.mjs";
 import { checkAdrFormat } from "../gates/adr-format.mjs";
 import { checkConfigFloor } from "../gates/config-floor.mjs";
 import { defaults } from "../config.mjs";
@@ -989,6 +990,14 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
         `    owing      ${Object.keys(ledger).length} file(s), ${owed} occurrence(s) still to translate — language.legacyNonEnglish`,
       );
     }
+  }
+
+  if (enabled(config.gates, "plain-language")) {
+    // Its own roots and its own extensions: a language rule asks which language, this one asks how
+    // plainly, and a repository answers the two questions over different parts of its tree.
+    const prose = await citableFiles(config, tree, config.plainLanguage.roots);
+    problems.push(...checkPlainLanguage(prose, config.plainLanguage));
+    lines.push(`OK  prose        ${prose.length} file(s) in short sentences, the active voice and the approved words`);
   }
 
   if (enabled(config.gates, "adr-format")) {
