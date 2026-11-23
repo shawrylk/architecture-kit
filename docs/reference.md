@@ -918,6 +918,7 @@ The comparison complements, negated `if` conditions, boolean swaps and `return u
 The check runs a baseline, then one mutant at a time in a detached temporary worktree containing the current files.
 Each mutant must pass `node --check` before the locked tests run. A syntax-error mutant is skipped and never counted as killed.
 Dependency links into the issue checkout resolve to the same paths in the temporary worktree, so workspace imports read the mutants.
+A link to a folder outside the repository stays as it is. A package there that links back into the issue checkout reads the original files, so a survivor in that path can be false (#232).
 It restores each file between changed lines and removes the temporary worktree in `finally`; the issue checkout is untouched.
 At most ten lines run within one 180-second budget, including the baseline. A child exceeding the deadline is killed.
 `runMutation` returns `{ survived: [{ file, line, mutant }], skippedLines }`; the skipped count includes lines
