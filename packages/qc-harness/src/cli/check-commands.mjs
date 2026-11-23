@@ -110,13 +110,20 @@ async function affectedTests(root, changed) {
 }
 
 async function importingTests(root, changed) {
-  if (changed.some((file) => !/^packages\/qc-harness\/src\/.*\.mjs$/.test(file) || !existsSync(path.join(root, file)))) return null;
+  const extension = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+  const isTest = (file) => /\.test\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
+  if (changed.some((file) => !file.startsWith("packages/qc-harness/src/") || !extension.test(file) || !existsSync(path.join(root, file)))) return null;
   try {
     const { default: ts } = await import("typescript");
-    const files = (await repoFiles(root)).filter((file) => file.endsWith(".mjs"));
+    const files = (await repoFiles(root)).filter((file) => extension.test(file));
     const known = new Set(files), readers = new Map(), uncertainFiles = new Set();
+    const tests = new Set(), mentions = new Map(changed.map((file) => [file, new Set()]));
     for (const file of files) {
-      const source = ts.createSourceFile(file, readFileSync(path.join(root, file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+      const text = readFileSync(path.join(root, file), "utf8");
+      if (isTest(file)) for (const changedFile of changed) {
+        if (text.includes(path.posix.basename(changedFile))) mentions.get(changedFile).add(file);
+      }
+      const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
       if (source.parseDiagnostics.length) return null;
       let uncertain = false;
       const visit = (node) => {
@@ -138,14 +145,13 @@ async function importingTests(root, changed) {
       visit(source);
       if (uncertain) uncertainFiles.add(file);
     }
-    const tests = new Set();
     // Unknown loaders can read any changed module; cover their readers too, or run the full suite.
     for (const file of new Set([...changed, ...uncertainFiles])) {
-      const seen = new Set([file]), queue = [file], covered = new Set();
-      const sibling = file.replace(/\.mjs$/, ".test.mjs");
+      const seen = new Set([file]), queue = [file], covered = new Set(mentions.get(file));
+      const sibling = file.replace(extension, (suffix) => `.test${suffix}`);
       if (known.has(sibling)) covered.add(sibling);
       for (const next of queue) {
-        if (next.endsWith(".test.mjs")) covered.add(next);
+        if (isTest(next)) covered.add(next);
         for (const reader of readers.get(next) ?? []) if (!seen.has(reader)) { seen.add(reader); queue.push(reader); }
       }
       if (!covered.size) return null;

@@ -277,6 +277,10 @@ test("--affected with one changed gate file runs that gate's test file and not a
   const put = (file, text) => writeFileSync(path.join(root, dir, file), text);
   put("gate.mjs", "export const value = 1;\n");
   put("bridge.mjs", "export { value } from './gate.mjs';\n");
+  for (const extension of ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]) {
+    put(`reader.${extension}`, "export { value } from './gate.mjs';\n");
+    put(`reader-${extension}.test.mjs`, `if (false) import('./reader.${extension}'); console.log('GRAPH ${extension}');\n`);
+  }
   for (const [name, source] of [["gate", ""], ["consumer", "import './bridge.mjs';"], ["unrelated", "throw Error('unrelated ran');"]]) {
     put(`${name}.test.mjs`, `${source} console.log("${name}.test.mjs");\n`);
   }
@@ -289,7 +293,20 @@ test("--affected with one changed gate file runs that gate's test file and not a
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.match(run.stdout, /gate\.test\.mjs/);
   assert.match(run.stdout, /consumer\.test\.mjs/);
+  for (const extension of ["js", "mjs", "cjs", "jsx", "ts", "mts", "cts", "tsx"]) assert.match(run.stdout, new RegExp(`GRAPH ${extension}\\b`));
   assert.doesNotMatch(run.stdout, /unrelated\.test\.mjs|FULL SUITE/);
+  const omittedReaders = [
+    ["consumer.test.js", "import { value } from './gate.mjs'; if (value !== 1) throw Error('JS READER');"],
+    ["runtime.test.mjs", "import { spawnSync } from 'node:child_process'; const run = spawnSync(process.execPath, ['--input-type=module', '-e', `import { value } from ${JSON.stringify(new URL('./gate.mjs', import.meta.url).href)}; process.exit(value === 1 ? 0 : 1)`]); if (run.status !== 0) throw Error('RUNTIME READER');"],
+  ];
+  const omittedRuns = omittedReaders.map(([file, source]) => {
+    put(file, source);
+    const result = check(root, ["--affected", "--base", base]);
+    rmSync(path.join(root, dir, file), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    return result;
+  });
+  assert.deepEqual(omittedRuns.map(({ status }) => status), [1, 1], omittedRuns.map(({ stdout, stderr }) => stdout + stderr).join("\n"));
+  for (const result of omittedRuns) assert.doesNotMatch(result.stdout, /unrelated\.test\.mjs|FULL SUITE/);
   put("dynamic.test.mjs", "const target = './gate.mjs'; await import(target); console.log('DYNAMIC COVERED');\n");
   git(root, "add", ".");
   run = check(root, ["--affected", "--base", base]);
