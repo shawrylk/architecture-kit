@@ -130,7 +130,8 @@ Every gate reads one file list: `git ls-files --cached --others --exclude-standa
 Without `check.related`, it selects sibling tests and tests that import each changed harness module, including transitive imports.
 The graph reads `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` sources and tests.
 It scans text for static imports, re-exports, bare imports, literal `import()` calls, and literal `require()` calls using only built-ins.
-Non-literal loader arguments and bare package specifiers make dependency coverage uncertain; matches inside comments or strings can add tests.
+Before scanning, it replaces block and line comments with spaces, preserving string and template literals and allowing whitespace between tokens.
+Non-literal loader arguments and bare package specifiers make dependency coverage uncertain; matches inside strings can add tests.
 It also selects every test whose text contains a changed file's base name (for example, `gate.mjs`), covering process and URL loads.
 Every affected selection includes all `packages/qc-harness/src/gates/*.test.mjs` files because they can scan the whole tree without importing changed modules.
 Runtime paths built without that literal base name can escape selection; spawning a process alone does not force the full suite.

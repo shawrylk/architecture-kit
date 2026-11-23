@@ -132,10 +132,11 @@ async function importingTests(root, changed) {
           else readers.set(target, [...(readers.get(target) ?? []), file]);
         } else if (!value.startsWith("node:")) uncertain = true;
       };
-      // Text matches in comments and strings are conservative: they can only add coverage.
-      for (const match of text.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2]);
-      for (const match of text.matchAll(/\b(?:import|require)\s*\(\s*/g)) {
-        const literal = /^(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1\s*(?=[,)])/.exec(text.slice(match.index + match[0].length));
+      // Keep literals intact while replacing comment trivia with whitespace between tokens.
+      const source = text.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, (token) => token.startsWith("/") ? " " : token);
+      for (const match of source.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2]);
+      for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*/g)) {
+        const literal = /^(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1\s*(?=[,)])/.exec(source.slice(match.index + match[0].length));
         if (literal) add(literal[2]);
         else uncertain = true;
       }
