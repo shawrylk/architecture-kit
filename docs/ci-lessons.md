@@ -71,3 +71,9 @@ Rule: none: a flake that passed on a rerun
 Symptom: "Missing expected exception." at `run-log.test.mjs:30` on windows-latest.
 Cause: on Windows, a read of `<file>/child` fails with `ENOENT`, and `readRuns` returns an empty log for `ENOENT`. Linux gives `ENOTDIR`.
 Rule: To prove a read error on every OS, read a folder and match `EISDIR|EPERM|EACCES`.
+
+## qc lint applies the ESLint-generated UI baseline and fails on a stale entry
+
+Symptom: `spawnSync ... node.exe ETIMEDOUT` at `preset.test.mjs:216` on windows-latest.
+Cause: a flake. The pull request did not change the lint code, and the child process ran past its timeout on a loaded runner.
+Rule: none: a flake that passed on a rerun
