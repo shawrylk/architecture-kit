@@ -8,8 +8,15 @@ import { fileURLToPath } from "node:url";
 import { defaults } from "../config.mjs";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
-const node = (source) => `"${process.execPath}" -e '${source}'`;
-const record = node('require("node:fs").writeFileSync("args.json", JSON.stringify(process.argv.slice(1)))');
+const scripts = mkdtempSync(path.join(tmpdir(), "qc-check-scripts-"));
+test.after(() => rmSync(scripts, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+let scriptId = 0;
+const node = (source) => {
+  const file = path.join(scripts, `${scriptId++}.cjs`);
+  writeFileSync(file, source);
+  return `"${process.execPath}" "${file}"`;
+};
+const record = node('require("node:fs").writeFileSync("args.json", JSON.stringify(process.argv.slice(2)))');
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe" });
 
 test("the e2e warning names qc e2e when the merge base is unavailable", (t) => {

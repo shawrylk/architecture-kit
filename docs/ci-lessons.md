@@ -35,3 +35,21 @@ Rule: Bind test servers to port zero and read the assigned port.
 Symptom: Temporary folder cleanup fails with EBUSY on Windows.
 Cause: A process or filesystem handle can retain a file briefly after the test ends.
 Rule: Use rmSync with recursive, force, maxRetries, and retryDelay for temporary folder cleanup on Windows.
+
+## --affected with one changed gate file runs that gate's test file and not an unrelated one
+
+Symptom: cmd.exe reports that the Node command is not recognized on Windows.
+Cause: The fixture wraps inline JavaScript in single quotes, which cmd.exe does not treat as shell quoting.
+Rule: Write fixture JavaScript to a script file and double-quote both the Node executable and script path.
+
+## scope covers committed, index, tracked and untracked files including an unborn HEAD
+
+Symptom: writeFileSync fails with ENOENT for the quoted old path on Windows.
+Cause: Windows forbids double quotes in file names.
+Rule: Use a quote-free fixture path on Windows and retain quoted-path coverage on other systems.
+
+## overview prints at most 60 lines on a repo with 200 files
+
+Symptom: writeFileSync fails with ENOENT for the newline path on Windows.
+Cause: Windows forbids newlines in file names.
+Rule: Create newline-named fixture files and run their associated assertions only outside Windows.

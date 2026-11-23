@@ -28,7 +28,7 @@ test("overview prints at most 60 lines on a repo with 200 files", async (t) => {
   put("package-lock.json", "x\n".repeat(300));
   put("src/binary.bin", Buffer.from([0, 255, 10]));
   put("src/binary.mjs", Buffer.from([0, 255, 10]));
-  put("src/line\nbreak.mjs", "x\n".repeat(250));
+  if (process.platform !== "win32") put("src/line\nbreak.mjs", "x\n".repeat(250));
   git(["add", "."]); git(["commit", "-qm", "files"]);
   put("src/mod/file0.mjs", "changed\n");
   put("docs/large.md", "updated docs\n".repeat(500));
@@ -46,8 +46,10 @@ test("overview prints at most 60 lines on a repo with 200 files", async (t) => {
   assert.ok(lines.every((line) => line.length <= 100));
   for (const section of output.split(/^(?:Modules|Largest|Churn|CI failures|Debt)$/m).slice(1)) assert.ok(section.trim().split("\n").length <= 10);
   const sectionRows = (name, next) => output.split(`${name}\n`)[1].split(`\n${next}\n`)[0].split("\n");
-  assert.deepEqual(sectionRows("Largest", "Churn").slice(0, 2), ["- src/line break.mjs: 250 lines", "- src/mod/file199.mjs: 200 lines"]);
-  assert.deepEqual(sectionRows("Churn", "CI failures").slice(0, 2), ["- src/mod/file0.mjs: 2 touches", "- src/line break.mjs: 1 touches"]);
+  if (process.platform !== "win32") {
+    assert.deepEqual(sectionRows("Largest", "Churn").slice(0, 2), ["- src/line break.mjs: 250 lines", "- src/mod/file199.mjs: 200 lines"]);
+    assert.deepEqual(sectionRows("Churn", "CI failures").slice(0, 2), ["- src/mod/file0.mjs: 2 touches", "- src/line break.mjs: 1 touches"]);
+  }
   assert.doesNotMatch(sectionRows("Largest", "Churn").join("\n") + sectionRows("Churn", "CI failures").join("\n"), /docs\//);
   assert.match(output, /broken test/);
   assert.doesNotMatch(output, /package-lock|binary\.(?:bin|mjs)|foreign failure|fixed failure/);

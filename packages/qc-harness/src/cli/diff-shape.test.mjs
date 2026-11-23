@@ -66,11 +66,12 @@ test("scope covers committed, index, tracked and untracked files including an un
   const problems = f.check(base, ["none/**"]);
   for (const name of ["committed", "staged", "new", "untracked"]) assert.ok(problems.some((p) => p.includes(`${name}.mjs`)));
   {
-    const f = fixture(t); f.write('outside space/old "quote".mjs', "same\n"); const base = f.commit();
-    mkdirSync(path.join(f.worktree, "owned")); f.git("mv", 'outside space/old "quote".mjs', "owned/new.mjs");
-    assert.ok(f.check(base, ["owned/**"]).some((p) => p.includes('outside space/old "quote".mjs')));
+    const oldPath = process.platform === "win32" ? "outside space/old quote.mjs" : 'outside space/old "quote".mjs';
+    const f = fixture(t); f.write(oldPath, "same\n"); const base = f.commit();
+    mkdirSync(path.join(f.worktree, "owned")); f.git("mv", oldPath, "owned/new.mjs");
+    assert.ok(f.check(base, ["owned/**"]).some((p) => p.includes(oldPath)));
     f.git("rm", "-f", "owned/new.mjs");
-    assert.ok(f.check(base, ["owned/**"]).some((p) => p.includes('outside space/old "quote".mjs')));
+    assert.ok(f.check(base, ["owned/**"]).some((p) => p.includes(oldPath)));
   }
   {
     const f = fixture(t); f.write("owned.mjs", "ok\n"); const base = f.commit();
