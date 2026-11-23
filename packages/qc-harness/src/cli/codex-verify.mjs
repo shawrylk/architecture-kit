@@ -68,14 +68,43 @@ export function verificationPolicy(brief, settings) {
 export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 1000 }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    let tail = "";
+    const lines = [];
     let timedOut = false;
     let timer;
-    const record = (chunk) => { tail = (tail + chunk).slice(-64 * 1024); };
+    const recorder = () => {
+      let partial = "";
+      let inKey = false;
+      const line = (value) => {
+        const beginsKey = /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value);
+        if (beginsKey && !inKey) lines.push("[REDACTED]");
+        else if (!inKey) lines.push(redactOutput(value));
+        if (beginsKey) inKey = true;
+        if (inKey && /-----END [A-Z ]*PRIVATE KEY-----/.test(value)) inKey = false;
+        if (lines.length > 200) lines.splice(0, lines.length - 200);
+      };
+      return {
+        record(chunk) {
+          const parts = chunk.split("\n");
+          for (let i = 0; i < parts.length; i++) {
+            partial = (partial + parts[i]).slice(0, 64 * 1024);
+            if (i < parts.length - 1) {
+              line(partial.replace(/\r$/, ""));
+              partial = "";
+            }
+          }
+        },
+        flush() {
+          if (partial) line(partial.replace(/\r$/, ""));
+          partial = "";
+        },
+      };
+    };
+    const stdout = recorder();
+    const stderr = recorder();
     const child = spawn(command, [], { cwd, env, shell: true, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.setEncoding("utf8").on("data", record);
-    child.stderr.setEncoding("utf8").on("data", record);
-    child.on("error", (error) => record(error.message));
+    child.stdout.setEncoding("utf8").on("data", stdout.record);
+    child.stderr.setEncoding("utf8").on("data", stderr.record);
+    child.on("error", (error) => stderr.record(error.message));
     timer = setTimeout(() => {
       timedOut = true;
       if (process.platform === "win32") {
@@ -86,8 +115,10 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
     }, timeout);
     child.on("close", (status) => {
       clearTimeout(timer);
-      if (timedOut) record("\ncommand timed out\n");
-      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: tail.trimEnd().split(/\r?\n/).slice(-10).join("\n") });
+      stdout.flush();
+      stderr.flush();
+      if (timedOut) lines.push("command timed out");
+      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: lines.join("\n").trimEnd().split(/\r?\n/).slice(-10).join("\n") });
     });
   });
 }

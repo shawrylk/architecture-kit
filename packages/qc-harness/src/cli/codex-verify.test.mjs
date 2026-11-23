@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { generateKeyPairSync } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -101,6 +102,33 @@ test("Verify failures redact secrets in both the command and its output proof", 
   const proof = readFileSync(`${f.progress}.report.md`, "utf8");
   assert.ok(!proof.includes(token));
   assert.match(proof, /node -e "console\.log\('\[REDACTED\]'\); process\.exit\(7\)": exit 7 in [\d.]+ s\n\[REDACTED\]\n$/);
+});
+
+test("Verify failures redact private keys whose BEGIN header falls outside the proof tail", async (t) => {
+  const { privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    privateKeyEncoding: { type: "pkcs1", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  });
+  const keyLines = privateKey.trimEnd().split(/\r?\n/);
+  assert.ok(keyLines.length > 10);
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.worktree, "key.pem"), privateKey.trimEnd());
+    writeFileSync(path.join(f.worktree, "print-key.cjs"), `
+      const lines = require("node:fs").readFileSync("key.pem", "utf8").split("\\n");
+      process.${stream}.write(lines.shift() + "\\n");
+      setImmediate(() => {
+        process.${stream}.write(lines.join("\\n"));
+        process.exitCode = 7;
+      });
+    `);
+    writeFileSync(f.brief, 'Verify: `node print-key.cjs`\n');
+    assert.equal(await verifyBrief(f), false);
+    const proof = readFileSync(`${f.progress}.report.md`, "utf8");
+    for (const line of keyLines) assert.ok(!proof.includes(line), "private key line must not reach the report");
+    assert.match(proof, /exit 7 in [\d.]+ s\n\[REDACTED\]\n$/);
+  }
 });
 
 test("proof-write failures prevent acceptance of an otherwise successful command", async (t) => {
