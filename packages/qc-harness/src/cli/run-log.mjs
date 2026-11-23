@@ -21,12 +21,15 @@ export function appendRun(file, record) {
   for (const field of ["branch", "pr", "run"]) {
     const value = record[field];
     if (typeof value !== "string") continue;
-    const cleaned = redactOutput(value).split(os.hostname()).join("[REDACTED]")
+    const cleaned = redactOutput(value)
+      .replace(/(?:[a-z]+:\/\/|\\\\)[^\s"'`]+/gi, "[REDACTED]");
+    const target = field === "run" ? value.slice(value.indexOf("@") + 1) : value;
+    const checked = target.split(os.hostname()).join("[REDACTED]")
       .replace(/(?:[a-z]+:\/\/|\\\\)[^\s"'`]+/gi, "[REDACTED]")
       .replace(/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,}/gi, "[REDACTED]")
       .replace(/(?:\d{1,3}\.){3}\d{1,3}/g, "[REDACTED]")
       .replace(/[a-f0-9]*:[a-f0-9]*:[a-f0-9:]*/gi, "[REDACTED]");
-    if (cleaned !== value) record[field] = "[REDACTED]";
+    if (cleaned !== value || checked !== target) record[field] = "[REDACTED]";
   }
   mkdirSync(path.dirname(file), { recursive: true });
   appendFileSync(file, `${JSON.stringify(record)}\n`);

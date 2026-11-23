@@ -71,3 +71,15 @@ test("run log redacts embedded hosts and addresses while retaining ordinary bran
     }
   }
 });
+
+
+test("run log keeps workflow names and checks hosts in the run target", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-target-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const file = path.join(dir, "runs.jsonl");
+  const values = ["ci.yml@feat/249-x", "ci.yml@topic/10.20.30.40", "ci.yml@topic/host.example.com"];
+  for (const run of values) {
+    appendRun(file, { kind: "ci", time: "2026-11-21T00:00:00Z", result: "pass", minutes: 1, run });
+  }
+  assert.deepEqual(readRuns(file).runs.map((row) => row.run), [values[0], "[REDACTED]", "[REDACTED]"]);
+});
