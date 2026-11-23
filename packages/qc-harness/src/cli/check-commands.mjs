@@ -112,6 +112,7 @@ async function affectedTests(root, changed) {
 async function importingTests(root, changed) {
   const extension = /\.(?:[cm]?[jt]s|[jt]sx)$/;
   const isTest = (file) => /\.test\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
+  const inSuite = (file) => /^packages\/qc-harness\/src\/.+\.test\.mjs$/.test(file) || file === "evals/agents/run.test.mjs";
   if (changed.some((file) => !file.startsWith("packages/qc-harness/src/") || !extension.test(file) || !existsSync(path.join(root, file)))) return null;
   try {
     const files = (await repoFiles(root)).filter((file) => extension.test(file));
@@ -120,7 +121,7 @@ async function importingTests(root, changed) {
     const testTexts = new Map();
     for (const file of files) {
       const text = readFileSync(path.join(root, file), "utf8");
-      if (isTest(file)) testTexts.set(file, text);
+      if (inSuite(file)) testTexts.set(file, text);
       let uncertain = false;
       const add = (value) => {
         if (/\\|\$\{/.test(value)) { uncertain = true; return; }
@@ -147,9 +148,9 @@ async function importingTests(root, changed) {
     for (const file of new Set([...changed, ...uncertainFiles])) {
       const seen = new Set([file]), queue = [file], covered = new Set();
       const sibling = file.replace(extension, (suffix) => `.test${suffix}`);
-      if (known.has(sibling)) covered.add(sibling);
+      if (known.has(sibling) && inSuite(sibling)) covered.add(sibling);
       for (const next of queue) {
-        if (isTest(next)) covered.add(next);
+        if (isTest(next) && inSuite(next)) covered.add(next);
         const basename = path.posix.basename(next);
         if (!namedTests.has(basename)) {
           const matches = new Set();

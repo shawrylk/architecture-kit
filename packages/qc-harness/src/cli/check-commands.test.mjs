@@ -334,6 +334,27 @@ console.log('WRAPPER RAN');
   assert.doesNotMatch(run.stdout + run.stderr, /unrelated\.test\.mjs|UNRELATED TEST RAN|FULL SUITE/);
 });
 
+test("--affected selects only tests included in the full suite", (t) => {
+  const root = fixture(t);
+  const dir = "packages/qc-harness/src/cli";
+  mkdirSync(path.join(root, dir), { recursive: true });
+  mkdirSync(path.join(root, "evals/agents/tasks/x"), { recursive: true });
+  writeFileSync(path.join(root, dir, "module.mjs"), "export const value = 1;\n");
+  writeFileSync(path.join(root, dir, "module.test.mjs"), "import './module.mjs'; console.log('SUITE TEST RAN');\n");
+  writeFileSync(path.join(root, "evals/agents/run.test.mjs"), "// module.mjs\nconsole.log('EVAL RUNNER RAN');\n");
+  writeFileSync(path.join(root, "evals/agents/tasks/x/hidden.test.ts"), "// module.mjs\nthrow Error('HIDDEN TEST RAN');\n");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "echo FULL SUITE" } }));
+  git(root, "add", "."); git(root, "commit", "-qm", "test: seed suite selection");
+  const base = git(root, "rev-parse", "HEAD").trim();
+  writeFileSync(path.join(root, dir, "module.mjs"), "export const value = 2;\n");
+  git(root, "add", ".");
+  const run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /SUITE TEST RAN/);
+  assert.match(run.stdout, /EVAL RUNNER RAN/);
+  assert.doesNotMatch(run.stdout + run.stderr, /hidden\.test\.ts|HIDDEN TEST RAN|FULL SUITE/);
+});
+
 test("--affected with one changed gate file runs that gate's test file and not an unrelated one", (t) => {
   const root = fixture(t);
   const dir = "packages/qc-harness/src/cli";
@@ -407,7 +428,8 @@ test("--affected with one changed gate file runs that gate's test file and not a
     rmSync(path.join(root, dir, file), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     return result;
   });
-  assert.deepEqual(omittedRuns.map(({ status }) => status), [1, 1], omittedRuns.map(({ stdout, stderr }) => stdout + stderr).join("\n"));
+  assert.deepEqual(omittedRuns.map(({ status }) => status), [0, 1], omittedRuns.map(({ stdout, stderr }) => stdout + stderr).join("\n"));
+  assert.doesNotMatch(omittedRuns[0].stdout + omittedRuns[0].stderr, /consumer\.test\.js|JS READER/);
   for (const result of omittedRuns) assert.doesNotMatch(result.stdout, /unrelated\.test\.mjs|FULL SUITE/);
   put("dynamic.test.mjs", "const target = './' + 'gate' + '.mjs'; await import(target); if (false) require(target); console.log('DYNAMIC COVERED');\n");
   git(root, "add", ".");
