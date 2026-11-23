@@ -66,20 +66,26 @@ export function checkDiffShape({ worktree, base, baseRef, paths, design = "", ma
     try { git("merge-base", "--is-ancestor", ancestor, revision); return true; }
     catch (error) { if (error.status === 1) return false; throw error; }
   };
-  let boundary = base || empty;
-  let tip;
   const hasHead = git("rev-parse", "--revs-only", "HEAD").trim();
-  if (base && baseRef && hasHead) {
-    let candidate;
-    try { candidate = git("merge-base", "HEAD", baseRef).trim(); } catch { /* Missing or invalid base refs keep the frozen boundary. */ }
-    if (candidate && !contains(candidate, base)) {
-      let merged;
-      try { merged = git("merge-tree", "--write-tree", base, candidate); }
-      catch (error) { if (error.status !== 1) throw error; merged = error.stdout; }
-      boundary = merged.split("\n")[0].trim();
-      tip = candidate;
+  const boundaries = new Map();
+  const boundaryOf = (revision) => {
+    let tip;
+    if (base && baseRef && revision) {
+      try { tip = git("merge-base", revision, baseRef).trim(); } catch { /* Missing or invalid base refs keep the frozen boundary. */ }
     }
-  }
+    if (!tip) return { boundary: base || empty };
+    if (boundaries.has(tip)) return boundaries.get(tip);
+    let result = { boundary: base };
+    if (!contains(tip, base)) {
+      let merged;
+      try { merged = git("merge-tree", "--write-tree", base, tip); }
+      catch (error) { if (error.status !== 1) throw error; merged = error.stdout; }
+      result = { boundary: merged.split("\n")[0].trim(), tip };
+    }
+    boundaries.set(tip, result);
+    return result;
+  };
+  const { boundary, tip } = boundaryOf(hasHead ? "HEAD" : undefined);
   // Incoming commits belong to the base; retain the run's commits on either side of the merge.
   const commits = hasHead ? git("rev-list", "--reverse", ...(base ? [`${base}..HEAD`] : ["HEAD"]), ...(tip ? [`^${tip}`] : [])).trim().split("\n").filter(Boolean) : [];
   const changed = new Set();
@@ -98,7 +104,7 @@ export function checkDiffShape({ worktree, base, baseRef, paths, design = "", ma
       }
     }
   };
-  for (const commit of commits) collect([tip && !contains(tip, commit) ? base : boundary, commit], commit);
+  for (const commit of commits) collect([boundaryOf(commit).boundary, commit], commit);
   collect(["--cached", boundary]);
   collect([boundary]);
   const staged = splitNames(git("diff", "--cached", "--no-renames", "--name-only", "-z", boundary, "--"));
@@ -121,8 +127,16 @@ export function checkDiffShape({ worktree, base, baseRef, paths, design = "", ma
   const problems = [...changed].filter((file) => !owns(normalize(file))).map((file) => `${file}: outside Paths`);
   for (const file of [...changed].filter((name) => path.posix.basename(name) === "package.json")) {
     try {
-      const originalExists = splitNames(git("ls-tree", "-r", "--name-only", "-z", boundary, "--", file)).includes(file);
-      const original = originalExists ? manifest(git("show", `${boundary}:${file}`), file) : {};
+      const original = {};
+      // A merge tree can contain conflict markers; read dependency keys from its parents instead.
+      for (const revision of [base || empty, ...(tip ? [tip] : [])]) {
+        const exists = splitNames(git("ls-tree", "-r", "--name-only", "-z", revision, "--", file)).includes(file);
+        if (!exists) continue;
+        const value = manifest(git("show", `${revision}:${file}`), file);
+        for (const section of ["dependencies", "devDependencies"]) {
+          original[section] = { ...original[section], ...value[section] };
+        }
+      }
       const list = versions.get(file) ?? [];
       try {
         const target = path.join(worktree, file);

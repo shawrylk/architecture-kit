@@ -71,6 +71,34 @@ test("base merge adds 500 lines and a devDependency; three own lines stay within
   }
 });
 
+test("conflicted manifest keeps dependencies from both the frozen base and incoming base", (t) => {
+  const f = fixture(t);
+  f.write("package.json", "{}\n"); const initial = f.commit();
+  f.git("checkout", "-qb", "run");
+  f.write("package.json", '{"devDependencies":{"existing-tool":"1"}}\n'); const base = f.commit();
+  f.git("checkout", "-qb", "incoming", initial);
+  f.write("package.json", '{"devDependencies":{"base-tool":"1"}}\n'); f.commit();
+  f.git("checkout", "-q", "run");
+  assert.throws(() => f.git("merge", "--no-edit", "incoming"));
+  f.write("package.json", '{"devDependencies":{"existing-tool":"1","base-tool":"1"}}\n'); f.commit();
+  assert.deepEqual(f.check(base, ["package.json"], { baseRef: "incoming" }), []);
+});
+
+test("two base merges use separate boundaries and count only two owned lines", (t) => {
+  for (const state of ["committed", "staged", "working"]) {
+    const f = baseMergeFixture(t);
+    f.git("merge", "--no-edit", "incoming");
+    f.git("checkout", "-q", "incoming");
+    f.write("next-base.mjs", "more from base\n".repeat(500)); f.commit();
+    f.git("checkout", "-q", "run");
+    f.git("merge", "--no-edit", "incoming");
+    f.write("owned/after.mjs", "own first line\nown second line\n");
+    if (state === "committed") f.commit();
+    else if (state === "staged") f.git("add", ".");
+    assert.deepEqual(f.check(f.base, ["owned/**"], { baseRef: f.baseRef, maxDiffLines: 2 }), [], state);
+  }
+});
+
 test("base merge still refuses 401 own lines in Paths", (t) => {
   for (const state of ["committed", "staged", "working"]) {
     const f = baseMergeFixture(t);
