@@ -6,7 +6,7 @@ Issue: `#<issue>`
 Report: `<absolute report file>`
 Progress: `<absolute progress file>`
 Paths: `<owned files or folders>`
-Verify: `<check command>`
+Verify: none
 Live: none
 Approved: `<scout report; required for implement only when codex.requireApproval is true>`
 
