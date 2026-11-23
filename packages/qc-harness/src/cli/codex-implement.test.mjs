@@ -44,6 +44,44 @@ function setup(t, { progress = "" } = {}) {
 
 const quiet = () => {};
 
+for (const mode of ["warn", "add", "named-file", "named-folder", "uncertain"]) {
+  test(`Paths coverage ${mode} launches with the expected ownership and prompt`, async (t) => {
+    const f = setup(t);
+    const base = "packages/qc-harness/src";
+    const source = `${base}/example.mjs`;
+    const covering = `${base}/tests/example.test.mjs`;
+    mkdirSync(path.join(f.worktree, base, "tests"), { recursive: true });
+    writeFileSync(path.join(f.worktree, source), "export const value = 1;\n");
+    writeFileSync(path.join(f.worktree, covering), mode === "uncertain" ? "import(process.env.MODULE);\n" : "import '../example.mjs';\n");
+    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: mode === "add" ? { pathsTests: "add" } : {} }));
+    for (const args of [["add", "."], ["-c", "user.name=qc", "-c", "user.email=qc@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "seed"]]) {
+      const result = spawnSync("git", args, { cwd: f.worktree, env: f.gitEnv, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    const named = mode === "named-file" ? `, \`${covering}\`` : mode === "named-folder" ? `, \`${base}/tests/\`` : "";
+    writeFileSync(f.brief, VALID_BRIEF.replace(/^Paths:.*$/m, `Paths: \`${source}\`${named}`));
+    const messages = [];
+    let calls = 0;
+    const status = await runCodexImplement(f.argv, {
+      say: (line) => messages.push(line), out: quiet,
+      run: async ({ input }) => {
+        calls += 1;
+        const paths = input.split(/\r?\n/).filter((line) => line.startsWith("Paths:"));
+        if (mode === "add" || mode === "named-file") assert.ok(paths.some((line) => line.includes(`\`${covering}\``)), input);
+        if (mode === "add" || mode.startsWith("named-")) appendFileSync(path.join(f.worktree, covering), "// owned change\n");
+        else appendFileSync(path.join(f.worktree, source), "// owned change\n");
+        writeFileSync(f.progress, `${DONE_MARKER}\n`);
+        return { status: 0 };
+      },
+    });
+    assert.equal(status, 0, messages.join("\n"));
+    assert.equal(calls, 1);
+    const warnings = messages.filter((line) => line.includes("Paths: does not name it"));
+    assert.deepEqual(warnings, ["warn", "add"].includes(mode)
+      ? [`qc codex-implement: warning: ${covering} covers ${source}; Paths: does not name it`] : []);
+  });
+}
+
 test("preflight rejects unparsed Paths prose before starting Codex", async (t) => {
   const f = setup(t);
   const messages = [];

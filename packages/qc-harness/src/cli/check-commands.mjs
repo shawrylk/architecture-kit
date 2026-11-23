@@ -109,57 +109,83 @@ async function affectedTests(root, changed) {
   return runCommand(root, `${manager} test`);
 }
 
+const extension = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+const isTest = (file) => /\.test\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
+const inSuite = (file) => /^packages\/qc-harness\/src\/.+\.test\.mjs$/.test(file) || file === "evals/agents/run.test.mjs";
+
+async function testGraph(root) {
+  const allFiles = await repoFiles(root);
+  const files = allFiles.filter((file) => extension.test(file));
+  const known = new Set(files), readers = new Map(), uncertainFiles = new Set();
+  const testTexts = new Map();
+  for (const file of files) {
+    const text = readFileSync(path.join(root, file), "utf8");
+    if (inSuite(file)) testTexts.set(file, text);
+    let uncertain = false;
+    const add = (value) => {
+      if (/\\|\$\{/.test(value)) { uncertain = true; return; }
+      if (value.startsWith(".")) {
+        const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), value));
+        if (!known.has(target)) uncertain = true;
+        else readers.set(target, [...(readers.get(target) ?? []), file]);
+      } else if (!value.startsWith("node:")) uncertain = true;
+    };
+    // Retain original matches when comment stripping misreads regexes or nested templates.
+    const stripped = text.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, (token) => token.startsWith("/") ? " " : token);
+    for (const source of new Set([text, stripped])) {
+      for (const match of source.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2]);
+      for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*/g)) {
+        const literal = /^(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1\s*(?=[,)])/.exec(source.slice(match.index + match[0].length));
+        if (literal) add(literal[2]);
+        else uncertain = true;
+      }
+    }
+    if (uncertain) uncertainFiles.add(file);
+  }
+  return { allFiles, files, known, readers, testTexts, uncertainFiles };
+}
+
+function coveringTests(file, { known, readers, testTexts }, namedTests) {
+  const seen = new Set([file]), queue = [file], covered = new Set();
+  const sibling = file.replace(extension, (suffix) => `.test${suffix}`);
+  if (known.has(sibling) && inSuite(sibling)) covered.add(sibling);
+  for (const next of queue) {
+    if (isTest(next) && inSuite(next)) covered.add(next);
+    const basename = path.posix.basename(next);
+    if (!namedTests.has(basename)) {
+      const matches = new Set();
+      for (const [test, text] of testTexts) if (text.includes(basename)) matches.add(test);
+      namedTests.set(basename, matches);
+    }
+    for (const test of namedTests.get(basename)) covered.add(test);
+    for (const reader of readers.get(next) ?? []) if (!seen.has(reader)) { seen.add(reader); queue.push(reader); }
+  }
+  return covered;
+}
+
+/** Certain coverage only: uncertain loaders belong to the conservative check runner. */
+export async function testsCovering(root, paths) {
+  const graph = await testGraph(root);
+  const namedTests = new Map(), result = new Map();
+  for (const entry of paths) {
+    const file = path.posix.normalize(entry).replace(/\/$/, "");
+    const children = graph.allFiles.filter((candidate) => candidate.startsWith(`${file}/`));
+    for (const target of children.length ? children : [file]) {
+      result.set(target, [...coveringTests(target, graph, namedTests)].sort());
+    }
+  }
+  return result;
+}
+
 async function importingTests(root, changed) {
-  const extension = /\.(?:[cm]?[jt]s|[jt]sx)$/;
-  const isTest = (file) => /\.test\.(?:[cm]?[jt]s|[jt]sx)$/.test(file);
-  const inSuite = (file) => /^packages\/qc-harness\/src\/.+\.test\.mjs$/.test(file) || file === "evals/agents/run.test.mjs";
   if (changed.some((file) => !file.startsWith("packages/qc-harness/src/") || !extension.test(file) || !existsSync(path.join(root, file)))) return null;
   try {
-    const files = (await repoFiles(root)).filter((file) => extension.test(file));
-    const known = new Set(files), readers = new Map(), uncertainFiles = new Set();
-    const tests = new Set(files.filter((file) => /^packages\/qc-harness\/src\/gates\/[^/]+\.test\.mjs$/.test(file)));
-    const testTexts = new Map();
-    for (const file of files) {
-      const text = readFileSync(path.join(root, file), "utf8");
-      if (inSuite(file)) testTexts.set(file, text);
-      let uncertain = false;
-      const add = (value) => {
-        if (/\\|\$\{/.test(value)) { uncertain = true; return; }
-        if (value.startsWith(".")) {
-          const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), value));
-          if (!known.has(target)) uncertain = true;
-          else readers.set(target, [...(readers.get(target) ?? []), file]);
-        } else if (!value.startsWith("node:")) uncertain = true;
-      };
-      // Retain original matches when comment stripping misreads regexes or nested templates.
-      const stripped = text.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, (token) => token.startsWith("/") ? " " : token);
-      for (const source of new Set([text, stripped])) {
-        for (const match of source.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2]);
-        for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*/g)) {
-          const literal = /^(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1\s*(?=[,)])/.exec(source.slice(match.index + match[0].length));
-          if (literal) add(literal[2]);
-          else uncertain = true;
-        }
-      }
-      if (uncertain) uncertainFiles.add(file);
-    }
+    const graph = await testGraph(root);
+    const tests = new Set(graph.files.filter((file) => /^packages\/qc-harness\/src\/gates\/[^/]+\.test\.mjs$/.test(file)));
     const namedTests = new Map();
     // Unknown loaders can read any changed module; cover their readers too, or run the full suite.
-    for (const file of new Set([...changed, ...uncertainFiles])) {
-      const seen = new Set([file]), queue = [file], covered = new Set();
-      const sibling = file.replace(extension, (suffix) => `.test${suffix}`);
-      if (known.has(sibling) && inSuite(sibling)) covered.add(sibling);
-      for (const next of queue) {
-        if (isTest(next) && inSuite(next)) covered.add(next);
-        const basename = path.posix.basename(next);
-        if (!namedTests.has(basename)) {
-          const matches = new Set();
-          for (const [test, text] of testTexts) if (text.includes(basename)) matches.add(test);
-          namedTests.set(basename, matches);
-        }
-        for (const test of namedTests.get(basename)) covered.add(test);
-        for (const reader of readers.get(next) ?? []) if (!seen.has(reader)) { seen.add(reader); queue.push(reader); }
-      }
+    for (const file of new Set([...changed, ...graph.uncertainFiles])) {
+      const covered = coveringTests(file, graph, namedTests);
       if (!covered.size) return null;
       for (const test of covered) tests.add(test);
     }

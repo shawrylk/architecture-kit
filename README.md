@@ -127,6 +127,11 @@ Tokens such as `GH_TOKEN`, `GITHUB_TOKEN`, `NPM_TOKEN`, and `NODE_AUTH_TOKEN` re
 Each `codex.envAllow` entry must be non-empty and have no leading or trailing whitespace.
 A brief that needs `gh` reads its token through `gh auth token`.
 
+`codex.pathsTests` defaults to `"warn"`: before launch, the runner warns about covering test files
+missing from the brief's `Paths:` and continues. Set it to `"add"` to include those tests in the
+owned paths and the prompt Codex reads. Naming a folder also names the tests within it.
+Coverage follows sibling tests, reader chains and basename mentions in suite tests; uncertain loaders do not add warnings.
+
 ## Task and merge gates
 
 The task gate reads CI on the current branch head, including commits after an implementer stops.

@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaults } from "../config.mjs";
+import { testsCovering } from "./check-commands.mjs";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 const scripts = mkdtempSync(path.join(tmpdir(), "qc-check-scripts-"));
@@ -18,6 +19,39 @@ const node = (source) => {
 };
 const record = node('require("node:fs").writeFileSync("args.json", JSON.stringify(process.argv.slice(2)))');
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe" });
+
+test("testsCovering finds sibling, reader-chain and basename tests for files and folders", async (t) => {
+  const root = fixture(t);
+  const base = "packages/qc-harness/src";
+  const source = `${base}/feature/source.mjs`;
+  const sibling = `${base}/feature/source.test.mjs`;
+  const reader = `${base}/reader.test.mjs`;
+  const named = `${base}/named.test.mjs`;
+  const data = `${base}/feature/data.json`;
+  const files = {
+    [source]: "export const value = 1;",
+    [sibling]: "export {};",
+    [`${base}/bridge.mjs`]: "export { value } from './feature/source.mjs';",
+    [reader]: "import './bridge.mjs';",
+    [named]: "// source.mjs and data.json are exercised by a command fixture",
+    [data]: "{}",
+    [`${base}/uncertain.test.mjs`]: "import(process.env.MODULE);",
+    "outside.test.mjs": "import './packages/qc-harness/src/feature/source.mjs';",
+  };
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    writeFileSync(path.join(root, file), text);
+  }
+  git(root, "add", ".");
+  const expected = [sibling, named, reader].sort();
+  const covered = await testsCovering(root, [source, `${base}/feature/`]);
+  assert.deepEqual(covered.get(source), expected);
+  assert.deepEqual(covered.get(sibling), [sibling]);
+  assert.deepEqual(covered.get(data), [named]);
+  assert.deepEqual([...covered.keys()].sort(), [source, sibling, data].sort());
+  assert.deepEqual(await testsCovering(root, [`${base}/feature`]), covered);
+  assert.deepEqual(await testsCovering(root, [`${base}/missing.mjs`]), new Map([[`${base}/missing.mjs`, []]]));
+});
 
 test("the e2e warning names qc e2e when the merge base is unavailable", (t) => {
   const root = fixture(t, { e2e: record, base: "missing-ref" });
