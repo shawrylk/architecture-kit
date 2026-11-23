@@ -59,12 +59,29 @@ function dependencyProblems(file, original, versions, design) {
 }
 
 /** Branch: checks every changed path, manifest addition and added/deleted line against a frozen brief. */
-export function checkDiffShape({ worktree, base, paths, design = "", maxDiffLines = 400 }) {
+export function checkDiffShape({ worktree, base, baseRef, paths, design = "", maxDiffLines = 400 }) {
   const git = (...args) => execFileSync("git", ["--literal-pathspecs", ...args], { cwd: worktree, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], maxBuffer: 64 * 1024 * 1024 });
   const empty = git("hash-object", "-w", "-t", "tree", "--stdin").trim();
-  const boundary = base || empty;
+  const contains = (ancestor, revision) => {
+    try { git("merge-base", "--is-ancestor", ancestor, revision); return true; }
+    catch (error) { if (error.status === 1) return false; throw error; }
+  };
+  let boundary = base || empty;
+  let tip;
   const hasHead = git("rev-parse", "--revs-only", "HEAD").trim();
-  const commits = hasHead ? git("rev-list", "--reverse", ...(base ? [`${base}..HEAD`] : ["HEAD"])).trim().split("\n").filter(Boolean) : [];
+  if (base && baseRef && hasHead) {
+    let candidate;
+    try { candidate = git("merge-base", "HEAD", baseRef).trim(); } catch { /* Missing or invalid base refs keep the frozen boundary. */ }
+    if (candidate && !contains(candidate, base)) {
+      let merged;
+      try { merged = git("merge-tree", "--write-tree", base, candidate); }
+      catch (error) { if (error.status !== 1) throw error; merged = error.stdout; }
+      boundary = merged.split("\n")[0].trim();
+      tip = candidate;
+    }
+  }
+  // Incoming commits belong to the base; retain the run's commits on either side of the merge.
+  const commits = hasHead ? git("rev-list", "--reverse", ...(base ? [`${base}..HEAD`] : ["HEAD"]), ...(tip ? [`^${tip}`] : [])).trim().split("\n").filter(Boolean) : [];
   const changed = new Set();
   const totals = new Map();
   const versions = new Map();
@@ -81,7 +98,7 @@ export function checkDiffShape({ worktree, base, paths, design = "", maxDiffLine
       }
     }
   };
-  for (const commit of commits) collect([boundary, commit], commit);
+  for (const commit of commits) collect([tip && !contains(tip, commit) ? base : boundary, commit], commit);
   collect(["--cached", boundary]);
   collect([boundary]);
   const staged = splitNames(git("diff", "--cached", "--no-renames", "--name-only", "-z", boundary, "--"));

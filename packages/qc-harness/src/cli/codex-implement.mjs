@@ -631,7 +631,7 @@ async function runJob(argv, {
         return 4;
       }
       if (["implement", "tests"].includes(settings.role)) {
-        const { problems } = checkDiffShape({ worktree: settings.worktree, base: boundary.head, ...contract, maxDiffLines: codex.maxDiffLines });
+        const { problems } = checkDiffShape({ worktree: settings.worktree, base: boundary.head, baseRef: guardBase, ...contract, maxDiffLines: codex.maxDiffLines });
         if (problems.length) {
           metrics.refusal = "diff-shape";
           for (const problem of problems) say(`qc codex-implement: diff shape refused: ${problem}`);

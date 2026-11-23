@@ -41,6 +41,52 @@ test('diff shape: 401 changed lines → one problem with "split the issue"', (t)
   }
 });
 
+function baseMergeFixture(t) {
+  const f = fixture(t);
+  f.write("package.json", "{}\n"); f.write("owned/a.mjs", "before\n"); const initial = f.commit();
+  f.git("checkout", "-qb", "run");
+  f.write("existing.mjs", "already on the run branch\n"); const base = f.commit();
+  f.git("checkout", "-qb", "incoming", initial);
+  f.write("base.mjs", "from base\n".repeat(500)); f.commit();
+  f.write("package.json", '{"devDependencies":{"base-tool":"1"}}\n'); f.commit();
+  f.git("checkout", "-q", "run");
+  return { ...f, base, baseRef: "incoming" };
+}
+
+test("base merge adds 500 lines and a devDependency; three own lines stay within the shape", (t) => {
+  for (const state of ["committed", "staged", "working"]) {
+    const f = baseMergeFixture(t);
+    f.write("owned/before.mjs", "own before merge\n"); f.commit();
+    f.git("merge", "--no-edit", "incoming");
+    f.write("package.json", '{"name":"own-change","devDependencies":{"base-tool":"1"}}\n');
+    if (state === "committed") f.commit();
+    else {
+      f.git("add", ".");
+      if (state === "working") f.git("reset", "--quiet");
+    }
+    const paths = ["owned/**", "package.json"];
+    assert.deepEqual(f.check(f.base, paths, { baseRef: f.baseRef }), [], state);
+    assert.ok(f.check(f.base, paths).some((problem) => /split the issue/.test(problem)));
+    assert.deepEqual(f.check(f.base, paths, { baseRef: "missing-ref" }), f.check(f.base, paths));
+  }
+});
+
+test("base merge still refuses 401 own lines in Paths", (t) => {
+  for (const state of ["committed", "staged", "working"]) {
+    const f = baseMergeFixture(t);
+    f.git("merge", "--no-edit", "incoming");
+    f.write("owned/after.mjs", "own line\n".repeat(401));
+    if (state === "committed") f.commit();
+    else {
+      f.git("add", ".");
+      if (state === "working") f.git("reset", "--quiet");
+    }
+    assert.deepEqual(f.check(f.base, ["owned/**"], { baseRef: f.baseRef }), [
+      "401 changed lines exceeds codex.maxDiffLines 400; split the issue",
+    ], state);
+  }
+});
+
 test("diff shape: Windows backslash path inside Paths → no problem", (t) => {
   const f = fixture(t); f.write("src/a.mjs", "before\n"); const base = f.commit(); f.write("src/a.mjs", "after\n");
   assert.deepEqual(f.check(base, ["src\\a.mjs"]), []);
