@@ -79,10 +79,10 @@ function fixture(t) {
   const rows = [row(1, "issues/4/comments"), row(2, "pulls/7/reviews"), row(3, "pulls/7/comments"), row(4, "issues/7/comments", "self"), row(5, "issues/8/comments")];
   const update = (extra = {}) => writeFileSync(data, JSON.stringify({ rows, baseOid, ...extra }));
   update();
-  const run = (event, command = "", script = "comment-watch.mjs", session = "session-a", tool_response = "", tool_name = "PowerShell") => {
+  const run = (event, command = "", script = "comment-watch.mjs", session = "session-a", tool_response = "", tool_name = "PowerShell", parentCwd = cwd) => {
     const cli = fileURLToPath(new URL(script, import.meta.url));
     const result = spawnSync(process.execPath, ["--import", pathToFileURL(mock).href, cli], {
-      cwd, encoding: "utf8", env: { ...env, DATA: data, CALLS: calls },
+      cwd: parentCwd, encoding: "utf8", env: { ...env, DATA: data, CALLS: calls },
       input: JSON.stringify({ cwd, hook_event_name: event, session_id: session, tool_name, tool_response, tool_input: { command } }),
     });
     assert.equal(result.status, 0, result.stderr);
@@ -108,6 +108,23 @@ for (const exists of [false, true]) {
     for (const call of unmapped) assert.equal(call.config, undefined);
   });
 }
+
+test("a relative mapped config folder is checked against the checkout root", (t) => {
+  for (const existsInRoot of [true, false]) {
+    const f = fixture(t);
+    const parent = mkdtempSync(path.join(os.tmpdir(), "qc-comment-parent-"));
+    t.after(() => rmSync(parent, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
+    mkdirSync(path.join(existsInRoot ? f.cwd : parent, "packages"));
+    writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ github: { configDirs: { shawrylk: "packages" } } }));
+    const parentCwd = existsInRoot ? path.parse(f.cwd).root : parent;
+    f.run("PostToolUse", "gh pr view 7", "comment-watch.mjs", "session-a", "", "PowerShell", parentCwd);
+    f.run("UserPromptSubmit", "", "comment-watch.mjs", "session-a", "", "PowerShell", parentCwd);
+    const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
+    const mapped = calls.filter(call => call.args.some(arg => arg.includes("shawrylk/example")));
+    assert.ok(mapped.length > 0);
+    for (const call of mapped) assert.equal(call.config, existsInRoot ? "packages" : undefined);
+  }
+});
 
 test("prompts show shared-login feedback once, retain failures, and isolate sessions and accounts", (t) => {
   const f = fixture(t);

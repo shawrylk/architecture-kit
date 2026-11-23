@@ -143,7 +143,7 @@ function github(root, config, deadline, run) {
   return async (repo, args) => {
     const dir = Object.entries(config.github?.configDirs ?? {}).find(([owner]) => owner.toLowerCase() === repo.split("/")[0].toLowerCase())?.[1];
     const env = expandHome({ GH_PROMPT_DISABLED: "1", ...(dir ? { GH_CONFIG_DIR: dir } : {}) });
-    if (env.GH_CONFIG_DIR && !existsSync(env.GH_CONFIG_DIR)) delete env.GH_CONFIG_DIR;
+    if (env.GH_CONFIG_DIR && !existsSync(path.resolve(root, env.GH_CONFIG_DIR))) delete env.GH_CONFIG_DIR;
     const timeoutMs = deadline - Date.now();
     if (timeoutMs <= 0) throw new Error("deadline");
     const text = await run(args, { cwd: root, env, timeoutMs });
