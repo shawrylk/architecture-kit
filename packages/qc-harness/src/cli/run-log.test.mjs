@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "n
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { appendRun, readRuns, runLogFileOf } from "./run-log.mjs";
+import { appendRun, readRuns, RUN_FIELDS, runLogFileOf } from "./run-log.mjs";
 
 test("run lines share the git common directory, append, and count malformed records", (t) => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-log-"));
@@ -21,7 +21,7 @@ test("run lines share the git common directory, append, and count malformed reco
   assert.deepEqual(readRuns(file), { runs: [], skipped: 0 });
   const rows = [
     { kind: "codex", time: "2026-11-20T00:00:00.000Z", role: "implement", exit: 0 },
-    { kind: "ci", time: "2026-11-21T00:00:00.000Z", pr: 249, head: "abc", result: "pass", minutes: 1.2 },
+    { kind: "ci", time: "2026-11-21T00:00:00.000Z", pr: 249, head: "abcdef0", result: "pass", minutes: 1.2 },
   ];
   appendRun(file, rows[0]);
   appendFileSync(file, "bad\nnull\n[]\n{}\n");
@@ -74,4 +74,48 @@ test("run log keeps only allowlisted branch, PR and workflow fields", (t) => {
   for (const [index, [field, value, expected]] of cases.entries()) {
     assert.equal(runs[index][field], expected, `${field}: ${JSON.stringify(value)}`);
   }
+});
+
+
+test("run log drops unknown fields without changing the caller's record", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-unknown-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const file = path.join(dir, "runs.jsonl");
+  const row = { kind: "ci", time: "2026-11-21T00:00:00Z", result: "pass", minutes: 1 };
+  const record = { ...row, unexpected: "private data" };
+  appendRun(file, record);
+  assert.deepEqual(readRuns(file).runs, [row]);
+  assert.equal(record.unexpected, "private data");
+});
+
+test("run log keeps lowercase hexadecimal heads of 7 to 40 characters", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-good-head-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const file = path.join(dir, "runs.jsonl");
+  const heads = ["abcdef0", "0123456789abcdef", "a".repeat(40)];
+  for (const head of heads) {
+    appendRun(file, { kind: "ci", time: "2026-11-21T00:00:00Z", result: "pass", minutes: 1, head });
+  }
+  assert.deepEqual(readRuns(file).runs.map((row) => row.head), heads);
+});
+
+test("run log redacts heads with invalid content or types", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-bad-head-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const file = path.join(dir, "runs.jsonl");
+  const heads = ["", "abcdef", "a".repeat(41), "ABCDEF0", "abcdefg", "abcdef0\n",
+    " abcdef0", "abcdef0 ", "private.example.com", 1234567, null, true, {}, [], undefined];
+  for (const head of heads) {
+    appendRun(file, { kind: "ci", time: "2026-11-21T00:00:00Z", result: "pass", minutes: 1, head });
+  }
+  assert.deepEqual(readRuns(file).runs.map((row) => row.head), heads.map(() => "[REDACTED]"));
+});
+
+
+test("run fields exports the frozen field contract", () => {
+  assert.equal(Object.isFrozen(RUN_FIELDS), true);
+  assert.deepEqual(RUN_FIELDS, [
+    "kind", "time", "branch", "issue", "role", "effort", "exit", "refusal", "inputTokens",
+    "outputTokens", "minutes", "verify", "live", "verdict", "findings", "pr", "run", "head", "result",
+  ]);
 });
