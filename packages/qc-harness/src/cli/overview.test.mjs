@@ -92,9 +92,9 @@ test("debt due counts first-parent milestone merges and resets after filing", as
   assert.equal(await check(), 1); assert.equal(output.pop(), "not due: 0 of 10");
   for (let i = 0; i < 10; i++) {
     git(["checkout", "-qb", `milestone/${i}`]);
-    put("src/hot/file.mjs", `${i}\n`);
+    put("src/hot/file.mjs", `export const replacement = '�'; // ${i}\n`);
     put("docs/hottest.md", `${i}\n`);
-    put("src/aaa/binary.mjs", Buffer.from([0, i]));
+    put("src/aaa/binary.mjs", Buffer.from(i % 2 ? [255, i] : [0, i]));
     put("src/deleted/file.ts", `${i}\n`);
     if (i === 0) put("src/cold/file.ts", "cold\n");
     git(["add", "."]); git(["commit", "-qm", "change"]);

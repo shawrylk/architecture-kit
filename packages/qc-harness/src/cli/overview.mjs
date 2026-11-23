@@ -9,7 +9,10 @@ import { runGhResult } from "./gh-run.mjs";
 
 const line = (text) => String(text).replace(/\s+/g, " ").trim().slice(0, 100);
 const commands = (root, options) => ({
-  git: options.git ?? ((args) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).trim()),
+  git: options.git ?? ((args, encoding = "utf8") => {
+    const output = execFileSync("git", args, { cwd: root, encoding, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    return encoding ? output.trim() : output;
+  }),
   gh: options.gh ?? ((args) => {
     const result = runGhResult(args, { cwd: root });
     if (result.status !== 0) throw new Error(result.stderr?.trim() || result.error?.message || "gh failed");
@@ -19,13 +22,18 @@ const commands = (root, options) => ({
 const sourceFile = /\.(?:[cm]?[jt]s|[jt]sx)$/;
 const lockfile = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|(?:yarn|bun)\.lockb?|[^/]+\.lock|go\.sum)$/;
 
+function decodeText(bytes) {
+  try { return bytes.includes(0) ? null : new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { return null; }
+}
+
 async function textFiles(root) {
   const files = new Map();
   for (const file of await repoFiles(root)) {
     if (lockfile.test(file)) continue;
     try {
-      const bytes = readFileSync(path.join(root, file));
-      if (!bytes.includes(0)) files.set(file, new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      const text = decodeText(readFileSync(path.join(root, file)));
+      if (text !== null) files.set(file, text);
     } catch { /* Missing files and binary encodings have no text ranking. */ }
   }
   return files;
@@ -111,8 +119,7 @@ export async function debtDue(root, options = {}) {
     if (count < 10) { (options.log ?? console.log)(`not due: ${count} of 10`); return 1; }
     const files = new Set(git(["ls-tree", "-r", "--name-only", "-z", "origin/main"]).split("\0"));
     const top = churn(git, files, "origin/main").find(([file]) => {
-      const text = git(["show", `origin/main:${file}`]);
-      return !text.includes("\0") && !text.includes("\ufffd");
+      return decodeText(git(["show", `origin/main:${file}`], null)) !== null;
     });
     if (!top) throw new Error("no source text files in the churn window");
     (options.log ?? console.log)(`due: ${line(path.posix.dirname(top[0]))}`);
