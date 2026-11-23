@@ -30,6 +30,11 @@ Copy `brief-template.md` beside this skill. A brief holds a header (worktree, br
 - Keep at most 40 non-blank lines (`codex.briefMaxLines`) and six numbered task steps (`codex.briefMaxSteps`). A nested numbered list counts as steps, so use bullets.
 - The fixed headings and the numbered steps under `## Run shape` use no task budget. Each refusal names its rule and limit before Codex starts.
 - A brief carries a read budget: at most 15 files before the first code edit. Research that needs more belongs to a scout or a planner.
+- Name every path in `Paths:` literally in backticks, test files included. Other text on that line fails before start. A package manifest in `Paths:` needs a `## Design` section that names the dependency.
+- Name each check command in backticks on a `Verify:` line, or write `Verify: none`. The runner runs them after the done marker. A failure exits `7` and appends `## Runner proof` to the report.
+- A `Live:` line uses the same form. The runner runs each command in a new empty folder, with `QC_WORKTREE` set to the worktree.
+- The runner reads `Verify:` and `Live:` once, before Codex starts. A later edit of the brief does not change them.
+- A review brief carries `Reviewed: <sha>`, a reviewed head of the branch in the ledger, and `Proof: <code report>`. The prompt holds the full ledger sha and the newest proof block.
 - Ask for a Claude co-author trailer only when `commitMessage.attribution` is on. Otherwise the brief says "no Claude co-author trailer".
 - Never tell Codex to skip a hook. "No local checks" makes Codex loop while it asks to push.
 - The runner reads the brief again before each run. Edit the brief file to change the scope or record a decision.
@@ -67,6 +72,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 | 3 | Out of runs, or a runner check failed | Read the progress tail |
 | 4 | Guard refused | Drop or rewrite the refused commits; rotate any secret that reached a remote |
 | 5 | Paused | Wait for the operator to run `qc resume` |
+| 7 | A `Verify:` or `Live:` command failed or timed out | Read `## Runner proof` in the report, then write a fix brief |
 
 - Read only the tails of the progress file and the report. Never read the Codex log or a transcript.
 - Read the diff of each test file yourself. A removed or weakened assertion is a finding.
@@ -75,7 +81,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 
 - Keep the session checkpoint at `<git common dir>/qc/checkpoints/<session_id>.md` in at most 60 non-blank lines, under `## Goal`, `## Rules`, `## Tasks`, and `## Next`.
 - Update it before each dispatch and at each clean break. After compact or resume, it is the source of truth.
-- Wait with one background `npx qc watch --pr <n> --codex <wrapper.log> --max 55`. It prints `EVENT <item> <state> <head or code>`. Re-arm it after each event. Never poll in a loop of tool calls.
+- Wait with one background `npx qc watch --pr <n> --codex <wrapper.log> --max 55`. It prints `EVENT <item> <state> <head or code>`. A nonzero Codex exit makes it exit `5`. Re-arm it after each event. Never poll in a loop of tool calls.
 
 ## Review
 
