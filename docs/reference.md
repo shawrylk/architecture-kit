@@ -1087,6 +1087,23 @@ The fallback failure names include only tests from files that ran.
 A passing rerun prints only the skip summary, when present. A failure prints at most four lines, including skips, test names, and the command for full output.
 Use `qc ci-failures --rerun --branch <branch>` to run the same check manually.
 
+### Repository overview and debt reviews
+
+`qc overview` prints `Modules`, `Largest`, `Churn`, `CI failures`, and `Debt`.
+Each section has at most 10 items, each on one line cut to 100 characters; the whole output stays under 60 lines.
+Modules come from `docs/architecture.md` headings, largest files use line counts, and churn counts file touches over 90 days.
+Rankings skip lockfiles and binary files. CI failures are unresolved records for the current branch and repository.
+Debt lists open issues with the `debt` label; a GitHub error appears as an unavailable item.
+
+`qc debt file <report>` reads top-level `- ` bullets under `## Debt`, skipping a section starting with `None`.
+The title ends at the first full stop and is cut to 80 characters; the full item becomes the issue body.
+It reads up to 1000 open issue titles once, skips duplicates, and files each new item with the `debt` label.
+After every item succeeds, it saves the current `origin/main` SHA to `<git common dir>/qc/debt-review.json`, shared by worktrees.
+An error preserves the previous watermark. The workflow ledger is unchanged.
+`qc debt due` counts first-parent merge commits on `origin/main` after that SHA whose subjects name a `milestone/` branch, or from the first commit without a watermark.
+At 10 merges it prints `due: <module>` (the top churn file's folder) and exits 0; otherwise it prints `not due: <n> of 10` and exits 1. Operational errors exit 3.
+Review prompts, including retries, carry the spec's five checks: architecture and design, failing inputs, useful tests, simpler code, and out-of-scope items under `## Debt`.
+
 With `swarm.dispatch` on, the session note tells the orchestrator to arm one watch for each pending item and create an hourly dead-man check.
 The context watch speaks only to the main session, in every repository where `swarm.dispatch` is off.
 It starts at `budgets.orchestrator.compactAt` (default `200000`) and notes each threshold once, in steps of 50K tokens.

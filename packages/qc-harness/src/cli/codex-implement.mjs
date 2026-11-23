@@ -236,7 +236,15 @@ const promptFor = (settings, codex) => {
     : settings.role === "review"
       ? `\n\nRole: review. Assess the implementation report's ## Survivors section${implementationReport && implementationReport !== settings.report ? ` at ${implementationReport}` : " named in the brief"}.`
       : `\n\nRole: ${settings.role}.`;
-  return `${preamble}\n\n${brief}${roleRule}${lessons}${continuationNote(settings.progress)}`;
+  const checklist = settings.role === "review" ? `
+
+Review checklist:
+1. Does the diff fit \`docs/architecture.md\` and the \`## Design\` part?
+2. Which input gives a wrong result? Give \`file:line\` and the input.
+3. Do the tests prove the issue? Name any test that adds nothing.
+4. Is there a simpler way with less code?
+5. Put debt outside the scope under \`## Debt\`, not under findings.` : "";
+  return `${preamble}\n\n${brief}${roleRule}${checklist}${lessons}${continuationNote(settings.progress)}`;
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */

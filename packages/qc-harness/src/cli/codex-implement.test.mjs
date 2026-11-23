@@ -442,7 +442,14 @@ test("--review pins the model and effort on every run and reset retry", async (t
     },
   }), 0);
   assert.equal(calls.length, 3);
-  for (const { args } of calls) {
+  for (const { args, input } of calls) {
+    for (const item of [
+      "Does the diff fit `docs/architecture.md` and the `## Design` part?",
+      "Which input gives a wrong result? Give `file:line` and the input.",
+      "Do the tests prove the issue? Name any test that adds nothing.",
+      "Is there a simpler way with less code?",
+      "Put debt outside the scope under `## Debt`, not under findings.",
+    ]) assert.ok(input.includes(item), item);
     for (const override of [`model="${defaults.codex.reviewModel}"`, `model_reasoning_effort="${defaults.codex.reviewEffort}"`]) {
       const index = args.indexOf(override);
       assert.ok(index > 0);
@@ -914,6 +921,7 @@ test("a run passes exec, the sandbox, the worktree and one prompt, with QC_ROLE=
   assert.equal(call.command, "codex");
   assert.deepEqual(call.args.slice(0, 5), ["exec", "-s", "danger-full-access", "-C", worktree]);
   const prompt = call.input;
+  assert.doesNotMatch(prompt, /Does the diff fit|Put debt outside the scope/);
   assert.equal(call.args.at(-1), "-");
   assert.equal(call.env.QC_ROLE, "implementer");
   assert.ok(prompt.startsWith(`${FIXED_PREAMBLE}\n\n${readFileSync(brief, "utf8")}`));

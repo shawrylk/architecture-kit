@@ -34,6 +34,9 @@ const USAGE = `qc — architecture gates
   qc commit-msg <file>     conventional (commitlint), English, and the trailer when attribution is on
   qc decisions [id]        where decisions are cited; --squash closes the gaps
   qc ledger [--cost] [branch]  the workflow ledger: dispatches, stops, verdicts, merges, issue updates; --cost totals tokens and tool calls
+  qc overview              modules, largest files, churn, CI failures, and debt; at most 60 lines
+  qc debt file <report>    file unseen debt items as issues and reset the review watermark
+  qc debt due              name the module due after 10 milestone merges; exit 1 when not due, 3 on error
   qc ci-failures --run <id> | --rerun [--branch <branch>]
                            record a failed run, or rerun the open test files before a push
   qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
@@ -84,6 +87,21 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "overview" || command === "debt") {
+    const valid = command === "overview" ? rest.length === 0 :
+      (rest[0] === "file" && rest.length === 2) || (rest[0] === "due" && rest.length === 1);
+    if (!valid) { console.error("usage: qc overview | qc debt file <report> | qc debt due"); process.exitCode = 1; return; }
+    const { buildOverview, fileDebt, debtDue } = await import("./overview.mjs");
+    try {
+      if (command === "overview") process.stdout.write(await buildOverview(process.cwd()));
+      else if (rest[0] === "file") await fileDebt(process.cwd(), rest[1]);
+      else process.exitCode = await debtDue(process.cwd());
+    } catch (error) {
+      console.error(`qc ${command}: ${String(error.message).replace(/\s+/g, " ")}`);
+      process.exitCode = 3;
+    }
+    return;
+  }
   if (command === "user-config") {
     const { runUserConfig } = await import("./user-config.mjs");
     process.exit(await runUserConfig(rest));
