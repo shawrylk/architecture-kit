@@ -71,6 +71,7 @@ const USAGE = `qc — architecture gates
                            move this branch's migrations after the last one of <ref>, and rewrite references
   qc branch sync <worktree> [--base <ref>] [--no-push]
                            merge the base, renumber migrations, regenerate, and push through a machine gate slot
+  qc milestone [--dry-run] [--drop <branch>]  publish approved branches in one ready pull request
   qc integrate --issue <n> [--type <t>] [--slug <s>] [--from <ref>] <branch>...
                            one <t>/<n>-<s> branch for a batch: merge, renumber, regenerate; stop on a conflict
   qc enforcement-map       refresh the generated rule/gate table in docs/enforcement.md
@@ -280,6 +281,10 @@ async function main() {
     case "branch": {
       const { runBranch } = await import("./branch-sync.mjs");
       process.exit(await runBranch(config, rest));
+    }
+    case "milestone": {
+      const { runMilestone } = await import("./milestone.mjs");
+      process.exit(await runMilestone(config, rest));
     }
     case "integrate": {
       const { runIntegrate } = await import("./integrate.mjs");

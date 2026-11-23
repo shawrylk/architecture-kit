@@ -318,6 +318,7 @@ export const defaults = {
   },
 
   // Push settled output in merge batches so each push triggers CI.
+  milestones: { times: ["11:00", "16:00", "21:00"] },
   integrate: { ciEvery: 3, push: true, branchPattern: "^[a-z]+/[0-9]+-integration$", review: true },
 
   check: {
@@ -744,6 +745,10 @@ export function load(root = process.cwd()) {
     } catch {
       throw new TypeError(`featureSwitches.patterns contains an invalid regular expression: ${JSON.stringify(pattern)}`);
     }
+  }
+  if (!isPlainObject(config.milestones)) throw new TypeError("milestones must be an object");
+  if (!Array.isArray(config.milestones.times) || !config.milestones.times.every((time) => typeof time === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(time))) {
+    throw new TypeError("milestones.times must be an array of local HH:MM times");
   }
   if (!isPlainObject(config.integrate)) throw new TypeError("integrate must be an object");
   if (config.integrate.base !== undefined && (typeof config.integrate.base !== "string" || !config.integrate.base.trim())) {

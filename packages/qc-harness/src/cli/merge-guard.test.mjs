@@ -1175,3 +1175,26 @@ test("Codex constituent verdicts do not satisfy the integration lane", (t) => {
   const output = decide(shell(dir, `gh pr merge 7 --match-head-commit ${head}`), { gh: fakeGh(prViewWithHead(base, "feat/7-integration")).gh });
   assert.match(denied(output), /integration lane .*does not apply: .*holds? no APPROVED review/);
 });
+
+for (const kind of ["branch", "codex"]) {
+  test(`a milestone admits approved ${kind} member heads through the integration lane`, (t) => {
+    const { dir, head, base } = integrationMergeRepo(t, { kind });
+    const output = decide(shell(dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(prViewWithHead(base, "milestone/2026-11-23-1")).gh });
+    assert.equal(denied(output), null);
+    assert.match(output?.hookSpecificOutput?.additionalContext ?? "", /integration lane/);
+  });
+}
+for (const mode of ["missing", "revoked", "disabled", "unreviewed commit"]) {
+  test(`a milestone refuses ${mode} even with an aggregate approval`, (t) => {
+    const repo = integrationMergeRepo(t, { unreviewed: mode === "missing", ...(mode === "disabled" ? { integrate: { review: false } } : {}) });
+    let head = repo.head;
+    const git = (...args) => execFileSync("git", args, { cwd: repo.dir, encoding: "utf8", stdio: "pipe" }).trim();
+    if (mode === "revoked") appendRecord(repo.ledger, verdict("codex", "CHANGES_REQUIRED", git("rev-parse", "HEAD^2")));
+    if (mode === "unreviewed commit") {
+      writeFileSync(path.join(repo.dir, "extra.txt"), "extra"); git("add", "."); git("commit", "-qm", "extra"); head = git("rev-parse", "HEAD");
+    }
+    appendRecord(repo.ledger, verdict("branch", "APPROVED", head));
+    const reason = denied(decide(shell(repo.dir, `gh pr merge 7 --squash --match-head-commit ${head}`), { gh: fakeGh(prViewWithHead(repo.base, "milestone/2026-11-23-1")).gh }));
+    assert.match(reason ?? "", /milestone|integration lane/);
+  });
+}

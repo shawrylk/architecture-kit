@@ -18,6 +18,7 @@ import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { MILESTONE_PATTERN } from "./milestone.mjs";
 import { load } from "../config.mjs";
 import { globMatcher, globToRegExp } from "../glob.mjs";
 import { ignoredPaths } from "./ignored-paths.mjs";
@@ -213,7 +214,7 @@ async function warnOnBranchMismatch(root, manifest) {
 /** The pre-commit git hook's own check — refuses the commit itself, not just an edit. */
 /** @returns why a branch name breaks `branches.pattern`, or null. A detached HEAD and an allowed branch pass. */
 export function branchNameRefusal(branch, { pattern, allow = [] }) {
-  if (!branch || !pattern || globMatcher(allow)(branch) || new RegExp(pattern).test(branch)) return null;
+  if (!branch || !pattern || MILESTONE_PATTERN.test(branch) || globMatcher(allow)(branch) || (!branch.startsWith("milestone/") && new RegExp(pattern).test(branch))) return null;
   return (
     `Branch "${branch}" names no issue: it must match branches.pattern ${pattern}, as in feat/340-roles. ` +
     "Open the issue first, then rename the branch: git branch -m <type>/<issue>-<slug>."
