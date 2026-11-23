@@ -23,7 +23,7 @@ function fixture(t, role = "implement", config = {}) {
   const base = git("rev-parse", "HEAD");
   const brief = path.join(root, "brief.md");
   const progress = path.join(root, "progress.md");
-  writeFileSync(brief, "# Brief\nPaths: *.mjs, qc.config.json\n## Product decisions\n- Test the runner.\n## Task\n1. Run.\n## Design\nUse the existing dependencies.\n");
+  writeFileSync(brief, "# Brief\nPaths: `*.mjs`, `qc.config.json`\n## Product decisions\n- Test the runner.\n## Task\n1. Run.\n## Design\nUse the existing dependencies.\n");
   const lock = path.join(worktree, ".git", "qc", "locked-tests", `${encodeURIComponent("feature/acceptance")}.json`);
   const file = path.join(worktree, "acceptance.test.mjs");
   const seal = () => {
