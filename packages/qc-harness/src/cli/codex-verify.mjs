@@ -4,6 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "no
 import os from "node:os";
 import path from "node:path";
 import { ledgerFileOf, readLedger, shaMatches } from "./ledger.mjs";
+import { redactOutput } from "./output-redaction.mjs";
 
 /** Refuses ambiguous ownership and manifest changes without a dependency design. */
 export function validatePaths(brief) {
@@ -115,7 +116,7 @@ export async function verifyBrief(settings, { env = process.env, policy, outcome
       }
       if (result.status !== 0) outcome[group] = "fail";
       else if (++passed === commands.length) outcome[group] = "pass";
-      appendFileSync(report, `${command}: exit ${result.status} in ${result.seconds} s\n${result.status !== 0 && result.tail ? result.tail + "\n" : ""}`);
+      appendFileSync(report, `${redactOutput(command)}: exit ${result.status} in ${result.seconds} s\n${result.status !== 0 && result.tail ? redactOutput(result.tail) + "\n" : ""}`);
       if (result.status !== 0) return false;
     }
   }

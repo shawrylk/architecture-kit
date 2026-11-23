@@ -92,6 +92,17 @@ test("Live failures keep proof, stop later commands and clean their temporary di
   assert.ok(path.basename(folder).startsWith("qc-codex-live-"));
 });
 
+test("Verify failures redact secrets in both the command and its output proof", async (t) => {
+  const f = fixture(t);
+  const token = ["ghp", "_", "a".repeat(36)].join("");
+  const command = `node -e "console.log('${token}'); process.exit(7)"`;
+  writeFileSync(f.brief, `Verify: \`${command}\`\n`);
+  assert.equal(await verifyBrief(f), false);
+  const proof = readFileSync(`${f.progress}.report.md`, "utf8");
+  assert.ok(!proof.includes(token));
+  assert.match(proof, /node -e "console\.log\('\[REDACTED\]'\); process\.exit\(7\)": exit 7 in [\d.]+ s\n\[REDACTED\]\n$/);
+});
+
 test("proof-write failures prevent acceptance of an otherwise successful command", async (t) => {
   const f = fixture(t);
   writeFileSync(f.brief, 'Report: .\nVerify: `echo ok`\n');
