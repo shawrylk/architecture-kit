@@ -18,6 +18,7 @@ import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
 import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCommand, verifyBaseTests } from "./locked-tests.mjs";
 import { runMutation } from "./mutate.mjs";
+import { reviewContext, validatePaths, verifyBrief } from "./codex-verify.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -52,7 +53,7 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
 
 const USAGE =
   "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
-  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs or report failure, 4 guard or diff shape refused, 5 paused";
+  "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs or report failure, 4 guard or diff shape refused, 5 paused, 7 verify failed";
 
 const FLAGS = { "--role": "role", "--resume": "resume", "--report": "report", "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
 
@@ -188,6 +189,7 @@ function validateBrief(brief, codex, settings) {
   if (nonBlank > codex.briefMaxLines) throw new Error(`codex.briefMaxLines limit is ${codex.briefMaxLines} non-blank lines; got ${nonBlank}`);
   if (!lines.some((line) => /^## Product decisions\s*$/.test(line))) throw new Error("## Product decisions is required: at least 1 heading");
   if (!lines.some((line) => /^Paths:[ \t]*\S/.test(line))) throw new Error("Paths: is required: at least 1 line naming owned files or folders");
+  validatePaths(brief);
   if (codex.requireApproval && settings.role === "implement") {
     if (!/^## Design[ \t]*\r?$/m.test(brief)) throw new Error("## Design is required for implement when codex.requireApproval is true");
     const approved = briefPath(brief, "Approved", settings.brief);
@@ -227,6 +229,7 @@ const promptFor = (settings, codex) => {
   const branch = currentBranch(settings.worktree);
   const refusal = ciBriefRefusal(settings.worktree, branch, brief);
   if (refusal) throw new Error(refusal);
+  const review = reviewContext(brief, settings, branch);
   const preamble = [FIXED_PREAMBLE, codex.preamble].filter(Boolean).join("\n");
   const rules = lessonRules(settings.worktree, load(settings.worktree).lessons);
   const lessons = rules.length ? `\n\nCI lesson rules (newest first):\n${rules.join("\n")}` : "";
@@ -244,7 +247,7 @@ Review checklist:
 3. Do the tests prove the issue? Name any test that adds nothing.
 4. Is there a simpler way with less code?
 5. Put debt outside the scope under \`## Debt\`, not under findings.` : "";
-  return `${preamble}\n\n${brief}${roleRule}${checklist}${lessons}${continuationNote(settings.progress)}`;
+  return `${preamble}\n\n${brief}${review}${roleRule}${checklist}${lessons}${continuationNote(settings.progress)}`;
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
@@ -481,6 +484,13 @@ async function runJob(argv, {
       appendFileSync(report, `\n## Survivors\n\n${diagnostics.length ? diagnostics.join("\n") : rows.length ? rows.join("\n") : "No survivors."}\n${result.skippedLines} lines skipped by syntax errors, the budget or ten-line cap.\n`);
     } catch (error) { say(`mutation: ${error.message.replace(/[\r\n]+/g, " ")}; no mutation coverage`); }
   };
+  const verifiedCompletion = async (message) => {
+    try {
+      if (!await verifyBrief(settings, { env })) return finish(say, "verify failed", 7);
+    } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
+    if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
+    return completeReview(settings, started, originalStamp, message, say);
+  };
   let resetDeadline;
   let boundary;
   let contract;
@@ -489,7 +499,7 @@ async function runJob(argv, {
       const refused = await verifyTests();
       if (refused !== null) return refused;
       await mutationReport();
-      return completeReview(settings, started, originalStamp, `done after ${count - 1} run(s)`, say);
+      return verifiedCompletion(`done after ${count - 1} run(s)`);
     }
     try {
       const branch = currentBranch(settings.worktree);
@@ -570,7 +580,7 @@ async function runJob(argv, {
     }
     if (isDone(settings.progress)) {
       await mutationReport();
-      return completeReview(settings, started, originalStamp, `done after ${count} run(s)`, say);
+      return verifiedCompletion(`done after ${count} run(s)`);
     }
     if (line) {
       const recordedAt = now();

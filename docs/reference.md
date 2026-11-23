@@ -1006,6 +1006,31 @@ The review prompt resolves the implementation brief's `Report:` path when that b
 A separate review brief should name this implementation report's `## Survivors` section so the reviewer can assess the uncovered behavior.
 `--report`, the review verdict and the review ledger retain their existing behavior.
 
+The runner checks every `Paths:` entry before Codex starts. Name each owned path in backticks,
+separated by commas, spaces, or `and`; other text is refused with the unparsed text.
+The read-only review form `Paths: none. ...` remains valid.
+Naming `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`, or a `*.csproj` file requires
+`## Design`, even with approval off; list each added dependency there.
+
+For reviews, `Reviewed: <sha>` must match a reviewed head of the current branch in the shared ledger
+(a `codex` or `branch` verdict). A mismatch exits `1` before launch and names the latest reviewed head.
+When omitted, the runner adds the newest branch review's SHA to the prompt and requests `git diff <sha>..HEAD`.
+Without a previous review, the prompt keeps its existing scope.
+
+`Verify:` lists shell commands in backticks. After the progress marker appears, the runner executes them
+in order in the worktree, through the platform shell, with a 15-minute timeout for each command.
+`Live:` uses the same format and runs after all Verify commands pass. Each Live command gets a new empty
+temporary folder and `QC_WORKTREE` set to the worktree path; the folder is removed afterward.
+The first failure stops verification, exits `7` (`verify failed`), and leaves `exit 7` as the wrapper's final line.
+A timeout is recorded as command exit `124`. Completion requires both the progress marker and successful commands,
+including when the marker exists at startup. Briefs without either line keep their existing behavior.
+
+The runner appends `## Runner proof` to the report named by `Report:` (relative to the brief),
+or `<progress>.report.md` if omitted. Each command gets `<command>: exit <n> in <s> s`;
+a failed command also gets its last ten output lines. A proof-write failure also prevents completion.
+Review runs skip Verify and Live. A review brief's `Proof:` line names the last code report;
+the runner adds its proof section to the prompt with “The runner ran these commands. Do not run them again.”
+
 The runner validates the worktree's brief and Codex settings before launch:
 
 | Setting or requirement | Default or rule |
@@ -1021,7 +1046,7 @@ The runner validates the worktree's brief and Codex settings before launch:
 | `codex.briefMaxLines` | `40` non-blank lines in the brief |
 | `codex.briefMaxSteps` | `6` numbered steps under the task heading |
 | `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
-| Required brief fields | a `Paths:` line naming owned paths, and a `## Product decisions` heading |
+| Required brief fields | a `Paths:` line naming owned paths in backticks, and a `## Product decisions` heading; manifest paths also require `## Design` |
 | `codex.requireApproval` | boolean, default `false`; implement requires Design and Approved when true |
 | `codex.maxDiffLines` | positive whole number, default `400` |
 | `tests.maxNewCases` | nonnegative whole number, default `8`; added cases allowed in a tests job |
@@ -1103,12 +1128,13 @@ It exits `0` after a reset, or `1` at the bound or on invalid input.
 
 | Exit | Meaning |
 |---|---|
-| `0` | the progress file says `ALL TASKS DONE` |
+| `0` | the progress marker is present and every Verify/Live command passed |
 | `1` | invalid arguments, Codex settings, `budgets.codex`, or brief; a file error; or `codex` did not start |
 | `2` | an output line reports `usage limit`, `spend cap`, `rate limit`, or `hit your limit`; the runner stops immediately or reaches its reset-wait bound |
 | `3` | `--max-runs` (default `1`) runs ended and the progress file is unfinished |
 | `4` | the guard refuses a finding in the run's changes |
 | `5` | the operator paused the kit, or the runner cannot read the pause |
+| `7` | a Verify/Live command failed or timed out, or runner proof could not be saved |
 
 With `QC_ROLE=implementer`, the `SessionStart` hook gives the session a worker note in place of the controller note.
 The runner's prompt requires tests first, the touched tests, one local check, and the brief's commit and push rules.
@@ -1122,10 +1148,10 @@ Its exit code says which:
 
 | Exit | Meaning |
 |---|---|
-| 0 | The first item finishes: a pull request has green checks and meets its requirements, a workflow passes, or a Codex wrapper reports an exit |
+| 0 | The first item finishes: a pull request has green checks and meets its requirements, a workflow passes, or a Codex wrapper reports `exit 0` |
 | 1 | A bad argument |
 | 4 | `--max` minutes passed (55 by default) |
-| 5 | A completed check or workflow has a conclusion outside the green allowlist |
+| 5 | A completed check or workflow has a conclusion outside the green allowlist, or a Codex wrapper reports a nonzero exit (including `exit 7`) |
 | 6 | A check stayed queued for 15 minutes, as on a runner that is offline |
 
 A new head starts the queued timers over. Run it as one background command for each head.
