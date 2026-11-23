@@ -470,7 +470,8 @@ for (const platform of ["Windows", "POSIX"]) test(`a stalled ${platform} remote 
   interceptGit(t, (command, args, options, execute) => {
     if (args.includes("ls-remote") && !args.includes("--get-url")) {
       assert.equal(command, process.execPath);
-      return execute(command, args.map((word) => word === "24000" ? "1000" : word), options);
+      assert.deepEqual(args.slice(2, 6), ["--", "24000", "5000", "git"]);
+      return execute(command, args.map((word, index) => index === 3 || index === 4 ? "1000" : word), options);
     }
     return execute(command, args, options);
   });
