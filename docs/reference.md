@@ -883,8 +883,8 @@ An agent never resumes the kit or removes the hold label itself.
 Missing labels or another page of labels refuse the merge. A full CLI page also refuses because more labels might exist.
 Keep the pull request body check for "no merge is authorized"; the label adds a separate hold.
 
-A test that fails on three distinct heads in a row holds its branch.
-The hold lives at `<git common dir>/qc/holds/<branch with / as ->` and leaves other branches available.
+A test that fails on three distinct heads in a row prompts a question on its linked issue, as described under CI failures below.
+An existing branch hold lives at `<git common dir>/qc/holds/<branch with / as ->` and leaves other branches available.
 Only the operator's `qc resume --branch <branch>` removes it. An agent never releases the hold.
 `qc resume` without a branch clears the global pause and preserves branch holds.
 The Codex runner and `qc watch --run` exit `5` for a held branch.
@@ -1139,10 +1139,16 @@ On a failed run, the watch fetches `gh run view <id> --log-failed` with a 20-sec
 It parses TAP and Node `spec` failures into the shared workflow ledger.
 Each record carries the repository as `owner/name`, branch, head, OS, test file, test name, and first error line.
 For fork runs, the repository comes from `head_repository.full_name`.
-A hold applies only when the record's repository matches the local `origin` repository.
+On the third distinct head with the same failing test, a run from the local `origin` repository asks once on the issue named by its PR's `Refs #n` or closing keyword.
+It adds `needs-user` and posts a question; repeated observations of that head do not post duplicates.
+With no linked issue, it prints one diagnostic line and asks nothing.
+It writes no hold file. Existing holds remain until `qc resume --branch <branch>`.
 Unknown output records the job name and first error line instead.
 A failed log fetch records nothing, writes one line to stderr, and preserves exit `5`.
 Use `qc ci-failures --run <id>` to record a run manually.
+Use `qc ask --issue <n> "<question>"` to ask a question directly on an issue in the checkout's origin repository.
+The command creates the `needs-user` label when missing, adds it to the issue, and posts the question as one comment.
+A GitHub CLI failure exits `1` and prints its first error line.
 The command reads the run's head repository from the Actions API for both failures and resolutions.
 A green later head on the same branch and repository resolves its open records.
 Open records also require lessons when their branch merges into `worktree.base`.
@@ -1390,8 +1396,12 @@ A CI fix requires known-red CI. A review fix requires a review of every implemen
 The newest stop needs no review if the prompt continues its `HANDOFF:`.
 
 Several branch reviewers can review one head at once, each with its own prompt line `Scope: <name>`.
-The one-review rule counts each scope on its own.
-With `swarm.review.merge: "branch"`, the merge guard requires the newest review of every scope on the head to approve.
+The merge guard requires one approval per issue head from the configured review kind and runtime.
+It does not require approval for every dispatched scope or a separate promotion scope.
+The newest verdict in each recorded scope still counts: `CHANGES_REQUIRED` takes precedence over an approval in another scope.
+Approvals must name the exact head; a push requires a new review.
+Milestones retain approval checks for each pinned member and validation of their merge trees.
+Operator pauses and existing holds still apply.
 
 #### The promotion review
 
@@ -1434,7 +1444,7 @@ Replace the worktree placeholder with a checkout on the integration branch at th
 The review remains a branch review with `Scope: promotion`.
 The report starts with `VERDICT: APPROVED <sha>` or `VERDICT: CHANGES_REQUIRED <sha>`.
 
-With `swarm.review.merge: "branch"`, the merge guard accepts the scoped APPROVED verdict for the configured integration-to-release PR at that head.
+With `swarm.review.merge: "branch"`, the merge guard accepts an APPROVED branch verdict on the configured integration-to-release PR head; a separate promotion scope is optional.
 With `swarm.review.merge: "task"`, the guard ignores the promotion approval and requires an APPROVED task verdict on the integration head.
 The promotion PR stays outside the direct lane in both modes.
 Merge with `gh pr merge <pr> --match-head-commit <sha>` after approval.

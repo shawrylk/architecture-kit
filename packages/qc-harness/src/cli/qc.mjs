@@ -45,6 +45,7 @@ const USAGE = `qc — architecture gates
   qc debt due              name the module due after 10 milestone merges; exit 1 when not due, 3 on error
   qc ci-failures --run <id> | --rerun [--branch <branch>]
                            record a failed run, or rerun the open test files before a push
+  qc ask --issue <n> "<question>"  label the issue needs-user and post the question
   qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
@@ -136,6 +137,11 @@ async function main() {
   if (command === "pause" || command === "resume") {
     const { runPause, runResume } = await import("./pause.mjs");
     process.exitCode = (command === "pause" ? runPause : runResume)(process.cwd(), rest);
+    return;
+  }
+  if (command === "ask") {
+    const { runAsk } = await import("./ask.mjs");
+    process.exitCode = runAsk(rest);
     return;
   }
   if (command === "ci-failures") {

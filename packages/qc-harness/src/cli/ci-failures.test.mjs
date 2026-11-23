@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { recordRun, openFailures, resolveFailures, ciBriefRefusal, lessonRefusal, lessonRules, rerunFailures, runCiFailures, parseFailedLog } from "./ci-failures.mjs";
-import { holdRefusal, runResume } from "./pause.mjs";
+import { holdBranch, holdRefusal, runResume } from "./pause.mjs";
 import { appendRecord, ledgerFileOf, readLedger } from "./ledger.mjs";
 import { runWatch } from "./watch.mjs";
 
@@ -45,18 +45,20 @@ function fixture(t) {
   return root;
 }
 
-test("records the repository and holds only failures from the local origin", (t) => {
+test("records the repository and asks only for failures from the local origin", (t) => {
   const root = fixture(t);
   for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) {
     recordRun(root, { id, branch: "main", head }, { repo: "fork/repo", gh: () => tap });
   }
   assert.equal(readLedger(ledgerFileOf(root))[0].repository, "fork/repo");
   assert.equal(holdRefusal(root, "main"), null);
+  const calls = [];
   for (const [id, head] of [[4, "ddddddd"], [5, "eeeeeee"], [6, "fffffff"]]) {
-    recordRun(root, { id, branch: "main", head }, { gh: () => tap });
+    recordRun(root, { id, branch: "main", head }, { gh: (args) => { calls.push(args); return args[0] === "run" ? tap : args[1]?.endsWith("/pulls") ? JSON.stringify([{ body: "Refs #227", state: "open", head: { ref: "main", repo: { full_name: "local/repo" } } }]) : "[]"; } });
   }
+  assert.ok(calls.some((args) => args[1] === "repos/local/repo/commits/fffffff/pulls"));
   assert.equal(readLedger(ledgerFileOf(root)).at(-1).repository, "local/repo");
-  assert.ok(holdRefusal(root, "main"));
+  assert.equal(holdRefusal(root, "main"), null);
 });
 
 test("watch isolates fork and explicit repositories when recording and resolving", async (t) => {
@@ -94,7 +96,7 @@ test("watch isolates fork and explicit repositories when recording and resolving
 
 test("a local branch hold leaves an explicit foreign repository watch available", async (t) => {
   const root = fixture(t);
-  for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "main", head }, { gh: () => tap });
+  holdBranch(root, "main", "operator hold");
   assert.ok(holdRefusal(root, "main"));
   assert.equal(await runWatch(["--run", "ci.yml@main", "--repo", "other/repo"], { cwd: root, requiredChecks: [], say: () => {},
     gh: (args) => args.includes(".sha") ? "ddddddd" : JSON.stringify({ workflow_runs: [{ id: 4, head_sha: "ddddddd", status: "completed", conclusion: "success" }] }),
@@ -103,7 +105,7 @@ test("a local branch hold leaves an explicit foreign repository watch available"
 
 test("an unreadable origin keeps the hold on an explicit repository watch", async (t) => {
   const root = fixture(t);
-  for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "main", head }, { gh: () => tap });
+  holdBranch(root, "main", "operator hold");
   execFileSync("git", ["remote", "remove", "origin"], { cwd: root });
   assert.ok(holdRefusal(root, "main"));
   const lines = [];
@@ -219,9 +221,20 @@ test("watch records a failed run, preserves exit 5 on a log error, and resolves 
   assert.equal(openFailures(root, "feat/test").length, 0);
 });
 
-test("repeat heads require diagnosis, third heads hold only that branch, and resume alone preserves the hold", (t) => {
+test("three red heads → a needs-user question, and no hold record", (t) => {
   const root = fixture(t);
-  const record = (id, head, log = tap) => recordRun(root, { id, branch: "feat/test", head }, { gh: () => log });
+  const calls = [];
+  const comments = [];
+  let currentHead;
+  const gh = (args) => {
+    calls.push(args);
+    if (args[0] === "run") return tap;
+    if (args[1] === `repos/local/repo/commits/${currentHead}/pulls`) return JSON.stringify([{ body: "Refs #227", state: "open", head: { ref: "feat/test", repo: { full_name: "local/repo" }, sha: currentHead } }]);
+    if (args[0] === "api") return JSON.stringify([comments]);
+    if (args[1] === "comment") comments.push({ body: args[args.indexOf("--body") + 1] });
+    return "[]";
+  };
+  const record = (id, head) => { currentHead = head; return recordRun(root, { id, branch: "feat/test", head }, { gh }); };
   record(1, "aaaaaaa");
   assert.match(ciBriefRefusal(root, "feat/test", ""), /cleanup retries/);
   assert.equal(ciBriefRefusal(root, "green", ""), null);
@@ -234,8 +247,20 @@ test("repeat heads require diagnosis, third heads hold only that branch, and res
   assert.match(ciBriefRefusal(root, "feat/test", brief), /## Diagnosis/);
   assert.match(ciBriefRefusal(root, "feat/test", `${brief}\n## Diagnosis\nRoot cause: open handle\n`), /Evidence:/);
   assert.equal(ciBriefRefusal(root, "feat/test", `${brief}\n## Diagnosis\nRoot cause: open handle\nEvidence: log shows EBUSY; cleanup code leaves it open.\n`), null);
+  assert.equal(calls.filter((args) => args[0] === "issue").length, 0);
   record(4, "ccccccc");
-  assert.match(holdRefusal(root, "feat/test"), /operator.*qc resume --branch feat\/test/i);
+  record(4, "ccccccc");
+  record(5, "ccccccc");
+  record(6, "ddddddd");
+  const questions = calls.filter((args) => args[0] === "issue" && args[1] === "comment");
+  assert.equal(questions.length, 1);
+  assert.equal(questions[0][2], "227");
+  assert.match(comments[0].body, /cleanup retries/);
+  assert.equal(holdRefusal(root, "feat/test"), null);
+  assert.ok(readLedger(ledgerFileOf(root)).every((record) => record.type === "ci-failure"));
+  holdBranch(root, "feat/test", "existing operator hold");
+  record(7, "eeeeeee");
+  assert.match(holdRefusal(root, "feat/test"), /qc resume/);
   assert.equal(holdRefusal(root, "other"), null);
   assert.equal(runResume(root, [], { say: () => {} }), 0);
   assert.ok(holdRefusal(root, "feat/test"));
@@ -297,7 +322,7 @@ test("rerun appends unique open test files, honors configuration, and propagates
 
 test("a held watched branch exits 5 without fetching and leaves other branches available", async (t) => {
   const root = fixture(t);
-  for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "feat/test", head }, { gh: () => tap });
+  holdBranch(root, "feat/test", "operator hold");
   assert.equal(await runWatch(["--run", "ci.yml@feat/test"], { cwd: root, requiredChecks: [], gh: () => assert.fail("held branch"), say: () => {} }), 5);
 });
 
@@ -306,6 +331,10 @@ test("the command table exposes ci-failures and reruns a green branch without gh
   const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
   const help = spawnSync(process.execPath, [qc], { cwd: root, encoding: "utf8" });
   assert.match(help.stdout, /qc ci-failures --run <id>/);
+  assert.match(help.stdout, /qc ask --issue <n>/);
+  const ask = spawnSync(process.execPath, [qc, "ask", "--issue", "0", "Why?"], { cwd: root, encoding: "utf8" });
+  assert.equal(ask.status, 1);
+  assert.match(ask.stderr, /Usage: qc ask/);
   const result = spawnSync(process.execPath, [qc, "ci-failures", "--rerun", "--branch", "green"], { cwd: root, encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
@@ -506,4 +535,81 @@ test("the skip line stays within 200 characters for many long paths", (t) => {
   assert.equal(warnings.length, 1);
   assert.ok(warnings[0].length <= 200);
   assert.match(warnings[0], /skip 10 test files:/);
+});
+
+
+test("CI questions use only PR issue references and diagnose missing issues or GitHub failures", (t) => {
+  for (const mode of ["advanced PR", "old PR", "retry same run", "retry next head"]) {
+    const root = fixture(t);
+    const comments = [];
+    const warnings = [];
+    let failAsk = mode !== "advanced PR";
+    let head;
+    const gh = (args) => {
+      if (args[0] === "run") return tap;
+      if (args[1] === `repos/local/repo/commits/${head}/pulls`) return JSON.stringify([
+        { body: "Closes #12", state: "closed", head: { ref: "feat/test", repo: { full_name: "local/repo" }, sha: "0000000" } },
+        { body: "Refs #13", state: "open", head: { ref: "other", repo: { full_name: "local/repo" }, sha: head } },
+        ...(mode === "advanced PR" ? [{ body: "Refs #13", state: "open", head: { ref: "feat/test", repo: { full_name: "fork/repo" }, sha: "ddddddd" } }] : []),
+        { body: mode === "old PR" ? "No linked issue" : "Refs #227", state: "open", head: { ref: "feat/test", repo: { full_name: "local/repo" }, sha: mode === "advanced PR" ? "ddddddd" : head } },
+      ]);
+      if (args[0] === "api") return JSON.stringify([comments]);
+      if (args[0] === "issue" && args[1] === "comment") {
+        if (failAsk) throw new Error("GitHub unavailable");
+        assert.equal(args[2], "227");
+        comments.push({ body: args[args.indexOf("--body") + 1] });
+      }
+      return "[]";
+    };
+    const record = (id, sha) => {
+      head = sha;
+      recordRun(root, { id, branch: "feat/test", head }, { gh, warn: (s) => warnings.push(s) });
+    };
+    record(1, "aaaaaaa"); record(2, "bbbbbbb"); record(3, "ccccccc");
+    if (mode === "advanced PR") {
+      assert.equal(comments.length, 1, "C asks even after its associated PR advances to D");
+      assert.deepEqual(warnings, []);
+    }
+    failAsk = false;
+    record(mode === "retry next head" ? 4 : 3, mode === "retry next head" ? "ddddddd" : "ccccccc");
+    if (mode === "old PR") {
+      assert.equal(comments.length, 0);
+      assert.ok(warnings.every((s) => /no linked issue/.test(s)), warnings.join("\n"));
+    } else {
+      assert.equal(comments.length, 1, mode);
+      record(5, "eeeeeee");
+      assert.equal(comments.length, 1, "successful question deduplicates later heads");
+    }
+  }
+  for (const body of ["Fixes #12", "closed #13", "Resolves local/repo#14", "Refs #15", "Mentions #16", "Closes foreign/repo#17"]) {
+    const root = fixture(t);
+    const calls = [];
+    const warnings = [];
+    const gh = (args) => {
+      calls.push(args);
+      if (args[0] === "run") return tap;
+      if (args[1] === "repos/local/repo/commits/ccccccc/pulls") return JSON.stringify([{ body, state: "open", head: { ref: "feature-without-number", repo: { full_name: "local/repo" }, sha: "ccccccc" } }]);
+      return "[]";
+    };
+    for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "feature-without-number", head }, { gh, warn: (line) => warnings.push(line) });
+    const question = calls.find((args) => args[0] === "issue" && args[1] === "comment");
+    if (/Mentions|foreign/.test(body)) {
+      assert.equal(question, undefined);
+      assert.equal(warnings.length, 1);
+      assert.doesNotMatch(warnings[0], /\n/);
+    } else {
+      assert.equal(question?.[2], /#(\d+)/.exec(body)[1]);
+      assert.equal(warnings.length, 0);
+      assert.ok(calls.filter((args) => args[0] !== "run").every((args) => args[0] === "api" ? args[1].includes("local/repo") : args[args.indexOf("-R") + 1] === "local/repo"));
+    }
+    assert.equal(holdRefusal(root, "feature-without-number"), null);
+  }
+  const root = fixture(t);
+  const warnings = [];
+  for (const [id, head] of [[1, "aaaaaaa"], [2, "bbbbbbb"], [3, "ccccccc"]]) recordRun(root, { id, branch: "main", head }, {
+    gh: (args) => { if (args[0] === "run") return tap; throw new Error("offline\nprivate details"); }, warn: (line) => warnings.push(line),
+  });
+  assert.deepEqual(warnings, ["ci-failures: gh failed: offline"]);
+  assert.equal(openFailures(root, "main").length, 3);
+  assert.equal(holdRefusal(root, "main"), null);
 });

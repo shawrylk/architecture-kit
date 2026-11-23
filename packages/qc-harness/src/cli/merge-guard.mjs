@@ -21,7 +21,7 @@ import { globMatcher } from "../glob.mjs";
 import { MILESTONE_PATTERN } from "./milestone.mjs";
 import { integrationLane } from "./integration-lane.mjs";
 import { checkMergeTrees } from "./integrate-tree.mjs";
-import { appendRecord, decidingVerdictFor, dispatchedScopesFor, latestVerdictFor, readLedger } from "./ledger.mjs";
+import { appendRecord, decidingVerdictFor, readLedger } from "./ledger.mjs";
 import { promotionBranchName } from "./promotion-branch.mjs";
 import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { lessonRefusal, resolvedFailures } from "./ci-failures.mjs";
@@ -52,23 +52,6 @@ export function mergeVerdict(merges, records, kind, lane = null, promotion = nul
       return { refusal: `Merge guard: \`gh pr merge\` must pass \`--match-head-commit <sha>\` with the head the ${kind} review approved, so a push after the review cannot merge unreviewed. Add it.` };
     }
     const verdict = decidingVerdictFor(reviews, merge.sha, kinds);
-    const missing = (kind === "branch" ? dispatchedScopesFor(records, merge.sha) : []).find(
-      (scope) => latestVerdictFor(records, merge.sha, [kind], scope)?.verdict !== "APPROVED",
-    );
-    if (missing !== undefined) {
-      return {
-        refusal:
-          `Merge guard: the ledger holds no APPROVED ${kind} review of scope "${missing}" on ${merge.sha}, and a review of that scope was dispatched. ` +
-          `Dispatch ${REVIEWER[kind]} with \`Scope: ${missing}\` on that head, and merge after every scope approves.`,
-      };
-    }
-    if (promotion && kind === "branch" && latestVerdictFor(records, merge.sha, ["branch"], promotion)?.verdict !== "APPROVED") {
-      return {
-        refusal:
-          `Merge guard: the ledger holds no APPROVED branch review of scope "${promotion}" on ${merge.sha}. ` +
-          `Run \`qc review promotion ${merge.number ?? (/^[1-9]\d*$/.test(merge.selector ?? "") ? merge.selector : "<pr>")}\` on that head, and merge after every scope approves.`,
-      };
-    }
     if (verdict?.kind === "codex" && verdict.verdict === "CHANGES_REQUIRED") {
       return { refusal: `Merge guard: the latest Codex review of ${merge.sha} is CHANGES_REQUIRED. Run a Codex review on that head, and merge after it approves.` };
     }
@@ -179,7 +162,7 @@ function milestoneLane(workflow, records, pr, sha, deadline) {
   const root = workflow.root;
   const commits = git(root, "log", "--first-parent", "--format=%H %P", sha, "--not", pr.oid);
   if (commits === null) return { problem: "cannot read milestone history" };
-  const kinds = ["codex", workflow.review.merge];
+  const kinds = workflow.review.runtime === "codex" ? [workflow.review.merge, "codex"] : [workflow.review.merge];
   const generated = globMatcher(policy.config?.generated?.globs ?? defaults.generated.globs);
   const merges = [];
   let heads = 0;
@@ -188,8 +171,6 @@ function milestoneLane(workflow, records, pr, sha, deadline) {
     if (parents.length === 2) {
       const member = parents[1];
       if (decidingVerdictFor(records, member, kinds)?.verdict !== "APPROVED") return { problem: `milestone member ${member} holds no APPROVED review` };
-      const missing = dispatchedScopesFor(records, member).find((scope) => decidingVerdictFor(records.filter((r) => (r.scope ?? null) === scope), member, kinds)?.verdict !== "APPROVED");
-      if (missing !== undefined) return { problem: `milestone member ${member} holds no APPROVED review of scope ${missing}` };
       merges.push(commit);
       heads++;
     } else if (parents.length === 1) {
