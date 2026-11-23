@@ -68,51 +68,75 @@ export function verificationPolicy(brief, settings) {
 export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 1000 }) {
   return new Promise((resolve) => {
     const started = Date.now();
-    let text = "";
+    const lines = [];
     let timedOut = false;
     let timer;
-    const emit = (value) => {
-      text += value;
-      if (text.length > 64 * 1024) {
-        const start = text.length - 64 * 1024;
-        const newline = text.indexOf("\n", start);
-        text = text[start - 1] === "\n" ? text.slice(start) : newline < 0 ? "" : text.slice(newline + 1);
-      }
+    const emit = (line) => {
+      lines.push(redactOutput(line.replace(/\r$/, "")));
+      if (lines.length > 200) lines.shift();
     };
     const recorder = () => {
       let buffer = "";
       let end = "";
+      let dropping = false;
+      let prefix = "";
+      const consume = (value, discard = false) => {
+        const length = value.length;
+        const inSpan = Boolean(end);
+        let lastMarker = 0;
+        if (discard && prefix) emit(prefix);
+        let output = discard ? "" : prefix;
+        prefix = "";
+        while (value || end) {
+          if (end) {
+            const index = value.indexOf(end);
+            if (index < 0) {
+              if (!discard) prefix = output;
+              return lastMarker;
+            }
+            value = value.slice(index + end.length);
+            lastMarker = length - value.length;
+            end = "";
+          } else {
+            const begin = /-----BEGIN ([A-Z ]*PRIVATE KEY)-----/.exec(value);
+            if (!begin) {
+              if (!discard) output += value;
+              break;
+            }
+            if (discard) emit("[REDACTED]");
+            else output += value.slice(0, begin.index) + "[REDACTED]";
+            // Match the BEGIN label, as in output-redaction.mjs:7.
+            end = `-----END ${begin[1]}-----`;
+            value = value.slice(begin.index + begin[0].length);
+            lastMarker = length - value.length;
+          }
+        }
+        if (!discard && (output || !inSpan)) emit(output);
+        return lastMarker;
+      };
       return {
         record(chunk) {
           buffer += chunk;
-          while (buffer) {
-            if (end) {
-              const index = buffer.indexOf(end);
-              if (index < 0) {
-                buffer = buffer.slice(-end.length);
-                return;
-              }
-              buffer = buffer.slice(index + end.length);
-              end = "";
-            } else {
-              const begin = /-----BEGIN ([A-Z ]*PRIVATE KEY)-----/.exec(buffer);
-              if (!begin) {
-                const length = Math.max(0, buffer.length - 100);
-                emit(buffer.slice(0, length));
-                buffer = buffer.slice(length);
-                return;
-              }
-              emit(buffer.slice(0, begin.index));
-              emit("[REDACTED]");
-              // Match the BEGIN label, as in output-redaction.mjs:7.
-              end = `-----END ${begin[1]}-----`;
-              buffer = buffer.slice(begin.index + begin[0].length);
-            }
+          let newline;
+          while ((newline = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, newline);
+            consume(line, dropping || newline >= 64 * 1024);
+            buffer = buffer.slice(newline + 1);
+            dropping = false;
+          }
+          if (buffer.length > 64 * 1024 || dropping) {
+            // Retain enough overlap to recognize a BEGIN or matching END split across chunks.
+            const lastMarker = consume(buffer, true);
+            // Never scan a complete marker twice when it falls inside the overlap.
+            buffer = buffer.slice(Math.max(lastMarker, buffer.length - 100));
+            dropping = true;
           }
         },
         flush() {
-          if (!end) emit(buffer);
+          if (buffer) consume(buffer, dropping);
+          if (prefix) emit(prefix);
           buffer = "";
+          prefix = "";
         },
       };
     };
@@ -134,8 +158,8 @@ export function runShell(command, { cwd, env = process.env, timeout = 15 * 60 * 
       clearTimeout(timer);
       stdout.flush();
       stderr.flush();
-      if (timedOut) emit(`${text && !text.endsWith("\n") ? "\n" : ""}command timed out`);
-      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: redactOutput(text).trimEnd().split(/\r?\n/).slice(-10).join("\n") });
+      if (timedOut) emit("command timed out");
+      resolve({ status: timedOut ? 124 : status ?? 1, seconds: (Date.now() - started) / 1000, tail: lines.slice(-10).join("\n").trimEnd() });
     });
   });
 }

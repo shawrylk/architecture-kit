@@ -140,7 +140,81 @@ test("shell proof redacts a private key after 65,536 characters on one line", as
     writeFileSync(path.join(f.worktree, "print-output.cjs"), `process.${stream}.write(${JSON.stringify(output)});`);
     const result = await runShell("node print-output.cjs", { cwd: f.worktree });
     assert.equal(result.status, 0);
+    assert.ok(result.tail.length > 0, "the key span must leave a redaction marker");
     assert.doesNotMatch(result.tail, /long-line-key-secret|-----BEGIN|-----END/);
+  }
+});
+
+test("shell proof redacts a token before stdout and stderr are merged", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    const other = stream === "stdout" ? "stderr" : "stdout";
+    const token = ["ghp", "_", "a".repeat(200)].join("");
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      (async () => {
+        const write = (stream, text) => new Promise((resolve) => stream.write(text, resolve));
+        const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
+        await write(process.${stream}, ${JSON.stringify(token.slice(0, 140))});
+        await pause();
+        await write(process.${other}, "other-stream\\n".repeat(20));
+        await pause();
+        await write(process.${stream}, ${JSON.stringify(token.slice(140) + "\n")});
+      })();
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, [...Array(9).fill("other-stream"), "[REDACTED]"].join("\n"));
+  }
+});
+
+test("shell proof discards the rest of a 70000-character cut line", async (t) => {
+  for (const stream of ["stdout", "stderr"]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      process.${stream}.write("x".repeat(70000), () => {
+        setTimeout(() => process.${stream}.write("cut-line-remainder\\nretained-sentinel\\n"), 50);
+      });
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "retained-sentinel");
+  }
+});
+
+test("shell proof keeps one, two, three in line completion order", async (t) => {
+  const f = fixture(t);
+  writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+    process.stdout.write("one\\n", () => {
+      setTimeout(() => process.stderr.write("two\\n", () => {
+        setTimeout(() => process.stdout.write("three\\n"), 50);
+      }), 50);
+    });
+  `);
+  const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+  assert.equal(result.status, 0);
+  assert.equal(result.tail, "one\ntwo\nthree");
+});
+
+test("shell proof keeps one key marker when a dropped line overlaps a key boundary", async (t) => {
+  const begin = pem("BEGIN", "RSA");
+  const end = pem("END", "RSA");
+  for (const chunks of [
+    ["x".repeat(70000) + begin + "secret" + end, "\nsafe\n"],
+    [begin + "\n", "secret".repeat(14000), "\n" + end + "\nsafe\n"],
+    ["x".repeat(70000) + begin.slice(0, 12), begin.slice(12) + "\nsecret\n" + end + "\nsafe\n"],
+  ]) {
+    const f = fixture(t);
+    writeFileSync(path.join(f.worktree, "print-output.cjs"), `
+      (async () => {
+        for (const chunk of ${JSON.stringify(chunks)}) {
+          await new Promise((resolve) => process.stdout.write(chunk, resolve));
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+      })();
+    `);
+    const result = await runShell("node print-output.cjs", { cwd: f.worktree });
+    assert.equal(result.status, 0);
+    assert.equal(result.tail, "[REDACTED]\nsafe");
   }
 });
 
