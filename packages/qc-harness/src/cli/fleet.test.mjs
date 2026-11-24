@@ -1,12 +1,13 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { fleetPath, validateFleet, ownerOf, freeIssues, runFleet } from "./fleet.mjs";
+import { readState, writeState } from "./fleet-state.mjs";
 
 const nodes = [
   { id: "a1", weight: 1, maxSize: "L", active: true },
@@ -18,6 +19,7 @@ const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
 function fixture(t) {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-fleet-"));
+  mkdirSync(path.join(cwd, ".git"));
   t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const env = { QC_FLEET_FILE: path.join(cwd, "config", "fleet.json") };
   const lines = [], errors = [];
@@ -25,7 +27,8 @@ function fixture(t) {
   const run = (args, extra = {}) => {
     lines.length = errors.length = 0;
     const code = runFleet(args, { ...deps, ...extra });
-    return { code, lines: [...lines], errors: [...errors] };
+    const result = value => ({ code: value, lines: [...lines], errors: [...errors] });
+    return code instanceof Promise ? code.then(result) : result(code);
   };
   return { cwd, env, run };
 }
@@ -43,7 +46,7 @@ function fakeGh(issues, prs = []) {
 
 test("fleet validates every field, defaults, paths, missing file and unreadable inputs", t => {
   const valid = { self: "a1", nodes: [{ id: "a1", weight: 1 }] };
-  assert.deepEqual(validateFleet(valid), { self: "a1", nodes: [nodes[0]] });
+  assert.deepEqual(validateFleet(valid), { self: "a1", nodes: [nodes[0]], leaders: ["a1"] });
   for (const [value, field] of [
     [null, "fleet"], [{}, "nodes"], [{ self: "a1", nodes: [] }, "self"],
     [{ ...valid, self: "other" }, "self"],
@@ -77,6 +80,53 @@ test("fleet validates every field, defaults, paths, missing file and unreadable 
   assert.equal(f.run(["next", "--repo", "o/r"], { gh: fakeGh([]), git: () => null }).code, 1);
   assert.equal(f.run(["status", "--repo", "o/r"], { gh: args => args[0] === "issue" ? "[]" : null, git: () => "" }).code, 1);
   assert.equal(f.run(["next"], { origin: () => null }).code, 1);
+});
+
+test("fleet settings accept optional secrets, ordered leaders and node endpoints, including old files", () => {
+  const old = { self: "a1", nodes };
+  assert.deepEqual(validateFleet(old), { ...old, leaders: ["a1", "b2", "c3"] });
+  for (const secret of ["ab".repeat(32), "AB".repeat(40), "a".repeat(65)]) {
+    const settings = { ...old, secret, leaders: ["c3", "a1"], nodes: [{ ...nodes[0], address: "localhost", port: 1024 }, { ...nodes[1], address: "::1", port: 65535 }, nodes[2]] };
+    assert.deepEqual(validateFleet(settings), settings);
+  }
+  assert.deepEqual(validateFleet({ ...old, nodes: [{ ...nodes[0], address: "node.local" }, { ...nodes[1], port: 1234 }, nodes[2]] }).nodes,
+    [{ ...nodes[0], address: "node.local" }, { ...nodes[1], port: 1234 }, nodes[2]]);
+  for (const [changes, field] of [
+    ...[null, "", "a".repeat(63), "g".repeat(64), `${"a".repeat(64)}\n`, 42].map(secret => [{ secret }, "secret"]),
+    ...[null, "a1", ["missing"], ["a1", "a1"], []].map(leaders => [{ leaders }, "leaders"]),
+    ...["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "", " host ", "host/path", "host:8080", null, 42].map(address => [{ nodes: [{ ...nodes[0], address }] }, "address"]),
+    ...[null, 1023, 65536, 1.5, "8080", NaN, Infinity].map(port => [{ nodes: [{ ...nodes[0], port }] }, "port"]),
+  ]) assert.throws(() => validateFleet({ ...old, ...changes }), new RegExp(field));
+});
+
+test("init accepts explicit secrets and addresses and generates a reusable secret by default", t => {
+  const f = fixture(t);
+  const args = ["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:S"];
+  const secret = "ab".repeat(32);
+  const explicit = f.run([...args, "--secret", secret, "--addresses", "a1@localhost:8080,b2@[::1]:9090"]);
+  assert.equal(explicit.code, 0, explicit.errors.join("\n"));
+  let saved = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
+  assert.equal(saved.secret, secret);
+  assert.deepEqual(saved.leaders, ["a1", "b2"]);
+  assert.deepEqual(saved.nodes.map(({ id, address, port }) => ({ id, address, port })), [{ id: "a1", address: "localhost", port: 8080 }, { id: "b2", address: "::1", port: 9090 }]);
+  assert.ok(!explicit.lines.join("\n").includes(secret));
+  for (const addresses of ["unknown@host:8080", "a1@host:8080,a1@other:8080", "a1@0.0.0.0:8080", "a1@[::]:8080", "a1@host:1023", "a1@host:65536", "a1@host:no", "a1@host:8e3", "a1@host", "a1@:8080", "a1@host:8080,", "a1@host:8080:90"]) {
+    const result = f.run([...args, "--force", "--addresses", addresses]);
+    assert.equal(result.code, 1, addresses);
+    assert.match(result.errors.join("\n"), /address|port/);
+    assert.equal(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).secret, secret);
+  }
+  for (const flags of [["--secret", "bad"], ["--secret"], ["--addresses"], ["--secret", secret, "--secret", secret]]) assert.equal(f.run([...args, "--force", ...flags]).code, 1);
+  const generated = f.run([...args, "--force"]);
+  assert.equal(generated.code, 0);
+  saved = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
+  assert.match(saved.secret, /^[0-9a-f]{64}$/);
+  const instruction = generated.lines.filter(line => line.includes(saved.secret));
+  assert.equal(instruction.length, 1);
+  assert.match(instruction[0], /pass the same secret on the other PCs/);
+  assert.match(instruction[0], /--secret/);
+  assert.equal(f.run([...args, "--force"]).code, 0);
+  assert.notEqual(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).secret, saved.secret);
 });
 
 test("ownerOf repeats across calls and repo case, using the specified SHA-256 score", () => {
@@ -143,7 +193,7 @@ test("free issues exclude hold labels and taken PR bodies, PR branches and origi
   }).free.map(row => row.number), [1]);
 });
 
-test("next prints the oldest five or all, exits 3 when empty, and status stays within 15 lines", t => {
+test("next prints the oldest five or all, exits 3 when empty, and status adds the node line", async t => {
   const remoteFixture = fixture(t);
   const git = (...args) => {
     const result = spawnSync("git", args, { cwd: remoteFixture.cwd, encoding: "utf8" });
@@ -175,19 +225,21 @@ test("next prints the oldest five or all, exits 3 when empty, and status stays w
   assert.equal(f.run(["next", "--repo", "o/r"], { ...extra, gh: fakeGh([issue(99, ["custom-hold"])]) }).code, 3);
   const empty = f.run(["next", "--repo", "o/r"], { ...extra, gh: fakeGh([]) });
   assert.deepEqual(empty, { code: 3, lines: [], errors: ["no free issue for a1"] });
-  const status = f.run(["status", "--repo", "o/r"], extra);
+  const status = await f.run(["status", "--repo", "o/r"], extra);
   assert.equal(status.code, 0);
-  assert.equal(status.lines.length, 3);
+  assert.equal(status.lines.length, 4);
   assert.match(status.lines[0], /a1.*1.*L.*true.*12.*12,11,10,9,8,7,6,5,4,3$/);
   assert.match(status.lines[1], /b2.*1.*S.*true.*0/);
   assert.match(status.lines[2], /taken.*0.*unassigned.*0/);
+  assert.equal(status.lines[3], "node=stopped leader=unknown peers=0/1");
   const many = Array.from({ length: 20 }, (_, i) => ({ id: `pc${i}`, weight: 1, maxSize: "L", active: true }));
   writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify({ self: "pc0", nodes: many }));
-  const capped = f.run(["status", "--repo", "o/r"], extra);
-  assert.equal(capped.lines.length, 15);
-  assert.match(capped.lines.at(-1), /6 more nodes/);
+  const capped = await f.run(["status", "--repo", "o/r"], extra);
+  assert.equal(capped.lines.length, 16);
+  assert.match(capped.lines.at(-2), /6 more nodes/);
+  assert.equal(capped.lines.at(-1), "node=stopped leader=unknown peers=0/19");
   writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify({ self: "a1", nodes: [{ ...nodes[0], active: false }] }));
-  assert.match(f.run(["status", "--repo", "o/r"], extra).lines.at(-1), /unassigned.*12/);
+  assert.match((await f.run(["status", "--repo", "o/r"], extra)).lines.at(-2), /unassigned.*12/);
 });
 
 test("init routes through qc from an empty folder, creates mode 0600 and refuses replacement", t => {
@@ -210,4 +262,59 @@ test("init routes through qc from an empty folder, creates mode 0600 and refuses
   assert.equal(call([...args, "--force"]).status, 0);
   for (const nodesArg of ["a1:1:L:extra", "a1:no:L", "a1:1:XL"]) assert.equal(call(["init", "--self", "a1", "--nodes", nodesArg, "--force"]).status, 1);
   assert.equal(call(["init", "--self", "a1"]).status, 1);
+});
+
+test("CLI starts, starts twice, reports running and stops without reading GitHub", async t => {
+  const f = fixture(t), lines = [], errors = [];
+  assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L", "--addresses", "a1@127.0.0.1:8080"]).code, 0);
+  let live = false, spawns = 0, instance;
+  const node = { spawn: (_command, _args, options) => { instance = options.env.QC_FLEET_INSTANCE; live = true; spawns++; return { pid: 45678, unref() {}, once() {} }; },
+    kill: (_pid, signal) => { if (!live) throw Object.assign(new Error("gone"), { code: "ESRCH" }); if (signal !== 0) live = false; },
+    fetch: async () => ({ status: 200, json: async () => ({ ok: true, instance }) }), clock: () => 1_000_000 };
+  const deps = { cwd: f.cwd, env: f.env, node, origin: () => null, gh: () => { throw new Error("unexpected GitHub read"); },
+    say: line => lines.push(line), warn: line => errors.push(line) };
+  assert.equal(await runFleet(["start", "--leader"], deps), 0, errors.join("\n"));
+  assert.deepEqual(lines.splice(0), ["fleet node started: a1"]);
+  assert.equal(await runFleet(["start"], deps), 0);
+  assert.deepEqual(lines.splice(0), ["fleet node already running: a1"]);
+  assert.equal(spawns, 1);
+  assert.equal(readState(f.cwd, "node").leader, true);
+  writeState(f.cwd, "peers", { b2: { time: 999999, kit: null, leader: false } });
+  assert.equal(await runFleet(["status", "--repo", "o/r"], { ...deps, gh: fakeGh([]), git: () => "" }), 0);
+  assert.equal(lines.splice(0).at(-1), "node=running leader=a1 peers=1/1");
+  assert.equal(await runFleet(["stop"], deps), 0);
+  assert.deepEqual(lines.splice(0), ["fleet node stopped: a1"]);
+  assert.equal(await runFleet(["stop"], deps), 0);
+  assert.deepEqual(lines.splice(0), ["fleet node already stopped: a1"]);
+  const saved = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
+  delete saved.secret;
+  writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify(saved));
+  assert.equal(await runFleet(["start"], deps), 1);
+  assert.match(errors.pop(), /secret/);
+  saved.secret = "ab".repeat(32);
+  delete saved.nodes[0].address;
+  writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify(saved));
+  assert.equal(await runFleet(["start"], deps), 1);
+  assert.match(errors.pop(), /address.*a1/);
+  for (const argv of [["start", "--leader", "--leader"], ["stop", "--leader"], ["serve", "--repo", "o/r"]]) assert.equal(await runFleet(argv, deps), 1);
+});
+
+test("CLI serve runs the node loop and exits after an injected stop signal", async t => {
+  const f = fixture(t);
+  assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080"]).code, 0);
+  const signals = new Map();
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  const errors = [];
+  const serving = runFleet(["serve", "--leader"], { cwd: f.cwd, env: f.env, origin: () => "o/r", warn: line => errors.push(line),
+    gh: () => { throw new Error("unexpected GitHub read"); }, node: {
+      listen: { port: 0 }, timer: () => 1, clearTimer: () => {},
+      onSignal: (name, fn) => { signals.set(name, fn); if (name === "SIGINT") started(); }, offSignal: name => signals.delete(name),
+    } });
+  await ready;
+  assert.equal(readState(f.cwd, "node").leader, true);
+  signals.get("SIGINT")();
+  assert.equal(await serving, 0, errors.join("\n"));
+  assert.deepEqual(readState(f.cwd, "node"), {});
+  assert.equal(signals.size, 0);
 });
