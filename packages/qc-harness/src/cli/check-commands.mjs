@@ -183,10 +183,10 @@ async function importingTests(root, changed) {
     const graph = await testGraph(root);
     const tests = new Set(graph.files.filter((file) => /^packages\/qc-harness\/src\/gates\/[^/]+\.test\.mjs$/.test(file)));
     const namedTests = new Map();
-    // Unknown loaders can read any changed module; cover their readers too, or run the full suite.
+    // Unknown loaders can read any changed module; include the suite tests that reach them.
     for (const file of new Set([...changed, ...graph.uncertainFiles])) {
       const covered = coveringTests(file, graph, namedTests);
-      if (!covered.size) return null;
+      if (!covered.size && changed.includes(file)) return null;
       for (const test of covered) tests.add(test);
     }
     return [...tests].sort();

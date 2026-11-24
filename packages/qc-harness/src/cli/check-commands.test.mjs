@@ -407,6 +407,43 @@ console.log('WRAPPER RAN');
   assert.doesNotMatch(run.stdout + run.stderr, /unrelated\.test\.mjs|UNRELATED TEST RAN|FULL SUITE/);
 });
 
+test("--affected skips an uncertain fixture outside the suite with no covering tests", (t) => {
+  const root = fixture(t);
+  const dir = "packages/qc-harness/src/cli";
+  mkdirSync(path.join(root, dir), { recursive: true });
+  mkdirSync(path.join(root, "evals/agents/tasks/x"), { recursive: true });
+  writeFileSync(path.join(root, dir, "module.mjs"), "export const value = 1;\n");
+  writeFileSync(path.join(root, dir, "module.test.mjs"), "import './module.mjs'; console.log('AFFECTED TEST RAN');\n");
+  writeFileSync(path.join(root, dir, "unrelated.test.mjs"), "throw Error('UNRELATED TEST RAN');\n");
+  writeFileSync(path.join(root, "evals/agents/tasks/x/fixture.ts"), "import 'unavailable-package';\n");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "echo FULL SUITE" } }));
+  git(root, "add", "."); git(root, "commit", "-qm", "test: seed uncertain fixture");
+  const base = git(root, "rev-parse", "HEAD").trim();
+  writeFileSync(path.join(root, dir, "module.mjs"), "export const value = 2;\n");
+  git(root, "add", ".");
+  const run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /AFFECTED TEST RAN/);
+  assert.doesNotMatch(run.stdout + run.stderr, /UNRELATED TEST RAN|FULL SUITE|fixture\.ts/);
+});
+
+test("--affected falls back to the full suite for an uncovered changed file", (t) => {
+  const root = fixture(t);
+  const dir = "packages/qc-harness/src/cli";
+  mkdirSync(path.join(root, dir), { recursive: true });
+  writeFileSync(path.join(root, dir, "uncovered.mjs"), "import 'unavailable-package';\n");
+  writeFileSync(path.join(root, dir, "unrelated.test.mjs"), "throw Error('UNRELATED TEST RAN');\n");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ scripts: { test: "echo FULL SUITE" } }));
+  git(root, "add", "."); git(root, "commit", "-qm", "test: seed uncovered source");
+  const base = git(root, "rev-parse", "HEAD").trim();
+  writeFileSync(path.join(root, dir, "uncovered.mjs"), "import 'unavailable-package';\nexport const value = 2;\n");
+  git(root, "add", ".");
+  const run = check(root, ["--affected", "--base", base]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.match(run.stdout, /FULL SUITE/);
+  assert.doesNotMatch(run.stdout + run.stderr, /UNRELATED TEST RAN/);
+});
+
 test("--affected selects only tests included in the full suite", (t) => {
   const root = fixture(t);
   const dir = "packages/qc-harness/src/cli";
