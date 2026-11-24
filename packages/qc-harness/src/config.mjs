@@ -723,6 +723,13 @@ export function merge(base, override) {
   return out;
 }
 
+// Keep project-field provenance separate from the merged defaults.
+const explicitOrchestratorCompactAt = new WeakMap();
+
+export function hasExplicitOrchestratorCompactAt(config) {
+  return explicitOrchestratorCompactAt.get(config) === true;
+}
+
 /** Read `qc.config.json` from `root`, merged over the defaults. Absent is legal. */
 export function load(root = process.cwd()) {
   const file = path.join(root, CONFIG_FILE);
@@ -816,6 +823,8 @@ export function load(root = process.cwd()) {
     throw new TypeError("tests.command must be a non-empty array of non-empty strings");
   }
   config.root = root;
+  explicitOrchestratorCompactAt.set(config,
+    isPlainObject(user.budgets?.orchestrator) && Object.hasOwn(user.budgets.orchestrator, "compactAt"));
   return config;
 }
 

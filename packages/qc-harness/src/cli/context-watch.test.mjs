@@ -10,13 +10,28 @@ import { decide, START, STEP, TELL_USER } from "./context-watch.mjs";
 
 function fixture(t, sessionId = "s") {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "context-watch-test-"));
-  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const home = path.join(tmp, "home");
+  const configDir = path.join(home, ".claude");
+  const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = configDir;
+  t.mock.method(os, "homedir", () => home);
+  t.after(() => {
+    if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousConfigDir;
+  });
   const transcript = path.join(tmp, "transcript.jsonl");
   mkdirSync(path.join(tmp, ".git"));
   const call = { cwd: tmp, session_id: sessionId, transcript_path: transcript, hook_event_name: "PostToolUse" };
   let request = 0;
   return {
     tmp,
+    home,
+    configDir,
+    settings(directory, value, name = "settings.json") {
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(path.join(directory, name), JSON.stringify(value));
+    },
     call,
     state: path.join(tmp, "claude-context-watch", `${sessionId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`),
     at(tokens, overrides = {}) {
@@ -37,6 +52,7 @@ function fixture(t, sessionId = "s") {
 
 test("dispatch owns compaction even with invalid budgets", (t) => {
   const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 100_000 });
   writeFileSync(path.join(f.tmp, "qc.config.json"), JSON.stringify({ swarm: { dispatch: {} }, budgets: false }));
   assert.equal(f.at(400_000), null);
   assert.equal(fs.existsSync(f.state), false);
@@ -55,6 +71,7 @@ test("without dispatch the watch starts at the configured orchestrator budget", 
 
 test("a disabled orchestrator budget keeps the watch silent", (t) => {
   const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 100_000 });
   writeFileSync(path.join(f.tmp, "qc.config.json"), JSON.stringify({ budgets: { orchestrator: null } }));
   assert.equal(f.at(400_000), null);
   assert.equal(fs.existsSync(f.state), false);
@@ -392,4 +409,122 @@ test("registers the context watch for prompts and all tool calls", () => {
     if (event === "PostToolUse") assert.equal(group.matcher, "*");
     else assert.equal(Object.hasOwn(group, "matcher"), false);
   }
+});
+
+
+test("global window starts reminders at 80 percent and repeats every 50K", (t) => {
+  const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 1_000_000 });
+  assert.equal(f.at(799_999), null);
+  assert.ok(f.at(800_000));
+  assert.equal(f.at(800_000), null);
+  assert.equal(f.at(849_999), null);
+  assert.ok(f.at(850_000));
+  assert.equal(f.at(800_000), null);
+  assert.equal(f.at(850_000), null);
+  assert.equal(f.at(799_999), null);
+  assert.deepEqual(JSON.parse(readFileSync(f.state, "utf8")), { step: -1 });
+  assert.ok(f.at(800_000));
+});
+
+test("CLAUDE_CONFIG_DIR replaces the home settings directory", (t) => {
+  const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 1_000_000 });
+  delete process.env.CLAUDE_CONFIG_DIR;
+  assert.equal(f.at(799_999), null);
+  assert.ok(f.at(800_000));
+  const replacement = path.join(f.tmp, "custom-config");
+  f.settings(replacement, { autoCompactWindow: 500_000 });
+  process.env.CLAUDE_CONFIG_DIR = replacement;
+  assert.equal(f.at(399_999), null);
+  assert.ok(f.at(400_000));
+  process.env.CLAUDE_CONFIG_DIR = path.join(f.tmp, "missing-config");
+  assert.equal(f.at(199_999), null);
+  assert.ok(f.at(200_000));
+});
+
+test("project settings then local settings override global settings", (t) => {
+  const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 1_000_000 });
+  const project = path.join(f.tmp, ".claude");
+  f.settings(project, { autoCompactWindow: 500_000 });
+  const nested = path.join(f.tmp, "nested");
+  mkdirSync(nested);
+  assert.equal(f.at(399_999, { cwd: nested }), null);
+  assert.ok(f.at(400_000, { cwd: nested }));
+  f.settings(project, { autoCompactWindow: 750_000 }, "settings.local.json");
+  assert.equal(f.at(599_999, { cwd: nested }), null);
+  assert.ok(f.at(600_000, { cwd: nested }));
+});
+
+test("last valid window survives invalid later sources", async (t) => {
+  const sources = [undefined, "{}", "{", "null", "[]", '"root"', "false",
+    ...['"1000000"', "true", "null", "0", "-1", "1e999", "-1e999", "[]", "{}"].map((value) => `{"autoCompactWindow":${value}}`)];
+  for (const [index, source] of sources.entries()) {
+    await t.test(String(index), (t) => {
+      const f = fixture(t);
+      f.settings(f.configDir, { autoCompactWindow: 1_000_000 });
+      const project = path.join(f.tmp, ".claude");
+      mkdirSync(project);
+      if (source !== undefined) {
+        writeFileSync(path.join(project, "settings.json"), source);
+        writeFileSync(path.join(project, "settings.local.json"), source);
+      }
+      assert.equal(f.at(799_999), null);
+      assert.ok(f.at(800_000));
+    });
+  }
+});
+
+test("unreadable settings retain earlier valid window", (t) => {
+  const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 1_000_000 });
+  const unreadable = path.join(f.tmp, ".claude", "settings.json");
+  mkdirSync(unreadable, { recursive: true });
+  assert.throws(() => readFileSync(unreadable, "utf8"), /EISDIR|EPERM|EACCES/);
+  assert.equal(f.at(799_999), null);
+  assert.ok(f.at(800_000));
+  // A later source must still be considered after a read failure.
+  f.settings(path.dirname(unreadable), { autoCompactWindow: 500_000 }, "settings.local.json");
+  assert.equal(f.at(399_999), null);
+  assert.ok(f.at(400_000));
+});
+
+test("explicit compactAt wins even when equal to 200000", (t) => {
+  const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 1_000_000 });
+  writeFileSync(path.join(f.tmp, "qc.config.json"), JSON.stringify({ budgets: { orchestrator: { compactAt: 200_000 } } }));
+  assert.equal(f.at(199_999), null);
+  assert.ok(f.at(200_000));
+});
+
+test("empty or unrelated project budgets still inherit the window", async (t) => {
+  for (const budgets of [{}, { orchestrator: {} }, { implementer: { remindAt: 100_000 } }, { reviewer: null }]) {
+    await t.test(JSON.stringify(budgets), (t) => {
+      const f = fixture(t);
+      f.settings(f.configDir, { autoCompactWindow: 1_000_000 });
+      writeFileSync(path.join(f.tmp, "qc.config.json"), JSON.stringify({ budgets }));
+      assert.equal(f.at(799_999), null);
+      assert.ok(f.at(800_000));
+    });
+  }
+});
+
+test("no valid window preserves 200K reminders", (t) => {
+  const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 0 });
+  f.settings(path.join(f.tmp, ".claude"), { autoCompactWindow: "1000000" });
+  assert.equal(f.at(199_999), null);
+  assert.ok(f.at(200_000));
+  assert.equal(f.at(249_999), null);
+  assert.ok(f.at(250_000));
+});
+
+test("fractional window uses exact 80 percent", (t) => {
+  const f = fixture(t);
+  f.settings(f.configDir, { autoCompactWindow: 250_000.625 });
+  assert.equal(f.at(200_000), null);
+  assert.ok(f.at(200_000.5));
+  assert.equal(f.at(250_000.4), null);
+  assert.ok(f.at(250_000.5));
 });
