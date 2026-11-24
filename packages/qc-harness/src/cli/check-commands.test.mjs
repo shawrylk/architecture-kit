@@ -20,7 +20,7 @@ const node = (source) => {
 const record = node('require("node:fs").writeFileSync("args.json", JSON.stringify(process.argv.slice(2)))');
 const git = (root, ...args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: "pipe" });
 
-test("testsCovering finds sibling, reader-chain and basename tests for files and folders", async (t) => {
+test("testsCovering finds sibling and reader-chain tests without basename-only matches for files and folders", async (t) => {
   const root = fixture(t);
   const base = "packages/qc-harness/src";
   const source = `${base}/feature/source.mjs`;
@@ -43,14 +43,38 @@ test("testsCovering finds sibling, reader-chain and basename tests for files and
     writeFileSync(path.join(root, file), text);
   }
   git(root, "add", ".");
-  const expected = [sibling, named, reader].sort();
+  const expected = [sibling, reader].sort();
   const covered = await testsCovering(root, [source, `${base}/feature/`]);
   assert.deepEqual(covered.get(source), expected);
   assert.deepEqual(covered.get(sibling), [sibling]);
-  assert.deepEqual(covered.get(data), [named]);
+  assert.deepEqual(covered.get(data), []);
   assert.deepEqual([...covered.keys()].sort(), [source, sibling, data].sort());
   assert.deepEqual(await testsCovering(root, [`${base}/feature`]), covered);
+  assert.deepEqual(await testsCovering(root, [source.replace(/\//g, "\\")]), new Map([[source, expected]]));
+  assert.deepEqual(await testsCovering(root, [`${base}/feature/`.replace(/\//g, "\\")]), covered);
+  for (const entry of [".", "./"]) {
+    const all = await testsCovering(root, [entry]);
+    assert.ok(all.has(source));
+    assert.ok(all.has("committed.mjs"));
+    assert.ok(!all.has("."));
+    assert.deepEqual(all.get(source), expected);
+  }
   assert.deepEqual(await testsCovering(root, [`${base}/missing.mjs`]), new Map([[`${base}/missing.mjs`, []]]));
+});
+
+test("testsCovering normalizes config file and folder backslashes", async (t) => {
+  const root = fixture(t);
+  const source = "packages/qc-harness/src/config.mjs";
+  const sibling = "packages/qc-harness/src/config.test.mjs";
+  mkdirSync(path.dirname(path.join(root, source)), { recursive: true });
+  writeFileSync(path.join(root, source), "export {};\n");
+  writeFileSync(path.join(root, sibling), "export {};\n");
+  git(root, "add", ".");
+  for (const entry of [source, "packages/qc-harness/src/"]) {
+    const expected = await testsCovering(root, [entry]);
+    assert.deepEqual(expected.get(source), [sibling]);
+    assert.deepEqual(await testsCovering(root, [entry.replace(/\//g, "\\")]), expected);
+  }
 });
 
 test("the e2e warning names qc e2e when the merge base is unavailable", (t) => {

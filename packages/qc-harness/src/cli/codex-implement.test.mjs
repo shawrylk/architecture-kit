@@ -44,7 +44,7 @@ function setup(t, { progress = "" } = {}) {
 
 const quiet = () => {};
 
-for (const mode of ["warn", "add", "named-file", "named-folder", "uncertain"]) {
+for (const mode of ["warn", "add", "named-file", "named-folder", "root", "root-slash", "text-only", "uncertain", "many-warn", "many-add"]) {
   test(`Paths coverage ${mode} launches with the expected ownership and prompt`, async (t) => {
     const f = setup(t);
     const base = "packages/qc-harness/src";
@@ -53,13 +53,21 @@ for (const mode of ["warn", "add", "named-file", "named-folder", "uncertain"]) {
     mkdirSync(path.join(f.worktree, base, "tests"), { recursive: true });
     writeFileSync(path.join(f.worktree, source), "export const value = 1;\n");
     writeFileSync(path.join(f.worktree, covering), mode === "uncertain" ? "import(process.env.MODULE);\n" : "import '../example.mjs';\n");
-    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: mode === "add" ? { pathsTests: "add" } : {} }));
+    if (mode === "text-only") writeFileSync(path.join(f.worktree, covering), "// example.mjs is mentioned only in text\n");
+    const many = mode.startsWith("many-");
+    const add = mode === "add" || mode === "many-add";
+    const tests = many ? Array.from({ length: 12 }, (_, i) => `${base}/tests/extra-${String(i).padStart(2, "0")}.test.mjs`) : [covering];
+    if (many) {
+      rmSync(path.join(f.worktree, covering));
+      for (const file of tests) writeFileSync(path.join(f.worktree, file), "import '../example.mjs';\n");
+    }
+    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: add ? { pathsTests: "add" } : {} }));
     for (const args of [["add", "."], ["-c", "user.name=qc", "-c", "user.email=qc@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "seed"]]) {
       const result = spawnSync("git", args, { cwd: f.worktree, env: f.gitEnv, encoding: "utf8" });
       assert.equal(result.status, 0, result.stderr);
     }
     const named = mode === "named-file" ? `, \`${covering}\`` : mode === "named-folder" ? `, \`${base}/tests/\`` : "";
-    writeFileSync(f.brief, VALID_BRIEF.replace(/^Paths:.*$/m, `Paths: \`${source}\`${named}`));
+    writeFileSync(f.brief, VALID_BRIEF.replace(/^Paths:.*$/m, `Paths: \`${mode === "root" ? "." : mode === "root-slash" ? "./" : source}\`${named}`));
     const messages = [];
     let calls = 0;
     const status = await runCodexImplement(f.argv, {
@@ -67,18 +75,21 @@ for (const mode of ["warn", "add", "named-file", "named-folder", "uncertain"]) {
       run: async ({ input }) => {
         calls += 1;
         const paths = input.split(/\r?\n/).filter((line) => line.startsWith("Paths:"));
-        if (mode === "add" || mode === "named-file") assert.ok(paths.some((line) => line.includes(`\`${covering}\``)), input);
-        if (mode === "add" || mode.startsWith("named-")) appendFileSync(path.join(f.worktree, covering), "// owned change\n");
-        else appendFileSync(path.join(f.worktree, source), "// owned change\n");
+        if (add || mode === "named-file") for (const file of tests) assert.ok(paths.some((line) => line.includes(`\`${file}\``)), input);
+        if (add || mode.startsWith("named-")) for (const file of tests) appendFileSync(path.join(f.worktree, file), "// owned change\n");
+        else if (mode !== "root" && mode !== "root-slash") appendFileSync(path.join(f.worktree, source), "// owned change\n");
         writeFileSync(f.progress, `${DONE_MARKER}\n`);
         return { status: 0 };
       },
     });
     assert.equal(status, 0, messages.join("\n"));
     assert.equal(calls, 1);
-    const warnings = messages.filter((line) => line.includes("Paths: does not name it"));
-    assert.deepEqual(warnings, ["warn", "add"].includes(mode)
-      ? [`qc codex-implement: warning: ${covering} covers ${source}; Paths: does not name it`] : []);
+    const warnings = messages.filter((line) => line.includes("qc codex-implement: warning:"));
+    const missing = many || ["warn", "add"].includes(mode) ? tests : [];
+    assert.deepEqual(warnings, [
+      ...missing.slice(0, 10).map((file) => `qc codex-implement: warning: ${file} covers ${source}; Paths: does not name it`),
+      ...(many ? ["qc codex-implement: warning: 2 more covering tests; Paths: does not name them"] : []),
+    ]);
   });
 }
 

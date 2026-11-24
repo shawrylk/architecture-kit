@@ -152,12 +152,12 @@ function coveringTests(file, { known, readers, testTexts }, namedTests) {
   for (const next of queue) {
     if (isTest(next) && inSuite(next)) covered.add(next);
     const basename = path.posix.basename(next);
-    if (!namedTests.has(basename)) {
+    if (namedTests && !namedTests.has(basename)) {
       const matches = new Set();
       for (const [test, text] of testTexts) if (text.includes(basename)) matches.add(test);
       namedTests.set(basename, matches);
     }
-    for (const test of namedTests.get(basename)) covered.add(test);
+    for (const test of namedTests?.get(basename) ?? []) covered.add(test);
     for (const reader of readers.get(next) ?? []) if (!seen.has(reader)) { seen.add(reader); queue.push(reader); }
   }
   return covered;
@@ -166,12 +166,12 @@ function coveringTests(file, { known, readers, testTexts }, namedTests) {
 /** Certain coverage only: uncertain loaders belong to the conservative check runner. */
 export async function testsCovering(root, paths) {
   const graph = await testGraph(root);
-  const namedTests = new Map(), result = new Map();
+  const result = new Map();
   for (const entry of paths) {
-    const file = path.posix.normalize(entry).replace(/\/$/, "");
-    const children = graph.allFiles.filter((candidate) => candidate.startsWith(`${file}/`));
+    const file = path.posix.normalize(entry.replace(/\\/g, "/")).replace(/\/$/, "");
+    const children = graph.allFiles.filter((candidate) => file === "." || candidate.startsWith(`${file}/`));
     for (const target of children.length ? children : [file]) {
-      result.set(target, [...coveringTests(target, graph, namedTests)].sort());
+      result.set(target, [...coveringTests(target, graph)].sort());
     }
   }
   return result;

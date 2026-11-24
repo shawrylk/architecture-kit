@@ -586,10 +586,11 @@ async function runJob(argv, {
         const named = contract.paths.map((file) => path.posix.normalize(file.replace(/\\/g, "/")).replace(/\/$/, ""));
         const missing = new Set();
         for (const [file, tests] of coverage) for (const test of tests) {
-          if (named.some((entry) => test === entry || test.startsWith(`${entry}/`)) || missing.has(test)) continue;
-          say(`qc codex-implement: warning: ${test} covers ${file}; Paths: does not name it`);
+          if (named.some((entry) => entry === "." || test === entry || test.startsWith(`${entry}/`)) || missing.has(test)) continue;
+          if (missing.size < 10) say(`qc codex-implement: warning: ${test} covers ${file}; Paths: does not name it`);
           missing.add(test);
         }
+        if (missing.size > 10) say(`qc codex-implement: warning: ${missing.size - 10} more covering tests; Paths: does not name them`);
         if (codex.pathsTests === "add") contract.paths.push(...missing);
       }
       if (codex.pathsTests === "add") prompt += `\n\nPaths: ${contract.paths.map((file) => `\`${file}\``).join(", ")}\n`;
