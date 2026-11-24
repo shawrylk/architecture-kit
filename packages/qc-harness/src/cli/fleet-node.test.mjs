@@ -639,3 +639,52 @@ test("regression: Leader resends a dropped unclaimed assign and skips an identic
   assert.deepEqual(readState(root, "outbox"), [pending]);
   assert.equal(sent.filter(row => row.kind === "assign").length, 2);
 });
+
+test("Leader keeps plans and questions only for the assigned sender and epoch", async t => {
+  const root = fixture(t);
+  writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "b", epoch: 3 } });
+  const valid = ["plan", "question"].map(kind => message({ kind, body: { issue: 7, epoch: 3, text: kind } }));
+  writeState(root, "queue", [...valid,
+    message({ kind: "plan", from: "a", body: { issue: 7, epoch: 3, text: "wrong sender" } }),
+    message({ kind: "question", body: { issue: 7, epoch: 2, text: "old epoch" } }),
+    message({ kind: "plan", repo: "other/repo", body: { issue: 7, epoch: 3, text: "wrong repo" } }),
+    message({ kind: "plan", body: { issue: 7, epoch: 3, text: "x".repeat(20001) } })]);
+  let tick;
+  const server = await serveNode({ root, fleet, repo: "o/r", leader: true, clock: () => now, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await tick();
+  assert.deepEqual(readState(root, "queue"), valid);
+});
+
+test("follower records replies only from claimed Leaders at the held epoch, with assign claim expiry", async t => {
+  const root = fixture(t);
+  writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a", epoch: 3 } });
+  const approve = message({ kind: "approve", body: { issue: 7, epoch: 3, plan: "p1", approved: true, note: "Go" } });
+  const answer = message({ kind: "answer", body: { issue: 7, epoch: 3, question: "q1", text: "Yes" } });
+  const old = message({ kind: "answer", body: { issue: 7, epoch: 2, question: "old", text: "No" } });
+  writeState(root, "queue", [approve, answer, old]);
+  let tick;
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => now, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await tick();
+  assert.deepEqual(readState(root, "queue"), [approve, answer]);
+  writeState(root, "peers", { b: { leader: true } });
+  await tick();
+  assert.deepEqual(readState(root, "plans"), { "o/r#7": approve });
+  assert.deepEqual(readState(root, "answers"), { q1: answer });
+  assert.deepEqual(readState(root, "queue"), []);
+  const rejected = [
+    message({ ...approve, id: "not-leader", from: "inactive" }),
+    message({ ...answer, id: "expired", from: "unaddressed", time: new Date(now - 600000).toISOString() }),
+    message({ ...approve, id: "bad-body", body: { ...approve.body, approved: "yes" } }),
+    message({ ...answer, id: "other-repo", repo: "x/y" }),
+  ];
+  writeState(root, "peers", { b: { leader: true }, inactive: { leader: false } });
+  writeState(root, "queue", rejected);
+  await tick();
+  assert.deepEqual(readState(root, "queue"), []);
+  assert.deepEqual(readState(root, "plans"), { "o/r#7": approve });
+  assert.deepEqual(readState(root, "answers"), { q1: answer });
+});

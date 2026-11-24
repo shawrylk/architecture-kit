@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { commonDirOf } from "./ledger.mjs";
 
-const FILES = ["assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node"];
+const FILES = ["assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node", "plans", "answers", "watched"];
 
 /** State is private to git's shared directory, outside every worktree's tracked files. */
 export function stateDir(root = process.cwd()) {

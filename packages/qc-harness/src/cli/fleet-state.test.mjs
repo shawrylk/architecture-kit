@@ -82,3 +82,12 @@ test("seen pruning removes only entries older than ten minutes and persists", t 
   assert.deepEqual(readState(root, "seen"), pruned);
   assert.deepEqual(pruneSeen({}, now), {});
 });
+
+test("plan decisions, answers and watched IDs are durable object snapshots", t => {
+  const root = fixture(t);
+  for (const name of ["plans", "answers", "watched"]) {
+    assert.deepEqual(readState(root, name), {});
+    writeState(root, name, { id: { text: "saved" } });
+    assert.deepEqual(readState(root, name), { id: { text: "saved" } });
+  }
+});
