@@ -14,7 +14,7 @@ test("ask creates a missing needs-user label and posts one question on the expli
     assert.ok(calls.every((args) => args[args.indexOf("-R") + 1] === "local/repo"));
     assert.deepEqual(calls.filter((args) => args[0] === "issue"), [
       ["issue", "edit", "227", "--add-label", "needs-user", "-R", "local/repo"],
-      ["issue", "comment", "227", "--body", question, "-R", "local/repo"],
+      ["issue", "comment", "227", "--body", `**Coder** · Question for the user\n\n${question}\n\n<!-- qc:v1 role=coder kind=question ref=#227 -->`, "-R", "local/repo"],
     ]);
   }
 });
@@ -37,4 +37,12 @@ test("ask exits 1 with the first GitHub error line and stops after the failed ca
     assert.deepEqual(warnings, ["GitHub unavailable"]);
   }
   assert.throws(() => askIssue(227, "Why?", { repo: "local/repo", gh: () => null }), /gh/);
+});
+
+test("ask refuses unsafe questions before any GitHub mutation", () => {
+  const calls = [];
+  assert.equal(runAsk(["--issue", "239", "bad -->"], {
+    repo: "local/repo", warn: () => {}, gh: (args) => { calls.push(args); return "[]"; },
+  }), 1);
+  assert.deepEqual(calls, []);
 });
