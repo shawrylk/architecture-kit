@@ -72,7 +72,17 @@ export function receiveTalk(root, fleet, leader, now) {
   }
   if (savedPlan) writeState(root, "plans", plans);
   if (savedAnswer) writeState(root, "answers", answers);
-  if (savedPlan || savedAnswer) writeState(root, "inbox", inbox.slice(-200));
+  if (savedPlan || savedAnswer) {
+    const watched = readState(root, "watched");
+    let excess = inbox.filter(entry => Object.hasOwn(watched, entry.id)).length - 200;
+    writeState(root, "inbox", inbox.filter(entry => {
+      if (excess > 0 && Object.hasOwn(watched, entry.id)) {
+        excess--;
+        return false;
+      }
+      return true;
+    }));
+  }
   if (changed) writeState(root, "queue", kept);
 }
 

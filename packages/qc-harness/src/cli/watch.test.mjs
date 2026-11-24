@@ -517,7 +517,29 @@ test("regression: follower watch keeps two approvals and answers accepted betwee
   writeState(root, "queue", [{ ...readState(root, "plans")["o/r#7"], id: "newest" }]);
   receiveTalk(root, fleet, false, Date.parse(time));
   const inbox = readState(root, "inbox");
-  assert.equal(inbox.length, 200);
-  assert.equal(inbox[0].id, "old-1");
+  assert.equal(inbox.length, 201);
+  assert.equal(inbox[0].id, "old-0");
   assert.equal(inbox.at(-1).id, "newest");
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, [...Array.from({ length: 200 }, (_, i) => `EVENT fleet:approve old-${i}`), "EVENT fleet:approve newest"]);
+  lines.length = 0;
+  const clock = fakeClock();
+  assert.equal(await runWatch(["--fleet", "--max", "1"], { ...deps, ...clock }), 4);
+  assert.deepEqual(lines, ["EVENT timeout"]);
+
+  // Interleave an unprinted entry with printed entries to verify pruning uses IDs.
+  const unprinted = { ...events[0], id: "unprinted" };
+  writeState(root, "inbox", [inbox[0], unprinted, ...inbox.slice(1)]);
+  writeState(root, "queue", [{ ...readState(root, "plans")["o/r#7"], id: "next" }]);
+  receiveTalk(root, fleet, false, Date.parse(time));
+  assert.deepEqual(readState(root, "inbox").map(({ id }) => id), ["unprinted", ...inbox.slice(1).map(({ id }) => id), "next"]);
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, ["EVENT fleet:approve unprinted", "EVENT fleet:approve next"]);
+
+  // A later reply drops the two oldest of the now 202 printed entries.
+  writeState(root, "queue", [{ ...readState(root, "plans")["o/r#7"], id: "last" }]);
+  receiveTalk(root, fleet, false, Date.parse(time));
+  assert.deepEqual(readState(root, "inbox").map(({ id }) => id), [...inbox.slice(2).map(({ id }) => id), "next", "last"]);
 });
