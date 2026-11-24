@@ -113,7 +113,8 @@ function fleetSegment(dir) {
     const base = process.platform === 'win32' && process.env.APPDATA
       ? process.env.APPDATA : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
     const file = process.env.QC_FLEET_FILE || path.join(base, 'qc', 'fleet.json');
-    const self = JSON.parse(fs.readFileSync(file, 'utf8'))?.self;
+    const fleet = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const self = fleet?.self;
     if (typeof self !== 'string' || !/^[a-z0-9-]{1,32}$/.test(self)) return null;
     let mark = '';
     const commonDir = gitCommonDir(dir);
@@ -128,6 +129,22 @@ function fleetSegment(dir) {
           if (alive) mark = node.leader === true ? ' leader' : '';
         }
       } catch { /* missing or invalid node state means off */ }
+      try {
+        const pairing = JSON.parse(fs.readFileSync(path.join(commonDir, 'qc', 'fleet', 'pairing.json'), 'utf8'));
+        const entries = fleet.secret ? pairing?.requests : pairing?.offers;
+        const completed = fleet.secret ? 'allowed' : 'accepted';
+        const now = Date.now();
+        const pending = Object.entries(entries || {}).filter(([id, entry]) =>
+          /^[a-z0-9-]{1,32}$/.test(id) && entry && !entry[completed] &&
+          typeof entry.code === 'string' && /^\d{6}$/.test(entry.code) &&
+          Number.isFinite(entry.seen) && entry.seen >= now - 10 * 60 * 1000
+        ).sort((a, b) => b[1].seen - a[1].seen);
+        if (pending.length) {
+          const [id, entry] = pending[0];
+          mark += fleet.secret ? ` join? ${id} ${entry.code}` : ` joining ${id} ${entry.code}`;
+          if (fleet.secret && pending.length > 1) mark += ` +${pending.length - 1}`;
+        }
+      } catch { /* missing or invalid pairing state adds nothing */ }
     }
     return { text: `fleet ${self}${mark}`, color: TEAL };
   } catch { return null; }
