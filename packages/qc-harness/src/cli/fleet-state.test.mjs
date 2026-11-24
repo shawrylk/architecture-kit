@@ -104,3 +104,11 @@ test("election and proposal state persist and leadership chooses term before rec
   assert.equal(latestLeader({ a: { leader: true, term: 3, time: 100 }, b: high }), high);
   assert.equal(latestLeader({ a: high, b: { leader: false, term: 5, time: 2 } }), undefined);
 });
+
+test("GitHub cursors default empty and survive snapshots", t => {
+  const root = fixture(t);
+  assert.deepEqual(readState(root, "github"), {});
+  const cursors = { cursors: { "o/r#7": "2026-11-24T00:00:00.000Z" } };
+  writeState(root, "github", cursors);
+  assert.deepEqual(readState(root, "github"), cursors);
+});

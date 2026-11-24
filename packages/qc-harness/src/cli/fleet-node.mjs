@@ -9,18 +9,13 @@ import { receiveTalk } from "./fleet-talk.mjs";
 import { assignTick } from "./fleet-assign.mjs";
 import { readOpenAssignments, freeIssues } from "./fleet.mjs";
 import { runGh } from "./gh-run.mjs";
-import { createMessage, verifyMessage } from "./fleet-message.mjs";
-import { highestTerm, leaderCandidate, leaderDead, livePeer, validTerm, latestLeader, pruneSeen, readState, stateDir, writeState } from "./fleet-state.mjs";
+import { createMessage } from "./fleet-message.mjs";
+import { githubFallback, postGithubMessage, readGithub, receiveMessage, validBranch, validHead, validWork } from "./fleet-github.mjs";
+import { highestTerm, leaderCandidate, leaderDead, livePeer, validTerm, latestLeader, readState, stateDir, writeState } from "./fleet-state.mjs";
+
+export { receiveMessage } from "./fleet-github.mjs";
 
 const LIMIT = 64 * 1024;
-const assignmentRef = row => row && typeof row.repo === "string" && /^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/i.test(row.repo) &&
-  Number.isSafeInteger(row.issue) && row.issue > 0 && Number.isSafeInteger(row.epoch) && row.epoch > 0;
-const validBranch = value => value === undefined || value === null || (typeof value === "string" && value.length > 0 && !/[\s\x00-\x1f\x7f]/.test(value));
-const validHead = value => value === undefined || value === null || (typeof value === "string" && /^[0-9a-f]{40}$/i.test(value));
-const validWork = row => assignmentRef(row) && [null, "plan", "code", "review", "merge"].includes(row.step) && validBranch(row.branch) && validHead(row.head);
-const validHeartbeat = body => validTerm(body.term) && typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
-  (body.work === undefined || (Array.isArray(body.work) && body.work.every(validWork))) &&
-  (body.assigned === undefined || (Array.isArray(body.assigned) && body.assigned.every(assignmentRef)));
 const endpoint = node => `http://${node.address.includes(":") ? `[${node.address}]` : node.address}:${node.port ?? 8080}`;
 
 /** Small node:http transport with a fetch-shaped injection point. */
@@ -75,39 +70,8 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
       try { message = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
       catch { reply(400, { ok: false, reason: "bad-json" }); return; }
       try {
-        const time = clock();
-        const seen = pruneSeen(readState(root, "seen"), time);
-        const result = verifyMessage(message, { secret: fleet.secret, nodes: fleet.nodes, seen, now: time });
-        if (!result.ok) { reply(400, result); return; }
-        if (message.kind === "heartbeat" && !validHeartbeat(message.body)) {
-          reply(400, { ok: false, reason: "bad-heartbeat" }); return;
-        }
-        // No await between verification and persistence: requests cannot race the saved IDs.
-        if (message.kind !== "heartbeat") writeState(root, "queue", [...readState(root, "queue"), message]);
-        writeState(root, "seen", seen);
-        if (message.kind === "heartbeat") {
-          const election = readState(root, "election"), node = readState(root, "node");
-          const highest = Math.max(highestTerm(root), message.body.term);
-          const accepted = message.body.leader && message.body.term >= highest;
-          election.highest = highest;
-          if (message.body.term > (node.term ?? 1)) writeState(root, "node", { ...node, leader: false, term: highest });
-          if (accepted) {
-            election.lastLeaderAt = time;
-            if (readState(root, "proposal").term <= message.body.term) writeState(root, "proposal", {});
-          }
-          writeState(root, "election", election);
-          const peers = readState(root, "peers");
-          const previous = peers[message.from];
-          if (message.body.term < (previous?.term ?? 1) || (message.body.term === (previous?.term ?? 1) &&
-            Date.parse(message.time) <= Date.parse(previous?.messageTime))) {
-            peers[message.from].time = time;
-          } else Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, term: message.body.term, leader: accepted,
-            ...(message.body.work === undefined ? {} : { work: message.body.work }),
-            ...(message.body.assigned === undefined ? {} : { assigned: message.body.assigned }) }, enumerable: true, configurable: true, writable: true });
-          for (const peer of Object.values(peers)) if ((peer.term ?? 1) < highest) peer.leader = false;
-          writeState(root, "peers", peers);
-        }
-        reply(202, { ok: true });
+        const result = receiveMessage({ root, fleet, message, clock });
+        reply(result.ok ? 202 : 400, result);
       } catch {
         reply(500, { ok: false, reason: "state-error" });
       }
@@ -158,34 +122,47 @@ export async function sendMessage({ root = process.cwd(), fleet, node, message, 
   return false;
 }
 
-/** Only a transient failure holds later messages behind the oldest entry. */
-export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal, allow = () => true }) {
+/** Transient HTTP failures hold later HTTP sends; eligible GitHub work can still pass. */
+export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal, gh, leader = false, allow = () => true }) {
   if (signal?.aborted) return;
+  const fallback = entry => gh && githubFallback({ root, entry, now: clock() });
   const pending = readState(root, "outbox");
+  let blocked = false;
   for (const entry of pending) {
     if (signal?.aborted) return;
     if (!allow(entry.message)) continue;
-    if (entry.nextAttempt > clock()) break;
-    const node = fleet.nodes.find(node => node.id === entry.node);
     let result;
-    try {
-      if (!node?.address || node.active === false) throw new Error("peer unavailable");
-      result = await post(node, unsignedFields(entry.message), fleet.secret, fetch, clock, signal);
-    } catch { result = { retry: true }; }
+    if (fallback(entry)) {
+      result = postGithubMessage({ root, fleet, entry, leader, clock, gh, signal }) ? { delivered: true } : { githubRetry: true };
+    } else {
+      if (blocked || entry.nextAttempt > clock()) { blocked = true; continue; }
+      const node = fleet.nodes.find(node => node.id === entry.node);
+      try {
+        if (!node?.address || node.active === false) throw new Error("peer unavailable");
+        result = await post(node, unsignedFields(entry.message), fleet.secret, fetch, clock, signal);
+      } catch { result = { retry: true }; }
+    }
     if (signal?.aborted) return;
     // Reread after the network await to preserve any concurrently queued sends.
     const current = readState(root, "outbox");
     const index = current.findIndex(item => item.node === entry.node && item.message.id === entry.message.id);
     if (index < 0) continue;
     if (result.retry) {
+      blocked = true;
       const attempts = entry.attempts + 1;
-      current[index] = { ...entry, message: unsignedFields(entry.message), attempts, nextAttempt: clock() + Math.min(60_000, 1000 * 2 ** Math.min(attempts - 1, 6)) };
-    } else {
-      if (!result.delivered) deadLetter(root, entry, result);
-      current.splice(index, 1);
+      const retried = { ...entry, message: unsignedFields(entry.message), attempts, nextAttempt: clock() + Math.min(60_000, 1000 * 2 ** Math.min(attempts - 1, 6)) };
+      current[index] = retried;
+      writeState(root, "outbox", current);
+      if (fallback(retried) && postGithubMessage({ root, fleet, entry: retried, leader, clock, gh, signal })) {
+        const latest = readState(root, "outbox");
+        writeState(root, "outbox", latest.filter(item => item.node !== entry.node || item.message.id !== entry.message.id));
+      }
+      continue;
     }
+    if (result.githubRetry) continue;
+    if (!result.delivered) deadLetter(root, entry, result);
+    current.splice(index, 1);
     writeState(root, "outbox", current);
-    if (result.retry) break;
   }
 }
 
@@ -369,7 +346,7 @@ async function assignWork({ root, fleet, repo, kit, term, clock, gh, git, holdLa
     message: unsignedFields(createMessage({ from: fleet.self, repo, kind, body, time: new Date(clock()).toISOString() }, fleet.secret)) }));
   if (pending.length) writeState(root, "outbox", [...outbox, ...pending]);
   for (const warning of result.warnings) warn(warning);
-  await flushOutbox({ root, fleet, clock, fetch, signal,
+  await flushOutbox({ root, fleet, clock, fetch, signal, gh, leader: true,
     allow: message => allowLeaderMessage(root, fleet, clock(), message, term) });
 }
 
@@ -481,7 +458,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
   const server = await createNodeServer({ root, fleet, clock, listen, instance });
   const sends = new AbortController();
-  let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000, nextAssign = clock() + 60_000;
+  let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000, nextAssign = clock() + 60_000, nextGithub = clock();
   const shutdown = () => {
     if (closing) return;
     closing = true;
@@ -502,11 +479,15 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     if (busy || closing) return;
     busy = true;
     try {
+      if (clock() >= nextGithub) {
+        nextGithub = clock() + 120_000;
+        readGithub({ root, fleet, repo, clock, gh });
+      }
       await electionTick({ root, fleet, repo, clock, fetch, signal: sends.signal });
       leader = savedRole(root).leader;
       receiveAssignments(root, fleet, clock(), leader);
       receiveTalk(root, fleet, leader, clock());
-      await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal,
+      await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
         allow: message => allowLeaderMessage(root, fleet, clock(), message) });
       if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;
