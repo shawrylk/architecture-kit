@@ -49,7 +49,7 @@ export function postGithubMessage({ root, fleet, entry, leader = false, clock = 
 function commentMessage(comment, { fleet, login, repo }) {
   const source = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/]+)\/issues\/([1-9]\d*)$/.exec(comment?.issue_url);
   const issue = Number(source?.[2]);
-  if (source?.[1] !== repo || !Number.isSafeInteger(issue)) return null;
+  if (source?.[1].toLowerCase() !== repo.toLowerCase() || !Number.isSafeInteger(issue)) return null;
   const marker = parseMarker(comment?.body, { secret: fleet.secret, nodes: fleet.nodes.map(node => node.id), ownAuthor: comment?.user?.login === login });
   if (marker.refused) return null;
   const lines = comment.body.split("\n").filter(line => line.startsWith("<!-- qc:msg"));
@@ -61,14 +61,14 @@ function commentMessage(comment, { fleet, login, repo }) {
     if (bytes.length > 64 * 1024 || bytes.toString("base64url") !== match[2]) return null;
     const message = JSON.parse(bytes.toString("utf8"));
     if (!isWork(message) || message.from !== marker.node || message.kind !== marker.kind || marker.ref !== `#${issue}`
-      || message.repo !== repo || message.body.issue !== issue) return null;
+      || message.repo?.toLowerCase() !== repo.toLowerCase() || message.body.issue !== issue) return null;
     return message;
   } catch { return null; }
 }
 
 /** Discover work across repositories using GitHub timestamps and a replay-safe overlap. */
 export function readGithub({ root, fleet, repo, clock = Date.now, gh = runGh }) {
-  const repos = new Set([repo, ...Object.values(readState(root, "assignments")).map(row => row.repo)].filter(Boolean));
+  const repos = new Set([repo, ...Object.values(readState(root, "assignments")).map(row => row.repo)].filter(Boolean).map(repo => repo.toLowerCase()));
   if (!repos.size) return;
   let login;
   try { login = JSON.parse(gh(["api", "user"], { cwd: root }))?.login; }

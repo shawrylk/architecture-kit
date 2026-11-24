@@ -155,22 +155,36 @@ test("a receiver clock 60 seconds ahead cannot skip a comment after an empty pol
 });
 
 test("GitHub reads the serve repository and every assigned repository once with durable repository cursors", t => {
-  for (const leader of [false, true]) {
+  const root = fixture(t), calls = [];
+  writeState(root, "assignments", {
+    "o/r#7": { repo: "o/r", issue: 7, node: "a" }, "o/r#8": { repo: "o/r", issue: 8, node: "b" },
+    "o/s#9": { repo: "o/s", issue: 9, node: "a" },
+    "o/t#10": { repo: "o/t", issue: 10, node: "b" },
+  });
+  const opts = { root, fleet, repo: "o/r", clock: () => now, gh: fakeReader([comment()], calls) };
+  readGithub(opts);
+  const reads = calls.filter(args => args[1] !== "user");
+  assert.deepEqual(reads.map(args => args[2].split("?")[0]), ["repos/o/r/issues/comments", "repos/o/s/issues/comments", "repos/o/t/issues/comments"]);
+  assert.deepEqual(readState(root, "queue").map(msg => msg.id).length, 1, "comments must match their repository");
+  assert.deepEqual(readState(root, "github").cursors, Object.fromEntries(["o/r", "o/s", "o/t"].map(repo => [repo, new Date(now - 60_000).toISOString()])));
+  calls.length = 0;
+  readGithub({ ...opts, clock: () => now + 120_000 });
+  assert.ok(calls.filter(args => args[1] !== "user").every(args => args[2].endsWith(`since=${new Date(now - 60_000).toISOString()}`)));
+});
+
+test("GitHub compares repository names without case", t => {
+  for (const repo of ["acme/repo", "Acme/Repo"]) {
     const root = fixture(t), calls = [];
-    writeState(root, "assignments", {
-      "o/r#7": { repo: "o/r", issue: 7, node: "a" }, "o/r#8": { repo: "o/r", issue: 8, node: "b" },
-      "o/s#9": { repo: "o/s", issue: 9, node: "a" },
-      "o/t#10": { repo: "o/t", issue: 10, node: "b" },
-    });
-    const opts = { root, fleet, repo: "o/r", leader, clock: () => now, gh: fakeReader([comment()], calls) };
-    readGithub(opts);
-    const reads = calls.filter(args => args[1] !== "user");
-    assert.deepEqual(reads.map(args => args[2].split("?")[0]), ["repos/o/r/issues/comments", "repos/o/s/issues/comments", "repos/o/t/issues/comments"]);
-    assert.deepEqual(readState(root, "queue").map(msg => msg.id).length, 1, "comments must match their repository");
-    assert.deepEqual(readState(root, "github").cursors, Object.fromEntries(["o/r", "o/s", "o/t"].map(repo => [repo, new Date(now - 60_000).toISOString()])));
-    calls.length = 0;
-    readGithub({ ...opts, clock: () => now + 120_000 });
-    assert.ok(calls.filter(args => args[1] !== "user").every(args => args[2].endsWith(`since=${new Date(now - 60_000).toISOString()}`)));
+    const good = message({ repo });
+    const posted = { ...comment(good), issue_url: "https://api.github.com/repos/Acme/Repo/issues/7" };
+    writeState(root, "assignments", { "Acme/Repo#7": { repo: "Acme/Repo", issue: 7, node: "a" } });
+    readGithub({ root, fleet, repo: "acme/repo", clock: () => now, gh: args => {
+      calls.push(args);
+      if (args[1] === "user") return JSON.stringify({ login: "me" });
+      return JSON.stringify([posted]);
+    } });
+    assert.deepEqual(readState(root, "queue"), [good], "the repository casing must not drop authenticated work");
+    assert.equal(calls.filter(args => args[1] !== "user").length, 1, "repository casing must not cause duplicate reads");
   }
 });
 
