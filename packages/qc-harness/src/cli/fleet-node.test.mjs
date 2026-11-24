@@ -1445,6 +1445,27 @@ test("received null or omitted load preserves measured fields without refreshing
   }
 });
 
+test("lower-term heartbeat refreshes liveness without rejuvenating legacy load", async t => {
+  const { freshLoad } = await import("./fleet-load.mjs");
+  const root = fixture(t), time = now + 301_000;
+  writeState(root, "peers", { b: { term: 2, time: now, messageTime: new Date(now).toISOString(),
+    load: { cpu: 0.95, mem: 0.5, rtt: 2200 } } });
+  const server = await createNodeServer({ root, fleet, clock: () => time, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const beat = message({ kind: "heartbeat", time: new Date(time).toISOString(),
+    body: { kit: null, term: 1, leader: false, load: { cpu: 0.1, mem: 0.1, rtt: 1 } } });
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(beat) });
+  assert.equal(response.status, 202);
+  const peer = readState(root, "peers").b;
+  assert.equal(peer.time, time);
+  assert.equal(peer.term, 2);
+  const status = await nodeStatus({ root, fleet, clock: () => time });
+  assert.match(status, /load b cpu=95%\(cached\) mem=50%\(cached\) rtt=2200ms\(cached\) cpu-age=301s/);
+  assert.doesNotMatch(status, /overloaded/);
+  assert.deepEqual(freshLoad(peer.load, time, peer.time), { cpu: null, mem: null, rtt: null });
+  assert.deepEqual(peer.load.observed, { cpu: now, mem: now, rtt: now });
+});
+
 test("status reports silent peers and cached metric ages", async t => {
   const root = fixture(t), at = now - 300_001;
   writeState(root, "peers", { b: { time: now, load: { cpu: 0.95, mem: 0.5, rtt: 2200, observed: { cpu: at, mem: now, rtt: at } } },
@@ -1475,6 +1496,15 @@ test("serve retains joined peer after 300 s without beacons and accepts authenti
   await tick();
   const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
   const beat = load => message({ kind: "heartbeat", time: new Date(time).toISOString(), body: { kit: null, term: 1, leader: false, load } });
+  time += 120_000;
+  // Repeated beacons must not reset the first-discovery age.
+  socket.emit("message", Buffer.from(JSON.stringify(createBeacon({ fleet: remote, address: "127.0.0.2", clock: () => time }))), { address: "127.0.0.2" });
+  await tick();
+  assert.equal(readState(root, "peers").b, undefined);
+  assert.match(await nodeStatus({ root, fleet: config, clock: () => time }),
+    /peer b state=silent last-heartbeat=120s cpu=- mem=- rtt=-/);
+  assert.equal(leaderCandidate(root, config, time), "z");
+  assert.deepEqual(readState(root, "assignments"), {});
   assert.equal((await post(beat({ cpu: 1, mem: 1, rtt: 2200 }))).status, 202);
   time += 300_001;
   await tick();

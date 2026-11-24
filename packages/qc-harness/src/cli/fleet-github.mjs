@@ -50,6 +50,9 @@ export function receiveMessage({ root, fleet, message, clock = Date.now }) {
     writeState(root, "election", election);
     const peers = readState(root, "peers");
     const previous = peers[message.from];
+    // Preserve legacy measurement ages before even an older snapshot refreshes liveness.
+    if (previous?.load) previous.load = mergeLoad(previous.load, undefined, time,
+      Date.parse(previous.messageTime) || previous.time);
     if (message.body.term < (previous?.term ?? 1) || (message.body.term === (previous?.term ?? 1) &&
       Date.parse(message.time) <= Date.parse(previous?.messageTime))) {
       peers[message.from].time = time;

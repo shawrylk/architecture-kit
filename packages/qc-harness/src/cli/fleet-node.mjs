@@ -13,7 +13,7 @@ import { receiveTalk } from "./fleet-talk.mjs";
 import { assignTick, overloaded } from "./fleet-assign.mjs";
 import { readOpenAssignments, freeIssues, fleetPath, validateFleet, saveFleet } from "./fleet.mjs";
 import { createPairing } from "./fleet-pair.mjs";
-import { effectiveFleet, pruneDiscovered, startDiscovery } from "./fleet-discover.mjs";
+import { effectiveFleet, pruneDiscovered, readDiscovered, startDiscovery } from "./fleet-discover.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { githubFallback, postGithubMessage, readGithub, receiveMessage, validBranch, validHead, validWork } from "./fleet-github.mjs";
@@ -339,8 +339,10 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
   const recent = others.filter(node => livePeer(peers[node.id], time));
   const leader = running && savedRole(root).leader ? fleet.self : recent.find(node => peers[node.id].leader === true && (peers[node.id].term ?? 1) >= highestTerm(root))?.id ?? "unknown";
   const proposal = readState(root, "proposal");
-  const loads = others.filter(node => recent.includes(node) || (Number.isFinite(peers[node.id]?.time) && time >= peers[node.id].time)).map(node => {
-    const peer = peers[node.id], load = peer.load, silent = !recent.includes(node);
+  const discovered = fleet.discover ? readDiscovered(root, fleet.secret) : {};
+  const lastSeen = id => peers[id]?.time ?? discovered[id]?.retainedAt ?? discovered[id]?.seen;
+  const loads = others.filter(node => recent.includes(node) || (Number.isFinite(lastSeen(node.id)) && time - lastSeen(node.id) >= 90_000)).map(node => {
+    const peer = peers[node.id] ?? {}, load = peer.load, silent = !recent.includes(node);
     const values = metrics.map(key => {
       const value = load?.[key];
       if (value == null) return `${key}=-`;
@@ -349,7 +351,7 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
     }).join(" ");
     const ages = load?.observed ? metrics.filter(key => load[key] != null).map(key =>
       ` ${key}-age=${Math.max(0, Math.floor((time - metricTime(load, key, peer.time)) / 1000))}s`).join("") : "";
-    return `\n${silent ? `peer ${node.id} state=silent last-heartbeat=${Math.floor((time - peer.time) / 1000)}s` : `load ${node.id}`} ${values}${ages}${!silent && overloaded(freshLoad(load, time, peer.time)).length ? " overloaded" : ""}`;
+    return `\n${silent ? `peer ${node.id} state=silent last-heartbeat=${Math.floor((time - lastSeen(node.id)) / 1000)}s` : `load ${node.id}`} ${values}${ages}${!silent && overloaded(freshLoad(load, time, peer.time)).length ? " overloaded" : ""}`;
   }).join("");
   return `node=${status}${health === "unreachable" ? " health=unreachable" : ""} leader=${leader} peers=${recent.length}/${others.length}` + loads +
     (proposal.id && validTerm(proposal.term) ? `\nproposed Leader ${proposal.id} term ${proposal.term}: run npx architecture-harness fleet confirm-leader` : "");
