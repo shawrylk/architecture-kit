@@ -66,5 +66,28 @@ test('leg records share the common ledger and tolerate torn lines', (t) => {
   assert.equal(legRecords(root).length, 1);
   assert.throws(() => appendLeg(root, { os: 'linux', head: 'x', source: 'affected' }), /invalid platform leg/);
   assert.throws(() => appendLeg(root, { os: 'linux', head: 'x', source: 'local', type: 'affected' }), /invalid platform leg type/);
-  assert.throws(() => appendLeg(root, { os: 'darwin', head: 'x', source: 'local' }), /platform/);
+  assert.throws(() => appendLeg(root, { os: 'freebsd', head: 'x', source: 'local' }), /platform/);
+});
+
+
+test('fleet Windows and macOS legs satisfy configured risky-head readiness', t => {
+  const { root, git } = legFixture(t);
+  writeFileSync(path.join(root, 'qc.config.json'), JSON.stringify({ check: { base: 'base' }, ready: { platforms: ['windows', 'darwin'] } }));
+  writeFileSync(path.join(root, 'a.mjs'), 'process.platform;\n');
+  git('add', '.'); git('commit', '-qm', 'risk');
+  const head = git('rev-parse', 'HEAD');
+  appendLeg(root, { os: 'windows', head, source: 'fleet' });
+  assert.deepEqual(readyProblems(root, head).missing, ['darwin']);
+  appendLeg(root, { os: 'darwin', head, source: 'fleet' });
+  assert.deepEqual(readyProblems(root, head).missing, []);
+});
+
+test('affected checks on macOS record the native passing leg', async t => {
+  const { root, git } = legFixture(t);
+  git('add', '.'); git('commit', '-qm', 'config');
+  const output = [];
+  const code = await runAffectedCheck({ root }, {}, { platform: 'darwin', gates: async () => ({ problems: [], lines: [] }),
+    commands: async () => 0, write: line => output.push(line) });
+  assert.equal(code, 0, output.join('\n'));
+  assert.equal(legRecords(root).at(-1).os, 'darwin');
 });

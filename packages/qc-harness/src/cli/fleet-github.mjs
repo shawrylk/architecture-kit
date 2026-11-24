@@ -44,6 +44,7 @@ export function receiveMessage({ root, fleet, message, clock = Date.now }) {
       Date.parse(message.time) <= Date.parse(previous?.messageTime))) {
       peers[message.from].time = time;
     } else Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, term: message.body.term, leader: accepted,
+      ...(message.body.os === undefined ? {} : { os: message.body.os }),
       ...(message.body.work === undefined ? {} : { work: message.body.work }),
       ...(message.body.assigned === undefined ? {} : { assigned: message.body.assigned }) }, enumerable: true, configurable: true, writable: true });
     for (const peer of Object.values(peers)) if ((peer.term ?? 1) < highest) peer.leader = false;
