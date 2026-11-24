@@ -34,6 +34,11 @@ jobs:
           tagged="${GITHUB_REF_NAME#v}"
           packaged=$(node -p "require('./packages/qc-harness/package.json').version")
           [ "$tagged" = "$packaged" ] || { echo "tag $tagged != package $packaged"; exit 1; }
+          # Claude Code updates a plugin only when its version changes, so the plugin must carry it too.
+          plugin=$(node -p "require('./.claude-plugin/plugin.json').version")
+          listed=$(node -p "require('./.claude-plugin/marketplace.json').plugins.find((p) => p.name === 'architecture').version")
+          [ "$plugin" = "$tagged" ] || { echo "tag $tagged != plugin $plugin"; exit 1; }
+          [ "$listed" = "$tagged" ] || { echo "tag $tagged != marketplace $listed"; exit 1; }
 
       # Trusted publishing: the registry trusts this repository and this workflow file, so there is
       # no token to store, leak or rotate. Provenance comes with it. Configured once with

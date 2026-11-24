@@ -27,9 +27,13 @@ pnpm add -D architecture-harness --save-exact
 The plugin:
 
 ```bash
-claude plugin marketplace add shawrylk/architecture-kit
+claude plugin marketplace add shawrylk/architecture-kit#stable
 claude plugin install architecture@architecture-kit
 ```
+
+The `stable` branch moves only at a release, so work on `main` does not reach your PCs. To get each release, turn on auto-update once on each PC: run `/plugin`, open the **Marketplaces** tab, select `architecture-kit`, and turn on auto-update. Claude Code checks after a session starts and loads a new version at the next launch, or after `/reload-plugins`.
+
+Claude Code updates a plugin only when its `version` changes. A release sets the same version in `packages/qc-harness/package.json`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 
 To split the open issues across several PCs, read [Split work across PCs](docs/fleet.md).
 
