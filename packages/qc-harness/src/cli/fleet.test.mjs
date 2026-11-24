@@ -7,7 +7,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { fleetPath, validateFleet, ownerOf, freeIssues, runFleet } from "./fleet.mjs";
-import { readState, writeState } from "./fleet-state.mjs";
+import { readState, stateDir, writeState } from "./fleet-state.mjs";
 
 const nodes = [
   { id: "a1", weight: 1, maxSize: "L", active: true },
@@ -123,10 +123,68 @@ test("init accepts explicit secrets and addresses and generates a reusable secre
   assert.match(saved.secret, /^[0-9a-f]{64}$/);
   const instruction = generated.lines.filter(line => line.includes(saved.secret));
   assert.equal(instruction.length, 1);
-  assert.match(instruction[0], /pass the same secret on the other PCs/);
+  assert.equal(instruction[0], `run on the other PCs: npx architecture-harness fleet init --secret ${saved.secret}`);
   assert.match(instruction[0], /--secret/);
   assert.equal(f.run([...args, "--force"]).code, 0);
   assert.notEqual(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).secret, saved.secret);
+});
+
+test("init without flags chooses a random hex name, enables discovery and prints the shared secret command", t => {
+  const f = fixture(t);
+  const result = f.run(["init"]);
+  assert.equal(result.code, 0, result.errors.join("\n"));
+  const saved = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
+  assert.match(saved.self, /^[0-9a-f]{4}$/);
+  assert.equal(saved.discover, true);
+  assert.deepEqual(saved.nodes.map(({ id, port, weight, maxSize }) => ({ id, port, weight, maxSize })),
+    [{ id: saved.self, port: 8080, weight: 1, maxSize: "L" }]);
+  assert.ok(result.lines.includes(`fleet name: ${saved.self}`));
+  assert.ok(result.lines.includes(`run on the other PCs: npx architecture-harness fleet init --secret ${saved.secret}`));
+  const other = fixture(t);
+  const joined = other.run(["init", "--secret", saved.secret, "--port", "9090", "--self", "custom"]);
+  assert.equal(joined.code, 0, joined.errors.join("\n"));
+  const second = JSON.parse(readFileSync(other.env.QC_FLEET_FILE, "utf8"));
+  assert.equal(second.self, "custom");
+  assert.equal(second.secret, saved.secret);
+  assert.equal(second.nodes[0].port, 9090);
+  assert.ok(!joined.lines.join("\n").includes(saved.secret));
+  for (const port of ["1023", "65536", "1.5", "no"]) assert.equal(other.run(["init", "--force", "--port", port]).code, 1);
+  const staticPeers = fixture(t);
+  const generated = staticPeers.run(["init", "--nodes", "peer:2:M"]);
+  assert.equal(generated.code, 0, generated.errors.join("\n"));
+  const configured = JSON.parse(readFileSync(staticPeers.env.QC_FLEET_FILE, "utf8"));
+  assert.match(configured.self, /^[0-9a-f]{4}$/);
+  assert.ok(configured.nodes.some(node => node.id === configured.self && node.port === 8080));
+  assert.ok(configured.nodes.some(node => node.id === "peer" && node.weight === 2));
+});
+
+test("validateFleet accepts optional discovery settings and rejects invalid types and ports", () => {
+  const old = { self: "a1", nodes: [nodes[0]] };
+  assert.equal(validateFleet({ ...old, discover: true }).discoveryPort, 47913);
+  assert.equal(validateFleet({ ...old, discover: false }).discover, false);
+  assert.equal(validateFleet({ ...old, discoveryPort: 49000 }).discoveryPort, 49000);
+  for (const discover of [null, "true", 0]) assert.throws(() => validateFleet({ ...old, discover }), /discover/);
+  for (const discoveryPort of [null, 1023, 65536, 1.5, "47913"]) assert.throws(() => validateFleet({ ...old, discoveryPort }), /discoveryPort/);
+});
+
+test("status and assignment use the discoveries saved on disk", async t => {
+  const f = fixture(t);
+  assert.equal(f.run(["init", "--self", "a1"]).code, 0);
+  mkdirSync(stateDir(f.cwd), { recursive: true });
+  writeFileSync(path.join(stateDir(f.cwd), "discovered.json"), JSON.stringify({ b2: {
+    address: "192.168.1.20", port: 8080, weight: 2, maxSize: "L", seen: Date.now(),
+  } }));
+  const extra = { gh: fakeGh([]), git: () => "", origin: () => "o/r" };
+  const status = await f.run(["status"], extra);
+  assert.equal(status.code, 0, status.errors.join("\n"));
+  assert.equal(status.lines[0], "name=a1 discover=on");
+  assert.ok(status.lines.some(line => /^b2 weight=2/.test(line)));
+  const issues = Array.from({ length: 100 }, (_, i) => issue(i + 1));
+  const currentNodes = [nodes[0], { ...nodes[1], weight: 2 }];
+  const mine = issues.filter(row => ownerOf("o/r", row.number, "M", currentNodes) === "a1").map(row => String(row.number));
+  const next = f.run(["next", "--all"], { ...extra, gh: fakeGh(issues) });
+  assert.equal(next.code, 0);
+  assert.deepEqual(next.lines, mine);
 });
 
 test("ownerOf repeats across calls and repo case, using the specified SHA-256 score", () => {
@@ -227,15 +285,16 @@ test("next prints the oldest five or all, exits 3 when empty, and status adds th
   assert.deepEqual(empty, { code: 3, lines: [], errors: ["no free issue for a1"] });
   const status = await f.run(["status", "--repo", "o/r"], extra);
   assert.equal(status.code, 0);
-  assert.equal(status.lines.length, 4);
-  assert.match(status.lines[0], /a1.*1.*L.*true.*12.*12,11,10,9,8,7,6,5,4,3$/);
-  assert.match(status.lines[1], /b2.*1.*S.*true.*0/);
-  assert.match(status.lines[2], /taken.*0.*unassigned.*0/);
-  assert.equal(status.lines[3], "node=stopped leader=unknown peers=0/1");
+  assert.equal(status.lines.length, 5);
+  assert.equal(status.lines[0], "name=a1 discover=off");
+  assert.match(status.lines[1], /a1.*1.*L.*true.*12.*12,11,10,9,8,7,6,5,4,3$/);
+  assert.match(status.lines[2], /b2.*1.*S.*true.*0/);
+  assert.match(status.lines[3], /taken.*0.*unassigned.*0/);
+  assert.equal(status.lines[4], "node=stopped leader=unknown peers=0/1");
   const many = Array.from({ length: 20 }, (_, i) => ({ id: `pc${i}`, weight: 1, maxSize: "L", active: true }));
   writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify({ self: "pc0", nodes: many }));
   const capped = await f.run(["status", "--repo", "o/r"], extra);
-  assert.equal(capped.lines.length, 16);
+  assert.equal(capped.lines.length, 17);
   assert.match(capped.lines.at(-2), /6 more nodes/);
   assert.equal(capped.lines.at(-1), "node=stopped leader=unknown peers=0/19");
   writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify({ self: "a1", nodes: [{ ...nodes[0], active: false }] }));

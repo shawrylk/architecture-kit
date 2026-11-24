@@ -1,4 +1,4 @@
-// A static fleet shares node settings across PCs; only the local self id differs.
+// Fleets share a secret and either discover LAN peers or use a static node list.
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
@@ -13,9 +13,10 @@ import { sendPushed, validPlatformBranch } from "./fleet-platform.mjs";
 import { TALK_VERBS, parseTalkArgs, runTalk } from "./fleet-talk.mjs";
 import { highestTerm, latestLeader, readState, writeState } from "./fleet-state.mjs";
 import { confirmLeader, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
+import { effectiveFleet, readDiscovered } from "./fleet-discover.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
+const USAGE = "usage: qc fleet init [--self <id>] [--nodes <id:weight:size,...>] [--port <port>] [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -56,7 +57,11 @@ export function validateFleet(value) {
   if (value.secret !== undefined && (typeof value.secret !== "string" || value.secret.length < 64 || /[^0-9a-f]/i.test(value.secret))) throw new Error("secret must be hex with at least 64 characters");
   const leaders = value.leaders === undefined ? nodes.map(node => node.id) : value.leaders;
   if (!Array.isArray(leaders) || !leaders.length || leaders.some(id => !seen.has(id)) || new Set(leaders).size !== leaders.length) throw new Error("leaders must be a nonempty list of unique node IDs");
-  return { self: value.self, nodes, leaders: [...leaders], ...(value.secret === undefined ? {} : { secret: value.secret }) };
+  if (value.discover !== undefined && typeof value.discover !== "boolean") throw new Error("discover must be a boolean");
+  if (value.discoveryPort !== undefined && (!Number.isInteger(value.discoveryPort) || value.discoveryPort < 1024 || value.discoveryPort > 65535)) throw new Error("discoveryPort must be an integer from 1024 to 65535");
+  return { self: value.self, nodes, leaders: [...leaders], ...(value.secret === undefined ? {} : { secret: value.secret }),
+    ...(value.discover === undefined ? {} : { discover: value.discover }),
+    ...(value.discoveryPort === undefined && value.discover === undefined ? {} : { discoveryPort: value.discoveryPort ?? 47913 }) };
 }
 
 /** Weighted rendezvous hashing keeps other owners stable when a PC goes inactive. */
@@ -136,7 +141,7 @@ function parseArgs(argv) {
   if (TALK_VERBS.includes(verb)) return parseTalkArgs(verb, args);
   const hasIssue = ["progress", "owns", "pushed"].includes(verb);
   const rest = hasIssue ? args.slice(1) : args;
-  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "pushed" ? ["--branch", "--head"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns", "confirm-leader"].includes(verb) ? [] : null;
+  const allowed = verb === "init" ? ["--self", "--nodes", "--port", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "pushed" ? ["--branch", "--head"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns", "confirm-leader"].includes(verb) ? [] : null;
   if (!allowed) throw new Error(USAGE);
   const options = { verb };
   if (hasIssue) {
@@ -165,12 +170,19 @@ function parseArgs(argv) {
 }
 
 function initialize(options, file, say) {
-  if (!options["--self"] || !options["--nodes"]) throw new Error("init needs --self and --nodes");
-  const nodes = options["--nodes"].split(",").map(entry => {
+  const self = options["--self"] ?? randomBytes(2).toString("hex");
+  const port = Number(options["--port"] ?? 8080);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("--port must be an integer from 1024 to 65535");
+  const nodes = options["--nodes"] === undefined ? [{ id: self, weight: 1, maxSize: "L", port }] : options["--nodes"].split(",").map(entry => {
     const [id, weight, maxSize, ...extra] = entry.split(":");
     if (extra.length) throw new Error("--nodes needs id:weight:size entries");
     return { id, weight: Number(weight), maxSize };
   });
+  if (options["--self"] === undefined && !nodes.some(node => node.id === self)) nodes.push({ id: self, weight: 1, maxSize: "L", port });
+  if (options["--nodes"] !== undefined && options["--port"] !== undefined) {
+    const local = nodes.find(node => node.id === self);
+    if (local) local.port = port;
+  }
   if (options["--addresses"]) {
     const addressed = new Set();
     for (const entry of options["--addresses"].split(",")) {
@@ -184,7 +196,7 @@ function initialize(options, file, say) {
     }
   }
   const secret = options["--secret"] ?? randomBytes(32).toString("hex");
-  const fleet = validateFleet({ self: options["--self"], nodes, secret });
+  const fleet = validateFleet({ self, nodes, secret, ...(options["--nodes"] === undefined ? { discover: true } : {}) });
   mkdirSync(path.dirname(file), { recursive: true });
   let fd;
   try {
@@ -198,7 +210,8 @@ function initialize(options, file, say) {
     if (fd !== undefined) closeSync(fd);
   }
   say(`fleet initialized: ${file}`);
-  if (!options["--secret"]) say(`pass the same secret on the other PCs: --secret ${secret}`);
+  say(`fleet name: ${self}`);
+  if (!options["--secret"]) say(`run on the other PCs: npx architecture-harness fleet init --secret ${secret}`);
   return 0;
 }
 
@@ -215,9 +228,11 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     }
     let value;
     try { value = JSON.parse(text); } catch { throw new Error(`fleet file has invalid JSON: ${file}`); }
-    const fleet = validateFleet(value);
+    const configuredFleet = validateFleet(value);
+    const fleet = effectiveFleet(configuredFleet, configuredFleet.discover ? readDiscovered(cwd) : {}, node.clock?.() ?? Date.now(), node.interfaces);
+    if (options.verb === "status") say(`name=${fleet.self} discover=${fleet.discover ? "on" : "off"}`);
     if (["start", "stop", "serve"].includes(options.verb)) {
-      return runNodeVerb(options, { root: cwd, fleet, env, gh, git, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
+      return runNodeVerb(options, { root: cwd, fleet, configuredFleet, env, gh, git, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
     }
     if (options.verb === "confirm-leader") {
       const term = confirmLeader({ ...node, root: cwd, fleet });
@@ -289,8 +304,8 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
   }
 }
 
-async function runNodeVerb(options, { root, fleet, env, gh, git, origin, say, warn, node }) {
-  const deps = { gh, git, ...node, root, fleet, env, leader: options["--leader"] === true };
+async function runNodeVerb(options, { root, fleet, configuredFleet, env, gh, git, origin, say, warn, node }) {
+  const deps = { gh, git, ...node, root, fleet, configuredFleet, env, leader: options["--leader"] === true };
   if (options.verb === "serve") {
     const kitRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const kit = gitOut(kitRoot, "rev-parse", "HEAD")?.trim() || null;

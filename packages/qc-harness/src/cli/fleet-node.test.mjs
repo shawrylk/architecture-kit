@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { connect } from "node:net";
 import { once } from "node:events";
+import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { createMessage, verifyMessage } from "./fleet-message.mjs";
@@ -367,6 +368,44 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   assert.equal(cleared.length, 1);
   assert.equal(signals.size, 0);
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
+});
+
+test("serve refreshes the same fleet for HTTP, heartbeats and expiry, and closes discovery on shutdown", async t => {
+  const { createBeacon } = await import("./fleet-discover.mjs");
+  const root = fixture(t), signals = new Map(), sent = [];
+  const current = { self: "a", secret, discover: true, nodes: [{ id: "a", weight: 1, maxSize: "L", port: 8080 }], leaders: ["a"] };
+  let time = now, tick, closed = false;
+  const socket = new EventEmitter();
+  socket.bind = (_port, _host, ready) => ready();
+  socket.setBroadcast = () => {};
+  socket.send = (_data, _port, _address, callback) => callback?.();
+  socket.close = () => { closed = true; };
+  const interfaces = () => ({ test: [{ address: "127.0.0.1", family: "IPv4", internal: false, netmask: "255.0.0.0" }] });
+  const server = await serveNode({ root, fleet: current, repo: "o/r", clock: () => time, listen: { port: 0 },
+    interfaces, discovery: { createSocket: () => socket, timer: () => 42, clearTimer() {} },
+    gh: apiResponse, timer: fn => { tick = fn; }, clearTimer() {},
+    onSignal: (name, fn) => signals.set(name, fn), offSignal: name => signals.delete(name),
+    fetch: async (url, options) => { sent.push({ url, message: JSON.parse(options.body) }); return { status: 202 }; } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  assert.equal(current.nodes[0].address, "127.0.0.1");
+  const remote = { self: "b", secret, nodes: [{ id: "b", port: 9090, weight: 2, maxSize: "M" }] };
+  socket.emit("message", Buffer.from(JSON.stringify(createBeacon({ fleet: remote, interfaces, clock: () => time }))), { address: "127.0.0.1" });
+  time += 30_000;
+  await tick();
+  assert.deepEqual(current.leaders, ["a", "b"]);
+  assert.equal(current.nodes.find(node => node.id === "b").port, 9090);
+  assert.ok(sent.some(row => row.url === "http://127.0.0.1:9090/message" && row.message.kind === "heartbeat"));
+  const body = createMessage({ from: "b", repo: "o/r", kind: "heartbeat", body: { term: 1, leader: false, kit: null }, time: new Date(time).toISOString() }, secret);
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
+  assert.equal(response.status, 202);
+  time = now + 300_001;
+  await tick();
+  assert.deepEqual(current.nodes.map(node => node.id), ["a"]);
+  assert.deepEqual(current.leaders, ["a"]);
+  const stopped = once(server, "close");
+  signals.get("SIGTERM")();
+  await stopped;
+  assert.equal(closed, true);
 });
 
 test("server refuses addresses that resolve to wildcard interfaces", async t => {
