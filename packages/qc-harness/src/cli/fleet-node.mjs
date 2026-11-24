@@ -5,6 +5,7 @@ import { closeSync, mkdirSync, openSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { lookup } from "node:dns/promises";
+import { receiveTalk } from "./fleet-talk.mjs";
 import { assignTick } from "./fleet-assign.mjs";
 import { readOpenAssignments, freeIssues } from "./fleet.mjs";
 import { runGh } from "./gh-run.mjs";
@@ -376,6 +377,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     busy = true;
     try {
       receiveAssignments(root, fleet, clock(), leader);
+      receiveTalk(root, fleet, leader, clock());
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal });
       if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;

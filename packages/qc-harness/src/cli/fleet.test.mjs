@@ -439,3 +439,13 @@ test("owns requires the latest Leader snapshot and the saved own epoch, with loc
   check(/assignment/i);
   assert.equal(f.run(["owns", "0"], deps).code, 1);
 });
+
+test("next adds the saved plan decision only for the assignment epoch", async t => {
+  const { cwd, run } = fixture(t);
+  run(["init", "--self", "a1", "--nodes", "a1:1:L"]);
+  writeState(cwd, "assignments", Object.fromEntries([7, 8, 9].map(issue => [`o/r#${issue}`, { repo: "o/r", issue, node: "a1", epoch: 3 }])));
+  writeState(cwd, "plans", Object.fromEntries([7, 8, 9].map(issue => [`o/r#${issue}`, { kind: "approve", body: { issue, epoch: issue === 9 ? 2 : 3, approved: issue !== 8 } }])));
+  const result = await run(["next"], { origin: () => "o/r", gh: () => JSON.stringify([7, 8, 9].map(number => ({ number }))) });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.lines, ["#7 epoch=3 plan approved", "#8 epoch=3 plan needs changes", "#9 epoch=3"]);
+});
