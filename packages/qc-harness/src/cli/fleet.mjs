@@ -13,10 +13,11 @@ import { sendPushed, validPlatformBranch } from "./fleet-platform.mjs";
 import { TALK_VERBS, parseTalkArgs, runTalk } from "./fleet-talk.mjs";
 import { highestTerm, latestLeader, readState, writeState } from "./fleet-state.mjs";
 import { confirmLeader, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
+import { createKey, validateKey, pairingDecision, readPairing } from "./fleet-pair.mjs";
 import { effectiveFleet, readDiscovered } from "./fleet-discover.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init [--self <id>] [--nodes <id:weight:size,...>] [--port <port>] [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
+const USAGE = "usage: qc fleet init [--self <id>] [--nodes <id:weight:size,...>] [--port <port>] [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | allow <code> | deny <code> | accept <code> | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -59,7 +60,8 @@ export function validateFleet(value) {
   if (!Array.isArray(leaders) || !leaders.length || leaders.some(id => !seen.has(id)) || new Set(leaders).size !== leaders.length) throw new Error("leaders must be a nonempty list of unique node IDs");
   if (value.discover !== undefined && typeof value.discover !== "boolean") throw new Error("discover must be a boolean");
   if (value.discoveryPort !== undefined && (!Number.isInteger(value.discoveryPort) || value.discoveryPort < 1024 || value.discoveryPort > 65535)) throw new Error("discoveryPort must be an integer from 1024 to 65535");
-  return { self: value.self, nodes, leaders: [...leaders], ...(value.secret === undefined ? {} : { secret: value.secret }),
+  const key = value.key === undefined ? undefined : validateKey(value.key);
+  return { ...(key === undefined ? {} : { key }), self: value.self, nodes, leaders: [...leaders], ...(value.secret === undefined ? {} : { secret: value.secret }),
     ...(value.discover === undefined ? {} : { discover: value.discover }),
     ...(value.discoveryPort === undefined && value.discover === undefined ? {} : { discoveryPort: value.discoveryPort ?? 47913 }) };
 }
@@ -138,6 +140,10 @@ export function freeIssues(repo, cwd, { gh = runGh, git = gitOut, holdLabel = "h
 
 function parseArgs(argv) {
   const [verb, ...args] = argv;
+  if (["allow", "deny", "accept"].includes(verb)) {
+    if (args.length !== 1 || !/^\d{6}$/.test(args[0])) throw new Error(`${verb} needs a 6-digit code`);
+    return { verb, code: args[0] };
+  }
   if (TALK_VERBS.includes(verb)) return parseTalkArgs(verb, args);
   const hasIssue = ["progress", "owns", "pushed"].includes(verb);
   const rest = hasIssue ? args.slice(1) : args;
@@ -195,8 +201,8 @@ function initialize(options, file, say) {
       Object.assign(node, { address: ipv6 ?? host, port: Number(port) });
     }
   }
-  const secret = options["--secret"] ?? randomBytes(32).toString("hex");
-  const fleet = validateFleet({ self, nodes, secret, ...(options["--nodes"] === undefined ? { discover: true } : {}) });
+  const secret = options["--secret"];
+  const fleet = validateFleet({ self, nodes, secret, key: createKey(), ...(options["--nodes"] === undefined ? { discover: true } : {}) });
   mkdirSync(path.dirname(file), { recursive: true });
   let fd;
   try {
@@ -209,10 +215,17 @@ function initialize(options, file, say) {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
-  say(`fleet initialized: ${file}`);
   say(`fleet name: ${self}`);
-  if (!options["--secret"]) say(`run on the other PCs: npx architecture-harness fleet init --secret ${secret}`);
   return 0;
+}
+
+export function saveFleet(file, value) {
+  let fd;
+  try {
+    fd = openSync(file, "w", 0o600);
+    if (process.platform !== "win32") fchmodSync(fd, 0o600);
+    writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`);
+  } finally { if (fd !== undefined) closeSync(fd); }
 }
 
 /** Fleet verbs return exit codes; injected readers and node operations keep tests local. */
@@ -229,8 +242,33 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     let value;
     try { value = JSON.parse(text); } catch { throw new Error(`fleet file has invalid JSON: ${file}`); }
     const configuredFleet = validateFleet(value);
+    if (["start", "serve"].includes(options.verb)) {
+      let changed = false;
+      if (!configuredFleet.key) { configuredFleet.key = createKey(); changed = true; }
+      if (configuredFleet.discover && !configuredFleet.secret && options["--leader"]) {
+        configuredFleet.secret = randomBytes(32).toString("hex");
+        changed = true;
+      }
+      if (changed) saveFleet(file, { ...value, ...configuredFleet });
+    }
     const fleet = effectiveFleet(configuredFleet, configuredFleet.discover ? readDiscovered(cwd, configuredFleet.secret) : {}, node.clock?.() ?? Date.now(), node.interfaces);
-    if (options.verb === "status") say(`name=${fleet.self} discover=${fleet.discover ? "on" : "off"}`);
+    if (["allow", "deny", "accept"].includes(options.verb)) {
+      if (options.verb === "accept" ? Boolean(fleet.secret) : !fleet.secret || !readState(cwd, "node").leader) throw new Error("pairing command is not available for this role");
+      pairingDecision(cwd, options.verb, options.code, node.clock?.() ?? Date.now());
+      say(`${options.verb} ${options.code}`);
+      return 0;
+    }
+    if (options.verb === "status") {
+      say(`name=${fleet.self} discover=${fleet.discover ? "on" : "off"}`);
+      const now = node.clock?.() ?? Date.now(), pairing = readPairing(cwd);
+      const live = row => Number.isFinite(row.seen) && now >= row.seen && now - row.seen <= 600_000;
+      if (fleet.secret && readState(cwd, "node").leader) {
+        for (const [id, row] of Object.entries(pairing.requests)) if (live(row)) say(`join? ${id} code=${row.code} host=${row.hostname} address=${row.address}`);
+      } else if (!fleet.secret) {
+        for (const [id, row] of Object.entries(pairing.offers)) if (live(row)) say(`joining ${id} code=${row.code}`);
+      }
+      if ((fleet.discover && !fleet.secret) || (!origin(cwd) && !options["--repo"])) return 0;
+    }
     if (["start", "stop", "serve"].includes(options.verb)) {
       return runNodeVerb(options, { root: cwd, fleet, configuredFleet, env, gh, git, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
     }
@@ -305,7 +343,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
 }
 
 async function runNodeVerb(options, { root, fleet, configuredFleet, env, gh, git, origin, say, warn, node }) {
-  const deps = { gh, git, ...node, root, fleet, configuredFleet, env, leader: options["--leader"] === true };
+  const deps = { gh, git, ...node, root, fleet, configuredFleet, env, fleetFile: fleetPath(env), leader: options["--leader"] === true };
   if (options.verb === "serve") {
     const kitRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const kit = gitOut(kitRoot, "rev-parse", "HEAD")?.trim() || null;

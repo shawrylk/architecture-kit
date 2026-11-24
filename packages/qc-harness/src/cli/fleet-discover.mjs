@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { canonical } from "./fleet-message.mjs";
+import { createPairing } from "./fleet-pair.mjs";
 import { stateDir } from "./fleet-state.mjs";
 
 const validId = id => typeof id === "string" && /^[a-z0-9-]{1,32}$/.test(id);
@@ -40,6 +41,7 @@ function saveDiscovered(root, secret, nodes) {
 /** A fresh, signed announcement always fits a single small UDP datagram. */
 export function createBeacon({ fleet, address, clock = Date.now }) {
   const self = fleet.nodes.find(node => node.id === fleet.self);
+  if (!fleet.secret) return createPairing({ fleet, address, clock }).beacon();
   if (isIP(address ?? "") !== 4) throw new Error("fleet discovery needs an IPv4 node address");
   const fields = { v: 1, id: fleet.self, port: self.port ?? 8080, addresses: [address], weight: self.weight ?? 1,
     maxSize: self.maxSize ?? "L", time: clock(), nonce: randomBytes(16).toString("hex") };
@@ -72,8 +74,8 @@ function broadcastAddresses(interfaces, address) {
 
 /** Authenticated LAN discovery with injectable transport, interfaces, timer and clock. */
 export async function startDiscovery({ root, fleet, address, clock = Date.now, interfaces = os.networkInterfaces,
-  createSocket = udpSocket, timer = setInterval, clearTimer = clearInterval, warn = console.error }) {
-  if (!fleet.secret) throw new Error("fleet secret is required for discovery");
+  createSocket = udpSocket, timer = setInterval, clearTimer = clearInterval, warn = console.error, pairing }) {
+  if (!fleet.secret && !fleet.discover) throw new Error("fleet secret is required for discovery");
   const ipv4 = isIP(address ?? "") === 4;
   const socket = createSocket({ type: "udp4", reuseAddr: true });
   const nonces = new Map();
@@ -85,15 +87,17 @@ export async function startDiscovery({ root, fleet, address, clock = Date.now, i
     try {
       const beacon = createBeacon({ fleet, address, clock });
       const data = Buffer.from(JSON.stringify(beacon));
-      for (const address of broadcastAddresses(interfaces, beacon.addresses[0])) socket.send(data, port, address, error => {
+      for (const address of broadcastAddresses(interfaces, beacon.address ?? beacon.addresses[0])) socket.send(data, port, address, error => {
         if (error) warn(`fleet discovery: ${error.message}`);
       });
     } catch (error) { warn(`fleet discovery: ${error.message}`); }
   };
   socket.on("message", (data, sender) => {
-    if (closed || data.length >= 1024) return;
+    if (closed || data.length > 2048) return;
     try {
       const { sig, ...fields } = JSON.parse(data.toString("utf8"));
+      if (fields.kind === "join") { pairing?.receiveJoin(fields, sender.address); return; }
+      if (!fleet.secret) return;
       if (typeof sig !== "string" || !/^[0-9a-f]{64}$/i.test(sig) ||
         !timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(mac(fields, fleet.secret), "hex"))) return;
       const now = clock();
@@ -117,6 +121,7 @@ export async function startDiscovery({ root, fleet, address, clock = Date.now, i
       Object.defineProperty(discovered, fields.id, { enumerable: true, configurable: true, writable: true,
         value: { address: sender.address, port: fields.port, weight: fields.weight, maxSize: fields.maxSize, seen: now } });
       saveDiscovered(root, fleet.secret, discovered);
+      pairing?.signed(fields.id);
     } catch (error) {
       // Malformed datagrams are ignored; disk failures remain visible to the operator.
       if (error.code) warn(`fleet discovery: ${error.message}`);

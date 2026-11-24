@@ -5,13 +5,14 @@ import { platformTick } from "./fleet-platform.mjs";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
 import { spawn as spawnProcess } from "node:child_process";
-import { closeSync, mkdirSync, openSync, rmSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { lookup } from "node:dns/promises";
 import { receiveTalk } from "./fleet-talk.mjs";
 import { assignTick, overloaded } from "./fleet-assign.mjs";
-import { readOpenAssignments, freeIssues } from "./fleet.mjs";
+import { readOpenAssignments, freeIssues, fleetPath, validateFleet, saveFleet } from "./fleet.mjs";
+import { createPairing } from "./fleet-pair.mjs";
 import { effectiveFleet, readDiscovered, startDiscovery } from "./fleet-discover.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage } from "./fleet-message.mjs";
@@ -43,27 +44,29 @@ export function nodeFetch(url, { method = "GET", body, signal } = {}) {
 }
 
 /** Bind only the configured local address; tests can request an OS-assigned port. */
-export async function createNodeServer({ root = process.cwd(), fleet, clock = Date.now, listen = {}, instance = randomUUID() }) {
+export async function createNodeServer({ root = process.cwd(), fleet, clock = Date.now, listen = {}, instance = randomUUID(), pairing }) {
   const self = fleet.nodes.find(node => node.id === fleet.self);
-  if (!fleet.secret) throw new Error("fleet secret is required");
+  if (!fleet.secret && !fleet.discover) throw new Error("fleet secret is required");
   if (!self?.address) throw new Error(`fleet address is required for ${fleet.self}`);
   let address;
   try { ({ address } = await lookup(self.address)); }
   catch { throw new Error(`node ${self.id} address ${self.address} does not resolve to an interface`); }
   const normalized = address.includes(":") ? new URL(`http://[${address}]/`).hostname : address;
   if (["0.0.0.0", "[::]", "[::ffff:0:0]"].includes(normalized)) throw new Error("fleet address must name one interface");
+  pairing ??= fleet.key ? createPairing({ root, fleet, clock, address }) : undefined;
   const server = createServer((req, res) => {
     const reply = (status, data) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(data));
     };
     if (req.method === "GET" && req.url === "/health") { reply(200, { ok: true, instance }); return; }
-    if (req.method !== "POST" || req.url !== "/message") { reply(404, { ok: false, reason: "not-found" }); req.resume(); return; }
+    const pairRoute = !fleet.secret && req.url === "/pair";
+    if (req.method !== "POST" || !(pairRoute || (fleet.secret && req.url === "/message"))) { reply(404, { ok: false, reason: "not-found" }); req.resume(); return; }
     const chunks = [];
     let size = 0;
     req.on("data", chunk => {
       size += chunk.length;
-      if (size > LIMIT) {
+      if (size > (pairRoute ? 2048 : LIMIT)) {
         if (!res.writableEnded) reply(413, { ok: false, reason: "body-too-large" });
         chunks.length = 0;
       } else chunks.push(chunk);
@@ -75,7 +78,9 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
       try { message = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
       catch { reply(400, { ok: false, reason: "bad-json" }); return; }
       try {
-        const result = receiveMessage({ root, fleet, message, clock });
+        const sender = req.socket.remoteAddress?.replace(/^::ffff:/, "");
+        const result = pairRoute ? { ok: pairing?.receivePair(message, sender) === true }
+          : receiveMessage({ root, fleet, message, clock });
         reply(result.ok ? 202 : 400, result);
       } catch {
         reply(500, { ok: false, reason: "state-error" });
@@ -242,7 +247,7 @@ function isLive(pid, kill) {
   catch (error) { if (error.code === "ESRCH") return false; throw error; }
 }
 function localNode(fleet) {
-  if (!fleet.secret) throw new Error("fleet secret is required");
+  if (!fleet.secret && !fleet.discover) throw new Error("fleet secret is required");
   const node = fleet.nodes.find(node => node.id === fleet.self);
   if (!node?.address) throw new Error(`fleet address is required for ${fleet.self}`);
   return node;
@@ -502,20 +507,35 @@ export function confirmLeader({ root, fleet, clock = Date.now }) {
 
 /** One serial tick avoids overlapping network retries and heartbeats. */
 export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, os: host = os, clock = Date.now,
-  configuredFleet = fleet, interfaces, discovery = {},
+  configuredFleet = fleet, interfaces, discovery = {}, env = process.env, fleetFile = env.QC_FLEET_FILE,
   fetch = nodeFetch, gh = runGh, git, platform = {}, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
   const configured = { ...configuredFleet, nodes: configuredFleet.nodes.map(node => ({ ...node })) };
   const refreshFleet = () => {
     if (!configured.discover) return;
+    try {
+      const currentFile = fleetFile ? validateFleet(JSON.parse(readFileSync(fleetFile, "utf8"))) : configured;
+      if (currentFile.self !== fleet.self) throw new Error("running fleet identity changed");
+      Object.assign(configured, currentFile);
+      fleet.secret = currentFile.secret;
+      fleet.key = currentFile.key;
+    } catch (error) { if (error.code !== "ENOENT") throw error; }
     const current = effectiveFleet(configured, readDiscovered(root, configured.secret), clock(), interfaces);
     fleet.nodes = current.nodes;
     fleet.leaders = current.leaders;
   };
   refreshFleet();
-  const server = await createNodeServer({ root, fleet, clock, listen, instance });
+  const pairing = fleet.discover && fleet.key ? createPairing({ root, fleet, clock, fetch, warn,
+    address: fleet.nodes.find(node => node.id === fleet.self)?.address,
+    leader: () => savedRole(root, leader).leader,
+    saveSecret: secret => {
+      const file = fleetFile ?? fleetPath(env), value = JSON.parse(readFileSync(file, "utf8"));
+      if (value.self !== fleet.self || value.key?.public !== fleet.key.public) throw new Error("running fleet identity changed");
+      saveFleet(file, { ...value, secret });
+    } }) : undefined;
+  const server = await createNodeServer({ root, fleet, clock, listen, instance, pairing });
   let discoverySocket;
-  try { if (fleet.discover) discoverySocket = await startDiscovery({ ...discovery, root, fleet, address: server.address().address, clock, interfaces, warn }); }
+  try { if (fleet.discover) discoverySocket = await startDiscovery({ ...discovery, root, fleet, address: server.address().address, clock, interfaces, warn, pairing }); }
   catch (error) { server.close(); throw error; }
   const sends = new AbortController();
   let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000, nextAssign = clock() + 60_000, nextGithub = clock();
@@ -541,6 +561,8 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     busy = true;
     try {
       refreshFleet();
+      await pairing?.tick();
+      if (!fleet.secret) return;
       if (clock() >= nextGithub) {
         nextGithub = clock() + 120_000;
         readGithub({ root, fleet, repo, clock, gh });
@@ -571,7 +593,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     } catch (error) { warn(`fleet node: ${error.message}`); }
     finally {
       try {
-        if (!closing && clock() >= nextHeartbeat) {
+        if (!closing && fleet.secret && clock() >= nextHeartbeat) {
           nextHeartbeat = clock() + 30_000;
           leader = savedRole(root).leader;
           await heartbeat({ root, fleet, repo, kit, leader, os: host, clock, fetch, signal: sends.signal });

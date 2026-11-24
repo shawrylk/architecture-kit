@@ -99,7 +99,7 @@ test("fleet settings accept optional secrets, ordered leaders and node endpoints
   ]) assert.throws(() => validateFleet({ ...old, ...changes }), new RegExp(field));
 });
 
-test("init accepts explicit secrets and addresses and generates a reusable secret by default", t => {
+test("init accepts explicit secrets and addresses and writes a fresh key without a secret by default", t => {
   const f = fixture(t);
   const args = ["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:S"];
   const secret = "ab".repeat(32);
@@ -120,15 +120,14 @@ test("init accepts explicit secrets and addresses and generates a reusable secre
   const generated = f.run([...args, "--force"]);
   assert.equal(generated.code, 0);
   saved = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
-  assert.match(saved.secret, /^[0-9a-f]{64}$/);
-  const instruction = generated.lines.filter(line => line.includes(saved.secret));
-  assert.equal(instruction.length, 1);
-  assert.equal(instruction[0], `run on the other PCs: npx architecture-harness fleet init --secret ${saved.secret}`);
+  assert.equal(saved.secret, undefined);
+  assert.ok(saved.key.public && saved.key.private);
+  assert.deepEqual(generated.lines, ["fleet name: a1"]);
   assert.equal(f.run([...args, "--force"]).code, 0);
-  assert.notEqual(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).secret, saved.secret);
+  assert.notEqual(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).key.public, saved.key.public);
 });
 
-test("init without flags chooses a random hex name, enables discovery and prints the shared secret command", t => {
+test("init without flags chooses a random hex name, enables discovery and prints only its name", t => {
   const f = fixture(t);
   const result = f.run(["init"]);
   assert.equal(result.code, 0, result.errors.join("\n"));
@@ -137,16 +136,18 @@ test("init without flags chooses a random hex name, enables discovery and prints
   assert.equal(saved.discover, true);
   assert.deepEqual(saved.nodes.map(({ id, port, weight, maxSize }) => ({ id, port, weight, maxSize })),
     [{ id: saved.self, port: 8080, weight: 1, maxSize: "L" }]);
-  assert.ok(result.lines.includes(`fleet name: ${saved.self}`));
-  assert.ok(result.lines.includes(`run on the other PCs: npx architecture-harness fleet init --secret ${saved.secret}`));
+  assert.deepEqual(result.lines, [`fleet name: ${saved.self}`]);
+  assert.equal(saved.secret, undefined);
+  assert.ok(saved.key.public && saved.key.private);
+  const shared = "ab".repeat(32);
   const other = fixture(t);
-  const joined = other.run(["init", "--secret", saved.secret, "--port", "9090", "--self", "custom"]);
+  const joined = other.run(["init", "--secret", shared, "--port", "9090", "--self", "custom"]);
   assert.equal(joined.code, 0, joined.errors.join("\n"));
   const second = JSON.parse(readFileSync(other.env.QC_FLEET_FILE, "utf8"));
   assert.equal(second.self, "custom");
-  assert.equal(second.secret, saved.secret);
+  assert.equal(second.secret, shared);
   assert.equal(second.nodes[0].port, 9090);
-  assert.ok(!joined.lines.join("\n").includes(saved.secret));
+  assert.ok(!joined.lines.join("\n").includes(shared));
   for (const port of ["1023", "65536", "1.5", "no"]) assert.equal(other.run(["init", "--force", "--port", port]).code, 1);
   const staticPeers = fixture(t);
   const rejected = staticPeers.run(["init", "--nodes", "peer:2:M"]);
@@ -166,7 +167,7 @@ test("validateFleet accepts optional discovery settings and rejects invalid type
 
 test("status and assignment use the discoveries saved on disk", async t => {
   const f = fixture(t);
-  assert.equal(f.run(["init", "--self", "a1"]).code, 0);
+  assert.equal(f.run(["init", "--self", "a1", "--secret", "ab".repeat(32)]).code, 0);
   mkdirSync(stateDir(f.cwd), { recursive: true });
   const configured = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
   writeFileSync(path.join(stateDir(f.cwd), "discovered.json"), JSON.stringify({
@@ -332,7 +333,7 @@ test("init routes through qc from an empty folder, creates mode 0600 and refuses
 
 test("CLI starts, starts twice, reports running and stops without reading GitHub", async t => {
   const f = fixture(t), lines = [], errors = [];
-  assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L", "--addresses", "a1@127.0.0.1:8080"]).code, 0);
+  assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]).code, 0);
   let live = false, spawns = 0, instance;
   const node = { spawn: (_command, _args, options) => { instance = options.env.QC_FLEET_INSTANCE; live = true; spawns++; return { pid: 45678, unref() {}, once() {} }; },
     kill: (_pid, signal) => { if (!live) throw Object.assign(new Error("gone"), { code: "ESRCH" }); if (signal !== 0) live = false; },
@@ -367,7 +368,7 @@ test("CLI starts, starts twice, reports running and stops without reading GitHub
 
 test("CLI serve runs the node loop and exits after an injected stop signal", async t => {
   const f = fixture(t);
-  assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080"]).code, 0);
+  assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]).code, 0);
   const signals = new Map();
   let started;
   const ready = new Promise(resolve => { started = resolve; });
@@ -558,7 +559,7 @@ test("status prints the pending Leader proposal", async t => {
 
 test("pushed requires owns and strict branch/head and sends the held epoch to the Leader", async t => {
   const f = fixture(t);
-  f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L", "--addresses", "a1@localhost:8080,b2@localhost:8081"]);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L", "--addresses", "a1@localhost:8080,b2@localhost:8081", "--secret", "ab".repeat(32)]);
   const head = "b".repeat(40), sent = [];
   const deps = { origin: () => "o/r", gh: () => { throw new Error("pushed needs no gh"); }, node: {
     fetch: async (url, options) => { sent.push({ url, message: JSON.parse(options.body) }); return { status: 202 }; }
@@ -579,4 +580,36 @@ test("pushed requires owns and strict branch/head and sends the held epoch to th
   assert.equal(sent[0].url, "http://localhost:8081/message");
   assert.equal(sent[0].message.kind, "pushed");
   assert.deepEqual(sent[0].message.body, { issue: 7, epoch: 2, branch: "feat/7", head });
+});
+
+test("start migrates keys, leader creates secret, and pairing CLI and status share the state contract", async t => {
+  const { createKey, createPairing, pairCode, readPairing } = await import("./fleet-pair.mjs");
+  const f = fixture(t), now = 1_800_000_000_000, address = "127.0.0.1";
+  assert.equal(f.run(["init", "--self", "leader"]).code, 0);
+  const old = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
+  delete old.key;
+  writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify(old));
+  const child = { pid: 12345, once() {}, unref() {} };
+  let instance;
+  const result = await f.run(["start", "--leader"], { node: { clock: () => now,
+    interfaces: () => ({ lo: [{ family: "IPv4", internal: false, address }] }),
+    spawn: (_cmd, _args, options) => { instance = options.env.QC_FLEET_INSTANCE; return child; },
+    kill: () => {}, fetch: async () => ({ status: 200, json: async () => ({ ok: true, instance }) }) } });
+  assert.equal(result.code, 0, result.errors.join("\n"));
+  const saved = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
+  assert.ok(saved.key.public && saved.key.private);
+  assert.match(saved.secret, /^[a-f0-9]{64}$/);
+  const joinFleet = { self: "new-pc", key: createKey(), nodes: [{ id: "new-pc", port: 8081 }] };
+  const joining = createPairing({ root: f.cwd, fleet: joinFleet, address, clock: () => now });
+  const pairing = createPairing({ root: f.cwd, fleet: saved, address, leader: () => true, clock: () => now });
+  assert.equal(pairing.receiveJoin(joining.beacon(), address), true);
+  const code = pairCode(saved.key.public, joinFleet.key.public);
+  const status = f.run(["status"], { origin: () => null, node: { clock: () => now } });
+  assert.equal(status.code, 0, status.errors.join("\n"));
+  assert.ok(status.lines.includes(`join? new-pc code=${code} host=${os.hostname()} address=${address}`));
+  assert.equal(f.run(["allow", code], { node: { clock: () => now } }).code, 0);
+  assert.equal(readPairing(f.cwd).requests["new-pc"].allowed, true);
+  assert.equal(f.run(["deny", code], { node: { clock: () => now } }).code, 0);
+  assert.equal(f.run(["allow", "123"], { node: { clock: () => now } }).code, 1);
+  assert.equal(f.run(["accept", code], { node: { clock: () => now } }).code, 1);
 });
