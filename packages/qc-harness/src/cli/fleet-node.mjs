@@ -126,14 +126,27 @@ export async function sendMessage({ root = process.cwd(), fleet, node, message, 
 export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal, gh, leader = false, allow = () => true }) {
   if (signal?.aborted) return;
   const fallback = entry => gh && githubFallback({ root, entry, now: clock() });
+  const permittedRole = entry => {
+    const role = savedRole(root, leader);
+    if (allow(entry.message, role)) return role;
+    const current = readState(root, "outbox");
+    const index = current.findIndex(item => item.node === entry.node && item.message.id === entry.message.id);
+    if (index >= 0) {
+      deadLetter(root, current[index], { reason: "not leader" });
+      current.splice(index, 1);
+      writeState(root, "outbox", current);
+    }
+    return null;
+  };
   const pending = readState(root, "outbox");
   let blocked = false;
   for (const entry of pending) {
     if (signal?.aborted) return;
-    if (!allow(entry.message)) continue;
+    let role = permittedRole(entry);
+    if (!role) continue;
     let result;
     if (fallback(entry)) {
-      result = postGithubMessage({ root, fleet, entry, leader, clock, gh, signal }) ? { delivered: true } : { githubRetry: true };
+      result = postGithubMessage({ root, fleet, entry, leader: role.leader, clock, gh, signal }) ? { delivered: true } : { githubRetry: true };
     } else {
       if (blocked || entry.nextAttempt > clock()) { blocked = true; continue; }
       const node = fleet.nodes.find(node => node.id === entry.node);
@@ -143,6 +156,8 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
       } catch { result = { retry: true }; }
     }
     if (signal?.aborted) return;
+    role = permittedRole(entry);
+    if (!role) continue;
     // Reread after the network await to preserve any concurrently queued sends.
     const current = readState(root, "outbox");
     const index = current.findIndex(item => item.node === entry.node && item.message.id === entry.message.id);
@@ -153,7 +168,7 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
       const retried = { ...entry, message: unsignedFields(entry.message), attempts, nextAttempt: clock() + Math.min(60_000, 1000 * 2 ** Math.min(attempts - 1, 6)) };
       current[index] = retried;
       writeState(root, "outbox", current);
-      if (fallback(retried) && postGithubMessage({ root, fleet, entry: retried, leader, clock, gh, signal })) {
+      if (fallback(retried) && postGithubMessage({ root, fleet, entry: retried, leader: role.leader, clock, gh, signal })) {
         const latest = readState(root, "outbox");
         writeState(root, "outbox", latest.filter(item => item.node !== entry.node || item.message.id !== entry.message.id));
       }
@@ -351,7 +366,7 @@ async function assignWork({ root, fleet, repo, kit, term, clock, gh, git, holdLa
   if (pending.length) writeState(root, "outbox", [...outbox, ...pending]);
   for (const warning of result.warnings) warn(warning);
   await flushOutbox({ root, fleet, clock, fetch, signal, gh, leader: true,
-    allow: message => allowLeaderMessage(root, fleet, clock(), message, term) });
+    allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, term, role) });
 }
 
 /** Read the durable role before every Leader action, including after a network await. */
@@ -364,9 +379,8 @@ function savedRole(root, fallbackLeader = false) {
   return { leader: record.leader === undefined ? fallbackLeader : record.leader === true, term };
 }
 
-function allowLeaderMessage(root, fleet, now, message, term) {
+function allowLeaderMessage(root, fleet, now, message, term, role = savedRole(root)) {
   if (!["assign", "approve", "answer"].includes(message.kind)) return true;
-  const role = savedRole(root);
   return role.leader && (term === undefined || role.term === term) && canAssign(root, fleet, now);
 }
 
@@ -492,7 +506,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       receiveAssignments(root, fleet, clock(), leader);
       receiveTalk(root, fleet, leader, clock());
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
-        allow: message => allowLeaderMessage(root, fleet, clock(), message) });
+        allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) });
       if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;
         const role = savedRole(root);

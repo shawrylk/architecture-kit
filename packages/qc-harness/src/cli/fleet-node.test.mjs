@@ -1007,6 +1007,54 @@ test("promotion during the heartbeat send to A gives C the rebuilt assignment at
     assigned: [{ repo: "o/r", issue: 7, epoch: 3 }] });
 });
 
+test("outbox fallback comments use the fresh role passed to authorization", async t => {
+  for (const retry of [false, true]) await t.test(retry ? "after HTTP retry" : "direct fallback", async t => {
+    const root = fixture(t), comments = [], roles = [];
+    writeState(root, "node", { leader: retry, term: 1 });
+    writeState(root, "peers", { b: { time: now } });
+    writeState(root, "outbox", [{ node: "b", attempts: retry ? 2 : 3, nextAttempt: now,
+      message: message({ from: "a", body: { issue: 7, epoch: 1 } }) }]);
+    await flushOutbox({ root, fleet, clock: () => now, leader: true,
+      allow: (_message, role) => { roles.push(role); return true; },
+      fetch: async () => { writeState(root, "node", { leader: false, term: 2 }); return { status: 503 }; },
+      gh: args => { comments.push(args); return ""; } });
+    assert.equal(comments.length, 1);
+    assert.match(comments[0][comments[0].indexOf("--body") + 1], /role=coder/);
+    assert.deepEqual(roles.at(-1), { leader: false, term: retry ? 2 : 1 });
+    assert.deepEqual(readState(root, "outbox"), []);
+  });
+});
+
+test("demotion during an assign retry with attempts=2 fences the GitHub fallback after a 503", async t => {
+  let f, retries = 0;
+  const comments = [], warnings = [];
+  f = await electionNode(t, "a", 3, { leader: true, warn: text => warnings.push(text),
+    gh: args => {
+      if (args[0] === "api") return apiResponse(args);
+      comments.push(args);
+      return "";
+    },
+    fetch: async (_url, options) => {
+      if (JSON.parse(options.body).kind !== "assign") return { status: 202 };
+      retries++;
+      const response = await fetch(`http://127.0.0.1:${f.server.address().port}/message`, { method: "POST",
+        body: JSON.stringify(message({ from: "b", kind: "heartbeat",
+          body: { leader: true, term: 2, kit: null, assigned: [], work: [] } })) });
+      assert.equal(response.status, 202);
+      assert.equal(readState(f.root, "node").leader, false);
+      return { status: 503 };
+    } });
+  writeState(f.root, "peers", { c: { leader: false, term: 1, time: now } });
+  const assignment = message({ from: "a", kind: "assign", body: { issue: 7, epoch: 1 } });
+  writeState(f.root, "outbox", [{ node: "c", attempts: 2, nextAttempt: now, message: assignment }]);
+  await f.tick();
+  assert.equal(retries, 1);
+  assert.deepEqual(comments, [], "a demoted Leader must not post the assignment to GitHub");
+  assert.deepEqual(readState(f.root, "outbox"), []);
+  assert.deepEqual(readState(f.root, "dead").map(entry => [entry.message.id, entry.reason]), [[assignment.id, "not leader"]]);
+  assert.deepEqual(warnings, []);
+});
+
 test("demotion during an awaited send fences the next assignment, Leader send and retry", async t => {
   for (const phase of ["retry", "assignment", "heartbeat"]) await t.test(phase, async t => {
     let f, demoted = false, readsAfterDemotion = 0;
@@ -1083,7 +1131,7 @@ test("Leader stops assignment after 90 seconds without a peer and resumes when o
   f.time(now + 180_000); await f.tick(); assert.ok(reads > 0);
 });
 
-test("partition grace starts at the last peer receipt and pauses durable assignment retries", async t => {
+test("partition grace starts at the last peer receipt and dead-letters refused assignment retries", async t => {
   let reads = 0;
   const f = await electionNode(t, "b", 3, { leader: true, gh: args => { if (args[0] === "api") return apiResponse(args); reads++; return "[]"; }, git: () => "" });
   writeState(f.root, "peers", { c: { leader: false, term: 1, time: now } });
@@ -1094,7 +1142,8 @@ test("partition grace starts at the last peer receipt and pauses durable assignm
   f.time(now + 120_000); await f.tick();
   assert.equal(reads, 0);
   assert.equal(f.sent.filter(m => m.kind === "assign").length, 0);
-  assert.deepEqual(readState(f.root, "outbox"), [pending]);
+  assert.deepEqual(readState(f.root, "outbox"), []);
+  assert.deepEqual(readState(f.root, "dead"), [{ ...pending, reason: "not leader" }]);
 });
 
 test("serve follows confirmation in node.json on its next tick", async t => {
