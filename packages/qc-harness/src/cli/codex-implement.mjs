@@ -423,11 +423,18 @@ function completeReview(settings, started, originalStamp, message, say, metrics)
     if (!ledger) throw new Error("cannot find the worktree ledger");
     appendRecord(ledger, { type: "verdict", kind: "codex", verdict, sha, branch });
     let inFindings = false;
+    let findingsDepth = 0;
     let findings = 0;
     for (const line of text.split(/\r?\n/)) {
-      const heading = /^#{1,2}[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
-      if (heading) inFindings = /^Findings$/i.test(heading[1]);
-      else if (inFindings && /^[ \t]*[-*][ \t]+\[P[0-3]\][ \t]+\S/.test(line)) findings += 1;
+      const heading = /^[ \t]*(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
+      const severityHeading = heading && /^\[P[0-3]\][ \t]+\S/.test(heading[2]);
+      if (heading && !severityHeading) {
+        if (/^Findings$/i.test(heading[2])) {
+          inFindings = true;
+          findingsDepth = heading[1].length;
+        } else if (/^Debt$/i.test(heading[2]) || heading[1].length <= findingsDepth) inFindings = false;
+      }
+      if (inFindings && (severityHeading || /^[ \t]*(?:[-*]|\d+[.)])[ \t]+\[P[0-3]\][ \t]+\S/.test(line))) findings += 1;
     }
     metrics.review = { verdict, findings };
     return finish(say, `${message}; recorded ${verdict} on ${sha}`, 0);

@@ -2439,6 +2439,19 @@ test("fresh review verdict and finding count match accepted report", async (t) =
   }
 });
 
+for (const prefix of ["-", "*", "1.", "2)", "#", "##", "###", "####", "#####", "######"]) {
+  test(`review findings count ${prefix} entries and exclude Debt`, async (t) => {
+    const f = reviewFixture(t);
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+      writeFileSync(f.report, `# Review\n## Findings\n${prefix} [P1] wrong result\n${prefix} [P4] invalid severity\n${prefix} no severity\n## Debt\n${prefix} [P2] excluded\nVERDICT: CHANGES_REQUIRED\n`);
+      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), 0);
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
+    assert.equal(row.verdict, "CHANGES_REQUIRED");
+    assert.equal(row.findings, 1);
+  });
+}
+
 test("stale or invalid review has no metrics", async (t) => {
   for (const mode of ["missing", "stale", "invalid"]) {
     const f = reviewFixture(t);
