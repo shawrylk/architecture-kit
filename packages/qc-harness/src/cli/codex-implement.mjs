@@ -11,6 +11,7 @@ import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { load } from "../config.mjs";
 import { checkDiffShape } from "./diff-shape.mjs";
+import { testsCovering } from "./check-commands.mjs";
 import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, parsePollMinutes, waitForCodexReset } from "./codex-reset.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
@@ -579,7 +580,20 @@ async function runJob(argv, {
     let prompt;
     try {
       prompt = promptFor(settings, codex);
-      contract ??= diffContract(readFileSync(settings.brief, "utf8"));
+      if (!contract) {
+        contract = diffContract(readFileSync(settings.brief, "utf8"));
+        const coverage = await testsCovering(settings.worktree, contract.paths).catch(() => new Map());
+        const named = contract.paths.map((file) => path.posix.normalize(file.replace(/\\/g, "/")).replace(/\/$/, ""));
+        const missing = new Set();
+        for (const [file, tests] of coverage) for (const test of tests) {
+          if (named.some((entry) => entry === "." || test === entry || test.startsWith(`${entry}/`)) || missing.has(test)) continue;
+          if (missing.size < 10) say(`qc codex-implement: warning: ${test} covers ${file}; Paths: does not name it`);
+          missing.add(test);
+        }
+        if (missing.size > 10) say(`qc codex-implement: warning: ${missing.size - 10} more covering tests; Paths: does not name them`);
+        if (codex.pathsTests === "add") contract.paths.push(...missing);
+      }
+      if (codex.pathsTests === "add") prompt += `\n\nPaths: ${contract.paths.map((file) => `\`${file}\``).join(", ")}\n`;
     } catch (error) {
       metrics.refusal = error.refusal ?? "other";
       return finish(say, `cannot prepare the brief: ${error.message}`, 1);
