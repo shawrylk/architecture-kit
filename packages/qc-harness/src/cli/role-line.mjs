@@ -41,7 +41,7 @@ export function parseMarker(text, { secret, nodes = [], ownAuthor } = {}) {
   if (!prefix.startsWith(heading) || split < 0 || !prefix.endsWith("\n\n")
     || /[\r\n]|-->/.test(prefix.slice(heading.length, split))) return refuse("invalid-marker");
   const body = prefix.slice(split + 2, -2);
-  if (body.includes("-->")) return refuse("invalid-marker");
+  if (/^<!-- qc:v1\b/m.test(body)) return refuse("invalid-marker");
   const expected = Buffer.from(signature(secret, { role, node, kind, ref }, body), "hex");
   const actual = Buffer.from(sig, "hex");
   if (sig.length !== 64 || actual.length !== expected.length || !timingSafeEqual(actual, expected)) return refuse("invalid-signature");

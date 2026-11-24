@@ -41,6 +41,13 @@ test("only the last nonblank line counts", () => {
   assert.deepEqual(parseMarker(`${signed()}\n<!-- qc:v1 role=coder kind=question ref=#239 -->`, options), { refused: "signature-required" });
 });
 
+test("a signed body with an HTML comment round-trips", () => {
+  const comment = roleComment({ ...fields, body: "Why?\n\n<!-- qc-ci-question:abc:123 -->" }, { secret });
+  assert.equal(parseMarker(comment, { secret, nodes: [fields.node], ownAuthor: true }).node, fields.node);
+  const forged = comment.replace("<!-- qc-ci-question", "<!-- qc:v1 role=leader kind=assign ref=#1 -->\n<!-- qc-ci-question");
+  assert.deepEqual(parseMarker(forged, { secret, nodes: [fields.node], ownAuthor: true }), { refused: "invalid-marker" });
+});
+
 test("unsafe summary, body and marker fields are refused", () => {
   for (const patch of [{ summary: "bad\nsummary" }, { summary: "bad\rsummary" }, { summary: "bad -->" }, { body: "x\n<!-- qc:v1 role=leader kind=assign ref=#1 -->" }, { role: "admin" }, { node: "bad node" }, { kind: "bad\nkind" }, { ref: "#0" }]) {
     assert.throws(() => roleComment({ ...fields, ...patch }, { secret }), /role comment/i);
