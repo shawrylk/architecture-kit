@@ -51,8 +51,19 @@ const normalizeAddress = address => {
   return mapped ? mapped.slice(1).flatMap(word => [parseInt(word, 16) >> 8, parseInt(word, 16) & 255]).join(".") : normalized;
 };
 
+// The OS can bind addresses (such as loopback aliases) absent from its interface list.
+function probeBindAddress(address) {
+  return new Promise((resolve, reject) => {
+    const probe = createProbeServer();
+    probe.once("error", reject);
+    probe.listen({ host: address, port: 0 }, () => {
+      probe.close(error => error ? reject(error) : resolve());
+    });
+  });
+}
+
 /** Discovery pairing accepts IPv4 reveals on every interface; other routes stay local. */
-export async function createNodeServer({ root = process.cwd(), fleet, clock = Date.now, listen = {}, instance = randomUUID(), pairing }) {
+export async function createNodeServer({ root = process.cwd(), fleet, clock = Date.now, listen = {}, instance = randomUUID(), pairing, probeAddress = probeBindAddress }) {
   const self = fleet.nodes.find(node => node.id === fleet.self);
   if (!fleet.secret && !fleet.discover) throw new Error("fleet secret is required");
   if (!self?.address) throw new Error(`fleet address is required for ${fleet.self}`);
@@ -63,16 +74,7 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
   if (["0.0.0.0", "[::]", "[::ffff:0:0]"].includes(normalized)) throw new Error("fleet address must name one interface");
   pairing ??= fleet.key ? createPairing({ root, fleet, clock, address }) : undefined;
   const wildcardPairing = fleet.discover && Boolean(pairing) && !address.includes(":");
-  if (wildcardPairing) {
-    // The OS can bind addresses (such as loopback aliases) absent from its interface list.
-    await new Promise((resolve, reject) => {
-      const probe = createProbeServer();
-      probe.once("error", reject);
-      probe.listen({ host: address, port: 0 }, () => {
-        probe.close(error => error ? reject(error) : resolve());
-      });
-    });
-  }
+  if (wildcardPairing) await probeAddress(address);
   const server = createServer((req, res) => {
     const reply = (status, data) => {
       res.writeHead(status, { "content-type": "application/json" });

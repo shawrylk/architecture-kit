@@ -239,28 +239,46 @@ test("no-secret discovery broadcasts joins and forwards only small joins to pair
 });
 
 test("wildcard pairing starts with a bindable loopback address absent from local interfaces", async t => {
-  const { createNodeServer, nodeFetch } = await import("./fleet-node.mjs");
+  const { createNodeServer } = await import("./fleet-node.mjs");
   t.mock.method(os, "networkInterfaces", () => ({ lo: [{ family: "IPv4", address: "127.0.0.1", internal: true }] }));
   const settings = { ...fleet, nodes: [{ id: "a", address: "127.0.0.2", port: 8080 }] };
-  const server = await createNodeServer({ root: fixture(t), fleet: settings, pairing: { receivePair() {} }, listen: { port: 0 } });
+  const probed = [];
+  const server = await createNodeServer({ root: fixture(t), fleet: settings, pairing: { receivePair() {} }, listen: { port: 0 },
+    probeAddress: async address => { probed.push(address); } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   assert.equal(server.address().address, "0.0.0.0");
   assert.equal(server.configuredAddress, "127.0.0.2");
-  assert.equal((await nodeFetch(`http://127.0.0.2:${server.address().port}/health`)).status, 200);
+  assert.deepEqual(probed, ["127.0.0.2"]);
 });
 
 test("wildcard pairing refuses a configured IPv4 address that the OS cannot bind", async t => {
   const { createNodeServer } = await import("./fleet-node.mjs");
   t.mock.method(os, "networkInterfaces", () => ({ lo: [{ family: "IPv4", address: "127.0.0.1", internal: true }] }));
   const settings = { ...fleet, nodes: [{ id: "a", address: "192.0.2.123", port: 8080 }] };
+  const probed = [];
   await assert.rejects(async () => {
-    const server = await createNodeServer({ root: fixture(t), fleet: settings, pairing: { receivePair() {} }, listen: { port: 0 } });
+    const server = await createNodeServer({ root: fixture(t), fleet: settings, pairing: { receivePair() {} }, listen: { port: 0 },
+      probeAddress: async address => {
+        probed.push(address);
+        throw Object.assign(new Error(`cannot bind ${address}`), { code: "EADDRNOTAVAIL" });
+      } });
     t.after(() => new Promise(resolve => server.close(resolve)));
   }, error => {
     assert.equal(error.code, "EADDRNOTAVAIL");
     assert.match(error.message, /192\.0\.2\.123/);
     return true;
   });
+  assert.deepEqual(probed, ["192.0.2.123"]);
+});
+
+test("wildcard pairing uses the real bind probe on the standard loopback address", async t => {
+  const { createNodeServer, nodeFetch } = await import("./fleet-node.mjs");
+  const settings = { ...fleet, nodes: [{ id: "a", address: "127.0.0.1", port: 8080 }] };
+  const server = await createNodeServer({ root: fixture(t), fleet: settings, pairing: { receivePair() {} }, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  assert.equal(server.address().address, "0.0.0.0");
+  assert.equal(server.configuredAddress, "127.0.0.1");
+  assert.equal((await nodeFetch(`http://127.0.0.1:${server.address().port}/health`)).status, 200);
 });
 
 test("join on the second subnet is forwarded with its actual sender", async t => {
