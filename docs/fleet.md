@@ -23,6 +23,8 @@ It shows up to 14 nodes and reports any omitted nodes in its final line, staying
 other systems use `$XDG_CONFIG_HOME/qc/fleet.json` or `~/.config/qc/fleet.json`.
 The file contains `{ "self": "a1", "nodes": [{ "id": "a1", "weight": 1, "maxSize": "L", "active": true }] }`.
 `init` creates parent folders and uses mode 0600 on POSIX; an existing file needs `--force` to replace it.
+
+Optional `secret` is shared hex text of at least 64 characters; `init --secret <hex>` reuses it, otherwise init generates 32 random bytes and prints a line to pass the same secret on the other PCs. Optional `leaders` lists node IDs in preference order (default: node order). Each node may have `address` (a host other than `0.0.0.0` or `::`) and `port` (1024–65535); set these with `--addresses a1@host:8080,b2@[::1]:8081`. Old files remain valid. Signed messages are data; local state stays in `<git common dir>/qc/fleet/`.
 Without a file, fleet mode is off. `--repo` defaults to origin; supply it when outside a checkout.
 Only a local matching checkout supplies `merge.holdLabel` from its root `qc.config.json`.
 

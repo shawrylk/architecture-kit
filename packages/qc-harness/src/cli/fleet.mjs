@@ -1,6 +1,7 @@
 // A static fleet shares node settings across PCs; only the local self id differs.
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { load } from "../config.mjs";
@@ -9,7 +10,13 @@ import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>]";
+const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>]";
+
+function validAddress(address) {
+  if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
+  if (isIP(address) === 6) return new URL(`http://[${address}]/`).hostname !== "[::]";
+  return address.length <= 253 && /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.?$/i.test(address);
+}
 
 /** The fleet settings live on this PC, outside the repository. */
 export function fleetPath(env = process.env, platform = process.platform, home = os.homedir()) {
@@ -34,10 +41,17 @@ export function validateFleet(value) {
     if (!SIZES.includes(maxSize)) throw new Error(`${field}.maxSize must be S, M or L`);
     const active = node.active === undefined ? true : node.active;
     if (typeof active !== "boolean") throw new Error(`${field}.active must be a boolean`);
-    return { id: node.id, weight: node.weight, maxSize, active };
+    if (node.address !== undefined && !validAddress(node.address)) throw new Error(`${field}.address must be a host other than 0.0.0.0 or ::`);
+    if (node.port !== undefined && (!Number.isInteger(node.port) || node.port < 1024 || node.port > 65535)) throw new Error(`${field}.port must be an integer from 1024 to 65535`);
+    return { id: node.id, weight: node.weight, maxSize, active,
+      ...(node.address === undefined ? {} : { address: node.address }),
+      ...(node.port === undefined ? {} : { port: node.port }) };
   });
   if (typeof value.self !== "string" || !seen.has(value.self)) throw new Error("self must name a node");
-  return { self: value.self, nodes };
+  if (value.secret !== undefined && (typeof value.secret !== "string" || value.secret.length < 64 || /[^0-9a-f]/i.test(value.secret))) throw new Error("secret must be hex with at least 64 characters");
+  const leaders = value.leaders === undefined ? nodes.map(node => node.id) : value.leaders;
+  if (!Array.isArray(leaders) || !leaders.length || leaders.some(id => !seen.has(id)) || new Set(leaders).size !== leaders.length) throw new Error("leaders must be a nonempty list of unique node IDs");
+  return { self: value.self, nodes, leaders: [...leaders], ...(value.secret === undefined ? {} : { secret: value.secret }) };
 }
 
 /** Weighted rendezvous hashing keeps other owners stable when a PC goes inactive. */
@@ -98,7 +112,7 @@ export function freeIssues(repo, cwd, { gh = runGh, git = gitOut, holdLabel = "h
 
 function parseArgs(argv) {
   const [verb, ...rest] = argv;
-  const allowed = verb === "init" ? ["--self", "--nodes", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : [];
+  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : [];
   if (!allowed.length) throw new Error(USAGE);
   const options = { verb };
   for (let i = 0; i < rest.length; i++) {
@@ -122,7 +136,20 @@ function initialize(options, file, say) {
     if (extra.length) throw new Error("--nodes needs id:weight:size entries");
     return { id, weight: Number(weight), maxSize };
   });
-  const fleet = validateFleet({ self: options["--self"], nodes });
+  if (options["--addresses"]) {
+    const addressed = new Set();
+    for (const entry of options["--addresses"].split(",")) {
+      const match = /^([a-z0-9-]+)@(?:\[([^\]]+)\]|([^@:\s]+)):(\d+)$/.exec(entry);
+      if (!match) throw new Error("--addresses needs id@host:port entries (bracket IPv6 hosts)");
+      const [, id, ipv6, host, port] = match;
+      const node = nodes.find(node => node.id === id);
+      if (!node || addressed.has(id)) throw new Error("--addresses must name each known node at most once");
+      addressed.add(id);
+      Object.assign(node, { address: ipv6 ?? host, port: Number(port) });
+    }
+  }
+  const secret = options["--secret"] ?? randomBytes(32).toString("hex");
+  const fleet = validateFleet({ self: options["--self"], nodes, secret });
   mkdirSync(path.dirname(file), { recursive: true });
   let fd;
   try {
@@ -136,6 +163,7 @@ function initialize(options, file, say) {
     if (fd !== undefined) closeSync(fd);
   }
   say(`fleet initialized: ${file}`);
+  if (!options["--secret"]) say(`pass the same secret on the other PCs: --secret ${secret}`);
   return 0;
 }
 
