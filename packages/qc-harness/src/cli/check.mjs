@@ -170,7 +170,7 @@ export async function runAffectedCheck(config, selection = {}, options = {}) {
   const git = options.git ?? ((...words) => gitText(config.root, ...words));
   const os = hostOS(options.platform);
   try {
-    if (!["linux", "windows"].includes(os)) throw new Error("unsupported platform");
+    if (!["linux", "windows", "darwin"].includes(os)) throw new Error("unsupported platform");
     const head = git("rev-parse", "HEAD"), clean = cleanHead(git);
     if (!await checkGates(config, options, write)) return 1;
     const code = await (options.commands ?? runCheckCommands)(config, { ...selection, affected: true });
