@@ -182,7 +182,7 @@ export function createPairing({ root, fleet, address, leader = () => false, cloc
         if (fleet.secret || !validId(body.leader) || body.leader === fleet.self) return false;
         syncAttempt(state, privateState, now);
         if (body.kind === "offer") {
-          if (!fieldsOnly(body, ["kind", "leader", "pub", "nonce", "port", "time"]) || !validPort(body.port) || !Number.isFinite(body.time) || Math.abs(now - body.time) > 60_000) return false;
+          if (!fieldsOnly(body, ["kind", "leader", "commit", "pub", "nonce", "port", "time"]) || body.commit !== attempt.commit || !validPort(body.port) || !Number.isFinite(body.time) || Math.abs(now - body.time) > 60_000) return false;
           state.offers = prune(state.offers, now);
           if (Object.hasOwn(state.offers, body.leader) || Object.keys(state.offers).length >= 20) return false;
           const digest = pairDigest(body.pub, fleet.key.public, body.nonce, attempt.r);
@@ -247,7 +247,7 @@ export function createPairing({ root, fleet, address, leader = () => false, cloc
         write(root, "pairing-private", privateState);
       }
       const bodies = [];
-      if (offersDue) bodies.push({ kind: "offer", leader: fleet.self, pub: fleet.key.public, nonce: binding.lr, port: fleet.nodes.find(node => node.id === fleet.self)?.port ?? 8080, time: now });
+      if (offersDue) bodies.push({ kind: "offer", leader: fleet.self, commit: binding.commit, pub: fleet.key.public, nonce: binding.lr, port: fleet.nodes.find(node => node.id === fleet.self)?.port ?? 8080, time: now });
       if (binding.digest && binding.pub && binding.code === row.code && row.allowed === true && grantsDue && Number.isFinite(binding.allowedAt) && now - binding.allowedAt <= TTL) {
         nextGrant = now + 15_000;
         const nonce = randomBytes(12), cipher = createCipheriv("aes-256-gcm", sharedKey(fleet.key, binding.pub, Buffer.from(binding.digest, "hex")), nonce);

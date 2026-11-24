@@ -594,7 +594,7 @@ test("joiner deny ends its attempt while allow and a joined follower's deny stay
   const fleet = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
   const joining = createPairing({ root: f.cwd, fleet, address, clock: () => now });
   const beacon = joining.beacon();
-  assert.equal(joining.receivePair({ kind: "offer", leader: "leader", pub: createKey().public,
+  assert.equal(joining.receivePair({ kind: "offer", leader: "leader", commit: beacon.commit, pub: createKey().public,
     nonce: "11".repeat(16), port: 8080, time: now }, address), true);
   const code = readPairing(f.cwd).offers.leader.code;
   assert.equal(f.run(["allow", code], { node: { clock: () => now } }).code, 1);

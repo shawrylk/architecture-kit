@@ -64,6 +64,7 @@ test("beacon commits once per attempt and reveals only after an offer; wrong rev
   assert.equal(p.lead.receivePair({ kind: "reveal", id: "joiner", pub: p.b.key.public, nonce: "00".repeat(16) }, "192.168.1.20"), false);
   assert.equal(readPairing(p.root).requests.joiner.code, undefined);
   await p.lead.tick();
+  assert.equal(p.sent[0].commit, beacon.commit);
   assert.match(p.sent[0].nonce, /^[0-9a-f]{32}$/);
   assert.equal(p.join.receivePair(p.sent[0], "192.168.1.10"), true);
   assert.equal(p.reveals.length, 1);
@@ -100,7 +101,12 @@ test("expiry rotates the attempt's random value and commitment before any new re
   assert.notEqual(next.commit, beacon.commit);
   assert.equal(p.join.beacon().commit, next.commit);
   assert.deepEqual(readPairing(p.other).offers, {});
-  assert.equal(p.join.receivePair({ ...oldOffer, leader: "other-leader", time: now + 600_001 }, "192.168.1.30"), true);
+  assert.equal(p.join.receivePair({ ...oldOffer, time: now + 600_001 }, "192.168.1.10"), false);
+  assert.deepEqual(readPairing(p.other).offers, {});
+  assert.equal(p.reveals.length, 1);
+  assert.equal(p.lead.receiveJoin(next, "192.168.1.20"), true);
+  await p.lead.tick();
+  assert.equal(p.join.receivePair(p.sent.at(-1), "192.168.1.10"), true);
   assert.equal(p.reveals.length, 2);
   assert.notEqual(p.reveals[1].nonce, oldReveal.nonce);
   assert.equal(pairCommit(p.reveals[1].pub, p.reveals[1].nonce), next.commit);
@@ -123,10 +129,39 @@ test("joiner deny drops its offer and rotates the attempt without revealing old 
   assert.equal(p.reveals.length, 1);
   const next = p.join.beacon();
   assert.notEqual(next.commit, beacon.commit);
-  assert.equal(p.join.receivePair({ ...p.sent[0], leader: "other-leader" }, "192.168.1.30"), true);
+  assert.equal(p.join.receivePair({ ...p.sent[0], leader: "other-leader", commit: next.commit }, "192.168.1.30"), true);
   assert.notEqual(p.reveals[1].nonce, oldReveal.nonce);
   assert.equal(pairCommit(p.reveals[1].pub, p.reveals[1].nonce), next.commit);
   assert.equal(readPairing(p.other).offers["other-leader"].accepted, false);
+});
+
+test("retry with the same Leader after joiner deny waits for the old request to expire and pairs with matching codes", async t => {
+  const p = peers(t), code = await offer(p), oldOffer = p.sent[0];
+  p.advance(15_000);
+  pairingDecision(p.other, "deny", code, now + 15_000, { joiner: true });
+  const next = p.join.beacon();
+  assert.notEqual(next.commit, oldOffer.commit);
+  assert.equal(p.lead.receiveJoin(next, "192.168.1.20"), false);
+  await p.lead.tick();
+  const retry = p.sent.at(-1);
+  assert.equal(retry.commit, oldOffer.commit);
+  assert.equal(p.join.receivePair(retry, "192.168.1.10"), false);
+  assert.deepEqual(readPairing(p.other).offers, {});
+  assert.equal(p.reveals.length, 1);
+  assert.equal(readPairing(p.root).requests.joiner.code, code);
+  p.advance(585_001);
+  assert.equal(p.join.beacon().commit, next.commit);
+  const nextCode = await offer(p);
+  assert.equal(p.sent.at(-1).commit, next.commit);
+  assert.equal(readPairing(p.other).offers.leader.code, nextCode);
+  pairingDecision(p.root, "allow", nextCode, now + 600_001);
+  pairingDecision(p.other, "accept", nextCode, now + 600_001);
+  await p.lead.tick();
+  const grant = p.sent.find(body => body.kind === "grant");
+  assert.ok(grant);
+  assert.equal(p.join.receivePair(grant, "192.168.1.10"), true);
+  await p.join.tick();
+  assert.equal(p.saved, secret);
 });
 
 test("restart retains the active Leader binding and observes another process denying it", async t => {
@@ -143,18 +178,32 @@ test("restart retains the active Leader binding and observes another process den
   const next = restarted.beacon();
   assert.notEqual(next.commit, beacon.commit);
   assert.equal(p.join.beacon().commit, next.commit);
-  assert.equal(restarted.receivePair(p.sent[0], "192.168.1.10"), true);
+  assert.equal(restarted.receivePair(p.sent[0], "192.168.1.10"), false);
+  assert.equal(reveals.length, 1);
+  assert.equal(restarted.receivePair({ ...p.sent[0], commit: next.commit }, "192.168.1.10"), true);
   assert.notEqual(reveals[1].nonce, p.reveals[0].nonce);
   assert.equal(pairCommit(reveals[1].pub, reveals[1].nonce), next.commit);
 });
 
 test("bad public keys reach parsing before an offer is bound", t => {
   const p = peers(t);
-  const body = { kind: "offer", leader: "unused-leader", pub: "bad", nonce: "11".repeat(16), port: 8080, time: now };
+  const body = { kind: "offer", leader: "unused-leader", commit: p.join.beacon().commit, pub: "bad", nonce: "11".repeat(16), port: 8080, time: now };
   assert.equal(p.join.receivePair(body, "192.168.1.10"), false);
   assert.deepEqual(readPairing(p.other).offers, {});
   assert.equal(p.reveals.length, 0);
   assert.equal(p.join.receivePair({ ...body, pub: p.a.key.public }, "192.168.1.10"), true);
+  assert.equal(p.reveals.length, 1);
+});
+
+test("offers without the active commitment cannot bind any Leader", t => {
+  const p = peers(t), beacon = p.join.beacon();
+  const body = { kind: "offer", leader: "leader", pub: p.a.key.public, nonce: "11".repeat(16), port: 8080, time: now };
+  for (const commit of [undefined, null, "bad", "00".repeat(32)]) {
+    assert.equal(p.join.receivePair({ ...body, commit }, "192.168.1.10"), false);
+    assert.deepEqual(readPairing(p.other).offers, {});
+    assert.equal(p.reveals.length, 0);
+  }
+  assert.equal(p.join.receivePair({ ...body, commit: beacon.commit }, "192.168.1.10"), true);
   assert.equal(p.reveals.length, 1);
 });
 

@@ -1384,8 +1384,9 @@ test("status prints recent peer load with null markers and overload reasons", as
 });
 
 test("join mode exposes health and pair only, enforces 2 KB and sender validation", async t => {
-  const { createKey } = await import("./fleet-pair.mjs");
+  const { createKey, createPairing } = await import("./fleet-pair.mjs");
   const root = fixture(t), joining = { ...fleet, secret: undefined, discover: true, key: createKey() };
+  const beacon = createPairing({ root, fleet: joining, clock: () => now }).beacon();
   const server = await createNodeServer({ root, fleet: joining, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -1393,7 +1394,9 @@ test("join mode exposes health and pair only, enforces 2 KB and sender validatio
   assert.equal((await fetch(`${base}/message`, { method: "POST", body: JSON.stringify(message()) })).status, 404);
   assert.equal((await fetch(`${base}/pair`, { method: "GET" })).status, 404);
   assert.equal((await fetch(`${base}/pair`, { method: "POST", body: "x".repeat(2049) })).status, 413);
-  const body = { kind: "offer", leader: "leader", pub: createKey().public, nonce: "11".repeat(16), port: 8080, time: now };
+  const body = { kind: "offer", leader: "leader", commit: beacon.commit, pub: createKey().public, nonce: "11".repeat(16), port: 8080, time: now };
+  assert.equal((await fetch(`${base}/pair`, { method: "POST", body: JSON.stringify({ ...body, commit: undefined }) })).status, 400);
+  assert.equal((await fetch(`${base}/pair`, { method: "POST", body: JSON.stringify({ ...body, commit: "00".repeat(32) }) })).status, 400);
   assert.equal((await fetch(`${base}/pair`, { method: "POST", body: JSON.stringify(body) })).status, 202);
   assert.equal((await fetch(`${base}/pair`, { method: "POST", body: JSON.stringify({ ...body, address: "192.168.1.1" }) })).status, 400);
 });
