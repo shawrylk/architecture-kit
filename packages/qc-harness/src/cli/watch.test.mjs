@@ -450,3 +450,96 @@ test("watch logs only final CI events with head, target, result and elapsed minu
   assert.equal((await watch(["--codex", wrapper], { cwd: dir })).code, 0);
   assert.equal(readFileSync(file, "utf8").trim().split("\n").length, 2);
 });
+
+test("fleet watch polls every five seconds, reports Leader requests once, and persists IDs", async t => {
+  const { readState, writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-fleet-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  writeState(root, "node", { leader: true });
+  writeState(root, "queue", [{ id: "p", kind: "plan" }, { id: "q", kind: "question" }, { id: "x", kind: "pushed" }]);
+  const lines = [], sleeps = [];
+  const deps = { cwd: root, say: line => lines.push(line), gh: () => { throw new Error("unexpected gh"); },
+    sleep: async ms => { sleeps.push(ms); writeState(root, "queue", [{ id: "p", kind: "plan" }, { id: "fresh", kind: "question" }]); } };
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, ["EVENT fleet:plan p", "EVENT fleet:question q"]);
+  assert.deepEqual(Object.keys(readState(root, "watched")).sort(), ["p", "q"]);
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(sleeps, [5000]);
+  assert.deepEqual(lines, ["EVENT fleet:question fresh"]);
+});
+
+test("follower fleet watch reports inbox approvals and answers, ignoring the request queue", async t => {
+  const { writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-follower-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  writeState(root, "queue", [{ id: "ignored", kind: "plan" }]);
+  writeState(root, "plans", { "o/r#7": { id: "approval", kind: "approve" } });
+  writeState(root, "answers", { q1: { id: "answer", kind: "answer" } });
+  writeState(root, "inbox", [{ id: "approval", kind: "approve" }, { id: "answer", kind: "answer" }]);
+  const lines = [];
+  assert.equal(await runWatch(["--fleet"], { cwd: root, say: line => lines.push(line) }), 0);
+  assert.deepEqual(lines, ["EVENT fleet:approve approval", "EVENT fleet:answer answer"]);
+});
+
+test("regression: follower watch keeps two approvals and answers accepted between polls", async t => {
+  const { readState, writeState } = await import("./fleet-state.mjs");
+  const { receiveTalk } = await import("./fleet-talk.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-inbox-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  writeState(root, "peers", { b: { leader: true } });
+  writeState(root, "assignments", { "o/r#7": { node: "a", epoch: 3 } });
+  const time = new Date().toISOString(), fleet = { self: "a" }, events = [];
+  for (const id of ["first", "second"]) {
+    const messages = [
+      { id: `approve-${id}`, kind: "approve", body: { issue: 7, epoch: 3, plan: "p", approved: id === "second", note: "Review" } },
+      { id: `answer-${id}`, kind: "answer", body: { issue: 7, epoch: 3, question: "q", text: id } },
+    ].map(message => ({ ...message, repo: "o/r", from: "b", time }));
+    writeState(root, "queue", messages);
+    receiveTalk(root, fleet, false, Date.parse(time));
+    events.push(...messages.map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
+  }
+  const lines = [];
+  const deps = { cwd: root, say: line => lines.push(line) };
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, events.map(({ id, kind }) => `EVENT fleet:${kind} ${id}`));
+  assert.deepEqual(readState(root, "inbox"), events);
+  assert.equal(readState(root, "plans")["o/r#7"].id, "approve-second");
+  assert.equal(readState(root, "answers").q.id, "answer-second");
+  writeState(root, "inbox", [...events, { id: "fresh", kind: "approve", repo: "o/r", issue: 7, time }]);
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, ["EVENT fleet:approve fresh"]);
+  writeState(root, "inbox", Array.from({ length: 200 }, (_, i) => ({ ...events[0], id: `old-${i}` })));
+  writeState(root, "queue", [{ ...readState(root, "plans")["o/r#7"], id: "newest" }]);
+  receiveTalk(root, fleet, false, Date.parse(time));
+  const inbox = readState(root, "inbox");
+  assert.equal(inbox.length, 201);
+  assert.equal(inbox[0].id, "old-0");
+  assert.equal(inbox.at(-1).id, "newest");
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, [...Array.from({ length: 200 }, (_, i) => `EVENT fleet:approve old-${i}`), "EVENT fleet:approve newest"]);
+  lines.length = 0;
+  const clock = fakeClock();
+  assert.equal(await runWatch(["--fleet", "--max", "1"], { ...deps, ...clock }), 4);
+  assert.deepEqual(lines, ["EVENT timeout"]);
+
+  // Interleave an unprinted entry with printed entries to verify pruning uses IDs.
+  const unprinted = { ...events[0], id: "unprinted" };
+  writeState(root, "inbox", [inbox[0], unprinted, ...inbox.slice(1)]);
+  writeState(root, "queue", [{ ...readState(root, "plans")["o/r#7"], id: "next" }]);
+  receiveTalk(root, fleet, false, Date.parse(time));
+  assert.deepEqual(readState(root, "inbox").map(({ id }) => id), ["unprinted", ...inbox.slice(1).map(({ id }) => id), "next"]);
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, ["EVENT fleet:approve unprinted", "EVENT fleet:approve next"]);
+
+  // A later reply drops the two oldest of the now 202 printed entries.
+  writeState(root, "queue", [{ ...readState(root, "plans")["o/r#7"], id: "last" }]);
+  receiveTalk(root, fleet, false, Date.parse(time));
+  assert.deepEqual(readState(root, "inbox").map(({ id }) => id), [...inbox.slice(2).map(({ id }) => id), "next", "last"]);
+});

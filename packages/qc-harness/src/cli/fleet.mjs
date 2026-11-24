@@ -9,11 +9,12 @@ import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
+import { TALK_VERBS, parseTalkArgs, runTalk } from "./fleet-talk.mjs";
 import { readState } from "./fleet-state.mjs";
 import { nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | start [--leader] | serve [--leader] | stop";
+const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -131,6 +132,7 @@ export function freeIssues(repo, cwd, { gh = runGh, git = gitOut, holdLabel = "h
 
 function parseArgs(argv) {
   const [verb, ...rest] = argv;
+  if (TALK_VERBS.includes(verb)) return parseTalkArgs(verb, rest);
   const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "stop" ? [] : null;
   if (!allowed) throw new Error(USAGE);
   const options = { verb };
@@ -206,11 +208,19 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     const localRepo = origin(cwd);
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
+    if (TALK_VERBS.includes(options.verb)) {
+      return runTalk(options, { root: cwd, fleet, repo, gh, say, node }).catch(error => { warn(error.message); return 1; });
+    }
     const checkout = checkoutRootOf(cwd);
     if (options.verb === "next" && checkout) {
       const assigned = readOpenAssignments({ root: checkout, fleet, repo, gh });
       if (assigned.length) {
-        for (const row of assigned) say(`#${row.issue} epoch=${row.epoch}`);
+        const plans = readState(checkout, "plans");
+        for (const row of assigned) {
+          const plan = plans[`${repo}#${row.issue}`]?.body;
+          const decision = plan?.epoch === row.epoch ? plan.approved ? " plan approved" : " plan needs changes" : "";
+          say(`#${row.issue} epoch=${row.epoch}${decision}`);
+        }
         return 0;
       }
     }

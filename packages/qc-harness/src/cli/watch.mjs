@@ -1,6 +1,7 @@
 // `qc watch`: block until the first event among the pull requests, Codex jobs and workflow runs it watches.
 // The wait is a shell command, so it costs no model tokens, and its exit is the event.
 
+import { readState, writeState } from "./fleet-state.mjs";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import path from "node:path";
 import { parseApiList, runGhResult } from "./gh-run.mjs";
@@ -21,7 +22,7 @@ const SHA_SUFFIX = /^(.+)@([0-9a-f]{7,40})$/i;
 export const EXIT = { PASSED: 0, BAD_INPUT: 1, TIMEOUT: 4, FAILED: 5, QUEUED: 6 };
 
 const USAGE =
-  "usage: qc watch [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]\n" +
+  "usage: qc watch [--fleet] [--pr <n>]... [--codex <wrapper.log>]... [--run <workflow>@<branch>[@<sha>]]... [--max <minutes>] [--repo <owner/name>] [--interval <seconds>]\n" +
   "exit 0 the item finished well, 1 bad input, 4 the bound passed, 5 a check or run failed, 6 a job stayed queued past 15 minutes";
 
 const positive = (flag, text) => {
@@ -35,6 +36,12 @@ export function parseWatchArgs(argv) {
   const parsed = { prs: [], codex: [], runs: [], repo: undefined, maxMinutes: DEFAULT_MAX_MINUTES, intervalSeconds: DEFAULT_INTERVAL_SECONDS };
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
+    if (flag === "--fleet") {
+      if (parsed.fleet) throw new Error("duplicate argument --fleet");
+      parsed.fleet = true;
+      index--;
+      continue;
+    }
     const value = argv[index + 1];
     if (!["--pr", "--codex", "--run", "--max", "--repo", "--interval"].includes(flag)) throw new Error(`unknown argument ${flag}`);
     if (value === undefined) throw new Error(`${flag} needs a value`);
@@ -50,7 +57,8 @@ export function parseWatchArgs(argv) {
     else if (flag === "--interval") parsed.intervalSeconds = positive(flag, value);
     else parsed.repo = value;
   }
-  if (parsed.prs.length + parsed.codex.length + parsed.runs.length === 0) throw new Error("name at least one item: --pr, --codex or --run");
+  if (!parsed.fleet && parsed.prs.length + parsed.codex.length + parsed.runs.length === 0) throw new Error("name at least one item: --pr, --codex or --run");
+  if (parsed.fleet) parsed.intervalSeconds = 5;
   return parsed;
 }
 
@@ -216,6 +224,27 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
   ];
   const deadline = started + parsed.maxMinutes * 60_000;
   for (;;) {
+    if (parsed.fleet) {
+      try {
+        const watched = readState(cwd, "watched");
+        const messages = readState(cwd, "node").leader === true
+          ? readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind))
+          : readState(cwd, "inbox");
+        const fresh = messages.filter(message => !Object.hasOwn(watched, message.id));
+        if (fresh.length) {
+          for (const message of fresh) {
+            if (Object.hasOwn(watched, message.id)) continue;
+            Object.defineProperty(watched, message.id, { value: true, enumerable: true, configurable: true });
+            say(`EVENT fleet:${message.kind} ${message.id}`);
+          }
+          writeState(cwd, "watched", watched);
+          return EXIT.PASSED;
+        }
+      } catch (error) {
+        warn(`watch: ${error.message}`);
+        return EXIT.BAD_INPUT;
+      }
+    }
     for (const { item, poll, target } of watchers) {
       const event = poll();
       if (event) {
