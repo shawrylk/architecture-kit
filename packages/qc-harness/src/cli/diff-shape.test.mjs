@@ -41,6 +41,16 @@ test('diff shape: 401 changed lines → one problem with "split the issue"', (t)
   }
 });
 
+test("diff measurements expose changed lines and configured/default caps", (t) => {
+  const f = fixture(t); f.write("a.mjs", "before\n"); const base = f.commit();
+  f.write("a.mjs", "after\n".repeat(400));
+  for (const cap of [undefined, 399]) {
+    const result = checkDiffShape({ worktree: f.worktree, base, paths: ["a.mjs"], maxDiffLines: cap });
+    assert.equal(result.changedLines, 401);
+    assert.equal(result.maxDiffLines, cap ?? 400);
+  }
+});
+
 function baseMergeFixture(t) {
   const f = fixture(t);
   f.write("package.json", "{}\n"); f.write("owned/a.mjs", "before\n"); const initial = f.commit();

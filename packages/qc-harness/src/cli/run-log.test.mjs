@@ -116,6 +116,28 @@ test("run fields exports the frozen field contract", () => {
   assert.equal(Object.isFrozen(RUN_FIELDS), true);
   assert.deepEqual(RUN_FIELDS, [
     "kind", "time", "branch", "issue", "role", "effort", "exit", "refusal", "inputTokens",
-    "outputTokens", "minutes", "verify", "live", "verdict", "findings", "pr", "run", "head", "result",
+    "outputTokens", "minutes", "verify", "live", "verdict", "findings", "pr", "run", "head", "result", "changedLines", "maxDiffLines",
   ]);
+});
+
+test("new measurement fields validate numbers and enums without fabricating legacy values", (t) => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-run-measurements-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const file = path.join(dir, "runs.jsonl");
+  const legacy = { kind: "codex", time: "2026-11-21T00:00:00Z", role: "fix", exit: 4 };
+  appendRun(file, legacy);
+  const measured = { ...legacy, verdict: "CHANGES_REQUIRED", findings: 2, changedLines: 401, maxDiffLines: 400 };
+  appendRun(file, measured);
+  assert.deepEqual(readRuns(file).runs, [legacy, measured]);
+  for (const field of ["findings", "changedLines", "maxDiffLines", "verdict"]) {
+    const values = field === "verdict" ? ["bad", 1, {}] : [-1, Infinity, NaN, "1", {}];
+    for (const value of values) {
+      appendRun(file, { ...legacy, [field]: value });
+      assert.equal(readRuns(file).runs.at(-1)[field], null);
+      appendFileSync(file, JSON.stringify({ ...legacy, [field]: typeof value === "number" && !Number.isFinite(value) ? -1 : value }) + "\n");
+    }
+  }
+  const loaded = readRuns(file);
+  assert.equal(loaded.skipped, 18);
+  assert.deepEqual(loaded.runs[0], legacy);
 });

@@ -7,8 +7,13 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 export const RUN_ROLES = ["scout", "tests", "implement", "review", "fix"];
 export const RUN_FIELDS = Object.freeze([
   "kind", "time", "branch", "issue", "role", "effort", "exit", "refusal", "inputTokens",
-  "outputTokens", "minutes", "verify", "live", "verdict", "findings", "pr", "run", "head", "result",
+  "outputTokens", "minutes", "verify", "live", "verdict", "findings", "pr", "run", "head", "result", "changedLines", "maxDiffLines",
 ]);
+
+const measurementFields = ["findings", "changedLines", "maxDiffLines", "verdict"];
+const validMeasurement = (field, value) => value == null || (field === "verdict"
+  ? ["APPROVED", "CHANGES_REQUIRED"].includes(value)
+  : Number.isFinite(value) && value >= 0);
 
 /** @returns the local run log shared by this checkout's worktrees, or null outside git. */
 export function runLogFileOf(cwd) {
@@ -21,6 +26,9 @@ export function runLogFileOf(cwd) {
 export function appendRun(file, record) {
   if (!file) throw new Error("cannot find the git common directory");
   record = Object.fromEntries(Object.entries(record).filter(([field]) => RUN_FIELDS.includes(field)));
+  for (const field of measurementFields) {
+    if (Object.hasOwn(record, field) && !validMeasurement(field, record[field])) record[field] = null;
+  }
   const allowedBranch = (value) => value.length <= 100 &&
     /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.exec(value)?.[0] === value;
   for (const field of ["branch", "pr", "run", "head"]) {
@@ -45,7 +53,8 @@ export function appendRun(file, record) {
   appendFileSync(file, `${JSON.stringify(record)}\n`);
 }
 
-const valid = (row) => row && !Array.isArray(row) && Number.isFinite(Date.parse(row.time)) && (
+const valid = (row) => row && !Array.isArray(row) && Number.isFinite(Date.parse(row.time)) &&
+  measurementFields.every(field => validMeasurement(field, row[field])) && (
   row.kind === "codex" ? RUN_ROLES.includes(row.role) && Number.isInteger(row.exit) && row.exit >= 0 &&
     (row.inputTokens === undefined || Number.isFinite(row.inputTokens) && row.inputTokens >= 0) :
   row.kind === "ci" && ["pass", "fail"].includes(row.result) && Number.isFinite(row.minutes) && row.minutes >= 0

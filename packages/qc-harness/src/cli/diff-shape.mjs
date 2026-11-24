@@ -158,5 +158,5 @@ export function checkDiffShape({ worktree, base, baseRef, paths, design = "", ma
   }
   const lines = [...totals.values()].reduce((sum, count) => sum + count, 0);
   if (lines > maxDiffLines) problems.push(`${lines} changed lines exceeds codex.maxDiffLines ${maxDiffLines}; split the issue`);
-  return { problems: [...new Set(problems)] };
+  return { problems: [...new Set(problems)], changedLines: lines, maxDiffLines };
 }

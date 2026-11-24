@@ -2024,7 +2024,7 @@ test("approval is opt-in; Design is fixed and approval paths resolve beside the 
     } }), 0);
   }
   {
-    for (const role of ["implement", "tests"]) {
+    for (const role of ["implement", "fix", "tests"]) {
       const f = setup(t);
       let runs = 0;
       assert.equal(await runCodexImplement([...f.argv, "--role", role, "--max-runs", "2"], { say: quiet, out: quiet, run: async () => {
@@ -2129,7 +2129,7 @@ if (fs.readFileSync(${JSON.stringify(f.progress)}, 'utf8').split('run').length >
 test("implement completion mutates only after green locked runner tests and appends survivors to the brief report", async (t) => {
   const { lockTests } = await import("./locked-tests.mjs");
   let handoff;
-  for (const mode of ["new", "prewritten", "fresh", "fresh-prewritten", "no-lock", "check-fails", "locked-fails"]) {
+  for (const [role, mode] of ["implement", "fix"].flatMap(role => ["new", "prewritten", "fresh", "fresh-prewritten", "no-lock", "check-fails", "locked-fails"].map(mode => [role, mode]))) {
     const f = setup(t);
     const fresh = mode.startsWith("fresh");
     const prewritten = mode.endsWith("prewritten");
@@ -2141,7 +2141,7 @@ test("implement completion mutates only after green locked runner tests and appe
     if (mode !== "no-lock") lockTests(f.worktree, ["acceptance.test.mjs"]);
     if (prewritten) writeFileSync(f.progress, DONE_MARKER);
     const events = [];
-    const exit = await runCodexImplement(f.argv, {
+    const exit = await runCodexImplement([...f.argv, "--role", role], {
       say: quiet, out: quiet,
       run: async () => {
         events.push("codex");
@@ -2277,9 +2277,9 @@ else writeFileSync(${JSON.stringify(path.join(f.dir, "attempt"))}, '1');
   let rows = readFileSync(file, "utf8").trim().split("\n").map(JSON.parse);
   assert.equal(rows.length, 1);
   assert.deepEqual({ ...rows[0], time: null, branch: null, minutes: null }, {
-    kind: "codex", time: null, branch: null, issue: 249, role: "fix", effort: "high", exit: 0,
+    kind: "codex", time: null, branch: null, issue: 249, role: "implement", effort: "high", exit: 0,
     refusal: null, inputTokens: 40, outputTokens: 10, minutes: null,
-    verify: "pass", live: "pass", verdict: "APPROVED", findings: 2,
+    verify: "pass", live: "pass", verdict: null, findings: null,
   });
   assert.ok(Number.isFinite(Date.parse(rows[0].time)));
   assert.equal(rows[0].branch, spawnSync("git", ["branch", "--show-current"], { cwd: f.worktree, encoding: "utf8" }).stdout.trim());
@@ -2371,7 +2371,7 @@ test("branch metrics redact tokens and values outside the allowlist", async (t) 
   const f = setup(t);
   for (const name of [`topic/ghp_${"a".repeat(36)}`, "topic/\u4f8b\u5b50.\u6d4b\u8bd5", "topic/private.example.com"]) {
     assert.equal(spawnSync("git", ["checkout", "-b", name], { cwd: f.worktree }).status, 0);
-    await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => { throw new Error("launch failed"); } });
+    await runCodexImplement([...f.argv, "--role", "fix"], { say: quiet, out: quiet, run: async () => { throw new Error("launch failed"); } });
     const row = JSON.parse(readFileSync(path.join(f.worktree, ".git", "qc", "runs.jsonl"), "utf8").trim().split("\n").at(-1));
     assert.equal(row.branch, "[REDACTED]");
   }
@@ -2392,11 +2392,77 @@ test("verify metrics ignore forged proof and report replacement", async (t) => {
   }
 });
 
-test("backticked Issue metadata counts fix runs", async (t) => {
+test("backticked Issue metadata preserves the explicit role", async (t) => {
   const f = setup(t);
   writeFileSync(f.brief, VALID_BRIEF.replace("# Brief", "# Brief: fix") + "\nIssue: `#249`\n");
-  await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => { throw new Error("launch failed"); } });
+  await runCodexImplement([...f.argv, "--role", "fix"], { say: quiet, out: quiet, run: async () => { throw new Error("launch failed"); } });
   const row = JSON.parse(readFileSync(path.join(f.worktree, ".git", "qc", "runs.jsonl"), "utf8").trim());
   assert.equal(row.issue, 249);
   assert.equal(row.role, "fix");
+});
+
+ test("flags alone determine every run role", async (t) => {
+  for (const role of ["scout", "tests", "implement", "review", "fix"]) {
+    const f = setup(t);
+    writeFileSync(f.brief, VALID_BRIEF.replace("# Brief", "# Brief: fix"));
+    await runCodexImplement([...f.argv, "--role", role], { say: quiet, out: quiet, run: async () => { throw new Error("stop"); } });
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
+    assert.equal(row.role, role);
+  }
+  const f = setup(t);
+  assert.throws(() => parseArgs([...f.argv, "--role", "fix", "--review"]), /conflict/);
+});
+
+test("explicit fix preserves approval and child protections", async (t) => {
+  for (const approved of [false, true]) {
+    const f = setup(t); approvalConfig(f);
+    writeFileSync(f.brief, VALID_BRIEF + "\n## Design\nFiles: src/example.mjs\n" + (approved ? "Approved: approved.md\n" : ""));
+    if (approved) writeFileSync(path.join(f.dir, "approved.md"), SCOUT_REPORT);
+    let calls = 0;
+    assert.equal(await runCodexImplement([...f.argv, "--role", "fix"], { say: quiet, out: quiet, run: async ({ env }) => {
+      calls++; assert.equal(env.QC_ROLE, "implementer");
+      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), approved ? 0 : 1);
+    assert.equal(calls, approved ? 1 : 0);
+  }
+});
+
+test("fresh review verdict and finding count match accepted report", async (t) => {
+  for (const verdict of ["APPROVED", "CHANGES_REQUIRED"]) {
+    const f = reviewFixture(t);
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+      writeFileSync(f.report, `# Review\nVERDICT: ${verdict}\n## Findings\n- [P0] one\n- [P1] two\n- [P2] three\n- [P3] four\n- [P4] invalid\n- [P1ish] invalid\n- no severity\n## Debt\n- [P1] excluded\n`);
+      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), 0);
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
+    assert.equal(row.verdict, verdict); assert.equal(row.findings, 4);
+  }
+});
+
+test("stale or invalid review has no metrics", async (t) => {
+  for (const mode of ["missing", "stale", "invalid"]) {
+    const f = reviewFixture(t);
+    if (mode === "stale") writeFileSync(f.report, "VERDICT: APPROVED\n## Findings\n- [P1] stale\n");
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+      if (mode === "invalid") writeFileSync(f.report, "No verdict\n## Findings\n- [P1] invalid\n");
+      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), 3);
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
+    assert.equal(row.verdict, null); assert.equal(row.findings, null);
+  }
+});
+
+test("diff-cap refusal records measured lines and configured/default cap", async (t) => {
+  for (const cap of [undefined, 10]) {
+    const f = setup(t);
+    if (cap) writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { maxDiffLines: cap } }));
+    assert.equal(await runCodexImplement([...f.argv, "--role", "fix"], { say: quiet, out: quiet, run: async () => {
+      mkdirSync(path.join(f.worktree, "src"));
+      writeFileSync(path.join(f.worktree, "src/example.mjs"), "line\n".repeat(401));
+      return { status: 0 };
+    } }), 4);
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
+    assert.equal(row.refusal, "diff-shape");
+    assert.equal(row.changedLines, cap ? 402 : 401); assert.equal(row.maxDiffLines, cap ?? 400);
+  }
 });

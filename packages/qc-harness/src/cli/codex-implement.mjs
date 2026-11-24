@@ -55,7 +55,7 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
 }
 
 const USAGE =
-  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
+  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review|fix>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
   "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs or report failure, 4 guard or diff shape refused, 5 paused, 7 verify failed";
 
 const FLAGS = { "--role": "role", "--resume": "resume", "--report": "report", "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
@@ -78,7 +78,7 @@ export function parseArgs(argv) {
   if (found.effort !== undefined && !["low", "medium", "high"].includes(found.effort)) throw new Error("--effort must be low, medium, or high");
   if (found.review && found.role !== undefined && found.role !== "review") throw new Error("--review conflicts with --role");
   const role = found.role ?? (found.review ? "review" : "implement");
-  if (!["scout", "tests", "implement", "review"].includes(role)) throw new Error("--role must be scout, tests, implement, or review");
+  if (!["scout", "tests", "implement", "review", "fix"].includes(role)) throw new Error("--role must be scout, tests, implement, review, or fix");
   if (found.resume !== undefined && (!found.resume.trim() || found.resume.startsWith("-") || /[\r\n]/.test(found.resume))) throw new Error("--resume needs a session id");
   if (role === "review" && found.effort !== undefined) throw new Error("--review cannot be combined with --effort");
   if (found.report !== undefined && !["scout", "review"].includes(role)) throw new Error("--report requires --review or --role scout");
@@ -193,7 +193,7 @@ function validateBrief(brief, codex, settings) {
   if (!lines.some((line) => /^## Product decisions\s*$/.test(line))) throw refusalError("brief:product-decisions", "## Product decisions is required: at least 1 heading");
   if (!lines.some((line) => /^Paths:[ \t]*\S/.test(line))) throw refusalError("brief:paths", "Paths: is required: at least 1 line naming owned files or folders");
   validatePaths(brief);
-  if (codex.requireApproval && settings.role === "implement") {
+  if (codex.requireApproval && ["implement", "fix"].includes(settings.role)) {
     if (!/^## Design[ \t]*\r?$/m.test(brief)) throw refusalError("brief:design", "## Design is required for implement when codex.requireApproval is true");
     const approved = briefPath(brief, "Approved", settings.brief);
     if (!approved) throw refusalError("brief:approval", "Approved: is required for implement when codex.requireApproval is true");
@@ -336,22 +336,14 @@ export async function runCodexImplement(argv, { out = writeLine, warn = console.
     const settings = metrics.settings;
     const worktreeIndex = argv.indexOf("--worktree");
     const root = settings?.worktree ?? (worktreeIndex >= 0 ? argv[worktreeIndex + 1] : undefined);
-    let verdict = null;
-    let findings = null;
-    try {
-      if (metrics.report) {
-        const text = readFileSync(metrics.report, "utf8");
-        verdict = /^(?:VERDICT:[ \t]*)?(APPROVED|CHANGES_REQUIRED)[ \t]*$/.exec(text.split(/\r?\n/)[0])?.[1] ?? null;
-        findings = text.split(/\r?\n/).filter((line) => line.startsWith("- [P")).length;
-      }
-    } catch { /* An absent report has no verdict or finding count. */ }
     if (root) appendRun(runLogFileOf(root), {
       kind: "codex", time: new Date(clock()).toISOString(), branch: currentBranch(root),
       issue: metrics.issue ?? null, role: metrics.role ?? settings?.role ?? "implement", effort: metrics.effort ?? null,
       exit: code, refusal: metrics.refusal,
       inputTokens: metrics.inputTokens, outputTokens: metrics.outputTokens,
       minutes: Math.round(Math.max(0, clock() - started) / 6000) / 10,
-      verify: metrics.verify, live: metrics.live, verdict, findings,
+      verify: metrics.verify, live: metrics.live, verdict: metrics.review?.verdict ?? null, findings: metrics.review?.findings ?? null,
+      ...(metrics.diff ?? {}),
     });
   } catch {
     warn("qc codex-implement: cannot write run log");
@@ -414,7 +406,7 @@ function completeScout(settings, started, originalStamp, message, say) {
 }
 
 /** Records a completed review once; every report, git or ledger error remains a failed job. */
-function completeReview(settings, started, originalStamp, message, say) {
+function completeReview(settings, started, originalStamp, message, say, metrics) {
   if (settings.role === "scout") return completeScout(settings, started, originalStamp, message, say);
   if (!settings.report) return finish(say, message, 0);
   try {
@@ -430,6 +422,14 @@ function completeReview(settings, started, originalStamp, message, say) {
     const ledger = ledgerFileOf(settings.worktree);
     if (!ledger) throw new Error("cannot find the worktree ledger");
     appendRecord(ledger, { type: "verdict", kind: "codex", verdict, sha, branch });
+    let inFindings = false;
+    let findings = 0;
+    for (const line of text.split(/\r?\n/)) {
+      const heading = /^#{1,2}[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
+      if (heading) inFindings = /^Findings$/i.test(heading[1]);
+      else if (inFindings && /^[ \t]*[-*][ \t]+\[P[0-3]\][ \t]+\S/.test(line)) findings += 1;
+    }
+    metrics.review = { verdict, findings };
     return finish(say, `${message}; recorded ${verdict} on ${sha}`, 0);
   } catch (error) {
     return finish(say, `cannot record review verdict: ${error.message}`, 3);
@@ -451,8 +451,6 @@ async function runJob(argv, {
       const issueMatch = /^Issue:[ \t]*(?:#(\d+)|(\d+)|`#?(\d+)`)[ \t]*\r?$/m.exec(brief);
       const issue = issueMatch?.slice(1).find(Boolean);
       metrics.issue = issue && Number.isSafeInteger(Number(issue)) ? Number(issue) : null;
-      if (/^#[ \t]+.*\bfix\b/i.test(brief)) metrics.role = "fix";
-      metrics.report = settings.report ?? briefPath(brief, "Report", settings.brief) ?? `${settings.progress}.report.md`;
     } catch { /* Preflight still reports an unreadable brief through its normal exit. */ }
   } catch (error) {
     say(`qc codex-implement: ${error.message}\n${USAGE}`);
@@ -493,7 +491,7 @@ async function runJob(argv, {
     protectedPaths = guardConfig.guard.protectedPaths;
     guardBase = guardConfig.worktree.base;
     tests = structuredClone(guardConfig.tests);
-    if (["tests", "implement"].includes(settings.role)) {
+    if (["tests", "implement", "fix"].includes(settings.role)) {
       locked = currentBranch(settings.worktree) ? readLockedTests(settings.worktree) : null;
       if (settings.role === "tests" || locked !== null) {
         const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -508,9 +506,9 @@ async function runJob(argv, {
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
   /** Applies frozen policy before accepting either a new or a prewritten marker. */
   const verifyTests = async ({ policyOnly = false } = {}) => {
-    if (settings.role !== "tests" && (settings.role !== "implement" || locked === null)) return null;
+    if (settings.role !== "tests" && (!["implement", "fix"].includes(settings.role) || locked === null)) return null;
     try {
-      if (settings.role === "implement") {
+      if (["implement", "fix"].includes(settings.role)) {
         const { problems } = checkLockedTests(settings.worktree, locked);
         if (problems.length) return refuse("other", `guard refused: ${problems.join("; ")}`, 4);
         const current = readLockedTests(settings.worktree);
@@ -535,7 +533,7 @@ async function runJob(argv, {
     return null;
   };
   const mutationReport = async () => {
-    if (settings.role !== "implement" || locked === null) return;
+    if (!["implement", "fix"].includes(settings.role) || locked === null) return;
     const diagnostics = [];
     try {
       const result = await mutate({ worktree: settings.worktree, base: testBase, command: tests.command, files: Object.keys(locked), say: (line) => { const redacted = redactOutput(line); diagnostics.push(redacted); say(redacted); } });
@@ -552,7 +550,7 @@ async function runJob(argv, {
       if (!passed) return finish(say, "verify failed", 7);
     } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
     if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
-    return completeReview(settings, started, originalStamp, message, say);
+    return completeReview(settings, started, originalStamp, message, say, metrics);
   };
   let resetDeadline;
   let boundary;
@@ -625,7 +623,7 @@ async function runJob(argv, {
     let result;
     let runError;
     try {
-      result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...childEnv, QC_ROLE: settings.role === "implement" ? "implementer" : settings.role, QC_PROTECTED_ALLOW: allow.join(",") }, log: settings.log, cwd: settings.worktree });
+      result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...childEnv, QC_ROLE: ["implement", "fix"].includes(settings.role) ? "implementer" : settings.role, QC_PROTECTED_ALLOW: allow.join(",") }, log: settings.log, cwd: settings.worktree });
     } catch (error) {
       runError = error;
     }
@@ -645,10 +643,11 @@ async function runJob(argv, {
         for (const finding of findings) say(`qc codex-implement: guard refused: ${findingName(finding)}`);
         return 4;
       }
-      if (["implement", "tests"].includes(settings.role)) {
-        const { problems } = checkDiffShape({ worktree: settings.worktree, base: boundary.head, baseRef: guardBase, ...contract, maxDiffLines: codex.maxDiffLines });
+      if (["implement", "fix", "tests"].includes(settings.role)) {
+        const { problems, changedLines, maxDiffLines } = checkDiffShape({ worktree: settings.worktree, base: boundary.head, baseRef: guardBase, ...contract, maxDiffLines: codex.maxDiffLines });
         if (problems.length) {
           metrics.refusal = "diff-shape";
+          if (changedLines > maxDiffLines) metrics.diff = { changedLines, maxDiffLines };
           for (const problem of problems) say(`qc codex-implement: diff shape refused: ${problem}`);
           return 4;
         }
