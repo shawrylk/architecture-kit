@@ -432,14 +432,13 @@ function completeReview(settings, started, originalStamp, message, say, metrics)
         previous = undefined;
         continue;
       }
-      const match = /^[ \t]*VERDICT:[ \t]*(APPROVED|CHANGES_REQUIRED)[ \t]*$/.exec(line);
-      if (match) {
-        verdict = match[1];
+      if (/^[ \t]*VERDICT:/.test(line)) {
+        verdict = /^[ \t]*VERDICT:[ \t]*(APPROVED|CHANGES_REQUIRED)[ \t]*$/.exec(line)?.[1];
         count = /^[ \t]*FINDINGS:[ \t]*(\d+)[ \t]*$/.exec(previous ?? "")?.[1];
       }
       previous = line;
     }
-    if (!verdict) throw new Error(`review report has no VERDICT: line: ${settings.report}`);
+    if (!verdict) throw new Error(`review report has no valid final VERDICT: line: ${settings.report}`);
     const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     const sha = git("rev-parse", "--verify", "HEAD^{commit}");
     const branch = git("symbolic-ref", "--quiet", "--short", "HEAD");

@@ -2440,6 +2440,23 @@ test("fresh review verdict and finding count come from contract lines", async (t
   }
 });
 
+test("an invalid final verdict rejects an earlier approval", async (t) => {
+  for (const verdict of ["CHANGES REQUIRED", "", "APPROVED extra", "UNKNOWN"]) {
+    await t.test(`final verdict: ${verdict || "empty"}`, async (t) => {
+      const f = reviewFixture(t);
+      const messages = [];
+      const code = await runCodexImplement(f.argv, { say: (line) => messages.push(line), out: quiet, run: async () => {
+        writeFileSync(f.report, `FINDINGS: 0\nVERDICT: APPROVED\n## Findings\n- [P1] src/a.mjs:1 unsafe result\nFINDINGS: 1\nVERDICT: ${verdict}\n`);
+        writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+      } });
+      const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
+      assert.deepEqual({ code, verdict: row.verdict, findings: row.findings, records: readLedger(ledgerFileOf(f.worktree)) },
+        { code: 3, verdict: null, findings: null, records: [] });
+      assert.match(messages.join("\n"), /cannot record review verdict/);
+    });
+  }
+});
+
 test("only the FINDINGS line directly above the final unfenced verdict counts", async (t) => {
   for (const [report, expected] of [
     ["## Findings\n- [P2] bug; evidence:\n  ```text\n  FINDINGS: 99\n  ```\n## Debt\nNone.\nFINDINGS: 1\nVERDICT: CHANGES_REQUIRED\n", 1],
