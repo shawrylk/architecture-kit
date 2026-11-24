@@ -25,12 +25,59 @@ concurrency:
 permissions: { contents: read }
 
 jobs:
+  plan:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    runs-on: ubuntu-latest
+    outputs:
+      os: ${{ steps.matrix.outputs.os }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - name: scan platform risk
+        id: risk
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          base=origin/main
+          if [[ "$EVENT" == push && -n "$BEFORE" && ! "$BEFORE" =~ ^0+$ ]]; then
+            base="$BEFORE"
+          fi
+          node packages/qc-harness/src/cli/qc.mjs platform-risk --base "$base"
+      - name: choose platforms
+        id: matrix
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          RISKY: ${{ steps.risk.outputs.risky }}
+          REQUESTED_OS: ${{ inputs.os }}
+        run: |
+          set -euo pipefail
+          os='["ubuntu-latest","windows-latest"]'
+          if [[ "$EVENT" == pull_request || "$EVENT" == push ]]; then
+            case "$RISKY" in
+              false) os='["ubuntu-latest"]' ;;
+              true) ;;
+              *) echo "Missing platform-risk result" >&2; exit 1 ;;
+            esac
+          elif [[ "$EVENT" == workflow_dispatch ]]; then
+            case "$REQUESTED_OS" in
+              linux) os='["ubuntu-latest"]' ;;
+              windows) os='["windows-latest"]' ;;
+            esac
+          fi
+          echo "os=$os" >> "$GITHUB_OUTPUT"
+
   gates:
+    needs: plan
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.os == 'linux' && '["ubuntu-latest"]' || github.event_name == 'workflow_dispatch' && inputs.os == 'windows' && '["windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
+        os: ${{ fromJSON(needs.plan.outputs.os) }}
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -60,8 +107,13 @@ jobs:
       - run: node packages/qc-harness/src/cli/qc.mjs check --affected --base origin/main
         if: github.event_name == 'pull_request'
         env: { QC_REQUIRE_CHROME: "1" }
+      - run: node packages/qc-harness/src/cli/qc.mjs check --affected --base "$BEFORE"
+        if: github.event_name == 'push' && github.event.before != '' && github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          QC_REQUIRE_CHROME: "1"
+          BEFORE: ${{ github.event.before }}
       - run: pnpm test
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'schedule' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.event.before == '' || github.event.before == '0000000000000000000000000000000000000000'))
         env: { QC_REQUIRE_CHROME: "1" }
 
       # The kit must still be able to set up a repository from nothing.

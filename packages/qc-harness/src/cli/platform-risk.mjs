@@ -1,5 +1,6 @@
 // A branch scans added lines and file metadata for platform risks.
 import { execFileSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
 
 const CODE_FILE = /\.(?:[cm]?[jt]sx?|sh|bash|zsh|ps1|psm1|bat|cmd|py|go|rs|java|cs|[ch]|[ch]pp|rb|php|swift|kt|kts|scala|sql|tf|hcl|lua|ex|exs|vue|svelte|css|scss)$|(?:^|\/)(?:Dockerfile|Makefile)$/i;
 
@@ -43,4 +44,22 @@ export function platformRisk(root, base = "origin/main", head = "HEAD") {
     cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
   });
   return riskHits(diff);
+}
+
+export function runPlatformRisk(root, args = []) {
+  if (!(args.length === 0 || (args.length === 2 && args[0] === "--base" && args[1] && !args[1].startsWith("-")))) {
+    console.error("usage: qc platform-risk [--base <ref>]");
+    return 1;
+  }
+  try {
+    const hits = platformRisk(root, args[1]);
+    const result = `risky=${hits.length > 0}\n`;
+    if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, result);
+    for (const { file, line, reason } of hits.slice(0, 10)) console.log(`${file}:${line} ${reason}`);
+    process.stdout.write(result);
+    return 0;
+  } catch (error) {
+    console.error(`qc platform-risk: ${String(error.message).replace(/\s+/g, " ")}`);
+    return 1;
+  }
 }
