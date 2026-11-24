@@ -73,3 +73,13 @@ test("qc commit-msg reads the file git wrote, and ignores its comment lines", as
   t.mock.method(console, "error", () => {});
   assert.equal(await runCommitMsg(config, file), 1);
 });
+
+test("Role trailers accept the three public roles and refuse other values", async () => {
+  const commitlint = await loadCommitlint(HARNESS);
+  for (const role of ["Coder", "Reviewer", "Leader"]) {
+    assert.deepEqual(await checkCommitMessage(`feat: show roles\n\nRole: ${role}\n`, {}, commitlint), []);
+  }
+  for (const role of ["Admin", "coder", ""]) {
+    assert.deepEqual((await checkCommitMessage(`feat: show roles\n\nRole: ${role}\n`, {}, commitlint)).map((problem) => problem.rule), ["role"]);
+  }
+});

@@ -11,7 +11,7 @@
 import { commentWatch } from "./comment-watch.mjs";
 import { fileURLToPath } from "node:url";
 import { defaults, PROMOTION_SCOPE } from "../config.mjs";
-import { PARSERS } from "./bash-command-guard.mjs";
+import { guardCommands } from "./bash-command-guard.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { configAtBase, gitBy, LANE_BUDGET_MS, mergeLane, sizeLine } from "./direct-lane.mjs";
 import { ghApiMerges, ghMerges } from "./gh-merge-command.mjs";
@@ -302,14 +302,16 @@ function recordMerge(merge, call, workflow, gh, deadline) {
   return null;
 }
 
-/** The verdict on one Bash or PowerShell event. @returns the hook output, or null to let it pass with no message. */
+/** The verdict on one Bash, PowerShell or REPL event. @returns the hook output, or null to let it pass with no message. */
 export function decide(call, { gh = runGh, commentCheck = commentWatch } = {}) {
+  return guardCommands(call, (command, parse) => decideCommand(call, command, parse, { gh, commentCheck }));
+}
+
+function decideCommand(call, command, parse, { gh, commentCheck }) {
   const deadline = Date.now() + LANE_BUDGET_MS;
   const event = call.hook_event_name;
   if (event !== "PreToolUse" && !POST_EVENTS.has(event)) return null;
-  const parse = PARSERS[call.tool_name];
-  const command = call.tool_input?.command;
-  if (!parse || typeof command !== "string" || !MAYBE_GH.test(command)) return null;
+  if (!MAYBE_GH.test(command)) return null;
   const cwd = call.cwd ?? process.cwd();
   const root = checkoutRootOf(cwd);
   if (!root) return null;
@@ -317,7 +319,7 @@ export function decide(call, { gh = runGh, commentCheck = commentWatch } = {}) {
   const apiMerges = event === "PreToolUse" ? ghApiMerges(command, parse, { cwd }) : [];
   const targets = [...merges, ...apiMerges.map(apiPrOf).filter(Boolean)];
   const checked = event === "PreToolUse" && targets.length ? commentCheck(call, { gh: gh === runGh ? runGhAsync : gh, merges: targets }) : null;
-  if (checked instanceof Promise) return checked.then(result => decide(call, { gh, commentCheck: () => result }));
+  if (checked instanceof Promise) return checked.then(result => decideCommand(call, command, parse, { gh, commentCheck: () => result }));
   const commentResult = checked;
   if (commentResult?.hookSpecificOutput?.permissionDecision === "deny") return commentResult;
   if (event === "PreToolUse" && (merges.length > 0 || apiMerges.length > 0)) {

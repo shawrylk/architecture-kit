@@ -18,6 +18,7 @@ const USAGE = `qc — architecture gates
   qc ci-preview [--os <linux|windows|both>]
                            dispatch CI for this head and record passing platform legs
   qc ready-check           print missing platform legs and up to three risk hits; silent on a pass
+  qc platform-risk [--base <ref>]  print up to ten changed-line platform risks and risky=true|false
   qc e2e                   the repository's e2e command with the changed files
   qc lint [--staged] [--base <ref>] [file...]
                            ESLint on the changed lines only: a problem on an untouched line never fails
@@ -100,6 +101,11 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "platform-risk") {
+    const { runPlatformRisk } = await import("./platform-risk.mjs");
+    process.exitCode = runPlatformRisk(process.cwd(), rest);
+    return;
+  }
   if (command === "overview" || command === "debt") {
     const valid = command === "overview" ? rest.length === 0 :
       (rest[0] === "file" && rest.length === 2) || (rest[0] === "due" && rest.length === 1);

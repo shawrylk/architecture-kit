@@ -20,6 +20,7 @@ import { pauseRefusal, holdRefusal } from "./pause.mjs";
 import { ciBriefRefusal, currentBranch, lessonRules } from "./ci-failures.mjs";
 import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCommand, verifyBaseTests } from "./locked-tests.mjs";
 import { runMutation } from "./mutate.mjs";
+import { redactOutput } from "./output-redaction.mjs";
 import { reviewContext, validatePaths, verificationPolicy, verifyBrief } from "./codex-verify.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
@@ -405,7 +406,7 @@ function completeScout(settings, started, originalStamp, message, say) {
     if (stamp === originalStamp || statSync(settings.report).mtimeMs < started) throw new Error(`stale scout report: ${settings.report}`);
     const text = readFileSync(settings.report, "utf8");
     for (const label of ["Gap", "Plan", "Check", "Risks", "Questions"]) {
-      if (!new RegExp(`^${label}:[ \t]*\\S`, "m").test(text)) throw new Error(`scout report requires ${label}:`);
+      if (!new RegExp(`^${label}:[ \t]*(?:\\S|\\r?\\n(?:[ \t]*\\r?\\n)*[ \t]*(?:[-*]|\\d+[.)]))`, "m").test(text)) throw new Error(`scout report requires ${label}:`);
     }
     if (!/^Breaking:[ \t]*(yes|no)[ \t]*\r?$/m.test(text)) throw new Error("scout report requires Breaking: yes|no");
     return finish(say, message, 0);
@@ -537,13 +538,13 @@ async function runJob(argv, {
     if (settings.role !== "implement" || locked === null) return;
     const diagnostics = [];
     try {
-      const result = await mutate({ worktree: settings.worktree, base: testBase, command: tests.command, files: Object.keys(locked), say: (line) => { diagnostics.push(line); say(line); } });
+      const result = await mutate({ worktree: settings.worktree, base: testBase, command: tests.command, files: Object.keys(locked), say: (line) => { const redacted = redactOutput(line); diagnostics.push(redacted); say(redacted); } });
       const report = briefPath(readFileSync(settings.brief, "utf8"), "Report", settings.brief);
       if (!report) { say("mutation: no Report: path in brief; cannot append survivors"); return; }
-      const rows = result.survived.map(({ file, line, mutant }) => `- ${file}:${line}: ${JSON.stringify(mutant)}`);
+      const rows = result.survived.map(({ file, line, mutant }) => redactOutput(`- ${file}:${line}: ${JSON.stringify(redactOutput(mutant))}`));
       mkdirSync(path.dirname(report), { recursive: true });
       appendFileSync(report, `\n## Survivors\n\n${diagnostics.length ? diagnostics.join("\n") : rows.length ? rows.join("\n") : "No survivors."}\n${result.skippedLines} lines skipped by syntax errors, the budget or ten-line cap.\n`);
-    } catch (error) { say(`mutation: ${error.message.replace(/[\r\n]+/g, " ")}; no mutation coverage`); }
+    } catch (error) { say(redactOutput(`mutation: ${error.message.replace(/[\r\n]+/g, " ")}; no mutation coverage`)); }
   };
   const verifiedCompletion = async (message) => {
     try {

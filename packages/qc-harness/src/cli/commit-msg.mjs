@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { scriptPattern } from "../gates/english-source.mjs";
+import { ROLES } from "./role-line.mjs";
 
 export const INSTALL_HINT = "pnpm add -D @commitlint/lint @commitlint/config-conventional";
 const TRAILER = /^co-authored-by:\s*\S/im;
@@ -74,6 +75,9 @@ export async function checkCommitMessage(raw, options, commitlint) {
   }
   const script = scriptPattern(options.scripts ?? ["cjk"]);
   message.split("\n").forEach((line, index) => {
+    if (line.startsWith("Role:") && !ROLES.includes(line.slice(5).trim())) {
+      problems.push({ rule: "role", detail: `line ${index + 1} must use Role: Coder, Role: Reviewer or Role: Leader.` });
+    }
     if (script.test(line)) problems.push({ rule: "english", detail: `line ${index + 1} is not English. A commit message is English.` });
   });
   if (options.attribution === true && !TRAILER.test(message)) {

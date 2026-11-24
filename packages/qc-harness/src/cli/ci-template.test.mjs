@@ -1,5 +1,8 @@
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
@@ -38,6 +41,32 @@ for (const [name, file] of [["template", WORKFLOW], ["kit", KIT_WORKFLOW]]) {
     assert.deepEqual(input.options, ["linux", "windows", "both"]);
     assert.equal(workflow.jobs.gates["runs-on"], "${{ matrix.os }}");
     assert.equal(workflow.jobs.gates.defaults.run.shell, "bash");
+    if (name === "kit") {
+      assert.equal(workflow.jobs.gates.needs, "plan");
+      assert.equal(workflow.jobs.gates.strategy.matrix.os, "${{ fromJSON(needs.plan.outputs.os) }}");
+      const step = workflow.jobs.plan.steps.find((s) => s.id === "matrix");
+      const choose = (EVENT, RISKY = "", REQUESTED_OS = "") => {
+        const dir = mkdtempSync(join(tmpdir(), "qc-plan-"));
+        const out = join(dir, "out");
+        writeFileSync(out, "");
+        const result = spawnSync("bash", ["-c", step.run], { env: { ...process.env, EVENT, RISKY, REQUESTED_OS, GITHUB_OUTPUT: out }, encoding: "utf8" });
+        const text = readFileSync(out, "utf8");
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        return result.status === 0 ? JSON.parse(text.trim().replace(/^os=/, "")) : null;
+      };
+      const both = ["ubuntu-latest", "windows-latest"];
+      assert.deepEqual(choose("pull_request", "false"), ["ubuntu-latest"]);
+      assert.deepEqual(choose("pull_request", "true"), both);
+      assert.equal(choose("pull_request", ""), null, "a missing scan fails the run");
+      assert.deepEqual(choose("push", "false"), ["ubuntu-latest"]);
+      assert.deepEqual(choose("push", "true"), both);
+      assert.deepEqual(choose("workflow_dispatch", "", "linux"), ["ubuntu-latest"]);
+      assert.deepEqual(choose("workflow_dispatch", "", "windows"), ["windows-latest"]);
+      assert.deepEqual(choose("workflow_dispatch", "", "both"), both);
+      assert.deepEqual(choose("schedule"), both);
+      assert.deepEqual(choose("merge_group"), both);
+      return;
+    }
     const matrix = workflow.jobs.gates.strategy.matrix.os;
     const expression = matrix.slice(3, -2).trim().replace(/fromJSON/g, "JSON.parse");
     const evaluate = (event, os) => Function("github", "inputs", `return (${expression})`)({ event_name: event }, { os });
@@ -86,7 +115,13 @@ test("the CI template runs --affected on pull_request and pnpm test on push to m
     const affected = steps.find((step) => /check --affected --base origin\/main/.test(step.run ?? ""));
     assert.equal(affected.if, "github.event_name == 'pull_request'");
     const full = steps.find((step) => /pnpm test|run test/.test(step.run ?? ""));
-    assert.equal(full.if, "github.event_name != 'pull_request'");
+    assert.equal(full.if, file === KIT_WORKFLOW
+      ? "github.event_name == 'schedule' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.event.before == '' || github.event.before == '0000000000000000000000000000000000000000'))"
+      : "github.event_name != 'pull_request'");
+    if (file === KIT_WORKFLOW) {
+      const pushed = steps.find((step) => /check --affected --base "\$BEFORE"/.test(step.run ?? ""));
+      assert.equal(pushed.if, "github.event_name == 'push' && github.event.before != '' && github.event.before != '0000000000000000000000000000000000000000'");
+    }
     const job = workflow.jobs['report-failure'];
     assert.equal(job.needs, 'gates');
     assert.deepEqual(job.concurrency, { group: 'ci-red-${{ github.sha }}', 'cancel-in-progress': false });

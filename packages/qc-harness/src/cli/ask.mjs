@@ -1,5 +1,6 @@
 import { runGhResult } from "./gh-run.mjs";
 import { originOf } from "./git-read.mjs";
+import { roleComment } from "./role-line.mjs";
 
 const USAGE = 'Usage: qc ask --issue <n> "<question>"';
 
@@ -7,6 +8,7 @@ const USAGE = 'Usage: qc ask --issue <n> "<question>"';
 export function askIssue(issue, question, { cwd = process.cwd(), repo = originOf(cwd), gh } = {}) {
   if (!/^[1-9]\d*$/.test(String(issue)) || typeof question !== "string" || !question.trim()) throw new Error(USAGE);
   if (!repo) throw new Error("qc ask: cannot read the repository from origin");
+  const comment = roleComment({ role: "coder", kind: "question", ref: `#${issue}`, summary: "Question for the user", body: question });
   const invoke = (args) => {
     const command = [...args, "-R", repo];
     if (gh) {
@@ -23,7 +25,7 @@ export function askIssue(issue, question, { cwd = process.cwd(), repo = originOf
     invoke(["label", "create", "needs-user", "--color", "D876E3", "--description", "Needs an answer from the user"]);
   }
   invoke(["issue", "edit", String(issue), "--add-label", "needs-user"]);
-  invoke(["issue", "comment", String(issue), "--body", question]);
+  invoke(["issue", "comment", String(issue), "--body", comment]);
 }
 
 /** `qc ask --issue <n> "<question>"`. */
