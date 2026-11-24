@@ -47,6 +47,8 @@ claude plugin install superpowers@claude-plugins-official
 pnpm add -D architecture-harness --save-exact
 ```
 
+`npx architecture-harness <command>` runs the kit in a folder that does not install it.
+
 The exact version and the lockfile keep the installed package fixed until you update it.
 Continue with [Tutorial](#tutorial) to set up your repository.
 
