@@ -9,6 +9,7 @@ import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
+import { readState } from "./fleet-state.mjs";
 import { nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
@@ -80,6 +81,22 @@ function readList(gh, args, cwd, valid) {
   try { list = JSON.parse(text); } catch { /* The error below names the failed read. */ }
   if (!Array.isArray(list) || !list.every(valid)) throw new Error(`gh ${args[0]} list returned no readable list`);
   return list;
+}
+
+/** Read this node's open work without changing the serve loop's saved snapshot. */
+export function readOpenAssignments({ root, fleet, repo, gh = runGh, warn = () => {} }) {
+  const assignments = readState(root, "assignments");
+  const held = Object.entries(assignments).filter(([, row]) => row.repo === repo && row.node === fleet.self);
+  if (!held.length) return [];
+  let open;
+  try {
+    open = new Set(readList(gh, ["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", repo], root,
+      row => Number.isSafeInteger(row?.number) && row.number > 0).map(row => row.number));
+  } catch (error) {
+    warn(`fleet node: ${error.message}`);
+    return held.map(([, row]) => row);
+  }
+  return held.filter(([, row]) => open.has(row.issue)).map(([, row]) => row);
 }
 
 /** Read free open issues and count those already taken by a PR or an origin branch. */
@@ -184,13 +201,21 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     try { value = JSON.parse(text); } catch { throw new Error(`fleet file has invalid JSON: ${file}`); }
     const fleet = validateFleet(value);
     if (["start", "stop", "serve"].includes(options.verb)) {
-      return runNodeVerb(options, { root: cwd, fleet, env, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
+      return runNodeVerb(options, { root: cwd, fleet, env, gh, git, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
     }
     const localRepo = origin(cwd);
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
+    const checkout = checkoutRootOf(cwd);
+    if (options.verb === "next" && checkout) {
+      const assigned = readOpenAssignments({ root: checkout, fleet, repo, gh });
+      if (assigned.length) {
+        for (const row of assigned) say(`#${row.issue} epoch=${row.epoch}`);
+        return 0;
+      }
+    }
     const remote = localRepo?.toLowerCase() === repo ? "origin" : `https://github.com/${repo}.git`;
-    const config = load(checkoutRootOf(cwd) ?? cwd);
+    const config = load(checkout ?? cwd);
     const { free, taken } = freeIssues(repo, cwd, { gh, git, remote, holdLabel: config.merge.holdLabel });
     const owned = free.map(row => ({ ...row, owner: ownerOf(repo, row.number, row.size, fleet.nodes) }));
     if (options.verb === "next") {
@@ -214,12 +239,13 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
   }
 }
 
-async function runNodeVerb(options, { root, fleet, env, origin, say, warn, node }) {
-  const deps = { ...node, root, fleet, env, leader: options["--leader"] === true };
+async function runNodeVerb(options, { root, fleet, env, gh, git, origin, say, warn, node }) {
+  const deps = { gh, git, ...node, root, fleet, env, leader: options["--leader"] === true };
   if (options.verb === "serve") {
     const kitRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const kit = gitOut(kitRoot, "rev-parse", "HEAD")?.trim() || null;
-    const server = await serveNode({ ...deps, repo: origin(root) ?? "qc/fleet", kit, warn });
+    const holdLabel = load(checkoutRootOf(root) ?? root).merge.holdLabel;
+    const server = await serveNode({ ...deps, holdLabel, repo: origin(root) ?? "qc/fleet", kit, warn });
     return new Promise(resolve => server.once("close", () => resolve(0)));
   }
   if (options.verb === "start") {
