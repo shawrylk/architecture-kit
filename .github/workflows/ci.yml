@@ -43,7 +43,12 @@ jobs:
         run: |
           set -euo pipefail
           base=origin/main
-          if [[ "$EVENT" == push && -n "$BEFORE" && ! "$BEFORE" =~ ^0+$ ]]; then
+          if [[ "$EVENT" == push ]]; then
+            # No previous commit to compare with: keep every platform leg.
+            if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then
+              echo "risky=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             base="$BEFORE"
           fi
           node packages/qc-harness/src/cli/qc.mjs platform-risk --base "$base"
