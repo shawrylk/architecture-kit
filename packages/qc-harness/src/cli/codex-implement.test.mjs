@@ -2160,6 +2160,62 @@ test("implement completion mutates only after green locked runner tests and appe
   } }), 0);
 });
 
+for (const source of ["diagnostic", "row", "error"]) {
+  test(`mutation survivor ${source} text redacts every shared secret shape`, async (t) => {
+    const { lockTests } = await import("./locked-tests.mjs");
+    const quotedAwsCredential = "z".repeat(40);
+    const secrets = [
+      ...["AKIA", "ASIA"].map((prefix) => `${prefix}${"A".repeat(16)}`),
+      `${["aws_secret", "_access_key"].join("")} = ${"a".repeat(40)}`,
+      `const ${["aws_secret", "_access_key"].join("")} = "${quotedAwsCredential}"; const enabled = true;`,
+      ...["p", "o", "u", "s", "r"].map((kind) => `gh${kind}_${"b".repeat(40)}`),
+      `${["github", "pat"].join("_")}_${"c".repeat(50)}`,
+      `${["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ")} key material -----END RSA PRIVATE KEY-----`,
+      `${["sk", "ant"].join("-")}-${"d".repeat(30)}`,
+      ...["a", "b", "p", "r", "s"].map((kind) => `xox${kind}-${"e".repeat(20)}`),
+      `${["npm", ""].join("_")}${"f".repeat(36)}`,
+    ];
+    const f = setup(t);
+    const report = path.join(f.dir, "implement-report.md");
+    writeFileSync(f.brief, `${VALID_BRIEF}Report: ${report}\n`);
+    commitFile(f, "qc.config.json", JSON.stringify({ check: { base: "HEAD" }, tests: { command: [process.execPath, "--test"] } }));
+    commitFile(f, "acceptance.test.mjs", "process.exit(0);\n");
+    lockTests(f.worktree, ["acceptance.test.mjs"]);
+    writeFileSync(f.progress, DONE_MARKER);
+    const messages = [];
+    const exit = await runCodexImplement(f.argv, {
+      say: (line) => messages.push(line), out: quiet,
+      runCheck: async () => 0,
+      runMutation: async ({ say }) => {
+        if (source === "error") throw new Error(`failed: ${secrets.join("; ")}\nmutation stopped`);
+        if (source === "diagnostic") for (const secret of secrets) say(`survived: ${secret}`);
+        return {
+          survived: source === "row" ? secrets.map((secret) => ({ file: `src/${secret}.mjs`, line: 2, mutant: secret })) : [],
+          skippedLines: 3,
+        };
+      },
+    });
+    assert.equal(exit, 0);
+    const output = messages.join("\n");
+    const text = existsSync(report) ? readFileSync(report, "utf8") : "";
+    assert.ok(!text.includes(quotedAwsCredential), `${source} report leaked a double-quoted AWS credential value`);
+    for (const secret of secrets) {
+      assert.ok(!text.includes(secret), `${source} report leaked a synthetic secret`);
+      assert.ok(!output.includes(secret), `${source} output leaked a synthetic secret`);
+    }
+    if (source === "error") {
+      assert.match(output, /mutation: failed: \[REDACTED\]/);
+      assert.match(output, /mutation stopped; no mutation coverage/);
+    } else {
+      assert.match(text, /## Survivors/);
+      assert.match(text, /\[REDACTED\]/);
+      assert.match(text, /3 lines skipped/);
+      if (source === "diagnostic") assert.match(output, /survived: \[REDACTED\]/);
+      else assert.match(text, /src\/\[REDACTED\]\.mjs:2/);
+    }
+  });
+}
+
 test("each Codex invocation logs tokens across turns and retries, metadata, and every exit", async (t) => {
   const f = setup(t);
   const report = path.join(f.dir, "metrics-report.md");
