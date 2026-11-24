@@ -112,10 +112,12 @@ async function checkHead({ root, body, git, check, signal }) {
     await git(root, "fetch", "origin", body.branch);
     temporary = mkdtempSync(path.join(os.tmpdir(), "qc-fleet-platform-"));
     checkout = path.join(temporary, "checkout");
-    await git(root, "worktree", "add", "--detach", checkout, body.head);
+    await git(root, "-c", "core.ignoreStat=false", "worktree", "add", "--detach", checkout, body.head);
     result = await check(checkout, { timeout: 30 * 60_000, signal });
     const actual = await git(checkout, "rev-parse", "HEAD");
-    const status = await git(checkout, "status", "--porcelain", "--untracked-files=all");
+    // A dirty index can make refresh exit nonzero; status below determines cleanliness.
+    try { await git(checkout, "-c", "core.ignoreStat=false", "update-index", "--really-refresh"); } catch {}
+    const status = await git(checkout, "-c", "core.ignoreStat=false", "status", "--porcelain", "--untracked-files=all");
     if (actual.stdout.trim() !== body.head) {
       result = { ok: false, tail: `${result.tail ?? ""}\nplatform check HEAD ${actual.stdout.trim()} does not match requested head ${body.head}` };
     } else if (status.stdout !== "") {

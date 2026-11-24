@@ -79,13 +79,13 @@ test("worker accepts only the Leader, checks a detached head serially, and repor
   assert.equal(f.calls.filter(row => row[0] === "check").length, 1);
   assert.equal(readState(f.root, "queue").length, 1);
   release(); await running;
-  const add = f.calls.find(row => row[2] === "worktree" && row[3] === "add");
-  assert.deepEqual(add.slice(2, 5), ["worktree", "add", "--detach"]);
+  const add = f.calls.find(row => row.includes("add"));
+  assert.deepEqual(add.slice(2, 7), ["-c", "core.ignoreStat=false", "worktree", "add", "--detach"]);
   assert.equal(add.at(-1), head);
   const run = f.calls.find(row => row[0] === "check");
-  assert.equal(run[1], add[5]);
+  assert.equal(run[1], add[7]);
   assert.equal(run[2].timeout, 30 * 60_000);
-  assert.deepEqual(f.calls.at(-1).slice(2), ["worktree", "remove", "--force", add[5]]);
+  assert.deepEqual(f.calls.at(-1).slice(2), ["worktree", "remove", "--force", add[7]]);
   assert.deepEqual(f.sent.map(m => m.body), [1, 2].map(() => ({ issue: 244, head, os: "darwin", ok: true, tail: "done" })));
 });
 
@@ -125,20 +125,25 @@ test("checks must leave the requested HEAD and a clean worktree", async t => {
   const f = fixture(t, "mac");
   const git = (cwd, ...args) => ({ stdout: execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) });
   git(f.root, "init");
+  writeFileSync(path.join(f.root, "tracked"), "original");
+  git(f.root, "add", "tracked");
   git(f.root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "first");
   const other = git(f.root, "rev-parse", "HEAD").stdout.trim();
   git(f.root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "requested");
   const requested = git(f.root, "rev-parse", "HEAD").stdout.trim();
   git(f.root, "remote", "add", "origin", f.root);
   git(f.root, "branch", "feat/244");
-  for (const mode of ["moved", "dirty", "hidden-untracked", "clean"]) {
+  for (const mode of ["moved", "dirty", "hidden-untracked", "ignore-stat", "clean"]) {
     git(f.root, "config", "status.showUntrackedFiles", mode === "hidden-untracked" ? "no" : "all");
+    git(f.root, "config", "core.ignoreStat", mode === "ignore-stat" ? "true" : "false");
     let checkout;
     f.queue("platform-check", { pusher: "pusher", head: requested }, "leader");
     await platformTick({ ...f.deps, git, check: async cwd => {
       checkout = cwd;
       if (mode === "moved") git(cwd, "checkout", "--detach", other);
       if (["dirty", "hidden-untracked"].includes(mode)) writeFileSync(path.join(cwd, "untracked"), "changed");
+      if (mode === "ignore-stat") execFileSync(process.execPath,
+        ["-e", "require('node:fs').writeFileSync('tracked', 'changed')"], { cwd });
       return { ok: true, tail: "command passed\n" };
     } });
     const result = f.sent.at(-1).body;
@@ -146,7 +151,7 @@ test("checks must leave the requested HEAD and a clean worktree", async t => {
     assert.equal(git(f.root, "worktree", "list", "--porcelain").stdout.includes(checkout), false);
     assert.equal(result.ok, mode === "clean", mode);
     if (mode === "moved") assert.match(result.tail.split("\n").at(-1), /HEAD.*requested/i);
-    if (["dirty", "hidden-untracked"].includes(mode)) assert.match(result.tail.split("\n").at(-1), /worktree.*(dirty|clean|changes)/i);
+    if (["dirty", "hidden-untracked", "ignore-stat"].includes(mode)) assert.match(result.tail.split("\n").at(-1), /worktree.*(dirty|clean|changes)/i);
     if (mode === "clean") assert.equal(result.tail, "command passed");
   }
 });
