@@ -4,7 +4,6 @@ import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, writeFileSync
 import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
@@ -15,6 +14,19 @@ import { highestTerm, latestLeader, readState, writeState } from "./fleet-state.
 import { confirmLeader, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 import { createKey, validateKey, pairingDecision, readPairing } from "./fleet-pair.mjs";
 import { effectiveFleet, readDiscovered } from "./fleet-discover.mjs";
+
+/** Release identity belongs to this installed package, independent of the checkout. */
+export function kitIdentity(packageUrl = new URL("../../package.json", import.meta.url)) {
+  try {
+    const metadata = JSON.parse(readFileSync(packageUrl, "utf8"));
+    if (metadata?.name !== "architecture-harness" || typeof metadata.version !== "string" || !metadata.version.trim()) {
+      throw new Error("expected architecture-harness package metadata with a nonempty version");
+    }
+    return `architecture-harness@${metadata.version}`;
+  } catch (error) {
+    throw new Error(`cannot read fleet kit identity: ${error.message}`, { cause: error });
+  }
+}
 
 const SIZES = ["S", "M", "L"];
 const USAGE = "usage: qc fleet init [--self <id>] [--nodes <id:weight:size,...>] [--port <port>] [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | allow <code> | deny <code> | accept <code> | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
@@ -347,9 +359,8 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
 
 async function runNodeVerb(options, { root, fleet, configuredFleet, env, gh, git, origin, say, warn, node }) {
   const deps = { gh, git, ...node, root, fleet, configuredFleet, env, fleetFile: fleetPath(env), leader: options["--leader"] === true };
+  const kit = ["start", "serve"].includes(options.verb) ? kitIdentity() : null;
   if (options.verb === "serve") {
-    const kitRoot = fileURLToPath(new URL("../../../../", import.meta.url));
-    const kit = gitOut(kitRoot, "rev-parse", "HEAD")?.trim() || null;
     const holdLabel = load(checkoutRootOf(root) ?? root).merge.holdLabel;
     const server = await serveNode({ ...deps, holdLabel, repo: origin(root) ?? "qc/fleet", kit, warn });
     return new Promise(resolve => server.once("close", () => resolve(0)));

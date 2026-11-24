@@ -1,12 +1,12 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
-import { fleetPath, validateFleet, ownerOf, freeIssues, runFleet } from "./fleet.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { fleetPath, validateFleet, ownerOf, freeIssues, runFleet, kitIdentity } from "./fleet.mjs";
 import { readState, stateDir, writeState } from "./fleet-state.mjs";
 
 const nodes = [
@@ -371,20 +371,25 @@ test("CLI starts, starts twice, reports running and stops without reading GitHub
   for (const argv of [["start", "--leader", "--leader"], ["stop", "--leader"], ["serve", "--repo", "o/r"]]) assert.equal(await runFleet(argv, deps), 1);
 });
 
-test("CLI serve runs the node loop and exits after an injected stop signal", async t => {
+test("serve advertises the installed package version", async t => {
   const f = fixture(t);
   assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]).code, 0);
   const signals = new Map();
   let started;
   const ready = new Promise(resolve => { started = resolve; });
   const errors = [];
+  let tick, time = 0;
   const serving = runFleet(["serve", "--leader"], { cwd: f.cwd, env: f.env, origin: () => "o/r", warn: line => errors.push(line),
     gh: () => { throw new Error("unexpected GitHub read"); }, node: {
-      listen: { port: 0 }, timer: () => 1, clearTimer: () => {},
+      clock: () => time, listen: { port: 0 }, timer: fn => { tick = fn; return 1; }, clearTimer: () => {},
       onSignal: (name, fn) => { signals.set(name, fn); if (name === "SIGINT") started(); }, offSignal: name => signals.delete(name),
     } });
   await ready;
+  t.after(() => signals.get("SIGINT")?.());
   assert.equal(readState(f.cwd, "node").leader, true);
+  time = 30_000;
+  await tick();
+  assert.equal(readState(f.cwd, "peers").a1.kit, kitIdentity());
   signals.get("SIGINT")();
   assert.equal(await serving, 0, errors.join("\n"));
   assert.deepEqual(readState(f.cwd, "node"), {});
@@ -644,4 +649,71 @@ test("start migrates keys, leader creates secret, and pairing CLI and status sha
   assert.equal(f.run(["deny", code], { node: { clock: () => now } }).code, 0);
   assert.equal(f.run(["allow", "123"], { node: { clock: () => now } }).code, 1);
   assert.equal(f.run(["accept", code], { node: { clock: () => now } }).code, 1);
+});
+
+
+function installedKitFixture(t, version = "0.29.0-beta.1+build.2") {
+  const f = fixture(t);
+  const installed = path.join(f.cwd, "node_modules", "architecture-harness");
+  mkdirSync(installed, { recursive: true });
+  cpSync(new URL("../", import.meta.url), path.join(installed, "src"), { recursive: true,
+    filter: source => !source.endsWith(".test.mjs") });
+
+  writeFileSync(path.join(installed, "package.json"), JSON.stringify({ name: "architecture-harness", version, type: "module" }));
+  writeFileSync(path.join(f.cwd, "package.json"), JSON.stringify({ name: "consumer", version: "99.0.0" }));
+  const moduleUrl = pathToFileURL(path.join(installed, "src", "cli", "fleet.mjs"));
+  return { f, installed, moduleUrl, version };
+}
+
+test("kit identity comes from module package metadata without git, including inside a foreign checkout", t => {
+  const { f, moduleUrl, version } = installedKitFixture(t);
+  for (const withGit of [false, true]) {
+    if (withGit) {
+      const init = spawnSync("git", ["init", "--quiet"], { cwd: f.cwd, encoding: "utf8" });
+      assert.equal(init.status, 0, init.stderr);
+      const commit = spawnSync("git", ["-c", "user.name=Fleet test", "-c", "user.email=fleet@example.test",
+        "commit", "--quiet", "--allow-empty", "-m", "foreign consumer"], { cwd: f.cwd, encoding: "utf8" });
+      assert.equal(commit.status, 0, commit.stderr);
+    }
+    const probe = spawnSync(process.execPath, ["--input-type=module", "-e",
+      `import { kitIdentity } from ${JSON.stringify(moduleUrl.href)}; console.log(kitIdentity());`],
+      { cwd: f.cwd, env: { ...process.env, ...(withGit ? {} : { PATH: "" }) }, encoding: "utf8" });
+    assert.equal(probe.status, 0, probe.stderr);
+    assert.equal(probe.stdout.trim(), `architecture-harness@${version}`);
+  }
+});
+
+test("start rejects invalid installed package metadata before spawning a child", async t => {
+  const { f, installed, moduleUrl } = installedKitFixture(t);
+  assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]).code, 0);
+  const { runFleet: runInstalledFleet } = await import(moduleUrl.href);
+  writeFileSync(path.join(installed, "package.json"), JSON.stringify({ name: "consumer", version: "99.0.0", type: "module" }));
+  let spawns = 0;
+  const errors = [];
+  const code = await runInstalledFleet(["start"], { cwd: f.cwd, env: f.env,
+    warn: message => errors.push(message),
+    node: { spawn: () => { spawns++; throw new Error("unexpected child spawn"); } } });
+  assert.equal(code, 1);
+  assert.deepEqual(errors, ["cannot read fleet kit identity: expected architecture-harness package metadata with a nonempty version"]);
+  assert.equal(spawns, 0);
+});
+
+test("kit identity rejects missing, unreadable or invalid package metadata", t => {
+  const f = fixture(t), metadata = path.join(f.cwd, "package.json");
+  assert.throws(() => kitIdentity(metadata), /kit identity.*ENOENT/i);
+  assert.throws(() => kitIdentity(f.cwd), /kit identity.*(EISDIR|EPERM|EACCES)/i);
+  const installed = installedKitFixture(t);
+  assert.equal(installed.f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]).code, 0);
+  writeFileSync(path.join(installed.installed, "package.json"), JSON.stringify({ name: "consumer", version: "99.0.0", type: "module" }));
+  const startup = spawnSync(process.execPath, ["--input-type=module", "-e",
+    `import { runFleet } from ${JSON.stringify(installed.moduleUrl.href)};
+     process.exitCode = await runFleet(["serve"], { cwd: ${JSON.stringify(installed.f.cwd)}, env: ${JSON.stringify(installed.f.env)} });`],
+    { cwd: installed.f.cwd, encoding: "utf8", timeout: 5000 });
+  assert.equal(startup.status, 1, startup.stderr);
+  assert.match(startup.stderr, /kit identity.*architecture-harness/i);
+  for (const value of ["{", "null", "[]", "{}", JSON.stringify({ name: "consumer", version: "1.0.0" }),
+    ...[null, "", "   ", 29].map(version => JSON.stringify({ name: "architecture-harness", version }))]) {
+    writeFileSync(metadata, value);
+    assert.throws(() => kitIdentity(metadata), /kit identity/i);
+  }
 });

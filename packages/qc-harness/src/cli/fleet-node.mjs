@@ -385,7 +385,7 @@ function receiveAssignments(root, fleet, now, leader) {
   }
 }
 
-async function assignWork({ root, fleet, repo, kit, term, clock, gh, git, holdLabel, fetch, signal, warn }) {
+async function assignWork({ root, fleet, repo, kit, term, clock, gh, git, holdLabel, fetch, signal, warn, warnedKitPairs }) {
   const { free } = freeIssues(repo, root, { gh, git, holdLabel });
   const rows = JSON.parse(gh(["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", repo], { cwd: root }));
   if (!Array.isArray(rows) || !rows.every(row => Number.isSafeInteger(row?.number) && row.number > 0)) throw new Error("gh issue list returned no readable list");
@@ -399,6 +399,12 @@ async function assignWork({ root, fleet, repo, kit, term, clock, gh, git, holdLa
     .map(({ node, kind, body }) => ({ node, attempts: 0, nextAttempt: clock(),
     message: unsignedFields(createMessage({ from: fleet.self, repo, kind, body, time: new Date(clock()).toISOString() }, fleet.secret)) }));
   if (pending.length) writeState(root, "outbox", [...outbox, ...pending]);
+  for (const { node, peerKit, leaderKit } of result.kitMismatches) {
+    const key = JSON.stringify([node, peerKit, leaderKit]);
+    if (warnedKitPairs.has(key)) continue;
+    warnedKitPairs.add(key);
+    warn(`node ${node} runs kit ${peerKit}, leader runs ${leaderKit}`);
+  }
   for (const warning of result.warnings) warn(warning);
   await flushOutbox({ root, fleet, clock, fetch, signal, gh, leader: true,
     allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, term, role) });
@@ -537,6 +543,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   let discoverySocket;
   try { if (fleet.discover) discoverySocket = await startDiscovery({ ...discovery, root, fleet, address: server.address().address, clock, interfaces, warn, pairing }); }
   catch (error) { server.close(); throw error; }
+  const warnedKitPairs = new Set();
   const sends = new AbortController();
   let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000, nextAssign = clock() + 60_000, nextGithub = clock();
   const shutdown = () => {
@@ -578,7 +585,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;
         const role = savedRole(root);
-        if (role.leader && canAssign(root, fleet, clock())) await assignWork({ root, fleet, repo, kit, term: role.term, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
+        if (role.leader && canAssign(root, fleet, clock())) await assignWork({ root, fleet, repo, kit, term: role.term, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn, warnedKitPairs });
         else if (!role.leader) {
           const repos = new Set(Object.values(readState(root, "assignments")).filter(row => row.node === fleet.self).map(row => row.repo));
           for (const repo of repos) {

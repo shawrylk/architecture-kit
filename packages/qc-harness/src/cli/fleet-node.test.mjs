@@ -676,8 +676,8 @@ test("regression: leader queues every new assign before a stop during the first 
   let tick, time = now, savedAtSend;
   const nodes = { ...fleet, nodes: ["a", "b", "c"].map((id, index) => ({ id, address: "127.0.0.1", port: 8080 + index, weight: 1, maxSize: "L" })) };
   writeState(root, "assignments", { "o/r#99": { repo: "o/r", issue: 99, node: "a", epoch: 1, time: now } });
-  writeState(root, "peers", { b: { time: now, kit: null, term: 1, leader: false }, c: { time: now, kit: null, term: 1, leader: false } });
-  const server = await serveNode({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => time, listen: { port: 0 },
+  writeState(root, "peers", { b: { time: now, kit: "architecture-harness@0.29.0", term: 1, leader: false }, c: { time: now, kit: "architecture-harness@0.29.0", term: 1, leader: false } });
+  const server = await serveNode({ root, fleet: nodes, repo: "o/r", kit: "architecture-harness@0.29.0", leader: true, clock: () => time, listen: { port: 0 },
     timer: fn => { tick = fn; }, clearTimer() {}, onSignal: (name, fn) => signals.set(name, fn), offSignal() {}, git: () => "",
     gh: args => args[0] === "api" ? apiResponse(args) : JSON.stringify(args[0] === "pr" ? [] : args.includes("number") ? [1, 2, 99].map(number => ({ number }))
       : [1, 2].map(number => ({ number, labels: [], createdAt: "2026-01-01" }))),
@@ -839,13 +839,13 @@ test("regression: an older Leader heartbeat cannot restore b after takeover by c
     fetch: async () => ({ status: 202 }), gh: () => JSON.stringify([{ number: 7 }]) });
   t.after(() => new Promise(resolve => follower.close(resolve)));
   const post = envelope => fetch(`http://127.0.0.1:${follower.address().port}/message`, { method: "POST", body: JSON.stringify(envelope) });
-  const oldBeat = message({ from: "a", kind: "heartbeat", body: { kit: null, term: 1, leader: true,
+  const oldBeat = message({ from: "a", kind: "heartbeat", body: { kit: "architecture-harness@0.29.0", term: 1, leader: true,
     assigned: [{ repo: "o/r", issue: 7, epoch: 1 }] } });
   const held = { repo: "o/r", issue: 7, node: "b", epoch: 1, time: now };
   writeState(followerRoot, "assignments", { "o/r#7": held });
   writeState(root, "assignments", { "o/r#7": held, "o/r#8": { ...held, issue: 8, node: "a" } });
-  writeState(root, "peers", { b: { time: now - 30_000, kit: null }, c: { time: now, kit: null } });
-  const leader = await serveNode({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => time,
+  writeState(root, "peers", { b: { time: now - 30_000, kit: "architecture-harness@0.29.0" }, c: { time: now, kit: "architecture-harness@0.29.0" } });
+  const leader = await serveNode({ root, fleet: nodes, repo: "o/r", kit: "architecture-harness@0.29.0", leader: true, clock: () => time,
     listen: { port: 0 }, timer: fn => { leaderTick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, git: () => "",
     gh: args => JSON.stringify(args.includes("number") ? [{ number: 7 }, { number: 8 }] : []),
     fetch: async (url, options) => url.includes(":8081/") ? post(JSON.parse(options.body)) : { status: 202 } });
@@ -878,8 +878,8 @@ test("three-node takeover saves the dead node's branch and head on the new follo
   t.after(() => new Promise(resolve => follower.close(resolve)));
   const row = (issue, node) => ({ repo: "o/r", issue, node, epoch: 1, time: now });
   writeState(root, "assignments", { "o/r#7": row(7, "b"), "o/r#8": row(8, "a") });
-  writeState(root, "peers", { b: { time: now - 30_000, kit: null, work: [{ repo: "o/r", issue: 7, epoch: 1, step: "code", branch, head }] }, c: { time: now, kit: null } });
-  const leader = await serveNode({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => time,
+  writeState(root, "peers", { b: { time: now - 30_000, kit: "architecture-harness@0.29.0", work: [{ repo: "o/r", issue: 7, epoch: 1, step: "code", branch, head }] }, c: { time: now, kit: "architecture-harness@0.29.0" } });
+  const leader = await serveNode({ root, fleet: nodes, repo: "o/r", kit: "architecture-harness@0.29.0", leader: true, clock: () => time,
     listen: { port: 0 }, timer: fn => { leaderTick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, git: () => "",
     gh: args => JSON.stringify(args.includes("number") ? [{ number: 7 }, { number: 8 }] : []),
     fetch: async (url, options) => url.includes(":8082/")
@@ -1130,7 +1130,7 @@ test("demotion during an awaited send fences the next assignment, Leader send an
   for (const phase of ["retry", "assignment", "heartbeat"]) await t.test(phase, async t => {
     let f, demoted = false, readsAfterDemotion = 0;
     const sent = [], warnings = [];
-    f = await electionNode(t, "a", 3, { leader: true, git: () => "", warn: text => warnings.push(text),
+    f = await electionNode(t, "a", 3, { leader: true, kit: "architecture-harness@0.29.0", git: () => "", warn: text => warnings.push(text),
       gh: args => { if (args[0] === "api") return apiResponse(args); if (demoted) readsAfterDemotion++; return JSON.stringify(args.includes("number") ? [{ number: 7 }, { number: 8 }] : []); },
       fetch: async (_url, options) => {
         const outgoing = JSON.parse(options.body);
@@ -1138,14 +1138,14 @@ test("demotion during an awaited send fences the next assignment, Leader send an
         if (!demoted && outgoing.kind === (phase === "retry" ? "question" : phase === "assignment" ? "assign" : "heartbeat")) {
           const response = await fetch(`http://127.0.0.1:${f.server.address().port}/message`, { method: "POST",
             body: JSON.stringify(message({ from: "b", kind: "heartbeat", time: new Date(now + 60_000).toISOString(),
-              body: { leader: true, term: 2, kit: null, assigned: [], work: [] } })) });
+              body: { leader: true, term: 2, kit: "architecture-harness@0.29.0", assigned: [], work: [] } })) });
           assert.equal(response.status, 202);
           assert.equal(readState(f.root, "node").leader, false);
           demoted = true;
         }
         return { status: 202 };
       } });
-    writeState(f.root, "peers", Object.fromEntries(["b", "c"].map(id => [id, { leader: false, term: 1, kit: null, time: now }])));
+    writeState(f.root, "peers", Object.fromEntries(["b", "c"].map(id => [id, { leader: false, term: 1, kit: "architecture-harness@0.29.0", time: now }])));
     if (phase === "retry") writeState(f.root, "outbox", ["question", "assign", "approve", "answer"].map((kind, i) => ({
       node: "c", attempts: 0, nextAttempt: now, message: message({ from: "a", kind, body: { issue: i + 1, epoch: 1 } }) })));
     if (phase === "assignment") writeState(f.root, "assignments", Object.fromEntries(["b", "c"].map((node, i) =>
@@ -1447,4 +1447,81 @@ test("serve rereads the fleet file and leaves join mode on a tick without restar
   assert.equal(JSON.parse(readFileSync(file, "utf8")).secret, secret);
   assert.ok(githubReads > 0);
   assert.equal((await fetch(`${base}/message`, { method: "POST", body: "{}" })).status, 400);
+});
+
+
+test("version identity survives signed heartbeat receipt", async t => {
+  const root = fixture(t), kit = "architecture-harness@0.29.0-rc.1+build.2";
+  const server = await createNodeServer({ root, fleet, clock: () => now, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await heartbeat({ root: fixture(t), fleet: { ...fleet, self: "b" }, repo: "o/r", kit, clock: () => now,
+    fetch: async (_url, options) => {
+      const outgoing = JSON.parse(options.body);
+      assert.equal(verifyMessage(outgoing, { secret, nodes: fleet.nodes, seen: {}, now }).ok, true);
+      return fetch(`http://127.0.0.1:${server.address().port}/message`, options);
+    } });
+  assert.equal(readState(root, "peers").b.kit, kit);
+});
+
+async function warningNode(t, kit = "architecture-harness@0.29.0", root = fixture(t)) {
+  const warnings = [], sent = [];
+  let tick, time = now;
+  const nodes = { ...fleet, leaders: ["a", "b", "c"], nodes: [
+    { ...fleet.nodes[0], weight: 1, maxSize: "S" },
+    ...["b", "c"].map(id => ({ id, address: "127.0.0.1", port: 8081, weight: 1, maxSize: "L", active: true })),
+  ] };
+  const server = await serveNode({ root, fleet: nodes, repo: "o/r", kit, leader: true, clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: text => warnings.push(text), git: () => "",
+    gh: args => args[0] === "api" ? apiResponse(args) : JSON.stringify(args[0] === "pr" ? [] :
+      args.includes("number,labels,createdAt") ? [{ number: 1, labels: [], createdAt: "2026-01-01" }] : [{ number: 1 }, { number: 99 }]),
+    fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); return { status: 202 }; } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  return { root, warnings, sent, kit, close: () => new Promise(resolve => server.close(resolve)), async step(peerKit = "old-A", extra = {}) {
+    time += 60_000;
+    writeState(root, "peers", Object.fromEntries(["b", "c"].map(id => [id, { time, kit: peerKit, term: 1, leader: false, ...extra[id] }])));
+    await tick();
+    return time;
+  } };
+}
+
+test("Leader warns once across multiple assignment ticks per peer and kit pair", async t => {
+  const f = await warningNode(t);
+  for (const [kit, count] of [["old-A", 2], ["old-A", 2], ["old-B", 4], ["old-A", 4], [f.kit, 4], ["old-A", 4]]) {
+    writeState(f.root, "assignments", {});
+    await f.step(kit);
+    assert.equal(f.warnings.length, count);
+    if (kit !== f.kit) assert.deepEqual(readState(f.root, "assignments"), {});
+    else assert.equal(Object.values(readState(f.root, "assignments"))[0].node === "a", false);
+  }
+  assert.deepEqual(f.warnings, ["b", "c"].map(id => `node ${id} runs kit old-A, leader runs ${f.kit}`)
+    .concat(["b", "c"].map(id => `node ${id} runs kit old-B, leader runs ${f.kit}`)));
+  writeState(f.root, "assignments", {});
+  writeState(f.root, "node", { ...readState(f.root, "node"), leader: false, term: 2 });
+  await f.step("old-A", { b: { leader: true, term: 2, assigned: [], work: [] } });
+  assert.equal(readState(f.root, "node").leader, false);
+  writeState(f.root, "node", { ...readState(f.root, "node"), leader: true, term: 3 });
+  await f.step();
+  assert.equal(readState(f.root, "node").leader, true);
+  assert.equal(f.warnings.length, 4);
+  assert.deepEqual(readState(f.root, "assignments"), {});
+  await f.close();
+  for (const leaderKit of [f.kit, "architecture-harness@0.30.0"]) {
+    const restarted = await warningNode(t, leaderKit, f.root);
+    await restarted.step(); await restarted.step();
+    assert.equal(restarted.warnings.length, 2);
+    assert.ok(restarted.warnings.every(text => text.endsWith(`leader runs ${leaderKit}`)));
+    assert.deepEqual(readState(restarted.root, "assignments"), {});
+    await restarted.close();
+  }
+});
+
+test("other warning kinds repeat independently", async t => {
+  const f = await warningNode(t);
+  writeState(f.root, "assignments", { "o/r#99": { repo: "o/r", issue: 99, node: "dead", epoch: 1, time: now - 90_000, size: "M" } });
+  for (let i = 0; i < 3; i++) await f.step("old-A", { c: { load: { cpu: 0.99 } } });
+  assert.equal(f.warnings.filter(text => text.includes("runs kit")).length, 1);
+  assert.equal(f.warnings.filter(text => text.includes("is overloaded")).length, 3);
+  assert.equal(f.warnings.filter(text => text.includes("is dead")).length, 3);
+  assert.equal(readState(f.root, "assignments")["o/r#1"], undefined);
+  assert.equal(f.sent.filter(m => m.kind === "assign").length, 0);
 });
