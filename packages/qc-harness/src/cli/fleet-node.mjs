@@ -1,3 +1,5 @@
+import os from "node:os";
+import { sampleLoad } from "./fleet-load.mjs";
 import { hostOS } from "./legs.mjs";
 import { platformTick } from "./fleet-platform.mjs";
 import { randomUUID } from "node:crypto";
@@ -8,7 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { lookup } from "node:dns/promises";
 import { receiveTalk } from "./fleet-talk.mjs";
-import { assignTick } from "./fleet-assign.mjs";
+import { assignTick, overloaded } from "./fleet-assign.mjs";
 import { readOpenAssignments, freeIssues } from "./fleet.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage } from "./fleet-message.mjs";
@@ -184,7 +186,13 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
   }
 }
 
-export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now, fetch = nodeFetch, signal }) {
+const loadRounds = new Map();
+
+export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, os: host = os, clock = Date.now, fetch = nodeFetch, signal }) {
+  const previous = loadRounds.get(root);
+  const { cpu, mem, sample } = sampleLoad({ os: host, previous: previous?.sample });
+  const load = { cpu, mem, rtt: previous?.rtt ?? null };
+  const durations = [];
   // No snapshot survives a network await: confirmation may rebuild assignments during a send.
   const bodyFor = id => {
     const role = savedRole(root, leader);
@@ -194,7 +202,7 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
       return { repo: row.repo, issue: row.issue, epoch: row.epoch, step: current.step ?? null,
         branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
     });
-    return { kit, os: hostOS(), ...role, work, ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
+    return { kit, os: hostOS(), load, ...role, work, ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
       .map(({ repo, issue, epoch }) => ({ repo, issue, epoch })) } : {}) };
   };
   const local = bodyFor(fleet.self);
@@ -204,11 +212,24 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
     writeState(root, "peers", peers);
   }
   for (const node of fleet.nodes) {
-    if (signal?.aborted) return;
+    if (signal?.aborted) break;
     if (node.id === fleet.self || node.active === false || !node.address) continue;
     const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: bodyFor(node.id),
       time: new Date(clock()).toISOString() }, fleet.secret);
-    await sendMessage({ root, fleet, node, message, clock, fetch, signal });
+    const started = clock();
+    if (await sendMessage({ root, fleet, node, message, clock, fetch, signal })) {
+      durations.push(Math.min(600_000, Math.max(0, clock() - started)));
+    }
+  }
+  durations.sort((a, b) => a - b);
+  const middle = Math.floor(durations.length / 2);
+  const rtt = durations.length ? (durations.length % 2 ? durations[middle] : (durations[middle - 1] + durations[middle]) / 2) : null;
+  loadRounds.set(root, { sample, rtt });
+  const latest = bodyFor(fleet.self);
+  if (latest.leader) {
+    const peers = readState(root, "peers");
+    peers[fleet.self] = { time: clock(), ...latest, load: { cpu, mem, rtt } };
+    writeState(root, "peers", peers);
   }
 }
 
@@ -308,7 +329,12 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
   const recent = others.filter(node => Number.isFinite(peers[node.id]?.time) && time - peers[node.id].time >= 0 && time - peers[node.id].time <= 90_000);
   const leader = running && record.leader ? fleet.self : recent.find(node => peers[node.id].leader === true && (peers[node.id].term ?? 1) >= highestTerm(root))?.id ?? "unknown";
   const proposal = readState(root, "proposal");
-  return `node=${status} leader=${leader} peers=${recent.length}/${others.length}` +
+  const loads = recent.map(node => {
+    const load = peers[node.id].load;
+    const percent = value => value == null ? "-" : `${Math.round(value * 100)}%`;
+    return `\nload ${node.id} cpu=${percent(load?.cpu)} mem=${percent(load?.mem)} rtt=${load?.rtt == null ? "-" : `${load.rtt}ms`}${overloaded(load).length ? " overloaded" : ""}`;
+  }).join("");
+  return `node=${status} leader=${leader} peers=${recent.length}/${others.length}` + loads +
     (proposal.id && validTerm(proposal.term) ? `\nproposed Leader ${proposal.id} term ${proposal.term}: run npx architecture-harness fleet confirm-leader` : "");
 }
 
@@ -474,7 +500,7 @@ export function confirmLeader({ root, fleet, clock = Date.now }) {
 }
 
 /** One serial tick avoids overlapping network retries and heartbeats. */
-export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now,
+export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, os: host = os, clock = Date.now,
   fetch = nodeFetch, gh = runGh, git, platform = {}, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
   const server = await createNodeServer({ root, fleet, clock, listen, instance });
@@ -533,7 +559,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
         if (!closing && clock() >= nextHeartbeat) {
           nextHeartbeat = clock() + 30_000;
           leader = savedRole(root).leader;
-          await heartbeat({ root, fleet, repo, kit, leader, clock, fetch, signal: sends.signal });
+          await heartbeat({ root, fleet, repo, kit, leader, os: host, clock, fetch, signal: sends.signal });
         }
       } catch (error) { warn(`fleet node: ${error.message}`); }
       finally { busy = false; }

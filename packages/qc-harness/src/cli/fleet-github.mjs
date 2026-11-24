@@ -8,7 +8,12 @@ const assignmentRef = row => row && typeof row.repo === "string" && /^[a-z0-9][a
 export const validBranch = value => value === undefined || value === null || (typeof value === "string" && value.length > 0 && !/[\s\x00-\x1f\x7f]/.test(value));
 export const validHead = value => value === undefined || value === null || (typeof value === "string" && /^[0-9a-f]{40}$/i.test(value));
 export const validWork = row => assignmentRef(row) && [null, "plan", "code", "review", "merge"].includes(row.step) && validBranch(row.branch) && validHead(row.head);
+const validLoad = load => load !== null && typeof load === "object" && !Array.isArray(load) &&
+  Object.entries({ cpu: 1, mem: 1, rtt: 600_000 }).every(([key, limit]) =>
+    load[key] === null || (Number.isFinite(load[key]) && load[key] >= 0 && load[key] <= limit)) &&
+  Object.keys(load).every(key => ["cpu", "mem", "rtt"].includes(key));
 const validHeartbeat = body => validTerm(body.term) && typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
+  (body.load === undefined || validLoad(body.load)) &&
   (body.work === undefined || (Array.isArray(body.work) && body.work.every(validWork))) &&
   (body.assigned === undefined || (Array.isArray(body.assigned) && body.assigned.every(assignmentRef)));
 
@@ -44,6 +49,7 @@ export function receiveMessage({ root, fleet, message, clock = Date.now }) {
       Date.parse(message.time) <= Date.parse(previous?.messageTime))) {
       peers[message.from].time = time;
     } else Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, term: message.body.term, leader: accepted,
+      ...(message.body.load === undefined ? {} : { load: message.body.load }),
       ...(message.body.os === undefined ? {} : { os: message.body.os }),
       ...(message.body.work === undefined ? {} : { work: message.body.work }),
       ...(message.body.assigned === undefined ? {} : { assigned: message.body.assigned }) }, enumerable: true, configurable: true, writable: true });

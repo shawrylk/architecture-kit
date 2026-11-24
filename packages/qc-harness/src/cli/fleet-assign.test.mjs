@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { assignTick } from "./fleet-assign.mjs";
+import { assignTick, overloaded } from "./fleet-assign.mjs";
 import { ownerOf } from "./fleet.mjs";
 
 const now = 100_000;
@@ -111,4 +111,27 @@ test("takeover uses ownerOf, excludes stale candidates, and retains size for tak
   }
   const first = assignTick({ ...base, open: new Set([1]), free: [row(1, [], "L")] });
   assert.equal(first.assignments["o/r#1"].size, "L");
+});
+
+test("overload limits are inclusive and unknown values do not count", () => {
+  assert.deepEqual(overloaded(), []);
+  assert.deepEqual(overloaded({ cpu: null, mem: null, rtt: null }), []);
+  assert.deepEqual(overloaded({ cpu: 0.89, mem: 0.89, rtt: 1999 }), []);
+  for (const [field, value, reason] of [["cpu", 0.9, "cpu 90%"], ["mem", 0.9, "mem 90%"], ["rtt", 2000, "rtt 2000ms"]]) {
+    assert.deepEqual(overloaded({ [field]: value }), [reason]);
+  }
+  assert.deepEqual(overloaded({ cpu: 0.95, mem: 0.91, rtt: 2100 }), ["cpu 95%", "mem 91%", "rtt 2100ms"]);
+});
+
+test("overloaded peers and Leader get no new work or takeover and keep held work", () => {
+  for (const id of ["a", "b"]) for (const load of [{ cpu: 0.95 }, { mem: 0.9 }, { rtt: 2000 }]) {
+    const input = { ...base, fleet: { self: "a", nodes: [node(id)] }, peers: { [id]: { time: now, kit: "kit", load } } };
+    const fresh = assignTick(input);
+    assert.deepEqual(fresh.assignments, {});
+    assert.deepEqual(fresh.warnings, [`node ${id} is overloaded: ${overloaded(load).join(", ")}`]);
+    const held = { "o/r#1": saved(1, id) };
+    assert.deepEqual(assignTick({ ...input, assignments: held }).assignments, held);
+    const dead = { "o/r#1": saved(1, "dead") };
+    assert.deepEqual(assignTick({ ...input, assignments: dead }).assignments, dead);
+  }
 });

@@ -1,11 +1,23 @@
 import { ownerOf } from "./fleet.mjs";
 
+/** Human-readable reasons for withholding new work; unknown metrics never count. */
+export function overloaded(load) {
+  const reasons = [];
+  if (load?.cpu != null && load.cpu >= 0.9) reasons.push(`cpu ${Math.round(load.cpu * 100)}%`);
+  if (load?.mem != null && load.mem >= 0.9) reasons.push(`mem ${Math.round(load.mem * 100)}%`);
+  if (load?.rtt != null && load.rtt >= 2000) reasons.push(`rtt ${load.rtt}ms`);
+  return reasons;
+}
+
 /** Keep open work stable and give each idle, compatible live node one issue. */
 export function assignTick({ fleet, repo, open, free, assignments, peers, kit, now }) {
   const kept = Object.fromEntries(Object.entries(assignments).filter(([, row]) => row.repo !== repo || open.has(row.issue)));
   const messages = [], warnings = [];
   const busy = new Set(Object.values(kept).map(row => row.node));
   const idle = fleet.nodes.filter(node => {
+    const reasons = overloaded(peers[node.id]?.load);
+    if (reasons.length) warnings.push(`node ${node.id} is overloaded: ${reasons.join(", ")}`);
+    if (reasons.length) return false;
     if (node.id === fleet.self) return !busy.has(node.id);
     const peer = peers[node.id];
     if (peer && peer.kit !== kit) warnings.push(`node ${node.id} runs kit ${peer.kit}, leader runs ${kit}`);
