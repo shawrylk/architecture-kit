@@ -155,15 +155,21 @@ It also selects every test whose text contains a changed file's base name (for e
 Every affected selection includes all `packages/qc-harness/src/gates/*.test.mjs` files because they can scan the whole tree without importing changed modules.
 Runtime paths built without that literal base name can escape selection; spawning a process alone does not force the full suite.
 Imports missed by both text scans are also an accepted selection limit; this scan is not a JavaScript lexer.
-Full runs on main and nightly provide the safety net for those cases.
+Full nightly runs provide the safety net for those cases.
 Uncertain dependency coverage, a deletion, missing base, shared config change, or uncovered file falls back to the repository test script.
 The base defaults to `check.base`. This mode accepts no file list, `--full`, `--os`, or `--since-push`.
 A passing affected run records the same host leg as a full run, only for a clean, unchanged head.
 Readiness still requires exact-head evidence and every configured platform when the diff has platform risk.
 
-CI runs affected checks on pull requests on Linux and Windows. Main pushes and nightly runs at 02:00 UTC run the full suite.
-Preview dispatches and merge queues also keep the full suite. Main or nightly failures open one `ci-red` and `priority` issue
-per failing SHA with its run URL; only that trusted reporting job receives issue-write permission.
+CI runs affected checks on Ubuntu for pull requests and main pushes; Windows also runs when the platform-risk scan finds a hit.
+Main pushes compare with the event's previous commit; a missing or all-zero commit runs the full suite.
+Nightly runs at 02:00 UTC, preview dispatches and merge queues keep the full suite and their platform legs.
+Main or nightly failures open one `ci-red` and `priority` issue per failing SHA with its run URL;
+only that trusted reporting job receives issue-write permission.
+
+| Command | Result |
+|---|---|
+| `qc platform-risk [--base <ref>]` | Scan added code and file metadata against `origin/main` by default; print up to ten `file:line reason` hits, then `risky=true` or `risky=false`; append the boolean to `GITHUB_OUTPUT` when set; exit 0 for either result and 1 on error |
 
 ### Record platform legs
 
