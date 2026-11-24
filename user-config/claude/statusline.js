@@ -104,7 +104,7 @@ function gitCommonDir(dir) {
   } catch { return null; }
 }
 
-function fleetSegment(dir) {
+function fleetSegment(dir, git) {
   try {
     // Keep in sync with fleetPath in the CLI; this script runs standalone.
     const base = process.platform === 'win32' && process.env.APPDATA
@@ -113,7 +113,7 @@ function fleetSegment(dir) {
     const self = JSON.parse(fs.readFileSync(file, 'utf8'))?.self;
     if (typeof self !== 'string' || !/^[a-z0-9-]{1,32}$/.test(self)) return null;
     let mark = '';
-    const commonDir = gitCommonDir(dir);
+    const commonDir = git ? gitCommonDir(dir) : null;
     if (commonDir) {
       mark = ' off';
       try {
@@ -320,7 +320,7 @@ process.stdin.on('data', (d) => { raw += d; }).on('end', () => {
   const line1 = [
     { text: tildePath(dir), color: ORANGE_BROWN },
     git ? { text: gitSegmentText(git), color: DARK_GREY } : null,
-    fleetSegment(dir),
+    fleetSegment(dir, git),
     typeof ctxPct === 'number' ? { text: contextText(ctxPct, j.context_window?.context_window_size), color: SLATE } : null,
   ];
 

@@ -80,6 +80,15 @@ test("marks a live leader", t => {
   assert.match(f.run(), /fleet dev-1 leader /);
 });
 
+test("shows no fleet mark inside the git directory of a live leader", t => {
+  const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
+  f.node({ pid: process.pid, leader: true });
+  const output = f.run(path.join(f.cwd, ".git"));
+  assert.match(output, /fleet dev-1 /);
+  assert.doesNotMatch(output, /fleet dev-1 (leader|off)/);
+});
+
 test("marks a live leader through a symlinked checkout subfolder", t => {
   const f = fixture(t);
   const nested = path.join(f.cwd, "nested");
