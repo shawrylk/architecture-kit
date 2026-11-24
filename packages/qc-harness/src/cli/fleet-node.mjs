@@ -10,7 +10,7 @@ import { assignTick } from "./fleet-assign.mjs";
 import { readOpenAssignments, freeIssues } from "./fleet.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage, verifyMessage } from "./fleet-message.mjs";
-import { latestLeader, pruneSeen, readState, stateDir, writeState } from "./fleet-state.mjs";
+import { highestTerm, leaderCandidate, leaderDead, livePeer, validTerm, latestLeader, pruneSeen, readState, stateDir, writeState } from "./fleet-state.mjs";
 
 const LIMIT = 64 * 1024;
 const assignmentRef = row => row && typeof row.repo === "string" && /^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/i.test(row.repo) &&
@@ -18,7 +18,7 @@ const assignmentRef = row => row && typeof row.repo === "string" && /^[a-z0-9][a
 const validBranch = value => value === undefined || value === null || (typeof value === "string" && value.length > 0 && !/[\s\x00-\x1f\x7f]/.test(value));
 const validHead = value => value === undefined || value === null || (typeof value === "string" && /^[0-9a-f]{40}$/i.test(value));
 const validWork = row => assignmentRef(row) && [null, "plan", "code", "review", "merge"].includes(row.step) && validBranch(row.branch) && validHead(row.head);
-const validHeartbeat = body => typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
+const validHeartbeat = body => validTerm(body.term) && typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
   (body.work === undefined || (Array.isArray(body.work) && body.work.every(validWork))) &&
   (body.assigned === undefined || (Array.isArray(body.assigned) && body.assigned.every(assignmentRef)));
 const endpoint = node => `http://${node.address.includes(":") ? `[${node.address}]` : node.address}:${node.port ?? 8080}`;
@@ -86,12 +86,25 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
         if (message.kind !== "heartbeat") writeState(root, "queue", [...readState(root, "queue"), message]);
         writeState(root, "seen", seen);
         if (message.kind === "heartbeat") {
+          const election = readState(root, "election"), node = readState(root, "node");
+          const highest = Math.max(highestTerm(root), message.body.term);
+          const accepted = message.body.leader && message.body.term >= highest;
+          election.highest = highest;
+          if (accepted) {
+            election.lastLeaderAt = time;
+            if (node.leader && message.body.term > (node.term ?? 1)) writeState(root, "node", { ...node, leader: false });
+            if (readState(root, "proposal").term <= message.body.term) writeState(root, "proposal", {});
+          }
+          writeState(root, "election", election);
           const peers = readState(root, "peers");
-          if (Date.parse(message.time) <= Date.parse(peers[message.from]?.messageTime)) {
+          const previous = peers[message.from];
+          if (message.body.term < (previous?.term ?? 1) || (message.body.term === (previous?.term ?? 1) &&
+            Date.parse(message.time) <= Date.parse(previous?.messageTime))) {
             peers[message.from].time = time;
-          } else Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, leader: message.body.leader,
+          } else Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, term: message.body.term, leader: accepted,
             ...(message.body.work === undefined ? {} : { work: message.body.work }),
             ...(message.body.assigned === undefined ? {} : { assigned: message.body.assigned }) }, enumerable: true, configurable: true, writable: true });
+          for (const peer of Object.values(peers)) if ((peer.term ?? 1) < highest) peer.leader = false;
           writeState(root, "peers", peers);
         }
         reply(202, { ok: true });
@@ -146,11 +159,12 @@ export async function sendMessage({ root = process.cwd(), fleet, node, message, 
 }
 
 /** Only a transient failure holds later messages behind the oldest entry. */
-export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal }) {
+export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal, allow = () => true }) {
   if (signal?.aborted) return;
   const pending = readState(root, "outbox");
   for (const entry of pending) {
     if (signal?.aborted) return;
+    if (!allow(entry.message)) continue;
     if (entry.nextAttempt > clock()) break;
     const node = fleet.nodes.find(node => node.id === entry.node);
     let result;
@@ -176,6 +190,7 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
 }
 
 export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now, fetch = nodeFetch, signal }) {
+  const term = leader ? readState(root, "node").term ?? 1 : highestTerm(root);
   const assignments = Object.values(readState(root, "assignments")), saved = readState(root, "work");
   const work = assignments.filter(row => row.node === fleet.self).map(row => {
     const current = saved[`${row.repo}#${row.issue}`]?.epoch === row.epoch ? saved[`${row.repo}#${row.issue}`] : {};
@@ -185,13 +200,13 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
   const assignedTo = id => assignments.filter(row => row.node === id).map(({ repo, issue, epoch }) => ({ repo, issue, epoch }));
   if (leader) {
     const peers = readState(root, "peers");
-    peers[fleet.self] = { time: clock(), kit, leader, work, assigned: assignedTo(fleet.self) };
+    peers[fleet.self] = { time: clock(), kit, leader, term, work, assigned: assignedTo(fleet.self) };
     writeState(root, "peers", peers);
   }
   for (const node of fleet.nodes) {
     if (signal?.aborted) return;
     if (node.id === fleet.self || node.active === false || !node.address) continue;
-    const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: { kit, leader, work,
+    const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: { kit, leader, term, work,
       ...(leader ? { assigned: assignedTo(node.id) } : {}) }, time: new Date(clock()).toISOString() }, fleet.secret);
     await sendMessage({ root, fleet, node, message, clock, fetch, signal });
   }
@@ -291,21 +306,23 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
   const time = clock(), peers = readState(root, "peers");
   const others = fleet.nodes.filter(node => node.id !== fleet.self);
   const recent = others.filter(node => Number.isFinite(peers[node.id]?.time) && time - peers[node.id].time >= 0 && time - peers[node.id].time <= 90_000);
-  const leader = running && record.leader ? fleet.self : recent.find(node => peers[node.id].leader === true)?.id ?? "unknown";
-  return `node=${status} leader=${leader} peers=${recent.length}/${others.length}`;
+  const leader = running && record.leader ? fleet.self : recent.find(node => peers[node.id].leader === true && (peers[node.id].term ?? 1) >= highestTerm(root))?.id ?? "unknown";
+  const proposal = readState(root, "proposal");
+  return `node=${status} leader=${leader} peers=${recent.length}/${others.length}` +
+    (proposal.id && validTerm(proposal.term) ? `\nproposed Leader ${proposal.id} term ${proposal.term}: run qc fleet confirm-leader` : "");
 }
 
 /** Consume assignments only after checking the sender's latest leadership claim. */
 function receiveAssignments(root, fleet, now, leader) {
   const queue = readState(root, "queue"), peers = readState(root, "peers"), assignments = readState(root, "assignments");
-  const snapshot = latestLeader(peers);
+  const snapshot = latestLeader(peers, highestTerm(root));
   const kept = [];
   for (const message of queue) {
     if (message.kind !== "assign") { kept.push(message); continue; }
     const { issue, epoch } = message.body ?? {};
     if (!Number.isSafeInteger(issue) || issue <= 0 || !Number.isSafeInteger(epoch) || epoch <= 0 ||
       !validBranch(message.body.branch) || !validHead(message.body.head)) continue;
-    const claim = peers[message.from]?.leader;
+    const claim = (peers[message.from]?.term ?? 1) < highestTerm(root) ? false : peers[message.from]?.leader;
     if (claim !== true) {
       if (claim !== false && now - Date.parse(message.time) < 600_000) kept.push(message);
       continue;
@@ -322,7 +339,7 @@ function receiveAssignments(root, fleet, now, leader) {
     }
   }
   let removed = false;
-  if (!leader && snapshot) {
+  if (!leader && snapshot && !leaderDead(root, now)) {
     for (const [key, row] of Object.entries(assignments)) {
       if (row.node === fleet.self && !snapshot.assigned?.some(item => item.repo === row.repo && item.issue === row.issue && item.epoch === row.epoch)) {
         delete assignments[key];
@@ -354,6 +371,92 @@ async function assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, f
   await flushOutbox({ root, fleet, clock, fetch, signal });
 }
 
+/** A disconnected Leader pauses assignment after the same grace period as peer death. */
+function canAssign(root, fleet, now) {
+  const election = readState(root, "election");
+  return now - (election.lastPeerAt ?? election.started ?? now) < 90_000;
+}
+
+async function electionTick({ root, fleet, repo, clock, fetch, signal }) {
+  const now = clock(), peers = readState(root, "peers"), record = readState(root, "node");
+  const election = readState(root, "election");
+  const live = fleet.nodes.filter(node => node.id !== fleet.self && node.active !== false && node.address && livePeer(peers[node.id], now));
+  if (live.length) election.lastPeerAt = Math.max(...live.map(node => peers[node.id].time));
+  election.highest = highestTerm(root);
+  writeState(root, "election", election);
+  const dead = !record.leader && leaderDead(root, now), candidate = leaderCandidate(root, fleet, now);
+  const send = async (node, kind, term) => sendMessage({ root, fleet, node, clock, fetch, signal,
+    message: createMessage({ from: fleet.self, repo, kind, body: { term, ...(kind === "leader" ? { accept: true } : {}) },
+      time: new Date(now).toISOString() }, fleet.secret) });
+  const kept = [], replies = [];
+  for (const message of readState(root, "queue")) {
+    if (!["propose-leader", "leader"].includes(message.kind)) { kept.push(message); continue; }
+    const term = message.body?.term, sender = live.find(node => node.id === message.from);
+    if (!validTerm(term) || !sender || term < election.highest) continue;
+    const previous = election.highest;
+    election.highest = term;
+    if (message.kind === "propose-leader") {
+      if (!dead || candidate !== message.from || term <= (record.term ?? 1) || (election.votedTerm ?? 0) >= term) continue;
+      election.votedTerm = term;
+      writeState(root, "election", election); // Save the vote before attempting delivery.
+      replies.push([sender, "leader", term]);
+    } else if (dead && candidate === fleet.self && message.body.accept === true &&
+      election.candidateTerm === term && previous <= term) {
+      writeState(root, "proposal", { id: fleet.self, term });
+    }
+  }
+  writeState(root, "queue", kept);
+  if (dead && candidate === fleet.self && live.length && (!election.candidateTerm || election.candidateTerm < election.highest)) {
+    const term = election.highest + 1;
+    if (!validTerm(term)) throw new Error("fleet term exhausted");
+    election.highest = term;
+    election.candidateTerm = term;
+    election.votedTerm = term;
+    writeState(root, "election", election);
+    for (const node of live) replies.push([node, "propose-leader", term]);
+  }
+  for (const peer of Object.values(peers)) if ((peer.term ?? 1) < election.highest) peer.leader = false;
+  writeState(root, "peers", peers);
+  writeState(root, "election", election);
+  for (const [node, kind, term] of replies) await send(node, kind, term);
+}
+
+/** Confirmation is local and explicit; live work snapshots rebuild the new Leader's ledger. */
+export function confirmLeader({ root, fleet, clock = Date.now }) {
+  const now = clock(), record = readState(root, "node"), proposal = readState(root, "proposal");
+  const highest = highestTerm(root);
+  if (record.leader || !leaderDead(root, now)) throw new Error("Leader is still alive");
+  if (leaderCandidate(root, fleet, now) !== fleet.self) throw new Error("this node is not the next Leader candidate");
+  const two = fleet.nodes.length === 2;
+  let term;
+  if (proposal.id || proposal.term) {
+    if (proposal.id !== fleet.self || !validTerm(proposal.term) || proposal.term < highest) throw new Error("Leader proposal is stale");
+    term = proposal.term;
+  } else {
+    if (!two) throw new Error("no Leader proposal: wait for a live peer to accept");
+    term = highest + 1;
+  }
+  if (!validTerm(term)) throw new Error("fleet term exhausted");
+  const assignments = {}, peers = readState(root, "peers"), work = readState(root, "work");
+  const selfWork = Object.values(readState(root, "assignments")).filter(row => row.node === fleet.self).map(row => {
+    const saved = work[`${row.repo}#${row.issue}`];
+    return saved?.epoch === row.epoch ? saved : { ...row, step: null };
+  });
+  for (const node of fleet.nodes) {
+    if (node.id !== fleet.self && (node.active === false || !livePeer(peers[node.id], now))) continue;
+    for (const row of node.id === fleet.self ? selfWork : peers[node.id]?.work ?? []) {
+      if (!validWork(row)) continue;
+      const key = `${row.repo}#${row.issue}`;
+      if (!assignments[key] || row.epoch > assignments[key].epoch) assignments[key] = { ...row, node: node.id, time: now };
+    }
+  }
+  writeState(root, "assignments", assignments);
+  writeState(root, "election", { ...readState(root, "election"), highest: term, lastLeaderAt: now });
+  writeState(root, "node", { ...record, leader: true, term });
+  writeState(root, "proposal", {});
+  return term;
+}
+
 /** One serial tick avoids overlapping network retries and heartbeats. */
 export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now,
   fetch = nodeFetch, gh = runGh, git, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
@@ -370,19 +473,28 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     forceClose = setTimeout(() => server.closeAllConnections(), 1000);
     forceClose.unref();
   };
-  try { writeState(root, "node", { pid, leader, instance }); }
+  try {
+    const previous = readState(root, "node"), election = readState(root, "election");
+    leader = leader || previous.leader === true;
+    writeState(root, "node", { pid, leader, instance, term: previous.term ?? highestTerm(root) });
+    writeState(root, "election", { ...election, started: election.started ?? clock(), highest: highestTerm(root) });
+  }
   catch (error) { server.close(); throw error; }
   interval = timer(async () => {
     if (busy || closing) return;
     busy = true;
     try {
+      await electionTick({ root, fleet, repo, clock, fetch, signal: sends.signal });
+      leader = readState(root, "node").leader === true;
       receiveAssignments(root, fleet, clock(), leader);
       receiveTalk(root, fleet, leader, clock());
-      await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal });
+      await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal,
+        allow: message => !["assign", "approve", "answer"].includes(message.kind) ||
+          (readState(root, "node").leader === true && canAssign(root, fleet, clock())) });
       if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;
-        if (leader) await assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
-        else {
+        if (leader && canAssign(root, fleet, clock())) await assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
+        else if (!leader) {
           const repos = new Set(Object.values(readState(root, "assignments")).filter(row => row.node === fleet.self).map(row => row.repo));
           for (const repo of repos) {
             const open = new Set(readOpenAssignments({ root, fleet, repo, gh, warn }).map(row => row.issue));
@@ -398,6 +510,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       try {
         if (!closing && clock() >= nextHeartbeat) {
           nextHeartbeat = clock() + 30_000;
+          leader = readState(root, "node").leader === true;
           await heartbeat({ root, fleet, repo, kit, leader, clock, fetch, signal: sends.signal });
         }
       } catch (error) { warn(`fleet node: ${error.message}`); }

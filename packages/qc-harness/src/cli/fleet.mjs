@@ -10,11 +10,11 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
 import { TALK_VERBS, parseTalkArgs, runTalk } from "./fleet-talk.mjs";
-import { latestLeader, readState, writeState } from "./fleet-state.mjs";
-import { nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
+import { highestTerm, latestLeader, readState, writeState } from "./fleet-state.mjs";
+import { confirmLeader, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue>";
+const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue>";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -135,7 +135,7 @@ function parseArgs(argv) {
   if (TALK_VERBS.includes(verb)) return parseTalkArgs(verb, args);
   const hasIssue = ["progress", "owns"].includes(verb);
   const rest = hasIssue ? args.slice(1) : args;
-  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns"].includes(verb) ? [] : null;
+  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns", "confirm-leader"].includes(verb) ? [] : null;
   if (!allowed) throw new Error(USAGE);
   const options = { verb };
   if (hasIssue) {
@@ -217,6 +217,11 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     if (["start", "stop", "serve"].includes(options.verb)) {
       return runNodeVerb(options, { root: cwd, fleet, env, gh, git, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
     }
+    if (options.verb === "confirm-leader") {
+      const term = confirmLeader({ ...node, root: cwd, fleet });
+      say(`Leader ${fleet.self} term ${term}`);
+      return 0;
+    }
     const localRepo = origin(cwd);
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
@@ -229,7 +234,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
       const key = `${repo}#${options.issue}`, row = readState(checkout, "assignments")[key];
       if (!row || row.node !== fleet.self) throw new Error(`no own assignment for #${options.issue}`);
       if (options.verb === "owns") {
-        const leader = latestLeader(readState(checkout, "peers"));
+        const leader = latestLeader(readState(checkout, "peers"), highestTerm(checkout));
         if (!leader) throw new Error("no Leader heartbeat yet");
         const listed = leader.assigned?.find(item => item.repo === repo && item.issue === options.issue);
         if (!listed) throw new Error(`Leader does not list an assignment for #${options.issue}`);
@@ -272,7 +277,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     const omitted = fleet.nodes.length > 14 ? `; ${fleet.nodes.length - 14} more nodes` : "";
     say(`taken=${taken} unassigned=${owned.filter(row => row.owner === null).length}${omitted}`);
     return nodeStatus({ ...node, root: cwd, fleet })
-      .then(status => { say(status); return 0; })
+      .then(status => { for (const line of status.split("\n")) say(line); return 0; })
       .catch(error => { warn(error.message); return 1; });
   } catch (error) {
     warn(error.message);

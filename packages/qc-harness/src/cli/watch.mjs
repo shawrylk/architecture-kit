@@ -230,12 +230,16 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
         const messages = readState(cwd, "node").leader === true
           ? readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind))
           : readState(cwd, "inbox");
+        const proposal = readState(cwd, "proposal");
+        if (Number.isSafeInteger(proposal.term) && proposal.term > 0) {
+          messages.push({ id: `propose-leader:${proposal.term}`, kind: "propose-leader", term: proposal.term });
+        }
         const fresh = messages.filter(message => !Object.hasOwn(watched, message.id));
         if (fresh.length) {
           for (const message of fresh) {
             if (Object.hasOwn(watched, message.id)) continue;
             Object.defineProperty(watched, message.id, { value: true, enumerable: true, configurable: true });
-            say(`EVENT fleet:${message.kind} ${message.id}`);
+            say(`EVENT fleet:${message.kind} ${message.term ?? message.id}`);
           }
           writeState(cwd, "watched", watched);
           return EXIT.PASSED;

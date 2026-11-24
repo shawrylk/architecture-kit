@@ -91,3 +91,16 @@ test("plan decisions, answers and watched IDs are durable object snapshots", t =
     assert.deepEqual(readState(root, name), { id: { text: "saved" } });
   }
 });
+
+test("election and proposal state persist and leadership chooses term before receipt time", async t => {
+  const root = fixture(t);
+  for (const name of ["election", "proposal"]) {
+    assert.deepEqual(readState(root, name), {});
+    writeState(root, name, { term: 4 });
+    assert.deepEqual(readState(root, name), { term: 4 });
+  }
+  const { latestLeader } = await import("./fleet-state.mjs");
+  const high = { leader: true, term: 4, time: 1 };
+  assert.equal(latestLeader({ a: { leader: true, term: 3, time: 100 }, b: high }), high);
+  assert.equal(latestLeader({ a: high, b: { leader: false, term: 5, time: 2 } }), undefined);
+});

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { commonDirOf } from "./ledger.mjs";
 
-const FILES = ["work", "assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node", "plans", "answers", "inbox", "watched"];
+const FILES = ["election", "proposal", "work", "assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node", "plans", "answers", "inbox", "watched"];
 
 /** State is private to git's shared directory, outside every worktree's tracked files. */
 export function stateDir(root = process.cwd()) {
@@ -49,8 +49,27 @@ export function pruneSeen(seen, now = Date.now()) {
   return Object.fromEntries(Object.entries(seen).filter(([, time]) => Number.isFinite(time) && now - time <= 600_000));
 }
 
-/** The most recently received leadership claim supplies this node's assignment snapshot. */
-export function latestLeader(peers) {
-  return Object.values(peers).filter(peer => peer.leader === true && Number.isFinite(peer.time))
+/** Prefer the highest observed term, then receipt order within that term. */
+export function latestLeader(peers, minimum = 1) {
+  const highest = Math.max(minimum, ...Object.values(peers).map(peer => peer.term ?? 1));
+  return Object.values(peers).filter(peer => peer.leader === true && (peer.term ?? 1) >= highest && Number.isFinite(peer.time))
     .sort((a, b) => b.time - a.time)[0];
+}
+
+export const validTerm = term => Number.isSafeInteger(term) && term > 0;
+export const livePeer = (peer, now) => Number.isFinite(peer?.time) && now - peer.time >= 0 && now - peer.time < 90_000;
+export function highestTerm(root) {
+  return Math.max(1, readState(root, "election").highest ?? 1, readState(root, "node").term ?? 1,
+    ...Object.values(readState(root, "peers")).map(peer => peer.term ?? 1));
+}
+export function leaderDead(root, now) {
+  const election = readState(root, "election");
+  const times = Object.values(readState(root, "peers")).filter(peer => peer.leader).map(peer => peer.time).filter(Number.isFinite);
+  const last = Math.max(election.lastLeaderAt ?? election.started ?? (times.length ? -Infinity : now), ...times);
+  return now - last >= 90_000;
+}
+export function leaderCandidate(root, fleet, now) {
+  const peers = readState(root, "peers");
+  return (fleet.leaders ?? fleet.nodes.map(node => node.id)).find(id => id === fleet.self ||
+    (fleet.nodes.some(node => node.id === id && node.active !== false) && livePeer(peers[id], now)));
 }

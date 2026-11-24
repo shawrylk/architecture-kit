@@ -543,3 +543,16 @@ test("regression: follower watch keeps two approvals and answers accepted betwee
   receiveTalk(root, fleet, false, Date.parse(time));
   assert.deepEqual(readState(root, "inbox").map(({ id }) => id), [...inbox.slice(2).map(({ id }) => id), "next", "last"]);
 });
+
+test("fleet watch announces each proposed Leader term once", async t => {
+  const { writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-election-")), lines = [];
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  mkdirSync(path.join(root, ".git"));
+  writeState(root, "proposal", { id: "b", term: 2 });
+  assert.equal(await runWatch(["--fleet"], { cwd: root, say: text => lines.push(text), sleep: async () => { throw new Error("proposal event missing"); } }), 0);
+  assert.deepEqual(lines, ["EVENT fleet:propose-leader 2"]);
+  writeState(root, "proposal", { id: "b", term: 3 });
+  assert.equal(await runWatch(["--fleet"], { cwd: root, say: text => lines.push(text), sleep: async () => { throw new Error("proposal event missing"); } }), 0);
+  assert.deepEqual(lines, ["EVENT fleet:propose-leader 2", "EVENT fleet:propose-leader 3"]);
+});

@@ -449,3 +449,42 @@ test("next adds the saved plan decision only for the assignment epoch", async t 
   assert.equal(result.code, 0);
   assert.deepEqual(result.lines, ["#7 epoch=3 plan approved", "#8 epoch=3 plan needs changes", "#9 epoch=3"]);
 });
+
+test("confirm-leader requires a current proposal in three nodes and rebuilds highest live work epochs", t => {
+  const f = fixture(t), time = Date.now(), deps = { origin: () => "o/r", node: { clock: () => time } };
+  f.run(["init", "--self", "b2", "--nodes", "a1:1:L,b2:1:L,c3:1:L"]);
+  writeState(f.cwd, "node", { pid: 123, leader: false, instance: "serve" });
+  writeState(f.cwd, "peers", { a1: { leader: true, term: 1, time: time - 90_000 },
+    c3: { term: 1, time, work: [{ repo: "o/r", issue: 7, epoch: 4, step: "review", branch: "feat/7", head: "a".repeat(40) }] } });
+  writeState(f.cwd, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "b2", epoch: 2 }, "o/r#8": { repo: "o/r", issue: 8, node: "a1", epoch: 9 } });
+  writeState(f.cwd, "work", { "o/r#7": { repo: "o/r", issue: 7, epoch: 2, step: "code" } });
+  assert.equal(f.run(["confirm-leader"], deps).code, 1);
+  writeState(f.cwd, "proposal", { id: "b2", term: 2 });
+  assert.equal(f.run(["confirm-leader"], deps).code, 0);
+  assert.deepEqual(readState(f.cwd, "node"), { pid: 123, leader: true, term: 2, instance: "serve" });
+  assert.deepEqual(readState(f.cwd, "assignments"), { "o/r#7": { repo: "o/r", issue: 7, epoch: 4, node: "c3", time, branch: "feat/7", head: "a".repeat(40), step: "review" } });
+  assert.deepEqual(readState(f.cwd, "proposal"), {});
+});
+
+test("two nodes confirm without a proposal only after Leader death; stale proposals cannot win", t => {
+  const f = fixture(t), time = Date.now(), deps = { origin: () => "o/r", node: { clock: () => time } };
+  f.run(["init", "--self", "b2", "--nodes", "a1:1:L,b2:1:L"]);
+  writeState(f.cwd, "node", { leader: false, started: time - 90_000 });
+  writeState(f.cwd, "peers", { a1: { leader: true, term: 5, time: time - 89_999 } });
+  assert.equal(f.run(["confirm-leader"], deps).code, 1);
+  writeState(f.cwd, "peers", { a1: { leader: true, term: 5, time: time - 90_000 } });
+  assert.equal(f.run(["confirm-leader"], deps).code, 0);
+  assert.equal(readState(f.cwd, "node").term, 6);
+  writeState(f.cwd, "node", { leader: false });
+  writeState(f.cwd, "proposal", { id: "b2", term: 4 });
+  assert.equal(f.run(["confirm-leader"], deps).code, 1);
+});
+
+test("status prints the pending Leader proposal", async t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "b2", "--nodes", "a1:1:L,b2:1:L,c3:1:L"]);
+  writeState(f.cwd, "proposal", { id: "b2", term: 2 });
+  const result = await f.run(["status"], { origin: () => "o/r", gh: fakeGh([]), git: () => "" });
+  assert.equal(result.code, 0);
+  assert.ok(result.lines.includes("proposed Leader b2 term 2: run qc fleet confirm-leader"));
+});
