@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn as spawnProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
@@ -26,7 +27,7 @@ function fixture(t, self = "leader") {
   const sent = [], urls = [], calls = [], comments = [], warnings = [];
   const deps = { root, fleet, clock: () => now, config: { check: { base: "base" }, ready: { platforms: ["linux", "windows", "darwin"] } },
     risk: (...args) => { calls.push(["risk", ...args]); return [{ reason: "platform" }]; },
-    git: async (...args) => { calls.push(["git", ...args]); },
+    git: async (...args) => { calls.push(["git", ...args]); return { stdout: args[1] === "rev-parse" ? `${head}\n` : "" }; },
     check: async (...args) => { calls.push(["check", ...args]); return { ok: true, tail: "passed" }; },
     gh: (args, options) => { comments.push({ args, options }); return "comment-url"; },
     fetch: async (url, options) => { urls.push(url); sent.push(JSON.parse(options.body)); return { status: 202 }; },
@@ -120,26 +121,116 @@ test("only heartbeat-matching passing results add fleet legs; Leader posts Revie
   assert.match(comment[6], /error/);
 });
 
-test("check runner uses this kit, bounds output to forty lines and kills on timeout", async () => {
+test("checks must leave the requested HEAD and a clean worktree", async t => {
+  const f = fixture(t, "mac");
+  const git = (cwd, ...args) => ({ stdout: execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) });
+  git(f.root, "init");
+  git(f.root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "first");
+  const other = git(f.root, "rev-parse", "HEAD").stdout.trim();
+  git(f.root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "requested");
+  const requested = git(f.root, "rev-parse", "HEAD").stdout.trim();
+  git(f.root, "remote", "add", "origin", f.root);
+  git(f.root, "branch", "feat/244");
+  for (const mode of ["moved", "dirty", "clean"]) {
+    let checkout;
+    f.queue("platform-check", { pusher: "pusher", head: requested }, "leader");
+    await platformTick({ ...f.deps, git, check: async cwd => {
+      checkout = cwd;
+      if (mode === "moved") git(cwd, "checkout", "--detach", other);
+      if (mode === "dirty") writeFileSync(path.join(cwd, "untracked"), "changed");
+      return { ok: true, tail: "command passed\n" };
+    } });
+    const result = f.sent.at(-1).body;
+    assert.equal(existsSync(path.dirname(checkout)), false);
+    assert.equal(git(f.root, "worktree", "list", "--porcelain").stdout.includes(checkout), false);
+    assert.equal(result.ok, mode === "clean", mode);
+    if (mode === "moved") assert.match(result.tail.split("\n").at(-1), /HEAD.*requested/i);
+    if (mode === "dirty") assert.match(result.tail.split("\n").at(-1), /worktree.*(dirty|clean|changes)/i);
+    if (mode === "clean") assert.equal(result.tail, "command passed");
+  }
+});
+
+test("timeout stops a real child and its long-lived grandchild and removes the worktree", async t => {
+  const f = fixture(t, "mac");
+  const heartbeat = path.join(f.root, "heartbeat");
+  const grandchildScript = `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(heartbeat)}, 'ready'); setInterval(() => fs.appendFileSync(${JSON.stringify(heartbeat)}, '.'), 25);`;
+  const childScript = `const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildScript)}], { stdio: ['ignore', 'inherit', 'inherit'] }); console.log(child.pid); setInterval(() => {}, 1000);`;
+  let child, grandchild, checkout, deadline;
+  t.after(() => {
+    clearTimeout(deadline);
+    for (const pid of [grandchild, child?.pid]) {
+      if (!pid) continue;
+      try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+    }
+  });
+  f.queue("platform-check", { pusher: "pusher" }, "leader");
+  const running = platformTick({ ...f.deps, check: async (cwd, options) => {
+    checkout = cwd;
+    return runPlatformCheck(cwd, { ...options, timeout: 1500, spawn: (_command, _args, spawnOptions) => {
+      child = spawnProcess(process.execPath, ["-e", childScript], { ...spawnOptions, cwd: f.root });
+      child.stdout.once("data", data => { grandchild = Number(data.toString().trim()); });
+      return child;
+    } });
+  } });
+  await Promise.race([running, new Promise((_, reject) => {
+    deadline = setTimeout(() => reject(new Error("timeout left descendant output pipes open")), 4000);
+  })]);
+  clearTimeout(deadline);
+  assert.ok(grandchild > 0);
+  assert.equal(f.sent.at(-1).body.ok, false);
+  assert.match(f.sent.at(-1).body.tail, /timed out/);
+  assert.equal(existsSync(path.dirname(checkout)), false);
+  assert.ok(f.calls.some(row => row[2] === "worktree" && row[3] === "remove" && row[5] === checkout));
+  const stopped = readFileSync(heartbeat, "utf8");
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(readFileSync(heartbeat, "utf8"), stopped, "grandchild must stop writing after timeout");
+});
+
+test("check runner uses this kit and bounds output to forty lines", async () => {
   let child, invocation;
   const spawn = (...args) => {
     invocation = args;
     child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
-    child.kill = () => { child.emit("close", null, "SIGTERM"); return true; };
     return child;
   };
   const running = runPlatformCheck("/checkout", { spawn, timeout: 1000 });
   child.stdout.write(Array.from({ length: 60 }, (_, n) => `line ${n}\n`).join(""));
-  child.stderr.write("last error\n"); child.emit("close", 1);
+  child.stderr.write("last error\n"); child.stdout.end(); child.stderr.end(); child.emit("exit", 1); child.emit("close", 1);
   const result = await running;
   assert.equal(invocation[0], process.execPath);
   assert.deepEqual(invocation[1].slice(1), ["check", "--affected", "--base", "origin/main"]);
   assert.match(invocation[1][0], /qc\.mjs$/);
   assert.equal(invocation[2].cwd, "/checkout");
+  assert.equal(invocation[2].detached, process.platform !== "win32");
   assert.equal(result.ok, false); assert.equal(result.tail.split("\n").length, 40);
   assert.equal(result.tail.split("\n").at(-1), "last error");
-  const timed = await runPlatformCheck("/checkout", { spawn, timeout: 5 });
-  assert.equal(timed.ok, false); assert.match(timed.tail, /timed out/);
+});
+
+test("check runner drains late output after exit without needing a child close event", async t => {
+  const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  const running = runPlatformCheck("/checkout", { spawn: () => child });
+  let deadline;
+  t.after(() => { clearTimeout(deadline); child.emit("close", 0); });
+  child.emit("exit", 0);
+  child.stdout.end("late output\n"); child.stderr.end();
+  const result = await Promise.race([running, new Promise((_, reject) => {
+    deadline = setTimeout(() => reject(new Error("runner waited for child close after pipes drained")), 1000);
+  })]);
+  assert.deepEqual(result, { ok: true, tail: "late output" });
+});
+
+test("check runner destroys pipes still open five seconds after exit", async t => {
+  const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+  const running = runPlatformCheck("/checkout", { spawn: () => child });
+  let deadline;
+  t.after(() => { clearTimeout(deadline); child.emit("close", 0); });
+  child.stdout.write("before exit\n"); child.emit("exit", 0);
+  const result = await Promise.race([running, new Promise((_, reject) => {
+    deadline = setTimeout(() => reject(new Error("runner did not bound pipe draining after exit")), 6500);
+  })]);
+  assert.deepEqual(result, { ok: true, tail: "before exit" });
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
 });
 
 test("Leader retries result comments after gh errors without losing newly queued work", async t => {

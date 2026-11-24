@@ -29,20 +29,41 @@ function tailLines(text) {
 /** Use this installed kit in the detached checkout, keeping only bounded output. */
 export function runPlatformCheck(root, { spawn = spawnProcess, timeout = 30 * 60_000, signal } = {}) {
   return new Promise(resolve => {
-    let output = "", expired = false, settled = false, timer;
+    let output = "", expired = false, settled = false, timer, drainTimer, child;
     const append = chunk => { output = (output + chunk.toString()).split(/\r?\n/).slice(-41).join("\n").slice(-48_000); };
     const finish = ok => {
       if (settled) return;
-      settled = true; clearTimeout(timer);
+      settled = true; clearTimeout(timer); clearTimeout(drainTimer);
+      child?.stdout?.destroy(); child?.stderr?.destroy();
       resolve({ ok: ok && !expired, tail: tailLines(output) });
     };
     try {
-      const child = spawn(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "check", "--affected", "--base", "origin/main"],
-        { cwd: root, stdio: ["ignore", "pipe", "pipe"], signal });
+      child = spawn(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "check", "--affected", "--base", "origin/main"],
+        { cwd: root, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", signal });
       child.stdout.on("data", append); child.stderr.on("data", append);
       child.once("error", error => { append(`\n${error.message}`); finish(false); });
-      child.once("close", code => finish(code === 0));
-      timer = setTimeout(() => { expired = true; append("\nplatform check timed out"); child.kill("SIGKILL"); }, timeout);
+      child.once("exit", code => {
+        clearTimeout(timer);
+        const drained = () => {
+          if ([child.stdout, child.stderr].every(stream => stream.readableEnded || stream.destroyed)) finish(code === 0);
+        };
+        drainTimer = setTimeout(() => finish(code === 0), 5000);
+        for (const stream of [child.stdout, child.stderr]) {
+          stream.once("end", drained); stream.once("close", drained);
+        }
+        drained();
+      });
+      timer = setTimeout(() => {
+        expired = true; append("\nplatform check timed out");
+        if (process.platform === "win32") {
+          execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], error => {
+            if (error) append(`\nprocess tree cleanup: ${error.message}`);
+          });
+        } else {
+          try { process.kill(-child.pid, "SIGKILL"); }
+          catch (error) { if (error.code !== "ESRCH") { append(`\nprocess tree cleanup: ${error.message}`); child.kill("SIGKILL"); } }
+        }
+      }, timeout);
     } catch (error) { append(error.message); finish(false); }
   });
 }
@@ -73,7 +94,14 @@ async function checkHead({ root, body, git, check, signal }) {
     checkout = path.join(temporary, "checkout");
     await git(root, "worktree", "add", "--detach", checkout, body.head);
     result = await check(checkout, { timeout: 30 * 60_000, signal });
-  } catch (error) { result = { ok: false, tail: error.message }; }
+    const actual = await git(checkout, "rev-parse", "HEAD");
+    const status = await git(checkout, "status", "--porcelain");
+    if (actual.stdout.trim() !== body.head) {
+      result = { ok: false, tail: `${result.tail ?? ""}\nplatform check HEAD ${actual.stdout.trim()} does not match requested head ${body.head}` };
+    } else if (status.stdout !== "") {
+      result = { ok: false, tail: `${result.tail ?? ""}\nplatform check worktree has uncommitted changes` };
+    }
+  } catch (error) { result = { ok: false, tail: `${result?.tail ?? ""}\n${error.message}` }; }
   finally {
     if (checkout) {
       try { await git(root, "worktree", "remove", "--force", checkout); }
