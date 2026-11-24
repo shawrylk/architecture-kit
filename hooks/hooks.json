@@ -57,7 +57,7 @@
         ]
       },
       {
-        "matcher": "Bash|PowerShell",
+        "matcher": "Bash|PowerShell|REPL",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/bash-command-guard.mjs\"", "timeout": 10 }
         ]
@@ -87,7 +87,7 @@
         ]
       },
       {
-        "matcher": "Bash|PowerShell",
+        "matcher": "Bash|PowerShell|REPL",
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/merge-guard.mjs\"", "timeout": 15 }
         ]
