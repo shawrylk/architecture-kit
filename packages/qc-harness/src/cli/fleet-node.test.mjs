@@ -956,7 +956,8 @@ test("votes require a dead Leader and go once per term, including after a restar
 });
 
 test("heartbeat terms fence old Leaders and malformed terms; a higher-term Leader stops duties", { timeout: 5000 }, async t => {
-  const f = await electionNode(t, "b", 3, { leader: true, gh: () => { throw new Error("stepped down Leader assigned"); }, warn: () => {} });
+  const warnings = [];
+  const f = await electionNode(t, "b", 3, { leader: true, gh: () => { throw new Error("stepped down Leader assigned"); }, warn: text => warnings.push(text) });
   await heartbeat({ root: f.root, fleet: f.config, repo: "o/r", leader: true, clock: () => now, fetch: async (_url, options) => {
     assert.equal(JSON.parse(options.body).body.term, 1); return { status: 202 };
   } });
@@ -971,6 +972,74 @@ test("heartbeat terms fence old Leaders and malformed terms; a higher-term Leade
   assert.ok(f.sent.filter(m => m.kind === "heartbeat").every(m => m.body.leader === false && m.body.term === 3));
   assert.equal((await post("a", 3, 2)).status, 202);
   assert.equal(readState(f.root, "peers").a.leader, true, "equal-term claim is accepted");
+  assert.deepEqual(warnings, [], "a swallowed gh error must fail this test");
+});
+
+test("demotion during an awaited send fences the next assignment, Leader send and retry", async t => {
+  for (const phase of ["retry", "assignment", "heartbeat"]) await t.test(phase, async t => {
+    let f, demoted = false, readsAfterDemotion = 0;
+    const sent = [], warnings = [];
+    f = await electionNode(t, "a", 3, { leader: true, git: () => "", warn: text => warnings.push(text),
+      gh: args => { if (demoted) readsAfterDemotion++; return JSON.stringify(args.includes("number") ? [{ number: 7 }, { number: 8 }] : []); },
+      fetch: async (_url, options) => {
+        const outgoing = JSON.parse(options.body);
+        sent.push(outgoing);
+        if (!demoted && outgoing.kind === (phase === "retry" ? "question" : phase === "assignment" ? "assign" : "heartbeat")) {
+          const response = await fetch(`http://127.0.0.1:${f.server.address().port}/message`, { method: "POST",
+            body: JSON.stringify(message({ from: "b", kind: "heartbeat", time: new Date(now + 60_000).toISOString(),
+              body: { leader: true, term: 2, kit: null, assigned: [], work: [] } })) });
+          assert.equal(response.status, 202);
+          assert.equal(readState(f.root, "node").leader, false);
+          demoted = true;
+        }
+        return { status: 202 };
+      } });
+    writeState(f.root, "peers", Object.fromEntries(["b", "c"].map(id => [id, { leader: false, term: 1, kit: null, time: now }])));
+    if (phase === "retry") writeState(f.root, "outbox", ["question", "assign", "approve", "answer"].map((kind, i) => ({
+      node: "c", attempts: 0, nextAttempt: now, message: message({ from: "a", kind, body: { issue: i + 1, epoch: 1 } }) })));
+    if (phase === "assignment") writeState(f.root, "assignments", Object.fromEntries(["b", "c"].map((node, i) =>
+      [`o/r#${i + 7}`, { repo: "o/r", issue: i + 7, node, epoch: 1, time: now, size: "M" }])));
+    f.time(now + (phase === "heartbeat" ? 30_000 : 60_000));
+    await f.tick();
+    assert.equal(demoted, true, "the heartbeat must arrive during the send");
+    assert.equal(readsAfterDemotion, 0, "the assignment tick must reread the role after the outbox await");
+    const remaining = sent.slice(1);
+    assert.ok(remaining.every(m => !["assign", "approve", "answer"].includes(m.kind)), "no Leader send or retry after demotion");
+    assert.ok(remaining.filter(m => m.kind === "heartbeat").every(m => m.body.leader === false && m.body.term === 2),
+      "each heartbeat send must reread the saved role and term");
+    assert.deepEqual(warnings, []);
+  });
+});
+
+test("a higher-term follower heartbeat fences an isolated old Leader after another Leader confirms", async t => {
+  let reads = 0;
+  const warnings = [], a = await electionNode(t, "a", 3, { leader: true, gh: () => { reads++; return "[]"; }, git: () => "", warn: text => warnings.push(text) });
+  const b = await electionNode(t, "b", 3);
+  writeState(b.root, "peers", { a: { leader: true, term: 1, time: now }, c: { leader: false, term: 1, time: now + 90_000 } });
+  b.time(now + 90_000); await b.tick();
+  assert.ok(b.sent.some(m => m.kind === "propose-leader" && m.body.term === 2));
+  writeState(b.root, "queue", [message({ from: "c", kind: "leader", body: { term: 2, accept: true } })]);
+  await b.tick();
+  const { confirmLeader } = await import("./fleet-node.mjs");
+  assert.equal(confirmLeader({ root: b.root, fleet: b.config, clock: () => now + 90_000 }), 2);
+  a.time(now + 120_000); await a.tick();
+  assert.equal(reads, 0, "the isolated old Leader pauses");
+  a.sent.length = 0;
+  a.time(now + 180_000);
+  const response = await fetch(`http://127.0.0.1:${a.server.address().port}/message`, { method: "POST", body: JSON.stringify(message({
+    from: "c", kind: "heartbeat", time: new Date(now + 180_000).toISOString(), body: { leader: false, term: 2, kit: null, work: [] } })) });
+  assert.equal(response.status, 202);
+  const record = readState(a.root, "node");
+  assert.deepEqual({ leader: record.leader, term: record.term }, { leader: false, term: 2 }, "a follower's higher term must persist demotion immediately");
+  await a.tick();
+  assert.equal(reads, 0, "reconnecting only to the follower must not resume assignments");
+  assert.equal(readState(b.root, "node").leader, true);
+  assert.equal(readState(b.root, "node").term, 2);
+  const beats = a.sent.filter(m => m.kind === "heartbeat");
+  assert.equal(beats.length, 2);
+  assert.ok(beats.every(m => m.body.leader === false && m.body.term === readState(a.root, "election").highest),
+    "follower heartbeats carry the highest term, including a new proposal after demotion");
+  assert.deepEqual(warnings, []);
 });
 
 test("Leader stops assignment after 90 seconds without a peer and resumes when one returns", async t => {

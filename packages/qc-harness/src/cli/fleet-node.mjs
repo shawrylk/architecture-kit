@@ -90,9 +90,9 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
           const highest = Math.max(highestTerm(root), message.body.term);
           const accepted = message.body.leader && message.body.term >= highest;
           election.highest = highest;
+          if (message.body.term > (node.term ?? 1)) writeState(root, "node", { ...node, leader: false, term: highest });
           if (accepted) {
             election.lastLeaderAt = time;
-            if (node.leader && message.body.term > (node.term ?? 1)) writeState(root, "node", { ...node, leader: false });
             if (readState(root, "proposal").term <= message.body.term) writeState(root, "proposal", {});
           }
           writeState(root, "election", election);
@@ -190,7 +190,7 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
 }
 
 export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now, fetch = nodeFetch, signal }) {
-  const term = leader ? readState(root, "node").term ?? 1 : highestTerm(root);
+  let role = savedRole(root, leader);
   const assignments = Object.values(readState(root, "assignments")), saved = readState(root, "work");
   const work = assignments.filter(row => row.node === fleet.self).map(row => {
     const current = saved[`${row.repo}#${row.issue}`]?.epoch === row.epoch ? saved[`${row.repo}#${row.issue}`] : {};
@@ -198,16 +198,17 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
       branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
   });
   const assignedTo = id => assignments.filter(row => row.node === id).map(({ repo, issue, epoch }) => ({ repo, issue, epoch }));
-  if (leader) {
+  if (role.leader) {
     const peers = readState(root, "peers");
-    peers[fleet.self] = { time: clock(), kit, leader, term, work, assigned: assignedTo(fleet.self) };
+    peers[fleet.self] = { time: clock(), kit, ...role, work, assigned: assignedTo(fleet.self) };
     writeState(root, "peers", peers);
   }
   for (const node of fleet.nodes) {
     if (signal?.aborted) return;
     if (node.id === fleet.self || node.active === false || !node.address) continue;
-    const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: { kit, leader, term, work,
-      ...(leader ? { assigned: assignedTo(node.id) } : {}) }, time: new Date(clock()).toISOString() }, fleet.secret);
+    role = savedRole(root, leader);
+    const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: { kit, ...role, work,
+      ...(role.leader ? { assigned: assignedTo(node.id) } : {}) }, time: new Date(clock()).toISOString() }, fleet.secret);
     await sendMessage({ root, fleet, node, message, clock, fetch, signal });
   }
 }
@@ -353,7 +354,7 @@ function receiveAssignments(root, fleet, now, leader) {
   }
 }
 
-async function assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal, warn }) {
+async function assignWork({ root, fleet, repo, kit, term, clock, gh, git, holdLabel, fetch, signal, warn }) {
   const { free } = freeIssues(repo, root, { gh, git, holdLabel });
   const rows = JSON.parse(gh(["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", repo], { cwd: root }));
   if (!Array.isArray(rows) || !rows.every(row => Number.isSafeInteger(row?.number) && row.number > 0)) throw new Error("gh issue list returned no readable list");
@@ -368,7 +369,24 @@ async function assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, f
     message: unsignedFields(createMessage({ from: fleet.self, repo, kind, body, time: new Date(clock()).toISOString() }, fleet.secret)) }));
   if (pending.length) writeState(root, "outbox", [...outbox, ...pending]);
   for (const warning of result.warnings) warn(warning);
-  await flushOutbox({ root, fleet, clock, fetch, signal });
+  await flushOutbox({ root, fleet, clock, fetch, signal,
+    allow: message => allowLeaderMessage(root, fleet, clock(), message, term) });
+}
+
+/** Read the durable role before every Leader action, including after a network await. */
+function savedRole(root, fallbackLeader = false) {
+  const record = readState(root, "node"), term = highestTerm(root);
+  if (record.leader && term > (record.term ?? 1)) {
+    writeState(root, "node", { ...record, leader: false, term });
+    return { leader: false, term };
+  }
+  return { leader: record.leader === undefined ? fallbackLeader : record.leader === true, term };
+}
+
+function allowLeaderMessage(root, fleet, now, message, term) {
+  if (!["assign", "approve", "answer"].includes(message.kind)) return true;
+  const role = savedRole(root);
+  return role.leader && (term === undefined || role.term === term) && canAssign(root, fleet, now);
 }
 
 /** A disconnected Leader pauses assignment after the same grace period as peer death. */
@@ -485,16 +503,16 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     busy = true;
     try {
       await electionTick({ root, fleet, repo, clock, fetch, signal: sends.signal });
-      leader = readState(root, "node").leader === true;
+      leader = savedRole(root).leader;
       receiveAssignments(root, fleet, clock(), leader);
       receiveTalk(root, fleet, leader, clock());
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal,
-        allow: message => !["assign", "approve", "answer"].includes(message.kind) ||
-          (readState(root, "node").leader === true && canAssign(root, fleet, clock())) });
+        allow: message => allowLeaderMessage(root, fleet, clock(), message) });
       if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;
-        if (leader && canAssign(root, fleet, clock())) await assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
-        else if (!leader) {
+        const role = savedRole(root);
+        if (role.leader && canAssign(root, fleet, clock())) await assignWork({ root, fleet, repo, kit, term: role.term, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
+        else if (!role.leader) {
           const repos = new Set(Object.values(readState(root, "assignments")).filter(row => row.node === fleet.self).map(row => row.repo));
           for (const repo of repos) {
             const open = new Set(readOpenAssignments({ root, fleet, repo, gh, warn }).map(row => row.issue));
@@ -510,7 +528,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       try {
         if (!closing && clock() >= nextHeartbeat) {
           nextHeartbeat = clock() + 30_000;
-          leader = readState(root, "node").leader === true;
+          leader = savedRole(root).leader;
           await heartbeat({ root, fleet, repo, kit, leader, clock, fetch, signal: sends.signal });
         }
       } catch (error) { warn(`fleet node: ${error.message}`); }
