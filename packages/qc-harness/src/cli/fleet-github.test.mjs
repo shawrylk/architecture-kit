@@ -241,3 +241,20 @@ test("paginated comments are read and gh errors or invalid responses preserve ea
   readGithub({ root, fleet, clock: () => now + 120_000, gh: () => { throw new Error("user read failed"); } });
   assert.deepEqual(readState(root, "github"), saved);
 });
+
+test("heartbeat load validation accepts missing and bounded values, refuses bad values, and saves load", t => {
+  const root = fixture(t);
+  const body = { kit: null, term: 1, leader: false };
+  for (const load of [undefined, { cpu: null, mem: null, rtt: null }, { cpu: 0, mem: 1, rtt: 600000 }]) {
+    const fields = load === undefined ? body : { ...body, load };
+    assert.equal(receiveMessage({ root, fleet, clock: () => now, message: message({ kind: "heartbeat", body: fields }) }).ok, true);
+    assert.deepEqual(readState(root, "peers").b.load, load);
+    // A later snapshot must be eligible to replace the previous one.
+    writeState(root, "peers", {});
+  }
+  for (const load of [null, [], "bad", {}, { cpu: -0.01, mem: 0, rtt: 0 }, { cpu: 1.01, mem: 0, rtt: 0 },
+    { cpu: 0, mem: 1.01, rtt: 0 }, { cpu: 0, mem: 0, rtt: -1 }, { cpu: 0, mem: 0, rtt: 600001 },
+    { cpu: "0", mem: 0, rtt: 0 }, { cpu: 0, mem: 0, rtt: true }]) {
+    assert.deepEqual(receiveMessage({ root, fleet, clock: () => now, message: message({ kind: "heartbeat", body: { ...body, load } }) }), { ok: false, reason: "bad-heartbeat" });
+  }
+});
