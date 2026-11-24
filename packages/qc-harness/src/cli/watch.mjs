@@ -147,9 +147,8 @@ function pairingMessages(cwd, leader, at) {
   let pairing;
   try {
     pairing = JSON.parse(readFileSync(path.join(stateDir(cwd), "pairing.json"), "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT" || error instanceof SyntaxError) return [];
-    throw error;
+  } catch {
+    return [];
   }
   if (!pairing || typeof pairing !== "object" || Array.isArray(pairing)) return [];
   const messages = [];

@@ -578,6 +578,21 @@ for (const [label, contents] of [
   });
 }
 
+test("fleet watch skips a pairing.json read error and reports queued questions", async t => {
+  const { stateDir, writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-pairing-read-error-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  mkdirSync(path.join(root, ".git"));
+  writeState(root, "node", { leader: true });
+  writeState(root, "queue", [{ id: "question", kind: "question" }]);
+  const pairingFile = path.join(stateDir(root), "pairing.json");
+  mkdirSync(pairingFile);
+  assert.throws(() => readFileSync(pairingFile, "utf8"), /EISDIR|EPERM|EACCES/);
+  const result = await watch(["--fleet", "--max", "1"], { cwd: root, time: fakeClock(), requiredChecks: [] });
+  assert.equal(result.code, 0);
+  assert.deepEqual(result.lines, ["EVENT fleet:question question"]);
+});
+
 for (const [kind, collection, flag, leader] of [
   ["join-request", "requests", "allowed", true],
   ["join-offer", "offers", "accepted", false],
