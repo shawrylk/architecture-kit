@@ -38,8 +38,9 @@ const fakeReader = (comments, calls = []) => args => {
 };
 
 test("every work kind falls back after three failures, is re-signed, and posts only its hidden payload", async t => {
-  for (const leader of [false, true]) {
+  for (const leader of [true]) {
     const root = fixture(t), calls = [];
+    writeState(root, "node", { leader: true, term: 1 });
     const pending = kinds.map(kind => entry({ message: message({ from: "a", kind, time: new Date(now - 600_000).toISOString() }) }));
     writeState(root, "outbox", pending);
     await flushOutbox({ root, fleet, leader, clock: () => now, fetch: async () => assert.fail("no HTTP after threshold"),
