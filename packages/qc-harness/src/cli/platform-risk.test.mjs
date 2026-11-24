@@ -9,6 +9,32 @@ import { riskHits } from "./platform-risk.mjs";
 
 const cli = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test('opt-out text inside strings and templates keeps platform risk', () => {
+  for (const source of [
+    'const value = "EPERM // qc-platform-ok',
+    "const value = 'EPERM // qc-platform-ok",
+    'const value = `EPERM // qc-platform-ok',
+    'const value = `EPERM ${value // qc-platform-ok',
+  ]) {
+    assert.ok(riskHits(`+++ b/a.js\n+${source}\n`).length > 0, source);
+  }
+});
+
+test('exempt template specifiers preserve paths in expressions', () => {
+  const source = 'import(`./${readFileSync("C:/deps.txt")}`);';
+  assert.deepEqual(riskHits(`+++ b/a.js\n+${source}\n`), [
+    { file: 'a.js', line: 1, reason: 'hard-coded path separator' },
+  ]);
+});
+
+test('require property calls keep path risk', () => {
+  for (const source of ['x.require("a/b");', 'x?.require("a/b");']) {
+    assert.deepEqual(riskHits(`+++ b/a.js\n+${source}\n`), [
+      { file: 'a.js', line: 1, reason: 'hard-coded path separator' },
+    ], source);
+  }
+});
+
 for (const source of [
   'import value from "pkg/value";',
   'export { value } from "./value.js";',
