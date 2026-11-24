@@ -62,6 +62,12 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
   if (["0.0.0.0", "[::]", "[::ffff:0:0]"].includes(normalized)) throw new Error("fleet address must name one interface");
   pairing ??= fleet.key ? createPairing({ root, fleet, clock, address }) : undefined;
   const wildcardPairing = fleet.discover && Boolean(pairing) && !address.includes(":");
+  if (wildcardPairing && !Object.values(os.networkInterfaces()).flat().some(entry => entry?.address === address)) {
+    const port = listen.port ?? self.port ?? 8080;
+    throw Object.assign(new Error(`listen EADDRNOTAVAIL: address not available ${address}:${port}`), {
+      code: "EADDRNOTAVAIL", syscall: "listen", address, port,
+    });
+  }
   const server = createServer((req, res) => {
     const reply = (status, data) => {
       res.writeHead(status, { "content-type": "application/json" });

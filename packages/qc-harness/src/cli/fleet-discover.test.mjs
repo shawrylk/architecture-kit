@@ -238,11 +238,18 @@ test("no-secret discovery broadcasts joins and forwards only small joins to pair
   assert.deepEqual(signed, ["b"]);
 });
 
-test("primary address remains advertised with a wildcard pairing listener", async t => {
-  const f = await listener(t, { nodes: [{ id: "a", address: "192.168.1.10", port: 8080 }] });
-  assert.ok(f.socket.sent.length > 0);
-  assert.ok(f.socket.sent.every(row => JSON.stringify(JSON.parse(row.data).addresses) === '["192.168.1.10"]'));
-  assert.deepEqual(f.socket.sent.map(row => row.address), ["255.255.255.255", "192.168.1.255"]);
+test("wildcard pairing refuses a configured IPv4 address absent from local interfaces", async t => {
+  const { createNodeServer } = await import("./fleet-node.mjs");
+  t.mock.method(os, "networkInterfaces", () => ({ lo: [{ family: "IPv4", address: "127.0.0.1", internal: true }] }));
+  const settings = { ...fleet, nodes: [{ id: "a", address: "192.0.2.123", port: 8080 }] };
+  await assert.rejects(async () => {
+    const server = await createNodeServer({ root: fixture(t), fleet: settings, pairing: { receivePair() {} }, listen: { port: 0 } });
+    t.after(() => new Promise(resolve => server.close(resolve)));
+  }, error => {
+    assert.equal(error.code, "EADDRNOTAVAIL");
+    assert.match(error.message, /192\.0\.2\.123/);
+    return true;
+  });
 });
 
 test("join on the second subnet is forwarded with its actual sender", async t => {
