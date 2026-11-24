@@ -309,7 +309,7 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
   const leader = running && record.leader ? fleet.self : recent.find(node => peers[node.id].leader === true && (peers[node.id].term ?? 1) >= highestTerm(root))?.id ?? "unknown";
   const proposal = readState(root, "proposal");
   return `node=${status} leader=${leader} peers=${recent.length}/${others.length}` +
-    (proposal.id && validTerm(proposal.term) ? `\nproposed Leader ${proposal.id} term ${proposal.term}: run qc fleet confirm-leader` : "");
+    (proposal.id && validTerm(proposal.term) ? `\nproposed Leader ${proposal.id} term ${proposal.term}: run npx architecture-harness fleet confirm-leader` : "");
 }
 
 /** Consume assignments only after checking the sender's latest leadership claim. */

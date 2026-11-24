@@ -11,6 +11,14 @@ import { runInit } from "./init.mjs";
 import { installHooks } from "./install-hooks.mjs";
 import { runCheck } from "./check.mjs";
 
+test("both package bin names point to the existing CLI file", () => {
+  const packageUrl = new URL("../../package.json", import.meta.url);
+  const { bin } = JSON.parse(readFileSync(packageUrl, "utf8"));
+  assert.equal(bin.qc, "./src/cli/qc.mjs");
+  assert.equal(bin["architecture-harness"], bin.qc);
+  assert.ok(existsSync(new URL(bin.qc, packageUrl)));
+});
+
 function repo() {
   const dir = mkdtempSync(path.join(tmpdir(), "qc-cli-"));
   execFileSync("git", ["init", "-q"], { cwd: dir });
