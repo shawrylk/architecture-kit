@@ -255,8 +255,9 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     }
     const fleet = effectiveFleet(configuredFleet, configuredFleet.discover ? readDiscovered(cwd, configuredFleet.secret) : {}, node.clock?.() ?? Date.now(), node.interfaces);
     if (["allow", "deny", "accept"].includes(options.verb)) {
-      if (options.verb === "accept" ? Boolean(fleet.secret) : !fleet.secret || !readState(cwd, "node").leader) throw new Error("pairing command is not available for this role");
-      pairingDecision(cwd, options.verb, options.code, node.clock?.() ?? Date.now());
+      const joiner = !fleet.secret, leader = Boolean(fleet.secret && readState(cwd, "node").leader);
+      if (options.verb === "accept" ? !joiner : options.verb === "allow" ? !leader : !joiner && !leader) throw new Error("pairing command is not available for this role");
+      pairingDecision(cwd, options.verb, options.code, node.clock?.() ?? Date.now(), { joiner });
       say(`${options.verb} ${options.code}`);
       return 0;
     }

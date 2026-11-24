@@ -124,8 +124,11 @@ test("init accepts explicit secrets and addresses and generates a secret for sta
   assert.ok(saved.key.public && saved.key.private);
   assert.ok(generated.lines.includes(`fleet initialized: ${f.env.QC_FLEET_FILE}`));
   assert.ok(generated.lines.includes("fleet name: a1"));
-  assert.ok(generated.lines.includes(`run on the other PCs: npx architecture-harness fleet init --secret ${saved.secret}`));
+  const instruction = generated.lines.filter(line => line.includes(saved.secret));
+  assert.equal(instruction.length, 1);
+  assert.equal(instruction[0], `run on the other PCs: npx architecture-harness fleet init --secret ${saved.secret}`);
   assert.equal(f.run([...args, "--force"]).code, 0);
+  assert.notEqual(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).secret, saved.secret);
   assert.notEqual(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).key.public, saved.key.public);
 });
 
@@ -582,6 +585,26 @@ test("pushed requires owns and strict branch/head and sends the held epoch to th
   assert.equal(sent[0].url, "http://localhost:8081/message");
   assert.equal(sent[0].message.kind, "pushed");
   assert.deepEqual(sent[0].message.body, { issue: 7, epoch: 2, branch: "feat/7", head });
+});
+
+test("joiner deny ends its attempt while allow and a joined follower's deny stay unavailable", async t => {
+  const { createKey, createPairing, readPairing } = await import("./fleet-pair.mjs");
+  const f = fixture(t), now = 1_800_000_000_000, address = "127.0.0.1";
+  assert.equal(f.run(["init", "--self", "joiner"]).code, 0);
+  const fleet = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
+  const joining = createPairing({ root: f.cwd, fleet, address, clock: () => now });
+  const beacon = joining.beacon();
+  assert.equal(joining.receivePair({ kind: "offer", leader: "leader", pub: createKey().public,
+    nonce: "11".repeat(16), port: 8080, time: now }, address), true);
+  const code = readPairing(f.cwd).offers.leader.code;
+  assert.equal(f.run(["allow", code], { node: { clock: () => now } }).code, 1);
+  const denied = f.run(["deny", code], { node: { clock: () => now } });
+  assert.equal(denied.code, 0, denied.errors.join("\n"));
+  assert.deepEqual(denied.lines, [`deny ${code}`]);
+  assert.deepEqual(readPairing(f.cwd).offers, {});
+  assert.notEqual(joining.beacon().commit, beacon.commit);
+  writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify({ ...fleet, secret: "ab".repeat(32) }));
+  assert.equal(f.run(["deny", code], { node: { clock: () => now } }).code, 1);
 });
 
 test("start migrates keys, leader creates secret, and pairing CLI and status share the state contract", async t => {

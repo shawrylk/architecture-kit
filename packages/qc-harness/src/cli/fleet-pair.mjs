@@ -71,14 +71,19 @@ export function readPairing(root) {
 const readPrivate = root => read(root, "pairing-private", { requests: {}, offers: {}, denied: [] });
 const prune = (rows, now) => Object.fromEntries(Object.entries(rows).filter(([, row]) => fresh(row, now)));
 
-export function pairingDecision(root, verb, code, now = Date.now()) {
+export function pairingDecision(root, verb, code, now = Date.now(), { joiner = false } = {}) {
   if (!["allow", "deny", "accept"].includes(verb) || !/^\d{6}$/.test(code ?? "")) throw new Error("pairing needs a 6-digit code");
-  const state = readPairing(root), privateState = readPrivate(root), group = verb === "accept" ? "offers" : "requests";
+  const state = readPairing(root), privateState = readPrivate(root);
+  const group = verb === "accept" || (verb === "deny" && joiner) ? "offers" : "requests";
   const matches = Object.entries(state[group]).filter(([, row]) => fresh(row, now) && row.code === code);
   if (matches.length !== 1) throw new Error("pairing code is expired, unknown or ambiguous");
   const [id, row] = matches[0], binding = privateState[group][id];
   if (!binding || binding.code !== code) throw new Error("pairing key is unavailable");
-  if (verb === "deny") {
+  if (verb === "deny" && group === "offers") {
+    delete state.offers[id];
+    delete privateState.offers[id];
+    delete privateState.attempt;
+  } else if (verb === "deny") {
     privateState.denied = privateState.denied.filter(row => row.until > now);
     privateState.denied.push({ id, pub: binding.pub, commit: binding.commit, until: now + 3_600_000 });
     delete state.requests[id];
@@ -94,11 +99,33 @@ export function pairingDecision(root, verb, code, now = Date.now()) {
 /** Commit before revealing keys and randomness; users compare the bound code on both PCs. */
 export function createPairing({ root, fleet, address, leader = () => false, clock = Date.now, fetch,
   saveSecret = () => { throw new Error("fleet secret persistence is unavailable"); }, warn = () => {} }) {
-  const r = randomBytes(16).toString("hex"), commit = pairCommit(fleet.key.public, r);
+  function newAttempt(now) {
+    const r = randomBytes(16).toString("hex");
+    return { r, commit: pairCommit(fleet.key.public, r), leader: null, seen: now };
+  }
+  let attempt = newAttempt(clock());
   let nextOffer = 0, nextGrant = 0, nextReveal = 0;
   const isLeader = () => Boolean(fleet.secret && leader());
-  const beacon = () => ({ v: 1, kind: "join", id: fleet.self, port: fleet.nodes.find(node => node.id === fleet.self)?.port ?? 8080,
-    address, commit, hostname: os.hostname(), os: process.platform, time: clock() });
+  function syncAttempt(state, privateState, now) {
+    const saved = privateState.attempt;
+    if (fresh(saved, now) && validNonce(saved.r) && saved.commit === pairCommit(fleet.key.public, saved.r)) {
+      attempt = saved;
+      return;
+    }
+    if (saved || attempt.leader || !fresh(attempt, now)) attempt = newAttempt(now);
+    state.offers = {};
+    privateState.offers = {};
+    privateState.attempt = attempt;
+    write(root, "pairing-private", privateState);
+    write(root, "pairing", state);
+  }
+  function beacon() {
+    const now = clock();
+    if (root !== undefined) syncAttempt(readPairing(root), readPrivate(root), now);
+    else if (!fresh(attempt, now)) attempt = newAttempt(now);
+    return { v: 1, kind: "join", id: fleet.self, port: fleet.nodes.find(node => node.id === fleet.self)?.port ?? 8080,
+      address, commit: attempt.commit, hostname: os.hostname(), os: process.platform, time: now };
+  }
   function receiveJoin(body, sender) {
     try {
       const now = clock();
@@ -153,21 +180,24 @@ export function createPairing({ root, fleet, address, leader = () => false, cloc
         row.code = code;
       } else {
         if (fleet.secret || !validId(body.leader) || body.leader === fleet.self) return false;
+        syncAttempt(state, privateState, now);
         if (body.kind === "offer") {
           if (!fieldsOnly(body, ["kind", "leader", "pub", "nonce", "port", "time"]) || !validPort(body.port) || !Number.isFinite(body.time) || Math.abs(now - body.time) > 60_000) return false;
           state.offers = prune(state.offers, now);
           if (Object.hasOwn(state.offers, body.leader) || Object.keys(state.offers).length >= 20) return false;
-          const digest = pairDigest(body.pub, fleet.key.public, body.nonce, r);
+          const digest = pairDigest(body.pub, fleet.key.public, body.nonce, attempt.r);
           sharedKey(fleet.key, body.pub, digest);
-          const code = pairCode(body.pub, fleet.key.public, body.nonce, r);
-          state.offers[body.leader] = { code, address: sender, port: body.port, seen: now, accepted: false };
+          if (attempt.leader) return false;
+          const code = pairCode(body.pub, fleet.key.public, body.nonce, attempt.r);
+          attempt.leader = body.leader;
+          state.offers[body.leader] = { code, address: sender, port: body.port, seen: attempt.seen, accepted: false };
           privateState.offers = Object.fromEntries(Object.entries(privateState.offers).filter(([id]) => Object.hasOwn(state.offers, id)));
-          privateState.offers[body.leader] = { pub: body.pub, r, lr: body.nonce, digest: digest.toString("hex"), code };
+          privateState.offers[body.leader] = { pub: body.pub, r: attempt.r, lr: body.nonce, digest: digest.toString("hex"), code };
         } else if (body.kind === "grant") {
           if (!fieldsOnly(body, ["kind", "leader", "pub", "nonce", "data"])) return false;
           const offer = Object.hasOwn(state.offers, body.leader) ? state.offers[body.leader] : undefined;
           const binding = privateState.offers[body.leader];
-          if (!fresh(offer, now) || offer.address !== sender || binding?.pub !== body.pub || binding.code !== offer.code || !binding.digest) return false;
+          if (attempt.leader !== body.leader || binding?.r !== attempt.r || !fresh(offer, now) || offer.address !== sender || binding?.pub !== body.pub || binding.code !== offer.code || !binding.digest) return false;
           decrypt(body, Buffer.from(binding.digest, "hex")); // Authenticate before retaining an encrypted grant.
           binding.grant = body;
           binding.received = now;
@@ -189,9 +219,10 @@ export function createPairing({ root, fleet, address, leader = () => false, cloc
   async function tick() {
     const now = clock(), state = readPairing(root), privateState = readPrivate(root);
     if (!fleet.secret) {
+      syncAttempt(state, privateState, now);
       for (const [id, row] of Object.entries(state.offers)) {
         const binding = privateState.offers[id];
-        if (!fresh(row, now) || row.accepted !== true || !binding?.grant || !fresh({ seen: binding.received }, now) || binding.pub !== binding.grant.pub || binding.code !== row.code) continue;
+        if (id !== attempt.leader || binding?.r !== attempt.r || !fresh(row, now) || row.accepted !== true || !binding?.grant || !fresh({ seen: binding.received }, now) || binding.pub !== binding.grant.pub || binding.code !== row.code) continue;
         const secret = decrypt(binding.grant, Buffer.from(binding.digest, "hex"));
         saveSecret(secret);
         fleet.secret = secret;
@@ -199,7 +230,7 @@ export function createPairing({ root, fleet, address, leader = () => false, cloc
       }
       if (!fleet.secret && fetch && now >= nextReveal) {
         nextReveal = now + 15_000;
-        await Promise.all(Object.entries(state.offers).filter(([id, row]) => fresh(row, now) && privateState.offers[id]?.r)
+        await Promise.all(Object.entries(state.offers).filter(([id, row]) => id === attempt.leader && fresh(row, now) && privateState.offers[id]?.r === attempt.r)
           .map(([id, row]) => post(row, reveal(privateState.offers[id]))));
       }
       return;
