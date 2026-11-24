@@ -218,7 +218,8 @@ function acknowledge(state, command, repo, number) {
 // Fragment: identify a REST request and distinguish full reads from session writes.
 function apiRequest(command) {
   if (command.group !== "api") return null;
-  const apiWords = [command.verb, ...command.args];
+  // API flags may precede the endpoint; keep their names with their values.
+  const apiWords = command.rest;
   let method;
   let write = false;
   let endpoint;
