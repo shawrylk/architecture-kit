@@ -347,7 +347,7 @@ test("CLI starts, starts twice, reports running and stops without reading GitHub
   assert.equal(readState(f.cwd, "node").leader, true);
   writeState(f.cwd, "peers", { b2: { time: 999999, kit: null, leader: false } });
   assert.equal(await runFleet(["status", "--repo", "o/r"], { ...deps, gh: fakeGh([]), git: () => "" }), 0);
-  assert.equal(lines.splice(0).at(-1), "node=running leader=a1 peers=1/1");
+  assert.deepEqual(lines.splice(0).slice(-2), ["node=running leader=a1 peers=1/1", "load b2 cpu=- mem=- rtt=-"]);
   assert.equal(await runFleet(["stop"], deps), 0);
   assert.deepEqual(lines.splice(0), ["fleet node stopped: a1"]);
   assert.equal(await runFleet(["stop"], deps), 0);
