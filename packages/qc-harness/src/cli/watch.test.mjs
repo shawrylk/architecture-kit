@@ -654,7 +654,7 @@ test("a follower ignores Leader pairing requests", async t => {
 });
 
 test("the fleet command documents startup, monitoring, pairing decisions, and secret handling", () => {
-  const command = readFileSync(new URL("../../../../commands/fleet.md", import.meta.url), "utf8");
+  const command = readFileSync(new URL("../../../../commands/fleet.md", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.match(command, /^---\ndescription: .+\nargument-hint: .+\n---/);
   for (const text of ["$ARGUMENTS", "npx --yes architecture-harness fleet", "npx --yes architecture-harness watch --fleet", "Monitor", "AskUserQuestion", "fleet allow <code>", "fleet deny <code>", "fleet accept <code>", "fleet status", "--leader", "QC_FLEET_FILE"]) {
     assert.ok(command.includes(text), text);
