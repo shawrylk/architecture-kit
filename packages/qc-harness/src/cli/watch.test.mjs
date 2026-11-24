@@ -470,7 +470,7 @@ test("fleet watch polls every five seconds, reports Leader requests once, and pe
   assert.deepEqual(lines, ["EVENT fleet:question fresh"]);
 });
 
-test("follower fleet watch reports saved approvals and answers, ignoring the request queue", async t => {
+test("follower fleet watch reports inbox approvals and answers, ignoring the request queue", async t => {
   const { writeState } = await import("./fleet-state.mjs");
   const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-follower-"));
   mkdirSync(path.join(root, ".git"));
@@ -478,7 +478,46 @@ test("follower fleet watch reports saved approvals and answers, ignoring the req
   writeState(root, "queue", [{ id: "ignored", kind: "plan" }]);
   writeState(root, "plans", { "o/r#7": { id: "approval", kind: "approve" } });
   writeState(root, "answers", { q1: { id: "answer", kind: "answer" } });
+  writeState(root, "inbox", [{ id: "approval", kind: "approve" }, { id: "answer", kind: "answer" }]);
   const lines = [];
   assert.equal(await runWatch(["--fleet"], { cwd: root, say: line => lines.push(line) }), 0);
   assert.deepEqual(lines, ["EVENT fleet:approve approval", "EVENT fleet:answer answer"]);
+});
+
+test("regression: follower watch keeps two approvals and answers accepted between polls", async t => {
+  const { readState, writeState } = await import("./fleet-state.mjs");
+  const { receiveTalk } = await import("./fleet-talk.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-inbox-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  writeState(root, "peers", { b: { leader: true } });
+  writeState(root, "assignments", { "o/r#7": { node: "a", epoch: 3 } });
+  const time = new Date().toISOString(), fleet = { self: "a" }, events = [];
+  for (const id of ["first", "second"]) {
+    const messages = [
+      { id: `approve-${id}`, kind: "approve", body: { issue: 7, epoch: 3, plan: "p", approved: id === "second", note: "Review" } },
+      { id: `answer-${id}`, kind: "answer", body: { issue: 7, epoch: 3, question: "q", text: id } },
+    ].map(message => ({ ...message, repo: "o/r", from: "b", time }));
+    writeState(root, "queue", messages);
+    receiveTalk(root, fleet, false, Date.parse(time));
+    events.push(...messages.map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
+  }
+  const lines = [];
+  const deps = { cwd: root, say: line => lines.push(line) };
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, events.map(({ id, kind }) => `EVENT fleet:${kind} ${id}`));
+  assert.deepEqual(readState(root, "inbox"), events);
+  assert.equal(readState(root, "plans")["o/r#7"].id, "approve-second");
+  assert.equal(readState(root, "answers").q.id, "answer-second");
+  writeState(root, "inbox", [...events, { id: "fresh", kind: "approve", repo: "o/r", issue: 7, time }]);
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, ["EVENT fleet:approve fresh"]);
+  writeState(root, "inbox", Array.from({ length: 200 }, (_, i) => ({ ...events[0], id: `old-${i}` })));
+  writeState(root, "queue", [{ ...readState(root, "plans")["o/r#7"], id: "newest" }]);
+  receiveTalk(root, fleet, false, Date.parse(time));
+  const inbox = readState(root, "inbox");
+  assert.equal(inbox.length, 200);
+  assert.equal(inbox[0].id, "old-1");
+  assert.equal(inbox.at(-1).id, "newest");
 });

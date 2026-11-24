@@ -17,7 +17,7 @@ function fixture(t, leader = false) {
   writeFileSync(file, "First line\nSecond line");
   writeState(root, "node", { leader });
   writeState(root, "peers", { b: { leader: true } });
-  writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a", epoch: 3 } });
+  writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: leader ? "b" : "a", epoch: 3 } });
   const sent = [], comments = [], lines = [], errors = [];
   const run = (args, extra = {}) => runFleet(args, { cwd: root, env: { QC_FLEET_FILE: config }, origin: () => "o/r",
     say: text => lines.push(text), warn: text => errors.push(text),
@@ -116,4 +116,47 @@ test("a failed Leader comment preserves its request and sends no reply", async t
   assert.equal(await f.run(["approve", "request", "--file", f.file], { gh: () => null }), 1);
   assert.deepEqual(readState(f.root, "queue"), [request]);
   assert.equal(f.sent.length, 0);
+});
+
+test("regression: replies reject requests after reassignment or an epoch change before any side effect", async t => {
+  const f = fixture(t, true);
+  for (const verb of ["approve", "answer"]) {
+    for (const assignment of [undefined, { node: "a", epoch: 3 }, { node: "b", epoch: 4 }]) {
+      writeState(f.root, "assignments", assignment ? { "o/r#7": { repo: "o/r", issue: 7, ...assignment } } : {});
+      const request = f.queued(verb === "approve" ? "plan" : "question");
+      const other = f.queued("question", "other");
+      writeState(f.root, "queue", [request, other]);
+      assert.equal(await f.run([verb, "request", "--file", f.file]), 1, `${verb} must reject a request no longer held at its epoch`);
+      assert.match(f.errors.at(-1), /assignment|epoch|hold/i);
+      assert.deepEqual(readState(f.root, "queue"), [other]);
+      assert.deepEqual(readState(f.root, "outbox"), []);
+      assert.equal(f.comments.length, 0);
+      assert.equal(f.sent.length, 0);
+    }
+  }
+});
+
+test("regression: plan and ask are durable before network sends and plan comments", async t => {
+  const f = fixture(t);
+  for (const verb of ["plan", "ask"]) {
+    writeState(f.root, "outbox", []);
+    let posted = false;
+    const checkPending = () => {
+      const pending = readState(f.root, "outbox");
+      assert.equal(pending.length, 1, `${verb} must enter outbox before external calls`);
+      assert.equal(pending[0].node, "b");
+      assert.equal(pending[0].message.kind, verb === "plan" ? "plan" : "question");
+      return pending[0].message.id;
+    };
+    let sentId;
+    assert.equal(await f.run([verb, "7", "--file", f.file], {
+      gh: () => { checkPending(); posted = true; return null; },
+      node: { fetch: async () => { sentId = checkPending(); throw new Error("offline"); } },
+    }), verb === "plan" ? 1 : 0, f.errors.join("\n"));
+    assert.equal(posted, verb === "plan");
+    const pending = readState(f.root, "outbox");
+    assert.equal(pending.length, 1, "failed external calls must preserve the request");
+    assert.equal(sentId, pending[0].message.id, "flushOutbox sends the saved message");
+    assert.equal(pending[0].attempts, 1);
+  }
 });

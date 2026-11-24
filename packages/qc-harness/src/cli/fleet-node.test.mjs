@@ -670,10 +670,12 @@ test("follower records replies only from claimed Leaders at the held epoch, with
   t.after(() => new Promise(resolve => server.close(resolve)));
   await tick();
   assert.deepEqual(readState(root, "queue"), [approve, answer]);
+  assert.deepEqual(readState(root, "inbox"), []);
   writeState(root, "peers", { b: { leader: true } });
   await tick();
   assert.deepEqual(readState(root, "plans"), { "o/r#7": approve });
   assert.deepEqual(readState(root, "answers"), { q1: answer });
+  assert.deepEqual(readState(root, "inbox"), [approve, answer].map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
   assert.deepEqual(readState(root, "queue"), []);
   const rejected = [
     message({ ...approve, id: "not-leader", from: "inactive" }),
@@ -687,4 +689,5 @@ test("follower records replies only from claimed Leaders at the held epoch, with
   assert.deepEqual(readState(root, "queue"), []);
   assert.deepEqual(readState(root, "plans"), { "o/r#7": approve });
   assert.deepEqual(readState(root, "answers"), { q1: answer });
+  assert.deepEqual(readState(root, "inbox"), [approve, answer].map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
 });

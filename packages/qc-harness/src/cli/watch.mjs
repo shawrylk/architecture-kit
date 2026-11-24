@@ -229,7 +229,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
         const watched = readState(cwd, "watched");
         const messages = readState(cwd, "node").leader === true
           ? readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind))
-          : [...Object.values(readState(cwd, "plans")), ...Object.values(readState(cwd, "answers"))];
+          : readState(cwd, "inbox");
         const fresh = messages.filter(message => !Object.hasOwn(watched, message.id));
         if (fresh.length) {
           for (const message of fresh) {

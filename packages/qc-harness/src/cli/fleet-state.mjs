@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { commonDirOf } from "./ledger.mjs";
 
-const FILES = ["assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node", "plans", "answers", "watched"];
+const FILES = ["assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node", "plans", "answers", "inbox", "watched"];
 
 /** State is private to git's shared directory, outside every worktree's tracked files. */
 export function stateDir(root = process.cwd()) {
@@ -23,7 +23,7 @@ export function readState(root, name) {
   try {
     return JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") return ["queue", "outbox", "dead"].includes(name) ? [] : {};
+    if (error.code === "ENOENT") return ["queue", "outbox", "dead", "inbox"].includes(name) ? [] : {};
     throw error;
   }
 }

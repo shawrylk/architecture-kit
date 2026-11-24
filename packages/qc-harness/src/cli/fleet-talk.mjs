@@ -1,11 +1,19 @@
 import { readFileSync } from "node:fs";
 import { createMessage } from "./fleet-message.mjs";
-import { sendMessage } from "./fleet-node.mjs";
+import { flushOutbox, sendMessage } from "./fleet-node.mjs";
 import { readState, writeState } from "./fleet-state.mjs";
 import { roleComment } from "./role-line.mjs";
 
 export const TALK_VERBS = ["plan", "ask", "approve", "answer", "show"];
 const validText = text => typeof text === "string" && text.length <= 20000;
+
+function requestError(message, assignments) {
+  const { issue, epoch, text } = message.body ?? {};
+  if (!Number.isSafeInteger(issue) || issue <= 0 || !Number.isSafeInteger(epoch) || epoch <= 0 || !validText(text)) return "invalid request issue, epoch or text";
+  const assignment = assignments[`${message.repo}#${issue}`];
+  if (!assignment || assignment.node !== message.from || assignment.epoch !== epoch) return "request sender does not hold this issue at this assignment epoch";
+  return null;
+}
 
 export function parseTalkArgs(verb, rest) {
   const [target, ...flags] = rest;
@@ -36,6 +44,7 @@ function fileText(file) {
 export function receiveTalk(root, fleet, leader, now) {
   const queue = readState(root, "queue"), peers = readState(root, "peers"), assignments = readState(root, "assignments");
   const plans = readState(root, "plans"), answers = readState(root, "answers"), kept = [];
+  const inbox = readState(root, "inbox");
   let changed = false, savedPlan = false, savedAnswer = false;
   for (const message of queue) {
     const request = leader && ["plan", "question"].includes(message.kind);
@@ -44,7 +53,7 @@ export function receiveTalk(root, fleet, leader, now) {
     changed = true;
     const body = message.body ?? {}, { issue, epoch } = body;
     if (!Number.isSafeInteger(issue) || issue <= 0 || !Number.isSafeInteger(epoch) || epoch <= 0) continue;
-    if (request ? !validText(body.text) : message.kind === "approve"
+    if (request ? requestError(message, assignments) : message.kind === "approve"
       ? typeof body.approved !== "boolean" || typeof body.plan !== "string" || !body.plan || !validText(body.note)
       : typeof body.question !== "string" || !body.question || !validText(body.text)) continue;
     const key = `${message.repo}#${issue}`, assignment = assignments[key];
@@ -59,9 +68,11 @@ export function receiveTalk(root, fleet, leader, now) {
       Object.defineProperty(answers, body.question, { value: message, enumerable: true, writable: true, configurable: true });
       savedAnswer = true;
     }
+    if (reply) inbox.push({ id: message.id, kind: message.kind, repo: message.repo, issue, time: message.time });
   }
   if (savedPlan) writeState(root, "plans", plans);
   if (savedAnswer) writeState(root, "answers", answers);
+  if (savedPlan || savedAnswer) writeState(root, "inbox", inbox.slice(-200));
   if (changed) writeState(root, "queue", kept);
 }
 
@@ -75,8 +86,17 @@ export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }
   }
   const request = ["plan", "ask"].includes(verb);
   if (!request && readState(root, "node").leader !== true) throw new Error(`${verb} runs on the Leader only`);
-  const text = options["--file"] ? fileText(options["--file"]) : "";
   let recipient, body, kind, comment, queued;
+  if (!request) {
+    queued = readState(root, "queue").find(message => message.id === target && message.repo === repo && message.kind === (verb === "approve" ? "plan" : "question"));
+    if (!queued) throw new Error(`${verb} request not found: ${target}`);
+    const reason = requestError(queued, readState(root, "assignments"));
+    if (reason) {
+      writeState(root, "queue", readState(root, "queue").filter(message => message.id !== target));
+      throw new Error(reason);
+    }
+  }
+  const text = options["--file"] ? fileText(options["--file"]) : "";
   if (request) {
     const issue = Number(target), assignment = readState(root, "assignments")[`${repo}#${issue}`];
     if (!assignment || assignment.node !== fleet.self) throw new Error(`this node does not hold #${issue}`);
@@ -87,8 +107,6 @@ export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }
     body = { issue, epoch: assignment.epoch, text };
     if (verb === "plan") comment = { role: "coder", kind, summary: "Plan for review", body: text };
   } else {
-    queued = readState(root, "queue").find(message => message.id === target && message.repo === repo && message.kind === (verb === "approve" ? "plan" : "question"));
-    if (!queued) throw new Error(`${verb} request not found: ${target}`);
     recipient = fleet.nodes.find(peer => peer.id === queued.from);
     kind = verb;
     const { issue, epoch } = queued.body;
@@ -99,11 +117,16 @@ export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }
   }
   if (!recipient?.address) throw new Error("recipient needs a fleet address");
   const message = createMessage({ from: fleet.self, repo, kind, body }, fleet.secret);
+  if (request) {
+    const { sig: _sig, time: _time, ...fields } = message;
+    writeState(root, "outbox", [...readState(root, "outbox"), { node: recipient.id, message: fields, attempts: 0, nextAttempt: (node.clock ?? Date.now)() }]);
+    await flushOutbox({ ...node, root, fleet });
+  }
   if (comment) {
     const result = gh(["issue", "comment", String(body.issue), "--repo", repo, "--body", roleComment({ ...comment, node: fleet.self, ref: `#${body.issue}` }, { secret: fleet.secret })], { cwd: root });
     if (result == null) throw new Error("gh issue comment failed");
   }
-  await sendMessage({ ...node, root, fleet, node: recipient, message });
+  if (!request) await sendMessage({ ...node, root, fleet, node: recipient, message });
   if (queued) writeState(root, "queue", readState(root, "queue").filter(message => message.id !== target));
   say(`${kind} ${message.id}`);
   return 0;
