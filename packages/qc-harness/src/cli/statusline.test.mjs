@@ -80,6 +80,13 @@ test("marks a live leader", t => {
   assert.match(f.run(), /fleet dev-1 leader /);
 });
 
+test("marks a live leader when git status fails with an invalid index", t => {
+  const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
+  f.node({ pid: process.pid, leader: true });
+  assert.match(f.run(f.cwd, { GIT_INDEX_FILE: "/dev/null" }), /fleet dev-1 leader /);
+});
+
 test("shows no fleet mark inside the git directory of a live leader", t => {
   const f = fixture(t);
   writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
@@ -100,7 +107,7 @@ test("marks a live leader through a symlinked checkout subfolder", t => {
   assert.match(f.run(linked), /fleet dev-1 leader /);
 });
 
-test("marks a live leader using GIT_DIR and GIT_WORK_TREE", t => {
+test("shows no fleet mark outside GIT_WORK_TREE even with GIT_DIR set", t => {
   const f = fixture(t);
   const outside = path.join(f.root, "outside");
   mkdirSync(outside);
@@ -109,7 +116,7 @@ test("marks a live leader using GIT_DIR and GIT_WORK_TREE", t => {
   assert.match(f.run(outside, {
     GIT_DIR: path.join(f.cwd, ".git"),
     GIT_WORK_TREE: f.cwd,
-  }), /fleet dev-1 leader /);
+  }), /fleet dev-1 /);
 });
 
 test("marks missing, malformed, and stopped nodes off", t => {

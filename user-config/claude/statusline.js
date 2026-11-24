@@ -96,15 +96,16 @@ function gitInfo(dir) {
 // Let git resolve symlinks, linked worktrees, and repository environment variables.
 function gitCommonDir(dir) {
   try {
-    return execFileSync(
+    const output = execFileSync(
       'git',
-      ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      ['-C', dir, 'rev-parse', '--is-inside-work-tree', '--path-format=absolute', '--git-common-dir'],
       { stdio: ['ignore', 'pipe', 'ignore'], timeout: 500 }
-    ).toString().trim();
+    ).toString().trim().split('\n');
+    return output[0] === 'true' ? output[1] || null : null;
   } catch { return null; }
 }
 
-function fleetSegment(dir, git) {
+function fleetSegment(dir) {
   try {
     // Keep in sync with fleetPath in the CLI; this script runs standalone.
     const base = process.platform === 'win32' && process.env.APPDATA
@@ -113,7 +114,7 @@ function fleetSegment(dir, git) {
     const self = JSON.parse(fs.readFileSync(file, 'utf8'))?.self;
     if (typeof self !== 'string' || !/^[a-z0-9-]{1,32}$/.test(self)) return null;
     let mark = '';
-    const commonDir = git ? gitCommonDir(dir) : null;
+    const commonDir = gitCommonDir(dir);
     if (commonDir) {
       mark = ' off';
       try {
@@ -320,7 +321,7 @@ process.stdin.on('data', (d) => { raw += d; }).on('end', () => {
   const line1 = [
     { text: tildePath(dir), color: ORANGE_BROWN },
     git ? { text: gitSegmentText(git), color: DARK_GREY } : null,
-    fleetSegment(dir, git),
+    fleetSegment(dir),
     typeof ctxPct === 'number' ? { text: contextText(ctxPct, j.context_window?.context_window_size), color: SLATE } : null,
   ];
 
