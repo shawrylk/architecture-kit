@@ -90,31 +90,21 @@ function gitInfo(dir) {
     if (/^[a-f0-9]+$/.test(oid)) branch = oid.slice(0, 7);
   }
 
-  return { branch, ahead, behind, dirty, commonDir: gitCommonDir(dir) };
+  return { branch, ahead, behind, dirty };
 }
 
-// Resolve .git and linked-worktree commondir files without another git call.
+// Let git resolve symlinks, linked worktrees, and repository environment variables.
 function gitCommonDir(dir) {
-  let current = path.resolve(dir);
-  while (true) {
-    let gitDir = path.join(current, '.git');
-    try {
-      if (!fs.statSync(gitDir).isDirectory()) {
-        const pointer = fs.readFileSync(gitDir, 'utf8').trim();
-        if (!pointer.startsWith('gitdir: ')) return null;
-        gitDir = path.resolve(current, pointer.slice(8));
-      }
-      try {
-        return path.resolve(gitDir, fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim());
-      } catch { return gitDir; }
-    } catch { /* look for the containing checkout */ }
-    const parent = path.dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
+  try {
+    return execFileSync(
+      'git',
+      ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 500 }
+    ).toString().trim();
+  } catch { return null; }
 }
 
-function fleetSegment(git) {
+function fleetSegment(dir) {
   try {
     // Keep in sync with fleetPath in the CLI; this script runs standalone.
     const base = process.platform === 'win32' && process.env.APPDATA
@@ -123,10 +113,11 @@ function fleetSegment(git) {
     const self = JSON.parse(fs.readFileSync(file, 'utf8'))?.self;
     if (typeof self !== 'string' || !/^[a-z0-9-]{1,32}$/.test(self)) return null;
     let mark = '';
-    if (git) {
+    const commonDir = gitCommonDir(dir);
+    if (commonDir) {
       mark = ' off';
       try {
-        const node = JSON.parse(fs.readFileSync(path.join(git.commonDir, 'qc', 'fleet', 'node.json'), 'utf8'));
+        const node = JSON.parse(fs.readFileSync(path.join(commonDir, 'qc', 'fleet', 'node.json'), 'utf8'));
         if (Number.isSafeInteger(node?.pid) && node.pid > 0) {
           let alive = false;
           try { process.kill(node.pid, 0); alive = true; }
@@ -329,7 +320,7 @@ process.stdin.on('data', (d) => { raw += d; }).on('end', () => {
   const line1 = [
     { text: tildePath(dir), color: ORANGE_BROWN },
     git ? { text: gitSegmentText(git), color: DARK_GREY } : null,
-    fleetSegment(git),
+    fleetSegment(dir),
     typeof ctxPct === 'number' ? { text: contextText(ctxPct, j.context_window?.context_window_size), color: SLATE } : null,
   ];
 

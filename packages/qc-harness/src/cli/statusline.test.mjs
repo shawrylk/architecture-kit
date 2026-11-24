@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,6 +78,29 @@ test("marks a live leader", t => {
   writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
   f.node({ pid: process.pid, leader: true });
   assert.match(f.run(), /fleet dev-1 leader /);
+});
+
+test("marks a live leader through a symlinked checkout subfolder", t => {
+  const f = fixture(t);
+  const nested = path.join(f.cwd, "nested");
+  const linked = path.join(f.root, "linked-subfolder");
+  mkdirSync(nested);
+  symlinkSync(nested, linked, process.platform === "win32" ? "junction" : "dir");
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
+  f.node({ pid: process.pid, leader: true });
+  assert.match(f.run(linked), /fleet dev-1 leader /);
+});
+
+test("marks a live leader using GIT_DIR and GIT_WORK_TREE", t => {
+  const f = fixture(t);
+  const outside = path.join(f.root, "outside");
+  mkdirSync(outside);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
+  f.node({ pid: process.pid, leader: true });
+  assert.match(f.run(outside, {
+    GIT_DIR: path.join(f.cwd, ".git"),
+    GIT_WORK_TREE: f.cwd,
+  }), /fleet dev-1 leader /);
 });
 
 test("marks missing, malformed, and stopped nodes off", t => {

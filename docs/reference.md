@@ -290,6 +290,7 @@ They also deny `Read` of every file in `~/.ssh`.
 The `statusLine.command` stays `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.js"`.
 The status line needs a Nerd Font for its powerline glyphs.
 The fleet segment shows the configured fleet name after git, with `leader` for a live leader or `off` when no live node runs in the checkout.
+With valid fleet settings, it resolves the common directory through Git with a 500 ms timeout, honoring symlinks, `GIT_DIR`, and `GIT_WORK_TREE`; a lookup error leaves the name without a mark.
 
 Codex shares `approval_policy`, `default_permissions`, `model`, `model_reasoning_effort`, `model_auto_compact_token_limit`, `model_post_turn_compact_threshold_percent`, and `service_tier`.
 It also shares `enabled` in each listed `[plugins."<name>"]` table.
