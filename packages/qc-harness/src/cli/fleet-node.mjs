@@ -12,6 +12,7 @@ import { lookup } from "node:dns/promises";
 import { receiveTalk } from "./fleet-talk.mjs";
 import { assignTick, overloaded } from "./fleet-assign.mjs";
 import { readOpenAssignments, freeIssues } from "./fleet.mjs";
+import { effectiveFleet, readDiscovered, startDiscovery } from "./fleet-discover.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { githubFallback, postGithubMessage, readGithub, receiveMessage, validBranch, validHead, validWork } from "./fleet-github.mjs";
@@ -501,14 +502,27 @@ export function confirmLeader({ root, fleet, clock = Date.now }) {
 
 /** One serial tick avoids overlapping network retries and heartbeats. */
 export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, os: host = os, clock = Date.now,
+  configuredFleet = fleet, interfaces, discovery = {},
   fetch = nodeFetch, gh = runGh, git, platform = {}, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
+  const configured = { ...configuredFleet, nodes: configuredFleet.nodes.map(node => ({ ...node })) };
+  const refreshFleet = () => {
+    if (!configured.discover) return;
+    const current = effectiveFleet(configured, readDiscovered(root, configured.secret), clock(), interfaces);
+    fleet.nodes = current.nodes;
+    fleet.leaders = current.leaders;
+  };
+  refreshFleet();
   const server = await createNodeServer({ root, fleet, clock, listen, instance });
+  let discoverySocket;
+  try { if (fleet.discover) discoverySocket = await startDiscovery({ ...discovery, root, fleet, address: server.address().address, clock, interfaces, warn }); }
+  catch (error) { server.close(); throw error; }
   const sends = new AbortController();
   let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000, nextAssign = clock() + 60_000, nextGithub = clock();
   const shutdown = () => {
     if (closing) return;
     closing = true;
+    discoverySocket?.close();
     clearTimer(interval);
     sends.abort();
     server.close();
@@ -521,11 +535,12 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     writeState(root, "node", { pid, leader, instance, term: previous.term ?? highestTerm(root) });
     writeState(root, "election", { ...election, started: election.started ?? clock(), highest: highestTerm(root) });
   }
-  catch (error) { server.close(); throw error; }
+  catch (error) { discoverySocket?.close(); server.close(); throw error; }
   interval = timer(async () => {
     if (busy || closing) return;
     busy = true;
     try {
+      refreshFleet();
       if (clock() >= nextGithub) {
         nextGithub = clock() + 120_000;
         readGithub({ root, fleet, repo, clock, gh });
@@ -568,6 +583,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   onSignal("SIGTERM", shutdown);
   onSignal("SIGINT", shutdown);
   server.once("close", () => {
+    discoverySocket?.close();
     clearTimeout(forceClose);
     if (!closing) clearTimer(interval);
     closing = true;
