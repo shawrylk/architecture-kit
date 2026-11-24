@@ -486,7 +486,7 @@ test("status prints the pending Leader proposal", async t => {
   writeState(f.cwd, "proposal", { id: "b2", term: 2 });
   const result = await f.run(["status"], { origin: () => "o/r", gh: fakeGh([]), git: () => "" });
   assert.equal(result.code, 0);
-  assert.ok(result.lines.includes("proposed Leader b2 term 2: run qc fleet confirm-leader"));
+  assert.ok(result.lines.includes("proposed Leader b2 term 2: run npx architecture-harness fleet confirm-leader"));
 });
 
 

@@ -32,7 +32,8 @@
     "access": "public"
   },
   "bin": {
-    "qc": "./src/cli/qc.mjs"
+    "qc": "./src/cli/qc.mjs",
+    "architecture-harness": "./src/cli/qc.mjs"
   },
   "exports": {
     ".": "./src/index.mjs",

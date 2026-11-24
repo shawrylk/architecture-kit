@@ -24,6 +24,8 @@ The package:
 pnpm add -D architecture-harness --save-exact
 ```
 
+`npx architecture-harness <command>` runs the kit in a folder that does not install it.
+
 The plugin:
 
 ```bash

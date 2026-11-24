@@ -339,6 +339,8 @@ test("status counts only known other senders in the inclusive 90-second window",
   writeState(root, "peers", { a: { time: now, leader: true }, b: { time: now - 90000, leader: true },
     inactive: { time: now - 90001, leader: true }, unaddressed: { time: now + 1, leader: true }, unknown: { time: now, leader: true } });
   assert.equal(await nodeStatus(p.deps), "node=stopped leader=b peers=1/3");
+  writeState(root, "proposal", { id: "b", term: 2 });
+  assert.match(await nodeStatus(p.deps), /proposed Leader b term 2: run npx architecture-harness fleet confirm-leader/);
 });
 
 test("serve schedules heartbeats every 30 seconds, retries every second and closes cleanly", async t => {
