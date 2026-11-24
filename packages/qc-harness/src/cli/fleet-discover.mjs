@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { createSocket as udpSocket } from "node:dgram";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
@@ -12,15 +12,22 @@ const validPort = port => Number.isInteger(port) && port >= 1024 && port <= 6553
 const validCapacity = node => Number.isFinite(node.weight) && node.weight > 0 && node.weight <= 100 && ["S", "M", "L"].includes(node.maxSize);
 const localIPv4 = interfaces => Object.values(interfaces()).flat().filter(row =>
   row && !row.internal && row.family === "IPv4" && isIP(row.address) === 4);
-const mac = (fields, secret) => createHmac("sha256", Buffer.from(secret, "hex")).update(canonical(fields)).digest("hex");
+const mac = (fields, secret) => createHmac("sha256", Buffer.from(secret, "utf8")).update(canonical(fields)).digest("hex");
 
-/** Discovery state shares the fleet's private git state directory. */
-export function readDiscovered(root) {
-  try { return JSON.parse(readFileSync(path.join(stateDir(root), "discovered.json"), "utf8")); }
+const fingerprint = secret => createHash("sha256").update(secret, "utf8").digest("hex").slice(0, 16);
+
+/** Discovery state shares the fleet's private git state directory and secret identity. */
+export function readDiscovered(root, secret) {
+  try {
+    const saved = JSON.parse(readFileSync(path.join(stateDir(root), "discovered.json"), "utf8"));
+    return typeof secret === "string" && saved?.fleet === fingerprint(secret) &&
+      saved.nodes && typeof saved.nodes === "object" && !Array.isArray(saved.nodes) ? saved.nodes : {};
+  }
   catch (error) { if (error.code === "ENOENT") return {}; throw error; }
 }
 
-function saveDiscovered(root, discovered) {
+function saveDiscovered(root, secret, nodes) {
+  const discovered = { fleet: fingerprint(secret), nodes };
   const file = path.join(stateDir(root), "discovered.json");
   const temporary = `${file}.${randomBytes(8).toString("hex")}.tmp`;
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -33,13 +40,10 @@ function saveDiscovered(root, discovered) {
 /** A fresh, signed announcement always fits a single small UDP datagram. */
 export function createBeacon({ fleet, clock = Date.now, interfaces = os.networkInterfaces }) {
   const self = fleet.nodes.find(node => node.id === fleet.self);
-  const fields = { v: 1, id: fleet.self, port: self.port ?? 8080, addresses: [], weight: self.weight ?? 1,
+  const address = self.address ?? localIPv4(interfaces)[0]?.address;
+  if (!address) throw new Error(`fleet address is required for ${fleet.self}`);
+  const fields = { v: 1, id: fleet.self, port: self.port ?? 8080, addresses: [address], weight: self.weight ?? 1,
     maxSize: self.maxSize ?? "L", time: clock(), nonce: randomBytes(16).toString("hex") };
-  for (const address of new Set(localIPv4(interfaces).map(row => row.address))) {
-    const candidate = { ...fields, addresses: [...fields.addresses, address] };
-    if (Buffer.byteLength(JSON.stringify({ ...candidate, sig: "0".repeat(64) })) >= 1024) break;
-    fields.addresses.push(address);
-  }
   return { ...fields, sig: mac(fields, fleet.secret) };
 }
 
@@ -57,9 +61,9 @@ export function effectiveFleet(fleet, discovered, now = Date.now(), interfaces =
   return { ...fleet, nodes, leaders: nodes.map(node => node.id).sort() };
 }
 
-function broadcastAddresses(interfaces) {
+function broadcastAddresses(interfaces, address) {
   const targets = new Set(["255.255.255.255"]);
-  for (const row of localIPv4(interfaces)) {
+  for (const row of localIPv4(interfaces).filter(row => row.address === address)) {
     if (isIP(row.netmask) !== 4) continue;
     const mask = row.netmask.split(".").map(Number);
     targets.add(row.address.split(".").map((byte, i) => (Number(byte) | (~mask[i] & 255))).join("."));
@@ -79,8 +83,9 @@ export async function startDiscovery({ root, fleet, clock = Date.now, interfaces
   const announce = () => {
     if (closed) return;
     try {
-      const data = Buffer.from(JSON.stringify(createBeacon({ fleet, clock, interfaces })));
-      for (const address of broadcastAddresses(interfaces)) socket.send(data, port, address, error => {
+      const beacon = createBeacon({ fleet, clock, interfaces });
+      const data = Buffer.from(JSON.stringify(beacon));
+      for (const address of broadcastAddresses(interfaces, beacon.addresses[0])) socket.send(data, port, address, error => {
         if (error) warn(`fleet discovery: ${error.message}`);
       });
     } catch (error) { warn(`fleet discovery: ${error.message}`); }
@@ -95,7 +100,7 @@ export async function startDiscovery({ root, fleet, clock = Date.now, interfaces
       if (fields.v !== 1 || !validId(fields.id) || !validPort(fields.port) || !validCapacity(fields) ||
         !Number.isFinite(fields.time) || Math.abs(now - fields.time) > 60_000 ||
         typeof fields.nonce !== "string" || !fields.nonce || fields.nonce.length > 128 ||
-        !Array.isArray(fields.addresses) || !fields.addresses.every(address => isIP(address) === 4) ||
+        !Array.isArray(fields.addresses) || fields.addresses.length !== 1 || !fields.addresses.every(address => isIP(address) === 4) ||
         !fields.addresses.includes(sender.address)) return;
       for (const [nonce, seen] of nonces) if (now - seen > 120_000) nonces.delete(nonce);
       if (nonces.has(fields.nonce)) return;
@@ -108,10 +113,10 @@ export async function startDiscovery({ root, fleet, clock = Date.now, interfaces
         }
         return;
       }
-      const discovered = readDiscovered(root);
+      const discovered = readDiscovered(root, fleet.secret);
       Object.defineProperty(discovered, fields.id, { enumerable: true, configurable: true, writable: true,
         value: { address: sender.address, port: fields.port, weight: fields.weight, maxSize: fields.maxSize, seen: now } });
-      saveDiscovered(root, discovered);
+      saveDiscovered(root, fleet.secret, discovered);
     } catch (error) {
       // Malformed datagrams are ignored; disk failures remain visible to the operator.
       if (error.code) warn(`fleet discovery: ${error.message}`);

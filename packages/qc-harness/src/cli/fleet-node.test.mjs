@@ -374,6 +374,12 @@ test("serve refreshes the same fleet for HTTP, heartbeats and expiry, and closes
   const { createBeacon } = await import("./fleet-discover.mjs");
   const root = fixture(t), signals = new Map(), sent = [];
   const current = { self: "a", secret, discover: true, nodes: [{ id: "a", weight: 1, maxSize: "L", port: 8080 }], leaders: ["a"] };
+  const { createHash } = await import("node:crypto");
+  mkdirSync(stateDir(root), { recursive: true });
+  writeFileSync(path.join(stateDir(root), "discovered.json"), JSON.stringify({
+    fleet: createHash("sha256").update(`${secret}a`, "utf8").digest("hex").slice(0, 16),
+    nodes: { stale: { address: "127.0.0.1", port: 9091, weight: 1, maxSize: "L", seen: now } },
+  }));
   let time = now, tick, closed = false;
   const socket = new EventEmitter();
   socket.bind = (_port, _host, ready) => ready();
@@ -388,7 +394,8 @@ test("serve refreshes the same fleet for HTTP, heartbeats and expiry, and closes
     fetch: async (url, options) => { sent.push({ url, message: JSON.parse(options.body) }); return { status: 202 }; } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   assert.equal(current.nodes[0].address, "127.0.0.1");
-  const remote = { self: "b", secret, nodes: [{ id: "b", port: 9090, weight: 2, maxSize: "M" }] };
+  assert.deepEqual(current.nodes.map(node => node.id), ["a"]);
+  const remote = { self: "b", secret, nodes: [{ id: "b", address: "127.0.0.1", port: 9090, weight: 2, maxSize: "M" }] };
   socket.emit("message", Buffer.from(JSON.stringify(createBeacon({ fleet: remote, interfaces, clock: () => time }))), { address: "127.0.0.1" });
   time += 30_000;
   await tick();

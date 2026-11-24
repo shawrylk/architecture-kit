@@ -170,6 +170,7 @@ function parseArgs(argv) {
 }
 
 function initialize(options, file, say) {
+  if (options["--nodes"] !== undefined && options["--self"] === undefined) throw new Error("init needs --self with --nodes");
   const self = options["--self"] ?? randomBytes(2).toString("hex");
   const port = Number(options["--port"] ?? 8080);
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("--port must be an integer from 1024 to 65535");
@@ -178,7 +179,6 @@ function initialize(options, file, say) {
     if (extra.length) throw new Error("--nodes needs id:weight:size entries");
     return { id, weight: Number(weight), maxSize };
   });
-  if (options["--self"] === undefined && !nodes.some(node => node.id === self)) nodes.push({ id: self, weight: 1, maxSize: "L", port });
   if (options["--nodes"] !== undefined && options["--port"] !== undefined) {
     const local = nodes.find(node => node.id === self);
     if (local) local.port = port;
@@ -229,7 +229,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     let value;
     try { value = JSON.parse(text); } catch { throw new Error(`fleet file has invalid JSON: ${file}`); }
     const configuredFleet = validateFleet(value);
-    const fleet = effectiveFleet(configuredFleet, configuredFleet.discover ? readDiscovered(cwd) : {}, node.clock?.() ?? Date.now(), node.interfaces);
+    const fleet = effectiveFleet(configuredFleet, configuredFleet.discover ? readDiscovered(cwd, configuredFleet.secret) : {}, node.clock?.() ?? Date.now(), node.interfaces);
     if (options.verb === "status") say(`name=${fleet.self} discover=${fleet.discover ? "on" : "off"}`);
     if (["start", "stop", "serve"].includes(options.verb)) {
       return runNodeVerb(options, { root: cwd, fleet, configuredFleet, env, gh, git, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });

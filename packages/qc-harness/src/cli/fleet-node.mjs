@@ -482,7 +482,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   const configured = { ...configuredFleet, nodes: configuredFleet.nodes.map(node => ({ ...node })) };
   const refreshFleet = () => {
     if (!configured.discover) return;
-    const current = effectiveFleet(configured, readDiscovered(root), clock(), interfaces);
+    const current = effectiveFleet(configured, readDiscovered(root, configured.secret), clock(), interfaces);
     fleet.nodes = current.nodes;
     fleet.leaders = current.leaders;
   };

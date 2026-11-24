@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -124,7 +124,6 @@ test("init accepts explicit secrets and addresses and generates a reusable secre
   const instruction = generated.lines.filter(line => line.includes(saved.secret));
   assert.equal(instruction.length, 1);
   assert.equal(instruction[0], `run on the other PCs: npx architecture-harness fleet init --secret ${saved.secret}`);
-  assert.match(instruction[0], /--secret/);
   assert.equal(f.run([...args, "--force"]).code, 0);
   assert.notEqual(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).secret, saved.secret);
 });
@@ -150,12 +149,10 @@ test("init without flags chooses a random hex name, enables discovery and prints
   assert.ok(!joined.lines.join("\n").includes(saved.secret));
   for (const port of ["1023", "65536", "1.5", "no"]) assert.equal(other.run(["init", "--force", "--port", port]).code, 1);
   const staticPeers = fixture(t);
-  const generated = staticPeers.run(["init", "--nodes", "peer:2:M"]);
-  assert.equal(generated.code, 0, generated.errors.join("\n"));
-  const configured = JSON.parse(readFileSync(staticPeers.env.QC_FLEET_FILE, "utf8"));
-  assert.match(configured.self, /^[0-9a-f]{4}$/);
-  assert.ok(configured.nodes.some(node => node.id === configured.self && node.port === 8080));
-  assert.ok(configured.nodes.some(node => node.id === "peer" && node.weight === 2));
+  const rejected = staticPeers.run(["init", "--nodes", "peer:2:M"]);
+  assert.equal(rejected.code, 1);
+  assert.deepEqual(rejected.errors, ["init needs --self with --nodes"]);
+  assert.equal(existsSync(staticPeers.env.QC_FLEET_FILE), false);
 });
 
 test("validateFleet accepts optional discovery settings and rejects invalid types and ports", () => {
@@ -171,9 +168,12 @@ test("status and assignment use the discoveries saved on disk", async t => {
   const f = fixture(t);
   assert.equal(f.run(["init", "--self", "a1"]).code, 0);
   mkdirSync(stateDir(f.cwd), { recursive: true });
-  writeFileSync(path.join(stateDir(f.cwd), "discovered.json"), JSON.stringify({ b2: {
-    address: "192.168.1.20", port: 8080, weight: 2, maxSize: "L", seen: Date.now(),
-  } }));
+  const configured = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
+  writeFileSync(path.join(stateDir(f.cwd), "discovered.json"), JSON.stringify({
+    fleet: createHash("sha256").update(configured.secret, "utf8").digest("hex").slice(0, 16), nodes: { b2: {
+      address: "192.168.1.20", port: 8080, weight: 2, maxSize: "L", seen: Date.now(),
+    } },
+  }));
   const extra = { gh: fakeGh([]), git: () => "", origin: () => "o/r" };
   const status = await f.run(["status"], extra);
   assert.equal(status.code, 0, status.errors.join("\n"));
@@ -185,6 +185,13 @@ test("status and assignment use the discoveries saved on disk", async t => {
   const next = f.run(["next", "--all"], { ...extra, gh: fakeGh(issues) });
   assert.equal(next.code, 0);
   assert.deepEqual(next.lines, mine);
+  writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify({ ...configured, secret: `${configured.secret}a` }));
+  const changed = await f.run(["status"], extra);
+  assert.equal(changed.code, 0, changed.errors.join("\n"));
+  assert.ok(!changed.lines.some(line => /^b2 weight=2/.test(line)));
+  const reassigned = f.run(["next", "--all"], { ...extra, gh: fakeGh(issues) });
+  assert.equal(reassigned.code, 0);
+  assert.deepEqual(reassigned.lines, issues.map(row => String(row.number)));
 });
 
 test("ownerOf repeats across calls and repo case, using the specified SHA-256 score", () => {
