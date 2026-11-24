@@ -158,7 +158,7 @@ test("discovery rejects bad MAC, old/future time, address mismatch and malformed
     ...[1023, 65536, 8080.5, "8080"].map(port => beacon({ port })),
     ...[0, -1, 101, "2"].map(weight => beacon({ weight })),
     beacon({ maxSize: "XL" }), beacon({ v: 2 }), beacon({ nonce: "" }),
-    beacon({ extra: "x".repeat(1024) }),
+    beacon({ extra: "x".repeat(2048) }),
   ];
   for (const value of invalid) f.receive(value);
   f.socket.emit("message", Buffer.from("{"), { address: "192.168.1.20" });
@@ -210,4 +210,30 @@ test("effectiveFleet expires discoveries after 300 seconds, keeps configured nod
   assert.deepEqual(current.nodes.find(node => node.id === "b"), { id: "b", address: "192.168.1.20", port: 8081, weight: 2, maxSize: "M", active: true });
   assert.deepEqual(effectiveFleet(configured, discovered, now + 300_001, interfaces).leaders, ["a", "z"]);
   assert.equal(configured.nodes[0].address, undefined);
+});
+
+test("no-secret discovery broadcasts joins and forwards only small joins to pairing; signed beacon stops grants", async t => {
+  const { createKey } = await import("./fleet-pair.mjs");
+  const f = await listener(t, { secret: undefined, key: createKey() });
+  const join = JSON.parse(f.socket.sent[0].data.toString());
+  assert.equal(join.kind, "join");
+  assert.equal(join.sig, undefined);
+  assert.equal(join.pub, undefined);
+  assert.equal(join.nonce, undefined);
+  assert.match(join.commit, /^[0-9a-f]{64}$/);
+  f.timers[0].fn();
+  assert.equal(JSON.parse(f.socket.sent.at(-1).data.toString()).commit, join.commit);
+  assert.equal(join.address, "192.168.1.10");
+  assert.equal(f.timers[0].ms, 15_000);
+  const received = [], signed = [];
+  const socket = new FakeSocket();
+  const leader = await startDiscovery({ root: fixture(t), fleet, address: "192.168.1.10", interfaces, clock: () => now,
+    pairing: { receiveJoin: (body, sender) => received.push([body, sender]), signed: id => signed.push(id) },
+    createSocket: () => socket, timer: () => 1, clearTimer: () => {} });
+  t.after(() => leader.close());
+  socket.emit("message", Buffer.from(JSON.stringify(join)), { address: "192.168.1.10" });
+  socket.emit("message", Buffer.from(JSON.stringify({ ...join, extra: "x".repeat(2048) })), { address: "192.168.1.10" });
+  assert.equal(received.length, 1);
+  socket.emit("message", Buffer.from(JSON.stringify(beacon())), { address: "192.168.1.20" });
+  assert.deepEqual(signed, ["b"]);
 });
