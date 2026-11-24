@@ -9,6 +9,27 @@ import { riskHits } from "./platform-risk.mjs";
 
 const cli = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test('comments before require members keep path risk', () => {
+  for (const source of ['x./* member */require("C:/deps.txt");', 'x?. /* member */ require("C:/deps.txt");']) {
+    assert.deepEqual(riskHits(`+++ b/a.js\n+${source}\n`), [
+      { file: 'a.js', line: 1, reason: 'hard-coded path separator' },
+    ], source);
+  }
+});
+
+test('template specifiers with a slash in an expression keep path risk', () => {
+  const source = 'import(`./${/}/.test(name) ? readFileSync("C:/deps.txt") : "dep"}`);';
+  assert.deepEqual(riskHits(`+++ b/a.js\n+${source}\n`), [
+    { file: 'a.js', line: 1, reason: 'hard-coded path separator' },
+  ]);
+});
+
+test('opt-out on a multiline template expression keeps path risk', () => {
+  assert.deepEqual(riskHits('+++ b/a.js\n+const value = `\n+${readFileSync("C:/deps.txt")} // qc-platform-ok\n+`;\n'), [
+    { file: 'a.js', line: 2, reason: 'hard-coded path separator' },
+  ]);
+});
+
 test('opt-out text inside strings and templates keeps platform risk', () => {
   for (const source of [
     'const value = "EPERM // qc-platform-ok',

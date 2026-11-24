@@ -16,13 +16,15 @@ const patterns = [
 function scanLine(source) {
   const paths = source.split("");
   let optedOut = false;
+  let expressionSlashes = 0;
   const mask = (start, end) => { paths.fill(" ", start, end); };
   const exempt = (start, end) => {
     const before = source.slice(0, start);
     const after = source.slice(end);
     const url = /^(?:https?:\/\/|node:)/.test(source.slice(start + 1));
-    const requireCall = /\brequire\s*\(\s*$/.exec(before);
-    const bareRequire = requireCall && !/[\w$.?]\s*$/.test(before.slice(0, requireCall.index));
+    const withoutComments = before.replace(/\/\*.*?\*\/|\/\/.*$/g, " ");
+    const requireCall = /\brequire\s*\(\s*$/.exec(withoutComments);
+    const bareRequire = requireCall && !/[\w$.?]\s*$/.test(withoutComments.slice(0, requireCall.index));
     const specifier = /\b(?:import|export)\s+[^;"'`]*\bfrom\s*$|\bimport\s*$|\bimport\s*\(\s*$/.test(before) || bareRequire;
     const relativeUrl = /\bnew\s+URL\s*\(\s*$/.test(before) && /^\s*,\s*import\s*\.\s*meta\s*\.\s*url\s*\)/.test(after);
     return url || specifier || relativeUrl;
@@ -32,8 +34,10 @@ function scanLine(source) {
     let i = start;
     while (i < source.length) {
       const char = source[i];
+      // A slash can start a regex with braces; do not guess its expression boundary.
+      if (inTemplate && char === "/") expressionSlashes += 1;
       if (source.startsWith("//", i)) {
-        if (!inTemplate && /^\/\/ qc-platform-ok\s*$/.test(source.slice(i))) optedOut = true;
+        if (!inTemplate && !/`|\$\{|\}/.test(source.slice(0, i)) && /^\/\/ qc-platform-ok\s*$/.test(source.slice(i))) optedOut = true;
         return source.length;
       }
       if (source.startsWith("/*", i)) {
@@ -48,6 +52,7 @@ function scanLine(source) {
         }
       } else if (char === "`") {
         const begin = i++;
+        const slashesBefore = expressionSlashes;
         const raw = [];
         let segment = begin;
         while (i < source.length) {
@@ -59,7 +64,7 @@ function scanLine(source) {
             if (source[i] === "}") i += 1;
           } else if (source[i] === "`") {
             raw.push([segment, ++i]);
-            if (exempt(begin, i)) for (const [from, to] of raw) mask(from, to);
+            if (expressionSlashes === slashesBefore && exempt(begin, i)) for (const [from, to] of raw) mask(from, to);
             break;
           } else i += 1;
         }
