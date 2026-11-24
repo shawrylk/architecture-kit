@@ -489,7 +489,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   refreshFleet();
   const server = await createNodeServer({ root, fleet, clock, listen, instance });
   let discoverySocket;
-  try { if (fleet.discover) discoverySocket = await startDiscovery({ ...discovery, root, fleet, clock, interfaces, warn }); }
+  try { if (fleet.discover) discoverySocket = await startDiscovery({ ...discovery, root, fleet, address: server.address().address, clock, interfaces, warn }); }
   catch (error) { server.close(); throw error; }
   const sends = new AbortController();
   let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000, nextAssign = clock() + 60_000, nextGithub = clock();

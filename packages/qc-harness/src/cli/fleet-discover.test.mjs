@@ -37,10 +37,10 @@ function fixture(t) {
   return root;
 }
 
-async function listener(t, changes = {}, root = fixture(t)) {
+async function listener(t, changes = {}, root = fixture(t), address = changes.nodes?.find(node => node.id === (changes.self ?? fleet.self))?.address ?? "192.168.1.10") {
   const socket = new FakeSocket(), warnings = [], timers = [], cleared = [];
   let time = now;
-  const discovery = await startDiscovery({ root, fleet: { ...fleet, ...changes }, interfaces, clock: () => time,
+  const discovery = await startDiscovery({ root, fleet: { ...fleet, ...changes }, address, interfaces, clock: () => time,
     createSocket: options => { assert.deepEqual(options, { type: "udp4", reuseAddr: true }); return socket; },
     timer: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; }, clearTimer: timer => cleared.push(timer),
     warn: text => warnings.push(text) });
@@ -50,7 +50,7 @@ async function listener(t, changes = {}, root = fixture(t)) {
 }
 
 test("beacons sign canonical data, advertise only the HTTP bind address and stay below 1 KB", () => {
-  const value = createBeacon({ fleet, interfaces, clock: () => now });
+  const value = createBeacon({ fleet, address: "192.168.1.10", clock: () => now });
   const { sig, ...fields } = value;
   assert.deepEqual(Object.keys(fields).sort(), ["v", "id", "port", "addresses", "weight", "maxSize", "time", "nonce"].sort());
   assert.deepEqual(fields.addresses, ["192.168.1.10"]);
@@ -58,11 +58,9 @@ test("beacons sign canonical data, advertise only the HTTP bind address and stay
   assert.equal(fields.port, 8080);
   assert.equal(fields.time, now);
   assert.equal(sig, sign(fields).sig);
-  assert.notEqual(value.nonce, createBeacon({ fleet, interfaces, clock: () => now }).nonce);
+  assert.notEqual(value.nonce, createBeacon({ fleet, address: "192.168.1.10", clock: () => now }).nonce);
   assert.ok(Buffer.byteLength(JSON.stringify(value)) < 1024);
-  const crowded = () => ({ eth0: Array.from({ length: 200 }, (_, i) => ({ family: "IPv4", internal: false,
-    address: `10.0.0.${i + 1}`, netmask: "255.255.255.0" })) });
-  assert.ok(Buffer.byteLength(JSON.stringify(createBeacon({ fleet, interfaces: crowded, clock: () => now }))) < 1024);
+
 });
 
 test("discovery binds UDP, broadcasts at start and every 15 seconds, and saves a good beacon", async t => {
@@ -85,13 +83,23 @@ test("discovery binds UDP, broadcasts at start and every 15 seconds, and saves a
   assert.deepEqual(f.cleared, f.timers);
 });
 
+test("non-IPv4 bound addresses send no beacon and warn once", async t => {
+  for (const address of ["::1", "::ffff:127.0.0.1", "localhost", undefined]) {
+    const f = await listener(t, {}, fixture(t), address === undefined ? null : address);
+    f.timers[0].fn();
+    f.timers[0].fn();
+    assert.deepEqual(f.socket.sent, []);
+    assert.deepEqual(f.warnings, ["fleet discovery needs an IPv4 node address"]);
+  }
+});
+
 test("an explicit self address advertises and broadcasts only on its interface", async t => {
   const f = await listener(t, { nodes: [{ ...fleet.nodes[0], address: "10.0.0.2" }] });
   assert.deepEqual(f.socket.sent.map(row => row.address), ["255.255.255.255", "10.0.255.255"]);
   for (const row of f.socket.sent) assert.deepEqual(JSON.parse(row.data).addresses, ["10.0.0.2"]);
   const implicit = await listener(t);
   const remote = { ...fleet, self: "b", nodes: [{ ...fleet.nodes[0], id: "b", address: "10.0.0.2" }] };
-  const message = createBeacon({ fleet: remote, interfaces, clock: () => now });
+  const message = createBeacon({ fleet: remote, address: remote.nodes[0].address, clock: () => now });
   implicit.receive(message, "192.168.1.20");
   assert.deepEqual(readDiscovered(implicit.root, implicit.secret), {});
   implicit.receive(message, "10.0.0.2");
@@ -104,9 +112,9 @@ test("secrets differing only in their final odd character refuse each other's be
     const f = await listener(t, { secret: own });
     const remote = { ...fleet, self: "b", secret: other,
       nodes: [{ id: "b", address: "192.168.1.20", port: 8081, weight: 2, maxSize: "M" }] };
-    f.receive(createBeacon({ fleet: remote, interfaces, clock: () => now }));
+    f.receive(createBeacon({ fleet: remote, address: remote.nodes[0].address, clock: () => now }));
     assert.deepEqual(readDiscovered(f.root, f.secret), {});
-    f.receive(createBeacon({ fleet: { ...remote, secret: own }, interfaces, clock: () => now }));
+    f.receive(createBeacon({ fleet: { ...remote, secret: own }, address: remote.nodes[0].address, clock: () => now }));
     assert.equal(readDiscovered(f.root, f.secret).b.address, "192.168.1.20");
   }
 });
@@ -173,7 +181,7 @@ test("a nonce is rejected for 120 seconds and old entries can be received with a
 test("name collisions are dropped and reported at most once per ten minutes", async t => {
   const f = await listener(t);
   const remote = { ...fleet, nodes: [{ ...fleet.nodes[0], address: "192.168.1.20" }] };
-  f.receive(createBeacon({ fleet: remote, interfaces, clock: () => now }));
+  f.receive(createBeacon({ fleet: remote, address: remote.nodes[0].address, clock: () => now }));
   f.setTime(now + 60_000);
   f.receive(beacon({ id: "a", nonce: "another", time: now + 60_000 }));
   assert.deepEqual(f.warnings, ["fleet name a is used by 192.168.1.20"]);

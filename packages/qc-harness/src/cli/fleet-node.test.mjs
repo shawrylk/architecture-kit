@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { getDefaultResultOrder, setDefaultResultOrder } from "node:dns";
 import { connect } from "node:net";
 import { once } from "node:events";
 import { EventEmitter } from "node:events";
@@ -370,10 +371,13 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
 });
 
-test("serve refreshes the same fleet for HTTP, heartbeats and expiry, and closes discovery on shutdown", async t => {
-  const { createBeacon } = await import("./fleet-discover.mjs");
-  const root = fixture(t), signals = new Map(), sent = [];
-  const current = { self: "a", secret, discover: true, nodes: [{ id: "a", weight: 1, maxSize: "L", port: 8080 }], leaders: ["a"] };
+test("serve advertises a hostname as its bound IPv4 to a receiver, refreshes the same fleet for HTTP, heartbeats and expiry, and closes discovery on shutdown", async t => {
+  const { createBeacon, readDiscovered, startDiscovery } = await import("./fleet-discover.mjs");
+  const order = getDefaultResultOrder();
+  setDefaultResultOrder("ipv4first");
+  t.after(() => setDefaultResultOrder(order));
+  const root = fixture(t), signals = new Map(), sent = [], beacons = [];
+  const current = { self: "a", secret, discover: true, nodes: [{ id: "a", address: "localhost", weight: 1, maxSize: "L", port: 8080 }], leaders: ["a"] };
   const { createHash } = await import("node:crypto");
   mkdirSync(stateDir(root), { recursive: true });
   writeFileSync(path.join(stateDir(root), "discovered.json"), JSON.stringify({
@@ -384,7 +388,7 @@ test("serve refreshes the same fleet for HTTP, heartbeats and expiry, and closes
   const socket = new EventEmitter();
   socket.bind = (_port, _host, ready) => ready();
   socket.setBroadcast = () => {};
-  socket.send = (_data, _port, _address, callback) => callback?.();
+  socket.send = (data, _port, _address, callback) => { beacons.push(JSON.parse(data)); callback?.(); };
   socket.close = () => { closed = true; };
   const interfaces = () => ({ test: [{ address: "127.0.0.1", family: "IPv4", internal: false, netmask: "255.0.0.0" }] });
   const server = await serveNode({ root, fleet: current, repo: "o/r", clock: () => time, listen: { port: 0 },
@@ -393,10 +397,22 @@ test("serve refreshes the same fleet for HTTP, heartbeats and expiry, and closes
     onSignal: (name, fn) => signals.set(name, fn), offSignal: name => signals.delete(name),
     fetch: async (url, options) => { sent.push({ url, message: JSON.parse(options.body) }); return { status: 202 }; } });
   t.after(() => new Promise(resolve => server.close(resolve)));
-  assert.equal(current.nodes[0].address, "127.0.0.1");
+  assert.equal(current.nodes[0].address, "localhost");
+  assert.equal(server.address().address, "127.0.0.1");
+  assert.ok(beacons.length > 0);
+  assert.deepEqual(beacons[0].addresses, [server.address().address]);
+  const receiverRoot = fixture(t), receiver = new EventEmitter();
+  receiver.bind = (_port, _host, ready) => ready();
+  receiver.setBroadcast = receiver.send = receiver.close = () => {};
+  const discovery = await startDiscovery({ root: receiverRoot,
+    fleet: { self: "b", secret, nodes: [{ id: "b", port: 9090 }] }, address: "127.0.0.1", interfaces,
+    clock: () => time, createSocket: () => receiver, timer: () => 42, clearTimer() {} });
+  t.after(() => discovery.close());
+  receiver.emit("message", Buffer.from(JSON.stringify(beacons[0])), { address: server.address().address });
+  assert.equal(readDiscovered(receiverRoot, secret).a.address, "127.0.0.1");
   assert.deepEqual(current.nodes.map(node => node.id), ["a"]);
   const remote = { self: "b", secret, nodes: [{ id: "b", address: "127.0.0.1", port: 9090, weight: 2, maxSize: "M" }] };
-  socket.emit("message", Buffer.from(JSON.stringify(createBeacon({ fleet: remote, interfaces, clock: () => time }))), { address: "127.0.0.1" });
+  socket.emit("message", Buffer.from(JSON.stringify(createBeacon({ fleet: remote, address: "127.0.0.1", clock: () => time }))), { address: "127.0.0.1" });
   time += 30_000;
   await tick();
   assert.deepEqual(current.leaders, ["a", "b"]);
