@@ -114,7 +114,7 @@ function deadLetter(root, entry, result) {
 
 /** Keep unsigned messages only for transient failures; permanent refusals are bounded. */
 export async function sendMessage({ root = process.cwd(), fleet, node, message, fetch = nodeFetch, clock = Date.now, signal }) {
-  if (signal?.aborted) return false;
+  // An aborted signal starts no request; post throws, and the catch keeps the message in the outbox.
   const fields = unsignedFields(message);
   const entry = { node: node.id, message: fields, attempts: 1, nextAttempt: clock() + 1000 };
   let result;

@@ -101,6 +101,11 @@ test("failed client sends persist and retries use oldest-first exponential backo
   assert.deepEqual(calls, [first.id, second.id]);
   assert.deepEqual(readState(root, "outbox"), []);
   assert.equal(await sendMessage({ ...opts, node: fleet.nodes[1], message: first, fetch: async () => ({ status: 500 }) }), false);
+  writeState(root, "outbox", []);
+  calls.length = 0;
+  assert.equal(await sendMessage({ ...opts, node: fleet.nodes[1], message: second, signal: AbortSignal.abort() }), false);
+  assert.deepEqual(calls, [], "an aborted signal starts no request");
+  assert.deepEqual(readState(root, "outbox").map(entry => entry.message.id), [second.id]);
 });
 
 test("heartbeat targets only other active addressed nodes and records receipt time, kit and leader", async t => {
