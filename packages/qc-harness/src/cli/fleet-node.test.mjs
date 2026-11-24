@@ -5,6 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { connect } from "node:net";
 import { once } from "node:events";
+import { createServer } from "node:http";
+import { spawn } from "node:child_process";
 import { createMessage, verifyMessage } from "./fleet-message.mjs";
 import { readState, stateDir, writeState } from "./fleet-state.mjs";
 import { createNodeServer, sendMessage, flushOutbox, heartbeat, startNode, stopNode, nodeStatus, serveNode } from "./fleet-node.mjs";
@@ -118,6 +120,67 @@ test("heartbeat targets only other active addressed nodes and records receipt ti
   assert.deepEqual(readState(root, "peers"), { b: { time: now, kit: null, leader: false } });
   assert.equal((await post(message({ kind: "heartbeat", body: { leader: "yes" } }))).status, 400);
   assert.deepEqual(readState(root, "queue"), []);
+});
+
+test("regression: a peer offline for four heartbeat ticks leaves the outbox empty", async t => {
+  const root = fixture(t), signals = new Map();
+  let time = now, tick;
+  const sent = [];
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {},
+    onSignal: (name, fn) => signals.set(name, fn), offSignal: name => signals.delete(name),
+    fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); throw new Error("offline"); } });
+  t.after(async () => { const closed = once(server, "close"); signals.get("SIGTERM")(); await closed; });
+  for (let i = 0; i < 4; i++) {
+    time += 30_000;
+    await tick();
+  }
+  assert.deepEqual(readState(root, "outbox"), []);
+  assert.equal(sent.length, 4);
+  assert.equal(new Set(sent.map(item => item.id)).size, 4);
+});
+
+test("regression: stop ends a child with a hung peer and starts no further sends", { timeout: 30_000 }, async t => {
+  for (const kind of ["heartbeat", "outbox"]) await t.test(kind, { timeout: 10_000 }, async t => {
+    const root = fixture(t), sockets = new Set();
+    let requests = 0, accept;
+    const accepted = new Promise(resolve => { accept = resolve; });
+    const peer = createServer(req => { requests++; req.resume(); accept(); });
+    peer.on("connection", socket => { sockets.add(socket); socket.on("close", () => sockets.delete(socket)); });
+    await new Promise(resolve => peer.listen(0, "127.0.0.1", resolve));
+    t.after(async () => { for (const socket of sockets) socket.destroy(); await new Promise(resolve => peer.close(resolve)); });
+    const nodes = { ...fleet, nodes: [
+      { id: "a", address: "127.0.0.1", port: 0 },
+      { id: "b", address: "127.0.0.1", port: peer.address().port },
+      { id: "c", address: "127.0.0.1", port: peer.address().port },
+    ] };
+    if (kind === "outbox") writeState(root, "outbox", ["b", "c"].map(node => ({
+      node, message: message(), attempts: 1, nextAttempt: now,
+    })));
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+      import { serveNode } from ${JSON.stringify(new URL("./fleet-node.mjs", import.meta.url).href)};
+      let time = ${now};
+      const server = await serveNode({ root: ${JSON.stringify(root)}, fleet: ${JSON.stringify(nodes)}, repo: "o/r",
+        clock: () => time, listen: { port: 0 }, timer: fn => setInterval(() => {
+          time = ${now} + ${kind === "heartbeat" ? 30_000 : 1000};
+          void fn();
+        }, 20) });
+      console.log(server.address().port);
+    `], { stdio: ["ignore", "pipe", "pipe"] });
+    const exited = once(child, "exit");
+    t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exited; });
+    const [output] = await once(child.stdout, "data");
+    nodes.nodes[0].port = Number(output.toString().trim());
+    await accepted;
+    const started = Date.now();
+    assert.deepEqual(await stopNode({ root, fleet: nodes }), { stopped: true, already: false });
+    const [code, signal] = await exited;
+    assert.equal(code, process.platform === "win32" ? null : 0);
+    assert.equal(signal, process.platform === "win32" ? "SIGTERM" : null);
+    assert.ok(Date.now() - started < 5000);
+    assert.equal(requests, 1);
+    assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
+  });
 });
 
 test("node:http client sends to the server and queues network failure", async t => {

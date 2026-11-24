@@ -92,9 +92,12 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
 
 const unsignedFields = ({ sig: _sig, time: _time, ...fields }) => fields;
 
-async function post(node, fields, secret, fetch, clock) {
+async function post(node, fields, secret, fetch, clock, signal) {
+  signal?.throwIfAborted();
   const message = createMessage({ ...fields, time: new Date(clock()).toISOString() }, secret);
-  const response = await fetch(`${endpoint(node)}/message`, { method: "POST", body: JSON.stringify(message), signal: AbortSignal.timeout(5000) });
+  const timeout = AbortSignal.timeout(5000);
+  const response = await fetch(`${endpoint(node)}/message`, { method: "POST", body: JSON.stringify(message),
+    signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   if (response.status === 202) return { delivered: true };
   if (response.status >= 400 && response.status < 500) {
     let reason = "unknown";
@@ -110,29 +113,34 @@ function deadLetter(root, entry, result) {
 }
 
 /** Keep unsigned messages only for transient failures; permanent refusals are bounded. */
-export async function sendMessage({ root = process.cwd(), fleet, node, message, fetch = nodeFetch, clock = Date.now }) {
+export async function sendMessage({ root = process.cwd(), fleet, node, message, fetch = nodeFetch, clock = Date.now, signal }) {
+  if (signal?.aborted) return false;
   const fields = unsignedFields(message);
   const entry = { node: node.id, message: fields, attempts: 1, nextAttempt: clock() + 1000 };
   let result;
-  try { result = await post(node, fields, fleet.secret, fetch, clock); }
+  try { result = await post(node, fields, fleet.secret, fetch, clock, signal); }
   catch { result = { retry: true }; }
   if (result.delivered) return true;
+  if (fields.kind === "heartbeat") return false;
   if (result.terminal) deadLetter(root, entry, result);
   else writeState(root, "outbox", [...readState(root, "outbox"), entry]);
   return false;
 }
 
 /** Only a transient failure holds later messages behind the oldest entry. */
-export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now }) {
+export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal }) {
+  if (signal?.aborted) return;
   const pending = readState(root, "outbox");
   for (const entry of pending) {
+    if (signal?.aborted) return;
     if (entry.nextAttempt > clock()) break;
     const node = fleet.nodes.find(node => node.id === entry.node);
     let result;
     try {
       if (!node?.address || node.active === false) throw new Error("peer unavailable");
-      result = await post(node, unsignedFields(entry.message), fleet.secret, fetch, clock);
+      result = await post(node, unsignedFields(entry.message), fleet.secret, fetch, clock, signal);
     } catch { result = { retry: true }; }
+    if (signal?.aborted) return;
     // Reread after the network await to preserve any concurrently queued sends.
     const current = readState(root, "outbox");
     const index = current.findIndex(item => item.node === entry.node && item.message.id === entry.message.id);
@@ -149,11 +157,12 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
   }
 }
 
-export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now, fetch = nodeFetch }) {
+export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now, fetch = nodeFetch, signal }) {
   for (const node of fleet.nodes) {
+    if (signal?.aborted) return;
     if (node.id === fleet.self || node.active === false || !node.address) continue;
     const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: { kit, leader }, time: new Date(clock()).toISOString() }, fleet.secret);
-    await sendMessage({ root, fleet, node, message, clock, fetch });
+    await sendMessage({ root, fleet, node, message, clock, fetch, signal });
   }
 }
 
@@ -260,11 +269,13 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   fetch = nodeFetch, listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
   const server = await createNodeServer({ root, fleet, clock, listen, instance });
+  const sends = new AbortController();
   let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000;
   const shutdown = () => {
     if (closing) return;
     closing = true;
     clearTimer(interval);
+    sends.abort();
     server.close();
     forceClose = setTimeout(() => server.closeAllConnections(), 1000);
     forceClose.unref();
@@ -277,9 +288,9 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     try {
       if (clock() >= nextHeartbeat) {
         nextHeartbeat = clock() + 30_000;
-        await heartbeat({ root, fleet, repo, kit, leader, clock, fetch });
+        await heartbeat({ root, fleet, repo, kit, leader, clock, fetch, signal: sends.signal });
       }
-      await flushOutbox({ root, fleet, clock, fetch });
+      await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal });
     } catch (error) { warn(`fleet node: ${error.message}`); }
     finally { busy = false; }
   }, 1000);
@@ -289,6 +300,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     clearTimeout(forceClose);
     if (!closing) clearTimer(interval);
     closing = true;
+    sends.abort();
     offSignal("SIGTERM", shutdown);
     offSignal("SIGINT", shutdown);
     try { const record = readState(root, "node"); if (record.pid === pid && record.instance === instance) removeNode(root); }
