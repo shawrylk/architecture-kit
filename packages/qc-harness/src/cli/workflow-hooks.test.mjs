@@ -17,7 +17,7 @@ const matchersOf = (event, script) =>
 test("hooks.json runs each workflow check on its events", () => {
   assert.deepEqual(matchersOf("PreToolUse", "controller-guard.mjs"), ["Write|Edit|MultiEdit|NotebookEdit"]);
   for (const event of ["PreToolUse", "PostToolUse", "PostToolUseFailure"]) {
-    assert.deepEqual(matchersOf(event, "merge-guard.mjs"), ["Bash|PowerShell"], event);
+    assert.deepEqual(matchersOf(event, "merge-guard.mjs"), [event === "PreToolUse" ? "Bash|PowerShell|REPL" : "Bash|PowerShell"], event);
   }
   for (const script of ["report-stop.mjs", "plan-stop.mjs"]) {
     assert.deepEqual(matchersOf("PreToolUse", script), ["SubagentHandback"], script);
@@ -122,4 +122,13 @@ test("cost-stop.mjs runs on every SubagentStop, and is silent in a checkout with
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "");
   assert.equal(existsSync(path.join(base, ".git", "qc", "ledger.jsonl")), false);
+});
+
+
+test("only the command and merge PreToolUse guards add REPL to their matchers", () => {
+  assert.deepEqual(matchersOf("PreToolUse", "bash-command-guard.mjs"), ["Bash|PowerShell|REPL"]);
+  const replHooks = Object.entries(hooks).flatMap(([event, entries]) => entries
+    .filter((entry) => entry.matcher?.split("|").includes("REPL"))
+    .flatMap((entry) => entry.hooks.map((hook) => [event, /src\/cli\/([a-z-]+\.mjs)/.exec(hook.command)?.[1]])));
+  assert.deepEqual(replHooks, [["PreToolUse", "bash-command-guard.mjs"], ["PreToolUse", "merge-guard.mjs"]]);
 });

@@ -1243,3 +1243,40 @@ test("a milestone validates approved member trees, migrations and aggregate poli
   }
   assert.deepEqual(failures, []);
 });
+
+test("REPL literal commands require the same merge approval and identify the first denial", (t) => {
+  const ws = workspace(t);
+  const cwd = ws.on;
+  const repl = (code) => ({ ...shell(cwd, ""), tool_name: "REPL", tool_input: { code } });
+  const command = `gh pr merge 60 --match-head-commit ${SHA}`;
+  for (const code of [`$\`${command}\``, `$("${command}")`, `tools.Bash({ command: "${command}" })`]) {
+    const reason = denied(decide(repl(code)));
+    assert.match(reason ?? "", /no APPROVED branch review/, code);
+    assert.ok(reason.includes(command), reason);
+  }
+  const reason = denied(decide(repl('$`git status`; $`gh pr merge 60`; $`gh pr merge 61`')));
+  assert.match(reason ?? "", /gh pr merge 60/);
+  assert.doesNotMatch(reason, /gh pr merge 61/);
+  for (const code of ['const answer = 42;', '$`git status`; $("gh pr view 60")', '$`gh pr merge 60`; $`broken']) {
+    assert.equal(decide(repl(code)), null, code);
+  }
+  assert.equal(decide({ ...repl(''), tool_input: { command: "gh pr merge 60" } }), null);
+  appendRecord(ws.ledgerOf(cwd), verdict("branch", "APPROVED"));
+  assert.equal(decide(repl(`$\`${command}\``)), null);
+});
+
+test("REPL merge checks await comments in command order and keep the first denial", async (t) => {
+  const ws = workspace(t);
+  const cwd = ws.on;
+  const seen = [];
+  appendRecord(ws.ledgerOf(cwd), verdict("branch", "APPROVED"));
+  const call = { ...shell(cwd, ""), tool_name: "REPL", tool_input: {
+    code: `$\`gh pr merge 60 --match-head-commit ${SHA}\`; $\`gh pr merge 61\`; $\`gh pr merge 62\``,
+  } };
+  const output = await decide(call, { commentCheck: async (_call, { merges }) => {
+    seen.push(merges[0].selector);
+    return { hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: "comments checked" } };
+  } });
+  assert.deepEqual(seen, ["60", "61"]);
+  assert.match(denied(output) ?? "", /gh pr merge 61/);
+});

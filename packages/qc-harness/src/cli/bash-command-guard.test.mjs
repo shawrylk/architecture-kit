@@ -487,3 +487,21 @@ test("a variable in a path of a command that adds no worktree, or in the worktre
   assert.equal(decide(bash(ws.plain, "cd $K && git worktree add ../x")), null, "a repository with no qc.config.json is not guarded");
   assert.equal(decide(bash(ws.adopted, `git -C ${plain} worktree add ../x`)), null);
 });
+
+test("REPL shell forms use the Bash rules and name the first refused command", (t) => {
+  const ws = workspace(t);
+  const repl = (code) => ({ ...bash(ws.adopted, "git status"), tool_name: "REPL", tool_input: { code } });
+  for (const code of ['$`git commit --no-verify`', '$("git commit --no-verify")',
+    'tools.Bash({ command: "git commit --no-verify" })']) {
+    const reason = reasonOf(decide(repl(code)));
+    assert.match(reason ?? "", /skips the git hooks/, code);
+    assert.match(reason, /git commit --no-verify/, code);
+  }
+  const first = reasonOf(decide(repl('$`git status`; $`git commit --no-verify`; $`git push --no-verify`')));
+  assert.match(first ?? "", /git commit --no-verify/);
+  assert.doesNotMatch(first, /git push --no-verify/);
+  for (const code of ['const answer = 42;', '$`git status`; $("git diff")', '$`git commit --no-verify`; $`broken']) {
+    assert.equal(decide(repl(code)), null, code);
+  }
+  assert.equal(decide({ ...repl(''), tool_input: { command: "git commit --no-verify" } }), null);
+});

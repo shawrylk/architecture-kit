@@ -10,6 +10,7 @@ import { CONFIG_FILE } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { locationTarget, powershellSegments } from "./powershell-command.mjs";
 import { cdTarget, commandEnv, commandWords, gitCall, segmentsOf } from "./shell-command.mjs";
+import { replCommands } from "./repl-commands.mjs";
 import { nativePath } from "./workflow-place.mjs";
 import { keyOf } from "./worktree.mjs";
 import { worktreeRuleAt } from "./worktree-settings.mjs";
@@ -31,7 +32,37 @@ const VALUE_OPTIONS = new Set([
 const COMMIT_VALUE_FLAGS = new Set(["m", "F", "C", "c", "t"]);
 
 /** The parser for each guarded tool. */
-export const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments };
+export const PARSERS = { Bash: segmentsOf, PowerShell: powershellSegments, REPL: segmentsOf };
+
+/** Run each extracted command in order, preserving async checks and naming the first REPL denial. */
+export function guardCommands(call, check) {
+  const parse = PARSERS[call.tool_name];
+  if (!parse) return null;
+  if (call.tool_name !== "REPL") {
+    const command = call.tool_input?.command;
+    return typeof command === "string" ? check(command, parse) : null;
+  }
+  const commands = replCommands(call.tool_input?.code);
+  const notes = [];
+  function next(at) {
+    if (at === commands.length) return notes.length ? {
+      hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: notes.join(" ") },
+    } : null;
+    const command = commands[at];
+    const finish = (output) => {
+      const specific = output?.hookSpecificOutput;
+      if (specific?.permissionDecision === "deny") return {
+        ...output,
+        hookSpecificOutput: { ...specific, permissionDecisionReason: `REPL command ${JSON.stringify(command)}: ${specific.permissionDecisionReason}` },
+      };
+      if (specific?.additionalContext) notes.push(specific.additionalContext);
+      return next(at + 1);
+    };
+    const output = check(command, parse);
+    return output instanceof Promise ? output.then(finish) : finish(output);
+  }
+  return next(0);
+}
 /** The directory a segment moves to, read the way each parser's shell reads it. */
 const MOVES = new Map([[segmentsOf, cdTarget], [powershellSegments, locationTarget]]);
 /** The options of `git worktree add` whose value is the next word. */
@@ -265,11 +296,12 @@ function folderAt(dir) {
   return checkoutRootOf(dir) === null ? undefined : (worktreeRuleAt(dir)?.folder ?? null);
 }
 
-/** The verdict on one Bash or PowerShell call. @returns the hook output, or null to let the call run with no message. */
+/** The verdict on one Bash, PowerShell or REPL call. @returns the hook output, or null to let the call run with no message. */
 export function decide(call) {
-  const command = call.tool_input?.command;
-  const parse = PARSERS[call.tool_name];
-  if (!parse || typeof command !== "string") return null;
+  return guardCommands(call, (command, parse) => decideCommand(call, command, parse));
+}
+
+function decideCommand(call, command, parse) {
   const cwd = call.cwd ?? process.cwd();
   const root = checkoutRootOf(cwd);
   if (!root || !existsSync(path.join(root, CONFIG_FILE))) return null;
