@@ -51,7 +51,7 @@ test("every hook script in src/cli is registered, in hooks.json or in a shell ho
 
 test("workflow scripts stay silent without swarm.dispatch, and the merge guard denies an unreadable base", (t) => {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-workflow-hooks-")));
-  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   execFileSync("git", ["init", "-q"], { cwd: base, stdio: "pipe" });
   writeFileSync(path.join(base, "qc.config.json"), JSON.stringify({ swarm: {}, commentWatch: false }));
   const events = {
@@ -95,7 +95,7 @@ test("hooks.json runs the skill guard on the Skill tool, and gives the dispatch 
 
 test("the skill guard is silent without swarm.dispatch, and denies a code-review skill with it", (t) => {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-skill-hooks-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   execFileSync("git", ["init", "-q"], { cwd: base, stdio: "pipe" });
   const run = (config) => {
     writeFileSync(path.join(base, "qc.config.json"), JSON.stringify(config));
@@ -109,7 +109,7 @@ test("the skill guard is silent without swarm.dispatch, and denies a code-review
 test("cost-stop.mjs runs on every SubagentStop, and is silent in a checkout without swarm.dispatch", (t) => {
   assert.deepEqual(matchersOf("SubagentStop", "cost-stop.mjs"), [undefined]);
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-cost-hooks-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   execFileSync("git", ["init", "-q"], { cwd: base, stdio: "pipe" });
   writeFileSync(path.join(base, "qc.config.json"), JSON.stringify({ swarm: {} }));
   const transcript = path.join(base, "agent.jsonl");
