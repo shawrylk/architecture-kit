@@ -133,7 +133,7 @@ test('the parent records its temporary view without suppressing evidence in nest
 
 
 test('affected checks preserve gate and command failures and record only a clean unchanged supported head', async () => {
-  for (const stage of ['pass', 'gates', 'commands', 'gate error', 'command error', 'dirty', 'checkout dirtied', 'head changed', 'unsupported']) {
+  for (const stage of ['pass', 'darwin', 'gates', 'commands', 'gate error', 'command error', 'dirty', 'checkout dirtied', 'head changed', 'unsupported']) {
     let heads = 0, statuses = 0;
     const { options, records } = fixture({
       ...(stage === 'gates' ? { gates: async () => ({ problems: [{ path: 'a', rule: 'bad', detail: 'bad' }], lines: [] }) } : {}),
@@ -143,10 +143,11 @@ test('affected checks preserve gate and command failures and record only a clean
       ...(stage === 'dirty' ? { git: (...args) => args[0] === 'status' ? ' M a' : 'head' } : {}),
       ...(stage === 'checkout dirtied' ? { git: (...args) => args[0] === 'status' ? (statuses++ ? ' M a' : '') : 'head' } : {}),
       ...(stage === 'head changed' ? { git: (...args) => args[0] === 'status' ? '' : String(heads++) } : {}),
-      ...(stage === 'unsupported' ? { platform: 'darwin' } : {}),
+      ...(stage === 'darwin' ? { platform: 'darwin' } : {}),
+      ...(stage === 'unsupported' ? { platform: 'freebsd' } : {}),
     });
     const code = await runAffectedCheck(config, { base: 'main' }, options);
     assert.equal(code, ['gates', 'gate error', 'command error', 'unsupported'].includes(stage) ? 1 : stage === 'commands' ? 7 : 0);
-    assert.deepEqual(records, stage === 'pass' ? [{ type: 'leg', os: 'windows', head: 'head', source: 'local' }] : []);
+    assert.deepEqual(records, ['pass', 'darwin'].includes(stage) ? [{ type: 'leg', os: stage === 'darwin' ? 'darwin' : 'windows', head: 'head', source: 'local' }] : []);
   }
 });
