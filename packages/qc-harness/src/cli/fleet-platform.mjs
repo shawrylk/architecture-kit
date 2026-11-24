@@ -29,21 +29,46 @@ function tailLines(text) {
 /** Use this installed kit in the detached checkout, keeping only bounded output. */
 export function runPlatformCheck(root, { spawn = spawnProcess, timeout = 30 * 60_000, signal } = {}) {
   return new Promise(resolve => {
-    let output = "", expired = false, settled = false, timer, drainTimer, child;
+    let output = "", expired = false, aborted = false, cleanupFailed = false, leftChild = false, settled = false, timer, drainTimer, child, stopping;
     const append = chunk => { output = (output + chunk.toString()).split(/\r?\n/).slice(-41).join("\n").slice(-48_000); };
+    async function stopTree(child) {
+      if (!child?.pid) return false;
+      if (process.platform === "win32") {
+        stopping ??= execute("taskkill", ["/pid", String(child.pid), "/t", "/f"]).catch(error => {
+          if (child.exitCode === null && child.signalCode === null) {
+            cleanupFailed = true; append(`\nprocess tree cleanup: ${error.message}`);
+          }
+        });
+        await stopping;
+        return false;
+      }
+      try { process.kill(-child.pid, "SIGKILL"); return true; }
+      catch (error) {
+        if (error.code !== "ESRCH") { cleanupFailed = true; append(`\nprocess tree cleanup: ${error.message}`); }
+        return false;
+      }
+    }
+    const onAbort = () => {
+      aborted = true; append("\nplatform check aborted");
+      void stopTree(child);
+    };
     const finish = ok => {
       if (settled) return;
       settled = true; clearTimeout(timer); clearTimeout(drainTimer);
+      signal?.removeEventListener("abort", onAbort);
       child?.stdout?.destroy(); child?.stderr?.destroy();
-      resolve({ ok: ok && !expired, tail: tailLines(output) });
+      resolve({ ok: ok && !expired && !aborted && !leftChild && !cleanupFailed, tail: tailLines(output) });
     };
     try {
+      if (signal?.aborted) { onAbort(); finish(false); return; }
       child = spawn(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "check", "--affected", "--base", "origin/main"],
-        { cwd: root, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32", signal });
+        { cwd: root, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
       child.stdout.on("data", append); child.stderr.on("data", append);
-      child.once("error", error => { append(`\n${error.message}`); finish(false); });
-      child.once("exit", code => {
+      child.once("error", async error => { append(`\n${error.message}`); await stopTree(child); finish(false); });
+      child.once("exit", async code => {
         clearTimeout(timer);
+        leftChild = await stopTree(child) && !expired && !aborted;
+        if (leftChild) append("\ncheck left a child process");
         const drained = () => {
           if ([child.stdout, child.stderr].every(stream => stream.readableEnded || stream.destroyed)) finish(code === 0);
         };
@@ -55,15 +80,10 @@ export function runPlatformCheck(root, { spawn = spawnProcess, timeout = 30 * 60
       });
       timer = setTimeout(() => {
         expired = true; append("\nplatform check timed out");
-        if (process.platform === "win32") {
-          execFile("taskkill", ["/pid", String(child.pid), "/t", "/f"], error => {
-            if (error) append(`\nprocess tree cleanup: ${error.message}`);
-          });
-        } else {
-          try { process.kill(-child.pid, "SIGKILL"); }
-          catch (error) { if (error.code !== "ESRCH") { append(`\nprocess tree cleanup: ${error.message}`); child.kill("SIGKILL"); } }
-        }
+        void stopTree(child);
       }, timeout);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     } catch (error) { append(error.message); finish(false); }
   });
 }
@@ -95,7 +115,7 @@ async function checkHead({ root, body, git, check, signal }) {
     await git(root, "worktree", "add", "--detach", checkout, body.head);
     result = await check(checkout, { timeout: 30 * 60_000, signal });
     const actual = await git(checkout, "rev-parse", "HEAD");
-    const status = await git(checkout, "status", "--porcelain");
+    const status = await git(checkout, "status", "--porcelain", "--untracked-files=all");
     if (actual.stdout.trim() !== body.head) {
       result = { ok: false, tail: `${result.tail ?? ""}\nplatform check HEAD ${actual.stdout.trim()} does not match requested head ${body.head}` };
     } else if (status.stdout !== "") {

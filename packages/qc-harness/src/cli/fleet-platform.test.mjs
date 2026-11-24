@@ -131,13 +131,14 @@ test("checks must leave the requested HEAD and a clean worktree", async t => {
   const requested = git(f.root, "rev-parse", "HEAD").stdout.trim();
   git(f.root, "remote", "add", "origin", f.root);
   git(f.root, "branch", "feat/244");
-  for (const mode of ["moved", "dirty", "clean"]) {
+  for (const mode of ["moved", "dirty", "hidden-untracked", "clean"]) {
+    git(f.root, "config", "status.showUntrackedFiles", mode === "hidden-untracked" ? "no" : "all");
     let checkout;
     f.queue("platform-check", { pusher: "pusher", head: requested }, "leader");
     await platformTick({ ...f.deps, git, check: async cwd => {
       checkout = cwd;
       if (mode === "moved") git(cwd, "checkout", "--detach", other);
-      if (mode === "dirty") writeFileSync(path.join(cwd, "untracked"), "changed");
+      if (["dirty", "hidden-untracked"].includes(mode)) writeFileSync(path.join(cwd, "untracked"), "changed");
       return { ok: true, tail: "command passed\n" };
     } });
     const result = f.sent.at(-1).body;
@@ -145,10 +146,56 @@ test("checks must leave the requested HEAD and a clean worktree", async t => {
     assert.equal(git(f.root, "worktree", "list", "--porcelain").stdout.includes(checkout), false);
     assert.equal(result.ok, mode === "clean", mode);
     if (mode === "moved") assert.match(result.tail.split("\n").at(-1), /HEAD.*requested/i);
-    if (mode === "dirty") assert.match(result.tail.split("\n").at(-1), /worktree.*(dirty|clean|changes)/i);
+    if (["dirty", "hidden-untracked"].includes(mode)) assert.match(result.tail.split("\n").at(-1), /worktree.*(dirty|clean|changes)/i);
     if (mode === "clean") assert.equal(result.tail, "command passed");
   }
 });
+
+async function assertProcessGone(pid) {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try { process.kill(pid, 0); }
+    catch (error) { assert.equal(error.code, "ESRCH"); return; }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.fail(`grandchild ${pid} is still alive`);
+}
+
+for (const ending of ["exit 0", "abort"]) {
+  test(`${ending} stops a real long-lived grandchild`, { skip: ending === "exit 0" && process.platform === "win32" }, async t => {
+    const f = fixture(t, "mac"), controller = new AbortController();
+    const heartbeat = path.join(f.root, "heartbeat");
+    const grandchildScript = `const fs = require('node:fs'); fs.writeFileSync(${JSON.stringify(heartbeat)}, 'ready'); process.send(process.pid); setInterval(() => fs.appendFileSync(${JSON.stringify(heartbeat)}, '.'), 25);`;
+    const childScript = `const { spawn } = require('node:child_process'); const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] }); child.once('message', pid => { console.log(pid); ${ending === "exit 0" ? "process.exit(0);" : ""} }); setInterval(() => {}, 1000);`;
+    let child, grandchild, deadline;
+    t.after(() => {
+      clearTimeout(deadline);
+      for (const pid of [grandchild, child?.pid]) {
+        if (!pid) continue;
+        try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      }
+    });
+    const running = runPlatformCheck(f.root, { signal: controller.signal, timeout: 10_000,
+      spawn: (_command, _args, options) => {
+        child = spawnProcess(process.execPath, ["-e", childScript], options);
+        child.stdout.once("data", data => {
+          grandchild = Number(data.toString().trim());
+          if (ending === "abort") controller.abort();
+        });
+        return child;
+      } });
+    const result = await Promise.race([running, new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(new Error(`${ending} did not settle`)), 4000);
+    })]);
+    clearTimeout(deadline);
+    assert.ok(grandchild > 0);
+    if (process.platform !== "win32") await assertProcessGone(grandchild);
+    const stopped = readFileSync(heartbeat, "utf8");
+    await new Promise(resolve => setTimeout(resolve, 150));
+    assert.equal(readFileSync(heartbeat, "utf8"), stopped, "grandchild must stop writing");
+    assert.equal(result.ok, false);
+    assert.match(result.tail, ending === "exit 0" ? /check left a child process/ : /abort/i);
+  });
+}
 
 test("timeout stops a real child and its long-lived grandchild and removes the worktree", async t => {
   const f = fixture(t, "mac");
