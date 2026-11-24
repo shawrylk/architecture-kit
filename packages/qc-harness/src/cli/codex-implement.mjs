@@ -434,7 +434,7 @@ function completeReview(settings, started, originalStamp, message, say, metrics)
           findingsDepth = heading[1].length;
         } else if (/^Debt$/i.test(heading[2]) || heading[1].length <= findingsDepth) inFindings = false;
       }
-      if (inFindings && (severityHeading || /^[ \t]*(?:[-*]|\d+[.)])[ \t]+\[P[0-3]\][ \t]+\S/.test(line))) findings += 1;
+      if (inFindings && (severityHeading || /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[P[0-3]\][ \t]+\S/.test(line))) findings += 1;
     }
     metrics.review = { verdict, findings };
     return finish(say, `${message}; recorded ${verdict} on ${sha}`, 0);

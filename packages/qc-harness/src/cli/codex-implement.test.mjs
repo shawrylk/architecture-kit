@@ -2439,7 +2439,7 @@ test("fresh review verdict and finding count match accepted report", async (t) =
   }
 });
 
-for (const prefix of ["-", "*", "1.", "2)", "#", "##", "###", "####", "#####", "######"]) {
+for (const prefix of ["-", "*", "+", "1.", "1)", "#", "##", "###", "####", "#####", "######"]) {
   test(`review findings count ${prefix} entries and exclude Debt`, async (t) => {
     const f = reviewFixture(t);
     assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
