@@ -131,6 +131,7 @@ A brief that needs `gh` reads its token through `gh auth token`.
 missing from the brief's `Paths:` and continues. Set it to `"add"` to include those tests in the
 owned paths and the prompt Codex reads. Naming a folder also names the tests within it.
 Warnings cover the sibling test and suite tests that import the file, directly or through other files; uncertain loaders do not add warnings.
+A commented-out import can also count.
 
 ## Task and merge gates
 

@@ -63,15 +63,14 @@ test("testsCovering finds sibling and reader-chain tests without basename-only m
 });
 
 for (const [kind, text] of [
-  ["comment", "// import './source.mjs';"],
-  ["string", 'export const example = "import(\'./source.mjs\')";'],
-]) test(`testsCovering ignores import-looking text in a ${kind}`, async (t) => {
+  ["regex apostrophe", "const apostrophe = /'/; import './source.mjs';"],
+  ["template substitution", 'export const module = `${await import("./source.mjs")}`;'],
+]) test(`testsCovering finds imports with a ${kind}`, async (t) => {
   const root = fixture(t);
   const base = "packages/qc-harness/src";
   mkdirSync(path.join(root, base), { recursive: true });
   writeFileSync(path.join(root, base, "source.mjs"), "export {};\n");
-  writeFileSync(path.join(root, base, "example.test.mjs"), text);
-  writeFileSync(path.join(root, base, "reader.test.mjs"), "import './source.mjs';\n");
+  writeFileSync(path.join(root, base, "reader.test.mjs"), text);
   git(root, "add", ".");
   assert.deepEqual(await testsCovering(root, [`${base}/source.mjs`]), new Map([
     [`${base}/source.mjs`, [`${base}/reader.test.mjs`]],
