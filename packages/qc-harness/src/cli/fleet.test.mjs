@@ -632,16 +632,125 @@ test("start migrates keys, leader creates secret, and pairing CLI and status sha
     fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); } });
   assert.equal(pairing.receiveJoin(joining.beacon(), address), true);
   const pending = f.run(["status"], { origin: () => null, node: { clock: () => now } });
-  assert.equal(pending.lines.some(line => line.startsWith("join?")), false);
+  const pendingLine = `join? new-pc code=pending host=${os.hostname()} address=${address} reason=awaiting-key-reveal`;
+  assert.deepEqual(pending.lines.filter(line => line.startsWith("join?")), [pendingLine]);
+  assert.equal(f.run(["allow", "000000"], { node: { clock: () => now } }).code, 1);
+  const requests = readPairing(f.cwd);
+  for (const [id, seen, code] of [["expired", now - 600_001], ["future", now + 1],
+    ["expired-code", now - 600_001, "123456"], ["future-code", now + 1, "234567"]]) {
+    requests.requests[id] = { ...requests.requests["new-pc"], seen, ...(code ? { code } : {}) };
+  }
+  writeFileSync(path.join(stateDir(f.cwd), "pairing.json"), JSON.stringify(requests));
+  assert.deepEqual(f.run(["status"], { origin: () => null, node: { clock: () => now } }).lines.filter(line => line.startsWith("join?")), [pendingLine]);
+  const nodeState = readState(f.cwd, "node");
+  writeState(f.cwd, "node", { ...nodeState, leader: false });
+  assert.deepEqual(f.run(["status"], { origin: () => null, node: { clock: () => now } }).lines.filter(line => line.startsWith("join?")), []);
+  writeState(f.cwd, "node", nodeState);
   await pairing.tick();
   assert.equal(joining.receivePair(sent[0], address), true);
   const code = readPairing(f.cwd).requests["new-pc"].code;
   const status = f.run(["status"], { origin: () => null, node: { clock: () => now } });
   assert.equal(status.code, 0, status.errors.join("\n"));
-  assert.ok(status.lines.includes(`join? new-pc code=${code} host=${os.hostname()} address=${address}`));
+  assert.deepEqual(status.lines.filter(line => line.startsWith("join?")), [`join? new-pc code=${code} host=${os.hostname()} address=${address}`]);
+  writeState(f.cwd, "node", { ...nodeState, leader: false });
+  assert.deepEqual(f.run(["status"], { origin: () => null, node: { clock: () => now } }).lines.filter(line => line.startsWith("join?")), []);
+  writeState(f.cwd, "node", nodeState);
   assert.equal(f.run(["allow", code], { node: { clock: () => now } }).code, 0);
   assert.equal(readPairing(f.cwd).requests["new-pc"].allowed, true);
   assert.equal(f.run(["deny", code], { node: { clock: () => now } }).code, 0);
   assert.equal(f.run(["allow", "123"], { node: { clock: () => now } }).code, 1);
   assert.equal(f.run(["accept", code], { node: { clock: () => now } }).code, 1);
+});
+
+
+test("discovery pairing accepts a reveal on a second local IPv4 address", async t => {
+  const { EventEmitter } = await import("node:events");
+  const { createNodeServer, nodeFetch } = await import("./fleet-node.mjs");
+  const f = fixture(t), received = [];
+  const fleet = { self: "leader", discover: true, secret: "ab".repeat(32),
+    nodes: [{ id: "leader", address: "127.0.0.1" }] };
+  const pairing = { receivePair: (message, sender) => { received.push({ message, sender }); return true; } };
+  const server = await createNodeServer({ root: f.cwd, fleet, pairing, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  assert.equal(server.address().address, "0.0.0.0");
+  const port = server.address().port;
+  let emulateSecondary = false;
+  const fetchLocal = async (address, url, options = {}) => {
+    if (!emulateSecondary || address !== "127.0.0.2") {
+      try { return await nodeFetch(`http://${address}:${port}${url}`, options); }
+      catch (error) {
+        if (address !== "127.0.0.2" || !["EADDRNOTAVAIL", "ENETUNREACH", "EHOSTUNREACH", "EACCES", "ECONNREFUSED"].includes(error.code)) throw error;
+        emulateSecondary = true;
+      }
+    }
+    // Some hosts do not route a second loopback alias; inject the socket in that case.
+    return new Promise(resolve => {
+      const req = Object.assign(new EventEmitter(), { method: options.method ?? "GET", url,
+        socket: { localAddress: address, remoteAddress: "127.0.0.1" }, resume() {} });
+      const res = { writableEnded: false, writeHead(status) { this.status = status; },
+        end(body) { this.writableEnded = true; resolve({ status: this.status, json: async () => JSON.parse(body) }); } };
+      server.emit("request", req, res);
+      if (options.body) req.emit("data", Buffer.from(options.body));
+      req.emit("end");
+    });
+  };
+  for (const address of ["127.0.0.1", "127.0.0.2"]) {
+    const response = await fetchLocal(address, "/pair", { method: "POST", body: '{"kind":"reveal"}' });
+    assert.equal(response.status, 202);
+    assert.deepEqual(await response.json(), { ok: true });
+    assert.equal((await fetchLocal(address, "/health")).status, address === "127.0.0.1" ? 200 : 404);
+    assert.equal((await fetchLocal(address, "/message", { method: "POST", body: "invalid" })).status,
+      address === "127.0.0.1" ? 400 : 404);
+  }
+  assert.equal(received.length, 2);
+  assert.equal((await fetchLocal("127.0.0.2", "/pair", { method: "POST", body: "x".repeat(2049) })).status, 413);
+  // Rejected interfaces must not install a body reader, including mapped IPv4 sockets.
+  for (const [method, url] of [["GET", "/health"], ["POST", "/message"], ["GET", "/pair"], ["POST", "/unknown"]]) {
+    let status;
+    server.emit("request", { method, url, socket: { localAddress: "::ffff:127.0.0.2" }, resume() {},
+      on() { assert.fail("secondary route read a body"); } }, {
+      writeHead(value) { status = value; }, end() {} });
+    assert.equal(status, 404);
+  }
+  let status;
+  server.emit("request", { method: "GET", url: "/health", socket: { localAddress: "::ffff:127.0.0.1" } }, {
+    writeHead(value) { status = value; }, end() {} });
+  assert.equal(status, 200);
+  await assert.rejects(createNodeServer({ root: f.cwd, fleet, pairing, listen: { port } }), { code: "EADDRINUSE" });
+  for (const [settings, handler] of [[{ ...fleet, discover: false }, pairing], [fleet, undefined],
+    [{ ...fleet, nodes: [{ id: "leader", address: "::1" }] }, pairing]]) {
+    const transport = await createNodeServer({ root: f.cwd, fleet: settings,
+      pairing: handler,
+      listen: { port: 0 } });
+    t.after(() => new Promise(resolve => transport.close(resolve)));
+    assert.equal(transport.address().address, settings.nodes[0].address);
+    const host = settings.nodes[0].address.includes(":") ? `[${settings.nodes[0].address}]` : settings.nodes[0].address;
+    assert.equal((await nodeFetch(`http://${host}:${transport.address().port}/health`)).status, 200);
+  }
+});
+
+test("serve discovery advertises the configured address with wildcard pairing", async t => {
+  const { EventEmitter, once } = await import("node:events");
+  const { serveNode } = await import("./fleet-node.mjs");
+  const { createKey } = await import("./fleet-pair.mjs");
+  const f = fixture(t), socket = new EventEmitter(), sent = [], warnings = [], signals = new Map();
+  Object.assign(socket, { bind(_port, _host, ready) { ready(); }, setBroadcast() {}, close() {},
+    send(data) { sent.push(JSON.parse(data)); } });
+  let ready;
+  const started = new Promise(resolve => { ready = resolve; });
+  const fleet = { self: "leader", discover: true, secret: "ab".repeat(32), key: createKey(),
+    nodes: [{ id: "leader", address: "127.0.0.1", port: 8080 }] };
+  const serving = serveNode({ root: f.cwd, fleet, leader: true, listen: { port: 0 }, warn: text => warnings.push(text),
+    interfaces: () => ({ lo: [{ family: "IPv4", internal: false, address: "127.0.0.1", netmask: "255.0.0.0" }] }),
+    timer: () => 1, clearTimer() {}, discovery: { createSocket: () => socket, timer: () => 1, clearTimer() {} },
+    onSignal(name, fn) { signals.set(name, fn); if (name === "SIGINT") ready(); }, offSignal() {} });
+  await started;
+  const server = await serving, bound = server.address();
+  const closed = once(server, "close");
+  signals.get("SIGINT")();
+  await closed;
+  assert.equal(bound.address, "0.0.0.0");
+  assert.deepEqual(warnings, []);
+  assert.ok(sent.length > 0);
+  assert.ok(sent.every(beacon => JSON.stringify(beacon.addresses) === '["127.0.0.1"]'));
 });

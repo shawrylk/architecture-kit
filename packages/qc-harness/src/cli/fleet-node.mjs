@@ -4,6 +4,7 @@ import { hostOS } from "./legs.mjs";
 import { platformTick } from "./fleet-platform.mjs";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
+import { createServer as createProbeServer } from "node:net";
 import { spawn as spawnProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -43,8 +44,26 @@ export function nodeFetch(url, { method = "GET", body, signal } = {}) {
   });
 }
 
-/** Bind only the configured local address; tests can request an OS-assigned port. */
-export async function createNodeServer({ root = process.cwd(), fleet, clock = Date.now, listen = {}, instance = randomUUID(), pairing }) {
+const normalizeAddress = address => {
+  if (!address?.includes(":")) return address;
+  const normalized = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  const mapped = /^::ffff:([a-f0-9]+):([a-f0-9]+)$/.exec(normalized);
+  return mapped ? mapped.slice(1).flatMap(word => [parseInt(word, 16) >> 8, parseInt(word, 16) & 255]).join(".") : normalized;
+};
+
+// The OS can bind addresses (such as loopback aliases) absent from its interface list.
+function probeBindAddress(address) {
+  return new Promise((resolve, reject) => {
+    const probe = createProbeServer();
+    probe.once("error", reject);
+    probe.listen({ host: address, port: 0 }, () => {
+      probe.close(error => error ? reject(error) : resolve());
+    });
+  });
+}
+
+/** Discovery pairing accepts IPv4 reveals on every interface; other routes stay local. */
+export async function createNodeServer({ root = process.cwd(), fleet, clock = Date.now, listen = {}, instance = randomUUID(), pairing, probeAddress = probeBindAddress }) {
   const self = fleet.nodes.find(node => node.id === fleet.self);
   if (!fleet.secret && !fleet.discover) throw new Error("fleet secret is required");
   if (!self?.address) throw new Error(`fleet address is required for ${fleet.self}`);
@@ -54,13 +73,18 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
   const normalized = address.includes(":") ? new URL(`http://[${address}]/`).hostname : address;
   if (["0.0.0.0", "[::]", "[::ffff:0:0]"].includes(normalized)) throw new Error("fleet address must name one interface");
   pairing ??= fleet.key ? createPairing({ root, fleet, clock, address }) : undefined;
+  const wildcardPairing = fleet.discover && Boolean(pairing) && !address.includes(":");
+  if (wildcardPairing) await probeAddress(address);
   const server = createServer((req, res) => {
     const reply = (status, data) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(data));
     };
+    const pairRoute = Boolean(pairing) && req.method === "POST" && req.url === "/pair";
+    if (!pairRoute && normalizeAddress(req.socket.localAddress) !== normalizeAddress(address)) {
+      reply(404, { ok: false, reason: "not-found" }); req.resume(); return;
+    }
     if (req.method === "GET" && req.url === "/health") { reply(200, { ok: true, instance }); return; }
-    const pairRoute = Boolean(pairing) && req.url === "/pair";
     if (req.method !== "POST" || !(pairRoute || (fleet.secret && req.url === "/message"))) { reply(404, { ok: false, reason: "not-found" }); req.resume(); return; }
     const chunks = [];
     let size = 0;
@@ -90,8 +114,9 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
   server.requestTimeout = 10_000;
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen({ host: address, port: listen.port ?? self.port ?? 8080 }, () => { server.off("error", reject); resolve(); });
+    server.listen({ host: wildcardPairing ? "0.0.0.0" : address, port: listen.port ?? self.port ?? 8080 }, () => { server.off("error", reject); resolve(); });
   });
+  server.configuredAddress = address;
   return server;
 }
 
@@ -535,7 +560,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     } }) : undefined;
   const server = await createNodeServer({ root, fleet, clock, listen, instance, pairing });
   let discoverySocket;
-  try { if (fleet.discover) discoverySocket = await startDiscovery({ ...discovery, root, fleet, address: server.address().address, clock, interfaces, warn, pairing }); }
+  try { if (fleet.discover) discoverySocket = await startDiscovery({ ...discovery, root, fleet, address: server.configuredAddress, clock, interfaces, warn, pairing }); }
   catch (error) { server.close(); throw error; }
   const sends = new AbortController();
   let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000, nextAssign = clock() + 60_000, nextGithub = clock();

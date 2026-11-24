@@ -72,6 +72,12 @@ function broadcastAddresses(interfaces, address) {
   return targets;
 }
 
+function sameSubnet(ip, local) {
+  if (isIP(ip) !== 4 || isIP(local.netmask ?? "") !== 4) return false;
+  const peer = ip.split(".").map(Number), mask = local.netmask.split(".").map(Number);
+  return local.address.split(".").every((byte, i) => (Number(byte) & mask[i]) === (peer[i] & mask[i]));
+}
+
 /** Authenticated LAN discovery with injectable transport, interfaces, timer and clock. */
 export async function startDiscovery({ root, fleet, address, clock = Date.now, interfaces = os.networkInterfaces,
   createSocket = udpSocket, timer = setInterval, clearTimer = clearInterval, warn = console.error, pairing }) {
@@ -79,7 +85,17 @@ export async function startDiscovery({ root, fleet, address, clock = Date.now, i
   if (!fleet.secret) pairing ??= createPairing({ root, fleet, address, clock });
   const ipv4 = isIP(address ?? "") === 4;
   const socket = createSocket({ type: "udp4", reuseAddr: true });
-  const nonces = new Map();
+  const nonces = new Map(), warnedPeers = new Set();
+  const warnSubnet = (id, sender) => {
+    if (warnedPeers.has(sender)) return;
+    const locals = localIPv4(interfaces);
+    if (locals.some(row => row.address === address && sameSubnet(sender, row))) return;
+    const reachable = locals.find(row => sameSubnet(sender, row));
+    if (!reachable || reachable.address === address) return;
+    warnedPeers.add(sender);
+    const self = fleet.nodes.find(node => node.id === fleet.self);
+    warn(`fleet peer ${id} at ${sender} cannot reach ${address}:${self?.port ?? 8080}; set this node's address to ${reachable.address}`);
+  };
   let collisionAt, interval, closed = false;
   const port = fleet.discoveryPort ?? 47913;
   const close = () => { if (closed) return; closed = true; if (interval !== undefined) clearTimer(interval); socket.close(); };
@@ -97,7 +113,10 @@ export async function startDiscovery({ root, fleet, address, clock = Date.now, i
     if (closed || data.length > 2048) return;
     try {
       const { sig, ...fields } = JSON.parse(data.toString("utf8"));
-      if (fields.kind === "join") { pairing?.receiveJoin(fields, sender.address); return; }
+      if (fields.kind === "join") {
+        if (pairing?.receiveJoin(fields, sender.address) === true) warnSubnet(fields.id, sender.address);
+        return;
+      }
       if (!fleet.secret) return;
       if (typeof sig !== "string" || !/^[0-9a-f]{64}$/i.test(sig) ||
         !timingSafeEqual(Buffer.from(sig, "hex"), Buffer.from(mac(fields, fleet.secret), "hex"))) return;
@@ -122,6 +141,7 @@ export async function startDiscovery({ root, fleet, address, clock = Date.now, i
       Object.defineProperty(discovered, fields.id, { enumerable: true, configurable: true, writable: true,
         value: { address: sender.address, port: fields.port, weight: fields.weight, maxSize: fields.maxSize, seen: now } });
       saveDiscovered(root, fleet.secret, discovered);
+      warnSubnet(fields.id, sender.address);
       pairing?.signed(fields.id);
     } catch (error) {
       // Malformed datagrams are ignored; disk failures remain visible to the operator.

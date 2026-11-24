@@ -353,3 +353,77 @@ test("shared contract flags drive grant and accept across a restart; retries can
   assert.equal(p.sent.length, 0);
   assert.throws(() => pairingDecision(p.root, "allow", code, now + 600_001));
 });
+
+test("second-subnet offer source receives reveal and completes bound pairing", async t => {
+  const primary = "192.168.1.220", secondary = "192.168.100.10", sender = "192.168.100.20";
+  for (const first of ["allow", "accept"]) {
+    const root = fixture(t), other = fixture(t), sent = [], reveals = [];
+    let time = now, saved;
+    const a = { self: "leader", secret, key: createKey(), discover: true,
+      nodes: [{ id: "leader", address: primary, port: 8080 }] };
+    const b = { self: "joiner", key: createKey(), discover: true,
+      nodes: [{ id: "joiner", address: sender, port: 8081 }] };
+    const lead = createPairing({ root, fleet: a, address: primary, leader: () => true, clock: () => time,
+      fetch: async (url, options) => { sent.push({ url, body: JSON.parse(options.body) }); return { status: 202 }; } });
+    const join = createPairing({ root: other, fleet: b, address: sender, clock: () => time, saveSecret: value => { saved = value; },
+      fetch: async (url, options) => {
+        const body = JSON.parse(options.body);
+        reveals.push({ url, body });
+        assert.equal(url, `http://${secondary}:8080/pair`);
+        assert.equal(lead.receivePair(body, sender), true);
+        return { status: 202 };
+      } });
+    const beacon = join.beacon();
+    assert.equal(lead.receiveJoin(beacon, sender), true);
+    assert.equal(readPairing(root).requests.joiner.code, undefined);
+    assert.throws(() => pairingDecision(root, "allow", "000000", time));
+    await lead.tick();
+    const offer = sent[0].body;
+    assert.equal(sent[0].url, `http://${sender}:8081/pair`);
+    for (const invalid of [{ ...offer, commit: "00".repeat(32) }, { ...offer, pub: "bad" }]) {
+      assert.equal(join.receivePair(invalid, secondary), false);
+    }
+    assert.equal(reveals.length, 0);
+    // Routing selects the Leader's secondary source, which becomes the reveal destination.
+    assert.equal(join.receivePair(offer, secondary), true);
+    assert.equal(reveals.length, 1);
+    const reveal = reveals[0].body;
+    assert.equal(pairCommit(reveal.pub, reveal.nonce), beacon.commit);
+    const code = readPairing(root).requests.joiner.code;
+    assert.match(code, /^\d{6}$/);
+    assert.equal(code, readPairing(other).offers.leader.code);
+    assert.equal(readPairing(other).offers.leader.address, secondary);
+    assert.equal(lead.receivePair(reveal, "192.168.100.99"), false);
+    assert.equal(lead.receivePair({ ...reveal, pub: createKey().public }, sender), false);
+    assert.equal(lead.receivePair({ ...reveal, nonce: "ff".repeat(16) }, sender), false);
+    assert.equal(join.receivePair({ ...offer, leader: "other-leader" }, primary), false);
+    assert.equal(join.receivePair({ ...offer, pub: createKey().public }, primary), false);
+    assert.equal(reveals.length, 1);
+    assert.deepEqual(Object.keys(readPairing(other).offers), ["leader"]);
+
+    pairingDecision(first === "allow" ? root : other, first, code, time);
+    await lead.tick();
+    const earlyGrant = sent.find(row => row.body.kind === "grant")?.body;
+    if (first === "allow") {
+      assert.ok(earlyGrant);
+      assert.equal(join.receivePair(earlyGrant, secondary), true);
+    } else assert.equal(earlyGrant, undefined);
+    await join.tick();
+    assert.equal(saved, undefined, `${first} alone must not install a secret`);
+    assert.equal(b.secret, undefined);
+
+    pairingDecision(first === "allow" ? other : root, first === "allow" ? "accept" : "allow", code, time);
+    time += 15_000;
+    await lead.tick();
+    const grant = sent.findLast(row => row.body.kind === "grant").body;
+    assert.equal(join.receivePair(grant, primary), false);
+    assert.equal(join.receivePair({ ...grant, pub: createKey().public }, secondary), false);
+    const corrupted = Buffer.from(grant.data, "base64");
+    corrupted[0] ^= 1;
+    assert.equal(join.receivePair({ ...grant, data: corrupted.toString("base64") }, secondary), false);
+    assert.equal(join.receivePair(grant, secondary), true);
+    await join.tick();
+    assert.equal(saved, secret);
+    assert.equal(b.secret, secret);
+  }
+});
