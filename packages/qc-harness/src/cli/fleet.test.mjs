@@ -387,3 +387,55 @@ test("regression: next hides closed assignments without overwriting a concurrent
   assert.deepEqual(result, { code: 0, lines: ["#8 epoch=1"], errors: [] });
   assert.deepEqual(readState(f.cwd, "assignments"), latest);
 });
+
+test("progress records each step at the own saved epoch and preserves optional branch/head", t => {
+  const f = fixture(t), head = "a".repeat(40);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L"]);
+  const held = { repo: "o/r", issue: 7, node: "a1", epoch: 2, time: 1 };
+  writeState(f.cwd, "assignments", { "o/r#7": held });
+  const deps = { origin: () => "O/R", gh: () => { throw new Error("progress must be local"); } };
+  for (const step of ["plan", "code", "review", "merge"]) {
+    const result = f.run(["progress", "7", "--step", step, ...(step === "plan" ? ["--branch", "feat/7", "--head", head] : [])], deps);
+    assert.equal(result.code, 0, result.errors.join("\n"));
+    assert.deepEqual(readState(f.cwd, "work")["o/r#7"], { repo: "o/r", issue: 7, epoch: 2, step, branch: "feat/7", head });
+  }
+  writeState(f.cwd, "assignments", { "o/r#7": { ...held, epoch: 3 } });
+  assert.equal(f.run(["progress", "7", "--step", "code"], deps).code, 0);
+  assert.deepEqual(readState(f.cwd, "work")["o/r#7"], { repo: "o/r", issue: 7, epoch: 3, step: "code", branch: null, head: null });
+  const before = readState(f.cwd, "work");
+  for (const args of [["progress", "8", "--step", "plan"], ["progress", "7"], ["progress", "7", "--step", "push"],
+    ["progress", "0", "--step", "plan"], ["progress", "7.5", "--step", "plan"], ["progress", "7", "--step", "plan", "--head", "bad"],
+    ["progress", "7", "--step", "plan", "--branch", "bad branch"], ["progress", "7", "--step", "plan", "--step", "code"]]) {
+    assert.equal(f.run(args, deps).code, 1, args.join(" "));
+    assert.deepEqual(readState(f.cwd, "work"), before);
+  }
+  writeState(f.cwd, "assignments", { "o/r#7": { ...held, node: "b2" } });
+  assert.equal(f.run(["progress", "7", "--step", "code"], deps).code, 1);
+});
+
+test("next prints takeover source branch/head", t => {
+  const f = fixture(t), head = "b".repeat(40);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L"]);
+  writeState(f.cwd, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a1", epoch: 2, branch: "feat/7-old", head } });
+  assert.deepEqual(f.run(["next"], { origin: () => "o/r", gh: fakeGh([issue(7)]) }).lines, [`#7 epoch=2 from feat/7-old@${head}`]);
+});
+
+test("owns requires the latest Leader snapshot and the saved own epoch, with local failure reasons", t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L,c3:1:L"]);
+  const held = { repo: "o/r", issue: 7, node: "a1", epoch: 2, time: 1 };
+  const deps = { origin: () => "o/r", gh: () => { throw new Error("owns must be local"); } };
+  const check = reason => { const result = f.run(["owns", "7"], deps); assert.equal(result.code, 1); assert.match([...result.lines, ...result.errors].join("\n"), reason); };
+  check(/assignment/i);
+  writeState(f.cwd, "assignments", { "o/r#7": held });
+  check(/Leader heartbeat/i);
+  writeState(f.cwd, "peers", { b2: { time: 1, leader: true, assigned: [{ repo: "o/r", issue: 7, epoch: 2 }] } });
+  assert.equal(f.run(["owns", "7"], deps).code, 0);
+  writeState(f.cwd, "peers", { b2: { time: 1, leader: true, assigned: [{ repo: "o/r", issue: 7, epoch: 2 }] }, c3: { time: 2, leader: true, assigned: [{ repo: "o/r", issue: 7, epoch: 3 }] } });
+  check(/epoch/i);
+  writeState(f.cwd, "peers", { b2: { time: 3, leader: true, assigned: [] } });
+  check(/list|assign/i);
+  writeState(f.cwd, "assignments", { "o/r#7": { ...held, node: "b2" } });
+  check(/assignment/i);
+  assert.equal(f.run(["owns", "0"], deps).code, 1);
+});

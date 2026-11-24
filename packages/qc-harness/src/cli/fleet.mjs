@@ -9,11 +9,11 @@ import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
-import { readState } from "./fleet-state.mjs";
+import { latestLeader, readState, writeState } from "./fleet-state.mjs";
 import { nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | start [--leader] | serve [--leader] | stop";
+const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | start [--leader] | serve [--leader] | stop | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue>";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -130,10 +130,16 @@ export function freeIssues(repo, cwd, { gh = runGh, git = gitOut, holdLabel = "h
 }
 
 function parseArgs(argv) {
-  const [verb, ...rest] = argv;
-  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "stop" ? [] : null;
+  const [verb, ...args] = argv;
+  const hasIssue = ["progress", "owns"].includes(verb);
+  const rest = hasIssue ? args.slice(1) : args;
+  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns"].includes(verb) ? [] : null;
   if (!allowed) throw new Error(USAGE);
   const options = { verb };
+  if (hasIssue) {
+    if (!/^[1-9][0-9]*$/.test(args[0] ?? "") || !Number.isSafeInteger(Number(args[0]))) throw new Error(`${verb} needs a positive issue number`);
+    options.issue = Number(args[0]);
+  }
   for (let i = 0; i < rest.length; i++) {
     const flag = rest[i];
     if (!allowed.includes(flag)) throw new Error(`unknown argument ${flag}`);
@@ -145,6 +151,12 @@ function parseArgs(argv) {
     }
   }
   if (options["--repo"] && !/^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/i.test(options["--repo"])) throw new Error("--repo needs owner/repository");
+  if (verb === "progress") {
+    if (!["plan", "code", "review", "merge"].includes(options["--step"])) throw new Error("--step needs plan, code, review or merge");
+    if (options["--head"] !== undefined && !/^[0-9a-f]{40}$/i.test(options["--head"])) throw new Error("--head needs a 40-character SHA");
+    const branch = options["--branch"];
+    if (branch !== undefined && (!branch || /[\s~^:?*\[\\\x00-\x1f\x7f]/.test(branch) || /(^[-/.]|[/.]$|\.\.|@\{|\/\/|\.lock(?:\/|$)|\/\.)/.test(branch) || branch === "@")) throw new Error("--branch needs a valid branch name");
+  }
   return options;
 }
 
@@ -207,10 +219,29 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
     const checkout = checkoutRootOf(cwd);
+    if (["progress", "owns"].includes(options.verb)) {
+      if (!checkout) throw new Error("fleet work needs a git checkout");
+      const key = `${repo}#${options.issue}`, row = readState(checkout, "assignments")[key];
+      if (!row || row.node !== fleet.self) throw new Error(`no own assignment for #${options.issue}`);
+      if (options.verb === "owns") {
+        const leader = latestLeader(readState(checkout, "peers"));
+        if (!leader) throw new Error("no Leader heartbeat yet");
+        const listed = leader.assigned?.find(item => item.repo === repo && item.issue === options.issue);
+        if (!listed) throw new Error(`Leader does not list an assignment for #${options.issue}`);
+        if (listed.epoch !== row.epoch) throw new Error(`#${options.issue} epoch ${row.epoch} differs from Leader epoch ${listed.epoch}`);
+        return 0;
+      }
+      const work = readState(checkout, "work"), saved = work[key]?.epoch === row.epoch ? work[key] : {};
+      work[key] = { repo, issue: options.issue, epoch: row.epoch, step: options["--step"],
+        branch: options["--branch"] ?? saved.branch ?? null, head: options["--head"] ?? saved.head ?? null };
+      writeState(checkout, "work", work);
+      say(`#${options.issue} epoch=${row.epoch} step=${options["--step"]}`);
+      return 0;
+    }
     if (options.verb === "next" && checkout) {
       const assigned = readOpenAssignments({ root: checkout, fleet, repo, gh });
       if (assigned.length) {
-        for (const row of assigned) say(`#${row.issue} epoch=${row.epoch}`);
+        for (const row of assigned) say(`#${row.issue} epoch=${row.epoch}${row.branch || row.head ? ` from ${row.branch ?? "?"}@${row.head ?? "?"}` : ""}`);
         return 0;
       }
     }

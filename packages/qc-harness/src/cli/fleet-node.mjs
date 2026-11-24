@@ -9,9 +9,17 @@ import { assignTick } from "./fleet-assign.mjs";
 import { readOpenAssignments, freeIssues } from "./fleet.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage, verifyMessage } from "./fleet-message.mjs";
-import { pruneSeen, readState, stateDir, writeState } from "./fleet-state.mjs";
+import { latestLeader, pruneSeen, readState, stateDir, writeState } from "./fleet-state.mjs";
 
 const LIMIT = 64 * 1024;
+const assignmentRef = row => row && typeof row.repo === "string" && /^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/i.test(row.repo) &&
+  Number.isSafeInteger(row.issue) && row.issue > 0 && Number.isSafeInteger(row.epoch) && row.epoch > 0;
+const validBranch = value => value === undefined || value === null || (typeof value === "string" && value.length > 0 && !/[\s\x00-\x1f\x7f]/.test(value));
+const validHead = value => value === undefined || value === null || (typeof value === "string" && /^[0-9a-f]{40}$/i.test(value));
+const validWork = row => assignmentRef(row) && [null, "plan", "code", "review", "merge"].includes(row.step) && validBranch(row.branch) && validHead(row.head);
+const validHeartbeat = body => typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
+  (body.work === undefined || (Array.isArray(body.work) && body.work.every(validWork))) &&
+  (body.assigned === undefined || (Array.isArray(body.assigned) && body.assigned.every(assignmentRef)));
 const endpoint = node => `http://${node.address.includes(":") ? `[${node.address}]` : node.address}:${node.port ?? 8080}`;
 
 /** Small node:http transport with a fetch-shaped injection point. */
@@ -70,7 +78,7 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
         const seen = pruneSeen(readState(root, "seen"), time);
         const result = verifyMessage(message, { secret: fleet.secret, nodes: fleet.nodes, seen, now: time });
         if (!result.ok) { reply(400, result); return; }
-        if (message.kind === "heartbeat" && !(typeof message.body.leader === "boolean" && (message.body.kit === null || typeof message.body.kit === "string"))) {
+        if (message.kind === "heartbeat" && !validHeartbeat(message.body)) {
           reply(400, { ok: false, reason: "bad-heartbeat" }); return;
         }
         // No await between verification and persistence: requests cannot race the saved IDs.
@@ -78,7 +86,9 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
         writeState(root, "seen", seen);
         if (message.kind === "heartbeat") {
           const peers = readState(root, "peers");
-          Object.defineProperty(peers, message.from, { value: { time, kit: message.body.kit, leader: message.body.leader }, enumerable: true, configurable: true, writable: true });
+          Object.defineProperty(peers, message.from, { value: { time, kit: message.body.kit, leader: message.body.leader,
+            ...(message.body.work === undefined ? {} : { work: message.body.work }),
+            ...(message.body.assigned === undefined ? {} : { assigned: message.body.assigned }) }, enumerable: true, configurable: true, writable: true });
           writeState(root, "peers", peers);
         }
         reply(202, { ok: true });
@@ -163,10 +173,23 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
 }
 
 export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now, fetch = nodeFetch, signal }) {
+  const assignments = Object.values(readState(root, "assignments")), saved = readState(root, "work");
+  const work = assignments.filter(row => row.node === fleet.self).map(row => {
+    const current = saved[`${row.repo}#${row.issue}`]?.epoch === row.epoch ? saved[`${row.repo}#${row.issue}`] : {};
+    return { repo: row.repo, issue: row.issue, epoch: row.epoch, step: current.step ?? null,
+      branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
+  });
+  const assignedTo = id => assignments.filter(row => row.node === id).map(({ repo, issue, epoch }) => ({ repo, issue, epoch }));
+  if (leader) {
+    const peers = readState(root, "peers");
+    peers[fleet.self] = { time: clock(), kit, leader, work, assigned: assignedTo(fleet.self) };
+    writeState(root, "peers", peers);
+  }
   for (const node of fleet.nodes) {
     if (signal?.aborted) return;
     if (node.id === fleet.self || node.active === false || !node.address) continue;
-    const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: { kit, leader }, time: new Date(clock()).toISOString() }, fleet.secret);
+    const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: { kit, leader, work,
+      ...(leader ? { assigned: assignedTo(node.id) } : {}) }, time: new Date(clock()).toISOString() }, fleet.secret);
     await sendMessage({ root, fleet, node, message, clock, fetch, signal });
   }
 }
@@ -270,13 +293,15 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
 }
 
 /** Consume assignments only after checking the sender's latest leadership claim. */
-function receiveAssignments(root, fleet, now) {
+function receiveAssignments(root, fleet, now, leader) {
   const queue = readState(root, "queue"), peers = readState(root, "peers"), assignments = readState(root, "assignments");
+  const snapshot = latestLeader(peers);
   const kept = [];
   for (const message of queue) {
     if (message.kind !== "assign") { kept.push(message); continue; }
     const { issue, epoch } = message.body ?? {};
-    if (!Number.isSafeInteger(issue) || issue <= 0 || !Number.isSafeInteger(epoch) || epoch <= 0) continue;
+    if (!Number.isSafeInteger(issue) || issue <= 0 || !Number.isSafeInteger(epoch) || epoch <= 0 ||
+      !validBranch(message.body.branch) || !validHead(message.body.head)) continue;
     const claim = peers[message.from]?.leader;
     if (claim !== true) {
       if (claim !== false && now - Date.parse(message.time) < 600_000) kept.push(message);
@@ -284,10 +309,25 @@ function receiveAssignments(root, fleet, now) {
     }
     const key = `${message.repo}#${issue}`;
     if (!assignments[key] || epoch > assignments[key].epoch) {
-      assignments[key] = { repo: message.repo, issue, node: fleet.self, epoch, time: now };
+      if (!leader && snapshot && (peers[message.from] !== snapshot ||
+        !snapshot.assigned?.some(item => item.repo === message.repo && item.issue === issue && item.epoch === epoch))) {
+        if (peers[message.from] === snapshot && now - Date.parse(message.time) < 600_000) kept.push(message);
+        continue;
+      }
+      assignments[key] = { repo: message.repo, issue, node: fleet.self, epoch, time: now,
+        ...(message.body.branch ? { branch: message.body.branch } : {}), ...(message.body.head ? { head: message.body.head } : {}) };
     }
   }
-  if (queue.some(message => message.kind === "assign")) {
+  let removed = false;
+  if (!leader && snapshot) {
+    for (const [key, row] of Object.entries(assignments)) {
+      if (row.node === fleet.self && !snapshot.assigned?.some(item => item.repo === row.repo && item.issue === row.issue && item.epoch === row.epoch)) {
+        delete assignments[key];
+        removed = true;
+      }
+    }
+  }
+  if (removed || queue.some(message => message.kind === "assign")) {
     writeState(root, "assignments", assignments);
     writeState(root, "queue", kept);
   }
@@ -333,11 +373,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     if (busy || closing) return;
     busy = true;
     try {
-      receiveAssignments(root, fleet, clock());
-      if (clock() >= nextHeartbeat) {
-        nextHeartbeat = clock() + 30_000;
-        await heartbeat({ root, fleet, repo, kit, leader, clock, fetch, signal: sends.signal });
-      }
+      receiveAssignments(root, fleet, clock(), leader);
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal });
       if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;
@@ -354,7 +390,15 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
         }
       }
     } catch (error) { warn(`fleet node: ${error.message}`); }
-    finally { busy = false; }
+    finally {
+      try {
+        if (!closing && clock() >= nextHeartbeat) {
+          nextHeartbeat = clock() + 30_000;
+          await heartbeat({ root, fleet, repo, kit, leader, clock, fetch, signal: sends.signal });
+        }
+      } catch (error) { warn(`fleet node: ${error.message}`); }
+      finally { busy = false; }
+    }
   }, 1000);
   onSignal("SIGTERM", shutdown);
   onSignal("SIGINT", shutdown);

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { commonDirOf } from "./ledger.mjs";
 
-const FILES = ["assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node"];
+const FILES = ["work", "assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node"];
 
 /** State is private to git's shared directory, outside every worktree's tracked files. */
 export function stateDir(root = process.cwd()) {
@@ -47,4 +47,10 @@ export function writeState(root, name, value) {
 /** Return a fresh ID-to-receipt-time snapshot retaining the inclusive ten-minute edge. */
 export function pruneSeen(seen, now = Date.now()) {
   return Object.fromEntries(Object.entries(seen).filter(([, time]) => Number.isFinite(time) && now - time <= 600_000));
+}
+
+/** The most recently received leadership claim supplies this node's assignment snapshot. */
+export function latestLeader(peers) {
+  return Object.values(peers).filter(peer => peer.leader === true && Number.isFinite(peer.time))
+    .sort((a, b) => b.time - a.time)[0];
 }
