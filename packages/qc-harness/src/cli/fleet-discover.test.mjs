@@ -237,3 +237,57 @@ test("no-secret discovery broadcasts joins and forwards only small joins to pair
   socket.emit("message", Buffer.from(JSON.stringify(beacon())), { address: "192.168.1.20" });
   assert.deepEqual(signed, ["b"]);
 });
+
+test("primary address remains advertised with a wildcard pairing listener", async t => {
+  const f = await listener(t, { nodes: [{ id: "a", address: "192.168.1.10", port: 8080 }] });
+  assert.ok(f.socket.sent.length > 0);
+  assert.ok(f.socket.sent.every(row => JSON.stringify(JSON.parse(row.data).addresses) === '["192.168.1.10"]'));
+  assert.deepEqual(f.socket.sent.map(row => row.address), ["255.255.255.255", "192.168.1.255"]);
+});
+
+test("join on the second subnet is forwarded with its actual sender", async t => {
+  const { createKey, createPairing, readPairing } = await import("./fleet-pair.mjs");
+  const root = fixture(t), socket = new FakeSocket(), warnings = [], forwarded = [];
+  const primary = "192.168.1.220", secondary = "192.168.100.10", sender = "192.168.100.20";
+  const multi = () => ({ eth0: [{ family: "IPv4", internal: false, address: primary, netmask: "255.255.255.0" }],
+    eth1: [{ family: "IPv4", internal: false, address: secondary, netmask: "255.255.255.0" }] });
+  const leaderFleet = { ...fleet, key: createKey(), nodes: [{ id: "a", address: primary, port: 8080 }] };
+  const leader = createPairing({ root, fleet: leaderFleet, address: primary, leader: () => true, clock: () => now });
+  const joining = createPairing({ fleet: { self: "joiner", key: createKey(), nodes: [{ id: "joiner", port: 8081 }] },
+    address: sender, clock: () => now });
+  const pairing = { receiveJoin(body, ip) { forwarded.push(ip); return leader.receiveJoin(body, ip); }, signed() {} };
+  const discovery = await startDiscovery({ root, fleet: leaderFleet, address: primary, interfaces: multi,
+    createSocket: () => socket, timer: () => 1, clearTimer() {}, clock: () => now, pairing, warn: text => warnings.push(text) });
+  t.after(() => discovery.close());
+  const receive = (message, ip = sender) => socket.emit("message", Buffer.from(JSON.stringify(message)), { address: ip });
+  const warning = id => `fleet peer ${id} at ${sender} cannot reach ${primary}:8080; set this node's address to ${secondary}`;
+  // Unauthenticated or malformed traffic must not produce an operator warning.
+  receive({ ...joining.beacon(), commit: "bad" });
+  receive(beacon({ addresses: [sender] }, "cd".repeat(32)));
+  assert.deepEqual(warnings, []);
+  receive(joining.beacon());
+  receive(joining.beacon());
+  assert.ok(forwarded.every(ip => ip === sender));
+  assert.equal(readPairing(root).requests.joiner.address, sender);
+  assert.deepEqual(warnings, [warning("joiner")]);
+  receive(beacon({ id: "joined", addresses: [sender] }));
+  assert.equal(readDiscovered(root, secret).joined.address, sender);
+  assert.deepEqual(warnings, [warning("joiner")]);
+
+  const other = "192.168.100.21";
+  receive(beacon({ id: "other", addresses: [other], nonce: "other-nonce" }), other);
+  receive(beacon({ id: "other", addresses: [other], nonce: "fresh-nonce" }), other);
+  assert.deepEqual(warnings, [warning("joiner"), `fleet peer other at ${other} cannot reach ${primary}:8080; set this node's address to ${secondary}`]);
+
+  // Selecting the secondary address fixes advertising, membership and warnings.
+  const fixedSocket = new FakeSocket(), fixedWarnings = [];
+  const fixedFleet = { ...leaderFleet, nodes: [{ id: "a", address: secondary, port: 8080 }] };
+  const fixed = await startDiscovery({ root, fleet: fixedFleet, address: secondary, interfaces: multi,
+    createSocket: () => fixedSocket, timer: () => 1, clearTimer() {}, clock: () => now, warn: text => fixedWarnings.push(text) });
+  t.after(() => fixed.close());
+  fixedSocket.emit("message", Buffer.from(JSON.stringify(beacon({ addresses: [sender] }))), { address: sender });
+  assert.deepEqual(fixedWarnings, []);
+  assert.ok(fixedSocket.sent.every(row => JSON.stringify(JSON.parse(row.data).addresses) === JSON.stringify([secondary])));
+  assert.ok(fixedSocket.sent.some(row => row.address === "192.168.100.255"));
+  assert.equal(effectiveFleet(fixedFleet, readDiscovered(root, secret), now, multi).nodes[0].address, secondary);
+});

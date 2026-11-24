@@ -266,7 +266,10 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
       const now = node.clock?.() ?? Date.now(), pairing = readPairing(cwd);
       const live = row => Number.isFinite(row.seen) && now >= row.seen && now - row.seen <= 600_000;
       if (fleet.secret && readState(cwd, "node").leader) {
-        for (const [id, row] of Object.entries(pairing.requests)) if (live(row) && /^\d{6}$/.test(row.code ?? "")) say(`join? ${id} code=${row.code} host=${row.hostname} address=${row.address}`);
+        for (const [id, row] of Object.entries(pairing.requests)) if (live(row)) {
+          const revealed = /^\d{6}$/.test(row.code ?? "");
+          say(`join? ${id} code=${revealed ? row.code : "pending"} host=${row.hostname} address=${row.address}${revealed ? "" : " reason=awaiting-key-reveal"}`);
+        }
       } else if (!fleet.secret) {
         for (const [id, row] of Object.entries(pairing.offers)) if (live(row)) say(`joining ${id} code=${row.code}`);
       }
