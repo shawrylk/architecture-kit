@@ -16,13 +16,23 @@ const localIPv4 = interfaces => Object.values(interfaces()).flat().filter(row =>
 const mac = (fields, secret) => createHmac("sha256", Buffer.from(secret, "utf8")).update(canonical(fields)).digest("hex");
 
 const fingerprint = secret => createHash("sha256").update(secret, "utf8").digest("hex").slice(0, 16);
+const retention = 7 * 86400_000;
+const lastHeartbeat = row => row.heartbeat ?? row.retainedAt ?? row.seen;
+
+function retainedNodes(nodes, now) {
+  return Object.fromEntries(Object.entries(nodes).filter(([id, row]) => validId(id) && row &&
+    Number.isFinite(row.seen) && row.seen >= 0 && isIP(row.address) === 4 && validPort(row.port) && validCapacity(row) &&
+    [row.heartbeat, row.retainedAt].every(at => at === undefined || (Number.isFinite(at) && at >= 0)) &&
+    (now === undefined || (row.seen <= now && lastHeartbeat(row) <= now && now - lastHeartbeat(row) <= retention)))
+    .sort(([a, left], [b, right]) => lastHeartbeat(right) - lastHeartbeat(left) || a.localeCompare(b)).slice(0, 64));
+}
 
 /** Discovery state shares the fleet's private git state directory and secret identity. */
 export function readDiscovered(root, secret) {
   try {
     const saved = JSON.parse(readFileSync(path.join(stateDir(root), "discovered.json"), "utf8"));
     return typeof secret === "string" && saved?.fleet === fingerprint(secret) &&
-      saved.nodes && typeof saved.nodes === "object" && !Array.isArray(saved.nodes) ? saved.nodes : {};
+      saved.nodes && typeof saved.nodes === "object" && !Array.isArray(saved.nodes) ? retainedNodes(saved.nodes) : {};
   }
   catch (error) { if (error.code === "ENOENT") return {}; throw error; }
 }
@@ -38,6 +48,21 @@ function saveDiscovered(root, secret, nodes) {
   } finally { rmSync(temporary, { force: true, maxRetries: 10, retryDelay: 100 }); }
 }
 
+/** Prune on daemon refresh too, so an expired identity cannot return from disk. */
+export function pruneDiscovered(root, secret, now) {
+  const saved = readDiscovered(root, secret), kept = retainedNodes(saved, now);
+  if (JSON.stringify(saved) !== JSON.stringify(kept)) saveDiscovered(root, secret, kept);
+  return kept;
+}
+
+/** Only the already verified heartbeat path may extend a retained identity's life. */
+export function discoveryHeartbeat(root, secret, id, now) {
+  const saved = pruneDiscovered(root, secret, now);
+  if (!Object.hasOwn(saved, id)) return;
+  saved[id] = { ...saved[id], heartbeat: now };
+  saveDiscovered(root, secret, retainedNodes(saved, now));
+}
+
 /** A fresh, signed announcement always fits a single small UDP datagram. */
 export function createBeacon({ fleet, address, clock = Date.now, pairing }) {
   const self = fleet.nodes.find(node => node.id === fleet.self);
@@ -48,15 +73,14 @@ export function createBeacon({ fleet, address, clock = Date.now, pairing }) {
   return { ...fields, sig: mac(fields, fleet.secret) };
 }
 
-/** Static files keep their identity; discovery adds only recent, unconfigured peers. */
+/** Static files take precedence over bounded, heartbeat-retained discovered peers. */
 export function effectiveFleet(fleet, discovered, now = Date.now(), interfaces = os.networkInterfaces) {
   if (!fleet.discover) return fleet;
   const nodes = fleet.nodes.map(node => node.id === fleet.self && !node.address
     ? { ...node, address: localIPv4(interfaces)[0]?.address } : node);
   const named = new Set(nodes.map(node => node.id));
-  for (const [id, row] of Object.entries(discovered)) {
-    if (named.has(id) || !validId(id) || !row || !Number.isFinite(row.seen) || now - row.seen < 0 || now - row.seen > 300_000) continue;
-    if (isIP(row.address) !== 4 || !validPort(row.port) || !validCapacity(row)) continue;
+  for (const [id, row] of Object.entries(retainedNodes(discovered, now))) {
+    if (named.has(id)) continue;
     nodes.push({ id, address: row.address, port: row.port, weight: row.weight, maxSize: row.maxSize, active: true });
   }
   return { ...fleet, nodes, leaders: nodes.map(node => node.id).sort() };
@@ -118,10 +142,13 @@ export async function startDiscovery({ root, fleet, address, clock = Date.now, i
         }
         return;
       }
-      const discovered = readDiscovered(root, fleet.secret);
+      const discovered = pruneDiscovered(root, fleet.secret, now);
+      const previous = discovered[fields.id];
       Object.defineProperty(discovered, fields.id, { enumerable: true, configurable: true, writable: true,
-        value: { address: sender.address, port: fields.port, weight: fields.weight, maxSize: fields.maxSize, seen: now } });
-      saveDiscovered(root, fleet.secret, discovered);
+        value: { address: sender.address, port: fields.port, weight: fields.weight, maxSize: fields.maxSize, seen: now,
+          retainedAt: previous?.retainedAt ?? previous?.seen ?? now,
+          ...(previous?.heartbeat === undefined ? {} : { heartbeat: previous.heartbeat }) } });
+      saveDiscovered(root, fleet.secret, retainedNodes(discovered, now));
       pairing?.signed(fields.id);
     } catch (error) {
       // Malformed datagrams are ignored; disk failures remain visible to the operator.

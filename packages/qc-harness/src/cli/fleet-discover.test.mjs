@@ -75,7 +75,7 @@ test("discovery binds UDP, broadcasts at start and every 15 seconds, and saves a
   assert.equal(f.socket.sent.length, 4);
   assert.notEqual(JSON.parse(f.socket.sent[2].data).nonce, first);
   f.receive(beacon());
-  const saved = { b: { address: "192.168.1.20", port: 8081, weight: 2, maxSize: "M", seen: now } };
+  const saved = { b: { address: "192.168.1.20", port: 8081, weight: 2, maxSize: "M", seen: now, retainedAt: now } };
   assert.deepEqual(readDiscovered(f.root, f.secret), saved);
   assert.deepEqual(JSON.parse(readFileSync(path.join(stateDir(f.root), "discovered.json"), "utf8")), { fleet: fingerprint(secret), nodes: saved });
   f.discovery.close();
@@ -193,7 +193,7 @@ test("name collisions are dropped and reported at most once per ten minutes", as
   assert.deepEqual(readDiscovered(f.root, f.secret), {});
 });
 
-test("effectiveFleet expires discoveries after 300 seconds, keeps configured nodes and sorts leaders", () => {
+test("known discovery survives beacon silence", () => {
   const staticFleet = { ...fleet, discover: false };
   assert.equal(effectiveFleet(staticFleet, {}, now, interfaces), staticFleet);
   const configured = { ...fleet, leaders: ["z"], nodes: [...fleet.nodes, { id: "z", address: "fixed", port: 9000 }] };
@@ -206,10 +206,45 @@ test("effectiveFleet expires discoveries after 300 seconds, keeps configured nod
   const current = effectiveFleet(configured, discovered, now, interfaces);
   assert.equal(current.nodes[0].address, "192.168.1.10");
   assert.equal(current.nodes[1], configured.nodes[1]);
-  assert.deepEqual(current.leaders, ["a", "b", "c", "z"]);
+  assert.deepEqual(current.leaders, ["a", "b", "c", "old", "z"]);
   assert.deepEqual(current.nodes.find(node => node.id === "b"), { id: "b", address: "192.168.1.20", port: 8081, weight: 2, maxSize: "M", active: true });
-  assert.deepEqual(effectiveFleet(configured, discovered, now + 300_001, interfaces).leaders, ["a", "z"]);
+  assert.deepEqual(effectiveFleet(configured, discovered, now + 300_001, interfaces).leaders, ["a", "b", "c", "old", "z"]);
+  assert.deepEqual(effectiveFleet(configured, discovered, now + 7 * 86400_000 + 1, interfaces).leaders, ["a", "z"]);
   assert.equal(configured.nodes[0].address, undefined);
+});
+
+test("retained cache still rejects malformed rows and changed secrets, preserves configured nodes and sorted leaders", async t => {
+  const f = await listener(t), row = { address: "192.168.1.20", port: 8081, weight: 2, maxSize: "M", seen: now };
+  const invalid = { badport: { ...row, port: 1 }, badip: { ...row, address: "host" }, badweight: { ...row, weight: -1 },
+    badsize: { ...row, maxSize: "XL" }, future: { ...row, seen: now + 1 }, badtime: { ...row, seen: "now" },
+    badbeat: { ...row, heartbeat: "now" }, "bad id": row, nil: null };
+  const configured = { ...fleet, nodes: [...fleet.nodes, { id: "z", address: "fixed", port: 9000 }] };
+  const current = effectiveFleet(configured, { ...invalid, b: row, z: row }, now, interfaces);
+  assert.deepEqual(current.leaders, ["a", "b", "z"]);
+  assert.equal(current.nodes.find(node => node.id === "z").address, "fixed");
+  f.receive(beacon());
+  assert.deepEqual(readDiscovered(f.root, "cd".repeat(32)), {});
+  const changed = await listener(t, { secret: "cd".repeat(32) }, f.root);
+  changed.receive(beacon({ id: "c", nonce: "rotated" }, "cd".repeat(32)));
+  assert.deepEqual(Object.keys(readDiscovered(f.root, "cd".repeat(32))), ["c"]);
+  assert.deepEqual(readDiscovered(f.root, secret), {});
+});
+
+test("retained cache holds at most 64 peers, oldest out first, and expires seven days after heartbeat", async t => {
+  const f = await listener(t);
+  for (let i = 0; i < 65; i++) {
+    f.setTime(now + i);
+    f.receive(beacon({ id: `n${i}`, nonce: `nonce${i}`, time: now + i }));
+  }
+  const saved = readDiscovered(f.root, secret);
+  assert.equal(Object.keys(saved).length, 64);
+  assert.equal(saved.n0, undefined);
+  assert.ok(saved.n1);
+  const day = 86400_000;
+  saved.n1.heartbeat = now + 6 * day;
+  const current = effectiveFleet(fleet, saved, now + 7 * day + 100, interfaces);
+  assert.deepEqual(current.leaders, ["a", "n1"]);
+  assert.deepEqual(effectiveFleet(fleet, saved, now + 13 * day + 1, interfaces).leaders, ["a"]);
 });
 
 test("no-secret discovery broadcasts joins and forwards only small joins to pairing; signed beacon stops grants", async t => {

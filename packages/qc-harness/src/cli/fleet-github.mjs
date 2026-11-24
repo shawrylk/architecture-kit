@@ -2,6 +2,8 @@ import { createMessage, verifyMessage } from "./fleet-message.mjs";
 import { parseMarker, roleComment } from "./role-line.mjs";
 import { parsePages, runGh } from "./gh-run.mjs";
 import { highestTerm, validTerm, pruneSeen, readState, writeState } from "./fleet-state.mjs";
+import { mergeLoad, metrics } from "./fleet-load.mjs";
+import { discoveryHeartbeat } from "./fleet-discover.mjs";
 
 const assignmentRef = row => row && typeof row.repo === "string" && /^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/i.test(row.repo) &&
   Number.isSafeInteger(row.issue) && row.issue > 0 && Number.isSafeInteger(row.epoch) && row.epoch > 0;
@@ -10,8 +12,10 @@ export const validHead = value => value === undefined || value === null || (type
 export const validWork = row => assignmentRef(row) && [null, "plan", "code", "review", "merge"].includes(row.step) && validBranch(row.branch) && validHead(row.head);
 const validLoad = load => load !== null && typeof load === "object" && !Array.isArray(load) &&
   Object.entries({ cpu: 1, mem: 1, rtt: 600_000 }).every(([key, limit]) =>
-    load[key] === null || (Number.isFinite(load[key]) && load[key] >= 0 && load[key] <= limit)) &&
-  Object.keys(load).every(key => ["cpu", "mem", "rtt"].includes(key));
+    load[key] == null || (Number.isFinite(load[key]) && load[key] >= 0 && load[key] <= limit)) &&
+  Object.keys(load).every(key => [...metrics, "observed"].includes(key)) &&
+  (load.observed === undefined || (load.observed !== null && typeof load.observed === "object" && !Array.isArray(load.observed) &&
+    Object.entries(load.observed).every(([key, at]) => metrics.includes(key) && Number.isFinite(at) && at >= 0)));
 const validHeartbeat = body => validTerm(body.term) && typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
   (body.load === undefined || validLoad(body.load)) &&
   (body.work === undefined || (Array.isArray(body.work) && body.work.every(validWork))) &&
@@ -26,7 +30,8 @@ export function receiveMessage({ root, fleet, message, clock = Date.now }) {
   const seen = pruneSeen(readState(root, "seen"), time);
   const result = verifyMessage(message, { secret: fleet.secret, nodes: fleet.nodes, seen, now: time });
   if (!result.ok) return result;
-  if (message.kind === "heartbeat" && !validHeartbeat(message.body)) {
+  if (message.kind === "heartbeat" && (!validHeartbeat(message.body) ||
+    Object.values(message.body.load?.observed ?? {}).some(at => at > Date.parse(message.time)))) {
     return { ok: false, reason: "bad-heartbeat" };
   }
   // No await between verification and persistence: requests cannot race the saved IDs.
@@ -49,12 +54,15 @@ export function receiveMessage({ root, fleet, message, clock = Date.now }) {
       Date.parse(message.time) <= Date.parse(previous?.messageTime))) {
       peers[message.from].time = time;
     } else Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, term: message.body.term, leader: accepted,
-      ...(message.body.load === undefined ? {} : { load: message.body.load }),
+      ...(message.body.load === undefined && previous?.load === undefined ? {} : {
+        load: mergeLoad(previous?.load, message.body.load, Math.min(time, Date.parse(message.time)),
+          Date.parse(previous?.messageTime) || previous?.time) }),
       ...(message.body.os === undefined ? {} : { os: message.body.os }),
       ...(message.body.work === undefined ? {} : { work: message.body.work }),
       ...(message.body.assigned === undefined ? {} : { assigned: message.body.assigned }) }, enumerable: true, configurable: true, writable: true });
     for (const peer of Object.values(peers)) if ((peer.term ?? 1) < highest) peer.leader = false;
     writeState(root, "peers", peers);
+    if (fleet.discover) discoveryHeartbeat(root, fleet.secret, message.from, time);
   }
   return { ok: true };
 }

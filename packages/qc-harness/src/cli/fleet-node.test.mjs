@@ -14,11 +14,12 @@ import { readState, stateDir, writeState } from "./fleet-state.mjs";
 import { createNodeServer, sendMessage, flushOutbox, heartbeat as sendHeartbeat, startNode, stopNode, nodeStatus, serveNode as runNode } from "./fleet-node.mjs";
 import { runFleet } from "./fleet.mjs";
 import { assignTick } from "./fleet-assign.mjs";
+import { createBeacon, readDiscovered } from "./fleet-discover.mjs";
 
 const idleOS = { cpus: () => [{ times: { user: 10, idle: 90 } }], freemem: () => 50, totalmem: () => 100 };
 const serveNode = options => runNode({ os: idleOS, ...options });
 const heartbeat = options => sendHeartbeat({ os: idleOS, ...options });
-const initialLoad = { cpu: null, mem: 0.5, rtt: null };
+const initialLoad = { cpu: null, mem: 0.5, rtt: null, observed: { mem: Date.parse("2026-11-24T00:00:00Z") } };
 
 const host = process.platform === "win32" ? "windows" : process.platform;
 const apiResponse = args => JSON.stringify(args[1] === "user" ? { login: "me" } : []);
@@ -37,6 +38,34 @@ function fixture(t) {
   return root;
 }
 const message = (fields = {}) => createMessage({ from: "b", repo: "o/r", kind: "question", body: { command: "do not execute" }, time: new Date(now).toISOString(), ...fields }, secret);
+
+test("status keeps live Leader on health timeout but rejects instance mismatch", async t => {
+  const root = fixture(t), signals = [];
+  writeState(root, "node", { pid: 123, instance: "saved", leader: true, term: 2 });
+  writeState(root, "election", { highest: 2 });
+  const options = { root, fleet, clock: () => now, kill: (pid, signal) => signals.push([pid, signal]) };
+  for (const fetch of [async () => { throw new DOMException("timeout", "TimeoutError"); },
+    async () => ({ status: 503 }), async () => ({ status: 200, json: async () => { throw new Error("invalid JSON"); } })]) {
+    assert.match(await nodeStatus({ ...options, fetch }), /^node=running health=unreachable leader=a peers=0\/3/);
+    await assert.rejects(stopNode({ ...options, fetch }), /stale/);
+  }
+  assert.ok(signals.every(([, signal]) => signal === 0));
+  const mismatch = async () => ({ status: 200, json: async () => ({ ok: true, instance: "other" }) });
+  assert.match(await nodeStatus({ ...options, fetch: mismatch }), /^node=stale leader=unknown/);
+  writeState(root, "election", { highest: 3 });
+  assert.match(await nodeStatus({ ...options, fetch: async () => { throw new Error("offline"); } }), /leader=unknown/);
+  assert.match(await nodeStatus({ ...options, fetch: async () => ({ status: 200, json: async () => ({ ok: true, instance: "saved" }) }) }), /^node=running leader=unknown/);
+});
+
+test("dead PID remains stopped after failed health", async t => {
+  const root = fixture(t);
+  writeState(root, "node", { pid: 123, instance: "saved", leader: true });
+  assert.match(await nodeStatus({ root, fleet, clock: () => now, fetch: async () => { throw new Error("offline"); },
+    kill: () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); } }), /^node=stopped leader=unknown/);
+  let checks = 0;
+  assert.match(await nodeStatus({ root, fleet, clock: () => now, fetch: async () => { throw new Error("offline"); },
+    kill: () => { if (++checks > 1) throw Object.assign(new Error("gone"), { code: "ESRCH" }); } }), /^node=stopped leader=unknown/);
+});
 
 test("HTTP routes, JSON, signature refusal, replay, byte limit and durable queue append", async t => {
   const root = fixture(t);
@@ -134,7 +163,7 @@ test("heartbeat targets only other active addressed nodes and records receipt ti
   const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
   const beat = message({ kind: "heartbeat", body: { kit: null, term: 1, leader: false } });
   assert.equal((await post(beat)).status, 202);
-  assert.deepEqual(readState(root, "peers"), { a: { load: { ...initialLoad, rtt: 0 }, time: now, os: host, kit: "commit", term: 1, leader: true, work: [], assigned: [] }, b: { time: now, messageTime: beat.time, kit: null, term: 1, leader: false } });
+  assert.deepEqual(readState(root, "peers"), { a: { load: { ...initialLoad, rtt: 0, observed: { ...initialLoad.observed, rtt: now } }, time: now, os: host, kit: "commit", term: 1, leader: true, work: [], assigned: [] }, b: { time: now, messageTime: beat.time, kit: null, term: 1, leader: false } });
   assert.equal((await post(message({ kind: "heartbeat", body: { leader: "yes" } }))).status, 400);
   assert.deepEqual(readState(root, "queue"), []);
 });
@@ -316,7 +345,7 @@ test("start detaches with a log, start twice is idempotent, stop keeps state and
   assert.equal(existsSync(path.join(stateDir(root), "node.log")), true);
   assert.deepEqual(await stopNode(p.deps), { stopped: true, already: true });
   assert.equal(await nodeStatus(p.deps), "node=stopped leader=b peers=1/3\nload b cpu=- mem=- rtt=-");
-  assert.equal(await nodeStatus({ ...p.deps, clock: () => now + 90_001 }), "node=stopped leader=unknown peers=0/3");
+  assert.equal(await nodeStatus({ ...p.deps, clock: () => now + 90_001 }), "node=stopped leader=unknown peers=0/3\npeer b state=silent last-heartbeat=90s cpu=- mem=- rtt=-");
 });
 
 test("start names missing secret/address, times out and cleans up; stale records and stop timeout", async t => {
@@ -341,11 +370,11 @@ test("start names missing secret/address, times out and cleans up; stale records
   assert.deepEqual(await startNode(p.deps), { running: true, already: false });
 });
 
-test("status counts only known other senders in the inclusive 90-second window", async t => {
+test("status counts only known other senders with a heartbeat less than 90 seconds old", async t => {
   const root = fixture(t), p = processDeps(root);
   writeState(root, "peers", { a: { time: now, leader: true }, b: { time: now - 90000, leader: true },
     inactive: { time: now - 90001, leader: true }, unaddressed: { time: now + 1, leader: true }, unknown: { time: now, leader: true } });
-  assert.equal(await nodeStatus(p.deps), "node=stopped leader=b peers=1/3\nload b cpu=- mem=- rtt=-");
+  assert.equal(await nodeStatus(p.deps), "node=stopped leader=unknown peers=0/3\npeer b state=silent last-heartbeat=90s cpu=- mem=- rtt=-\npeer inactive state=silent last-heartbeat=90s cpu=- mem=- rtt=-");
   writeState(root, "proposal", { id: "b", term: 2 });
   assert.match(await nodeStatus(p.deps), /proposed Leader b term 2: run npx architecture-harness fleet confirm-leader/);
 });
@@ -366,7 +395,7 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   time += 1000;
   await timers[0].fn();
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0].body, { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [], assigned: [] });
+  assert.deepEqual(sent[0].body, { load: { ...initialLoad, observed: { mem: now + 30_000 } }, os: host, kit: null, term: 1, leader: true, work: [], assigned: [] });
   assert.equal(readState(root, "node").leader, true);
   const closed = new Promise(resolve => server.once("close", resolve));
   signals.get("SIGTERM")();
@@ -376,7 +405,7 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
 });
 
-test("serve advertises a hostname as its bound IPv4 to a receiver, refreshes the same fleet for HTTP, heartbeats and expiry, and closes discovery on shutdown", async t => {
+test("serve advertises a hostname as its bound IPv4 to a receiver, refreshes the same fleet for HTTP, heartbeats and retention, and closes discovery on shutdown", async t => {
   const { createBeacon, readDiscovered, startDiscovery } = await import("./fleet-discover.mjs");
   const order = getDefaultResultOrder();
   setDefaultResultOrder("ipv4first");
@@ -427,6 +456,9 @@ test("serve advertises a hostname as its bound IPv4 to a receiver, refreshes the
   const response = await fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
   assert.equal(response.status, 202);
   time = now + 300_001;
+  await tick();
+  assert.deepEqual(current.nodes.map(node => node.id), ["a", "b"]);
+  time = now + 30_000 + 7 * 86400_000 + 1;
   await tick();
   assert.deepEqual(current.nodes.map(node => node.id), ["a"]);
   assert.deepEqual(current.leaders, ["a"]);
@@ -484,7 +516,7 @@ test("regression: lifecycle requires the saved instance before readiness or sign
     assert.equal(await nodeStatus(p.deps), "node=stale leader=unknown peers=0/3");
     await assert.rejects(stopNode(p.deps), /stale/);
     await assert.rejects(startNode(p.deps), /stale/);
-    assert.deepEqual(p.signals, []);
+    assert.ok(p.signals.every(signal => signal === 0));
     assert.equal(p.spawned.length, 0);
     assert.equal(readState(root, "node").instance, "saved-instance");
   });
@@ -788,7 +820,7 @@ test("heartbeats carry own work, per-recipient Leader assignments, and replace p
   received.length = 0;
   writeState(root, "assignments", { "o/r#1": held(1, "a", 2) });
   await heartbeat({ root, fleet: nodes, repo: "o/r", clock: () => now, fetch: fetcher });
-  assert.deepEqual(received[0].body, { load: { ...initialLoad, rtt: 0 }, os: host, kit: null, term: 1, leader: false, work: [{ repo: "o/r", issue: 1, epoch: 2, step: null, branch: null, head: null }] });
+  assert.deepEqual(received[0].body, { load: { ...initialLoad, rtt: 0, observed: { ...initialLoad.observed, rtt: now } }, os: host, kit: null, term: 1, leader: false, work: [{ repo: "o/r", issue: 1, epoch: 2, step: null, branch: null, head: null }] });
   const server = await createNodeServer({ root, fleet: nodes, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   let sentTime = now;
@@ -1350,7 +1382,7 @@ test("platform child checks leave serve ticks free to heartbeat and retain the p
   assert.equal(readState(root, "peers").b.os, "windows");
 });
 
-test("heartbeat samples fake OS and publishes the successful prior round median, including Leader load", async t => {
+test("heartbeat retains last valid CPU and RTT through failed rounds", async t => {
   const root = fixture(t);
   let time = now, busy = 10;
   const fakeOS = { cpus: () => [{ times: { user: busy, idle: 90 } }], freemem: () => 20, totalmem: () => 100 };
@@ -1361,17 +1393,118 @@ test("heartbeat samples fake OS and publishes the successful prior round median,
   const deps = { root, fleet: nodes, repo: "o/r", leader: true, os: fakeOS, clock: () => time,
     fetch: async (_url, options) => { received.push(JSON.parse(options.body).body.load); time += durations[index % 5]; return { status: index++ % 5 === 2 ? 503 : 202 }; } };
   await heartbeat(deps);
-  assert.deepEqual(received, Array(5).fill({ cpu: null, mem: 0.8, rtt: null }));
-  assert.deepEqual(readState(root, "peers").a.load, { cpu: null, mem: 0.8, rtt: 25 });
+  assert.deepEqual(received, Array(5).fill({ cpu: null, mem: 0.8, rtt: null, observed: { mem: now } }));
+  assert.deepEqual(readState(root, "peers").a.load, { cpu: null, mem: 0.8, rtt: 25, observed: { mem: now, rtt: time } });
   received.length = 0;
   busy = 110;
+  const cpuAt = time, rttAt = time;
   await heartbeat(deps);
-  assert.deepEqual(received, Array(5).fill({ cpu: 1, mem: 0.8, rtt: 25 }));
+  assert.deepEqual(received, Array(5).fill({ cpu: 1, mem: 0.8, rtt: 25, observed: { cpu: cpuAt, mem: cpuAt, rtt: rttAt } }));
+  const lastRttAt = time;
+  time += 300_001;
   await heartbeat({ ...deps, fetch: async () => { time += 50; return { status: 503 }; } });
-  assert.equal(readState(root, "peers").a.load.rtt, null);
+  assert.equal(readState(root, "peers").a.load.rtt, 25);
+  assert.equal(readState(root, "peers").a.load.cpu, 1);
+  assert.equal(readState(root, "peers").a.load.observed.cpu, cpuAt);
+  assert.equal(readState(root, "peers").a.load.observed.rtt, lastRttAt);
   received.length = 0;
   await heartbeat(deps);
-  assert.equal(received[0].rtt, null);
+  assert.equal(received[0].rtt, 25);
+  assert.equal(received[0].observed.rtt, lastRttAt);
+  assert.equal(readState(root, "peers").a.load.observed.rtt, time);
+});
+
+test("received null or omitted load preserves measured fields without refreshing metric age", async t => {
+  const root = fixture(t);
+  let time = now;
+  const server = await createNodeServer({ root, fleet, clock: () => time, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const post = load => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST",
+    body: JSON.stringify(message({ kind: "heartbeat", time: new Date(time).toISOString(), body: { kit: null, term: 1, leader: false, ...(load === undefined ? {} : { load }) } })) });
+  assert.equal((await post({ cpu: 0.95, mem: 0.5, rtt: 2200 })).status, 202);
+  for (const load of [{ cpu: null, mem: 0.6, rtt: null }, undefined, { mem: 0.7 }]) {
+    time += 120_000;
+    assert.equal((await post(load)).status, 202);
+    const saved = readState(root, "peers").b.load;
+    assert.equal(saved.cpu, 0.95);
+    assert.equal(saved.rtt, 2200);
+    assert.equal(saved.observed.cpu, now);
+    assert.equal(saved.observed.rtt, now);
+  }
+  assert.equal(readState(root, "peers").b.load.observed.mem, time);
+  time++;
+  assert.equal((await post({ cpu: 0.1, observed: { cpu: time - 1000 } })).status, 202);
+  assert.equal(readState(root, "peers").b.load.observed.cpu, time - 1000);
+  time++;
+  assert.equal((await post({ cpu: 0.9, observed: { cpu: time - 2000 } })).status, 202);
+  assert.equal(readState(root, "peers").b.load.cpu, 0.1);
+  for (const load of [{ cpu: 2 }, { cpu: -1 }, { rtt: "20" }, { cpu: 0.1, observed: { cpu: time + 100 } },
+    { cpu: 0.1, observed: { cpu: "old" } }, { observed: [] }, { observed: { other: time } }]) {
+    time++;
+    assert.equal((await post(load)).status, 400);
+  }
+});
+
+test("status reports silent peers and cached metric ages", async t => {
+  const root = fixture(t), at = now - 300_001;
+  writeState(root, "peers", { b: { time: now, load: { cpu: 0.95, mem: 0.5, rtt: 2200, observed: { cpu: at, mem: now, rtt: at } } },
+    inactive: { time: now - 120_000, load: { cpu: 0.25, mem: 0.5, rtt: 20, observed: { cpu: at, mem: at, rtt: at } } } });
+  const status = await nodeStatus({ root, fleet, clock: () => now });
+  assert.match(status, /peers=1\/3/);
+  assert.match(status, /load b cpu=95%\(cached\) mem=50% rtt=2200ms\(cached\) cpu-age=300s mem-age=0s rtt-age=300s/);
+  assert.doesNotMatch(status, /overloaded/);
+  assert.match(status, /peer inactive state=silent last-heartbeat=120s cpu=25%\(cached\) mem=50%\(cached\) rtt=20ms\(cached\)/);
+  assert.doesNotMatch(status, /peer unaddressed/);
+});
+
+test("serve retains joined peer after 300 s without beacons and accepts authenticated heartbeats", async t => {
+  const { leaderCandidate } = await import("./fleet-state.mjs");
+  const root = fixture(t), socket = new EventEmitter(), warnings = [];
+  Object.assign(socket, { bind: (_port, _host, ready) => ready(), setBroadcast() {}, send: (_data, _port, _address, cb) => cb(), close() {} });
+  let time = now, tick;
+  const config = { self: "z", secret, discover: true, nodes: [{ id: "z", address: "127.0.0.1", port: 8080, weight: 1, maxSize: "L" }] };
+  const remote = { self: "b", secret, nodes: [{ id: "b", address: "127.0.0.2", port: 8081, weight: 1, maxSize: "L" }] };
+  const server = await serveNode({ root, fleet: config, repo: "o/r", leader: true, clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: value => warnings.push(value),
+    discovery: { createSocket: () => socket, timer: () => 1, clearTimer() {} }, git: () => "",
+    gh: args => args[0] === "api" ? apiResponse(args) : JSON.stringify(args[0] === "pr" ? [] : args.includes("number,labels,createdAt")
+      ? [1, 2].map(number => ({ number, labels: [], createdAt: "2026-01-01" })) : [{ number: 1 }, { number: 2 }]),
+    fetch: async () => ({ status: 202 }) });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  socket.emit("message", Buffer.from(JSON.stringify(createBeacon({ fleet: remote, address: "127.0.0.2", clock: () => time }))), { address: "127.0.0.2" });
+  await tick();
+  const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
+  const beat = load => message({ kind: "heartbeat", time: new Date(time).toISOString(), body: { kit: null, term: 1, leader: false, load } });
+  assert.equal((await post(beat({ cpu: 1, mem: 1, rtt: 2200 }))).status, 202);
+  time += 300_001;
+  await tick();
+  assert.ok(config.nodes.some(node => node.id === "b"));
+  assert.deepEqual(config.leaders, ["b", "z"]);
+  assert.equal(leaderCandidate(root, config, time), "z", "silent b has no leadership candidacy");
+  assert.deepEqual(readState(root, "assignments"), {}, "silent b receives no new work");
+  const status = await nodeStatus({ root, fleet: config, clock: () => time });
+  assert.match(status, /peers=0\/1/);
+  assert.match(status, /peer b state=silent last-heartbeat=300s/);
+  assert.equal((await post({ ...beat({ cpu: null }), sig: "00".repeat(32) })).status, 400);
+  assert.equal((await post(message({ from: "unknown", kind: "heartbeat", time: new Date(time).toISOString(), body: { kit: null, term: 1, leader: false } }))).status, 400);
+  time++;
+  const fresh = beat({ cpu: null, mem: null, rtt: null });
+  assert.equal((await post(fresh)).status, 202);
+  assert.equal((await post(fresh)).status, 400, "retention does not relax replay checks");
+  assert.equal(leaderCandidate(root, config, time), "b");
+  assert.equal(readDiscovered(root, secret).b.heartbeat, time);
+  time += 60_000;
+  await tick();
+  assert.ok(Object.values(readState(root, "assignments")).some(row => row.node === "b"), "cached overload metrics do not block a fresh peer");
+  assert.ok(warnings.every(value => !/node b is overloaded/.test(value)));
+  const lastHeartbeat = readDiscovered(root, secret).b.heartbeat;
+  time = now + 7 * 86400_000 + 1;
+  await tick();
+  assert.ok(config.nodes.some(node => node.id === "b"), "heartbeat extends retention beyond the original beacon");
+  time = lastHeartbeat + 7 * 86400_000 + 1;
+  await tick();
+  assert.ok(!config.nodes.some(node => node.id === "b"));
+  assert.equal(readDiscovered(root, secret).b, undefined, "expired identity is removed from disk");
 });
 
 test("status prints recent peer load with null markers and overload reasons", async t => {
@@ -1380,7 +1513,7 @@ test("status prints recent peer load with null markers and overload reasons", as
   writeState(root, "peers", { b: { time: now, load: { cpu: 0.95, mem: 0.5, rtt: 2000 } },
     c: { time: now - 90000 }, inactive: { time: now - 90001 }, unaddressed: { time: now + 1 } });
   assert.equal(await nodeStatus({ root, fleet: nodes, clock: () => now }),
-    "node=stopped leader=unknown peers=2/4\nload b cpu=95% mem=50% rtt=2000ms overloaded\nload c cpu=- mem=- rtt=-");
+    "node=stopped leader=unknown peers=1/4\nload b cpu=95% mem=50% rtt=2000ms overloaded\npeer inactive state=silent last-heartbeat=90s cpu=- mem=- rtt=-\npeer c state=silent last-heartbeat=90s cpu=- mem=- rtt=-");
 });
 
 test("join mode exposes health and pair only, enforces 2 KB and sender validation", async t => {

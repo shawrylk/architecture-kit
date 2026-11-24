@@ -1,5 +1,5 @@
 import os from "node:os";
-import { sampleLoad } from "./fleet-load.mjs";
+import { sampleLoad, freshLoad, metricFresh, metrics, metricTime } from "./fleet-load.mjs";
 import { hostOS } from "./legs.mjs";
 import { platformTick } from "./fleet-platform.mjs";
 import { randomUUID } from "node:crypto";
@@ -13,7 +13,7 @@ import { receiveTalk } from "./fleet-talk.mjs";
 import { assignTick, overloaded } from "./fleet-assign.mjs";
 import { readOpenAssignments, freeIssues, fleetPath, validateFleet, saveFleet } from "./fleet.mjs";
 import { createPairing } from "./fleet-pair.mjs";
-import { effectiveFleet, readDiscovered, startDiscovery } from "./fleet-discover.mjs";
+import { effectiveFleet, pruneDiscovered, startDiscovery } from "./fleet-discover.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { githubFallback, postGithubMessage, readGithub, receiveMessage, validBranch, validHead, validWork } from "./fleet-github.mjs";
@@ -196,8 +196,8 @@ const loadRounds = new Map();
 
 export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, os: host = os, clock = Date.now, fetch = nodeFetch, signal }) {
   const previous = loadRounds.get(root);
-  const { cpu, mem, sample } = sampleLoad({ os: host, previous: previous?.sample });
-  const load = { cpu, mem, rtt: previous?.rtt ?? null };
+  const { cpu, mem, sample, observed } = sampleLoad({ os: host, previous: previous?.sample, previousLoad: previous?.load, clock });
+  const load = { cpu, mem, rtt: previous?.load.rtt ?? null, observed };
   const durations = [];
   // No snapshot survives a network await: confirmation may rebuild assignments during a send.
   const bodyFor = id => {
@@ -230,11 +230,12 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
   durations.sort((a, b) => a - b);
   const middle = Math.floor(durations.length / 2);
   const rtt = durations.length ? (durations.length % 2 ? durations[middle] : (durations[middle - 1] + durations[middle]) / 2) : null;
-  loadRounds.set(root, { sample, rtt });
+  const latestLoad = { ...load, rtt: rtt ?? load.rtt, observed: { ...observed, ...(rtt === null ? {} : { rtt: clock() }) } };
+  loadRounds.set(root, { sample, load: latestLoad });
   const latest = bodyFor(fleet.self);
   if (latest.leader) {
     const peers = readState(root, "peers");
-    peers[fleet.self] = { time: clock(), ...latest, load: { cpu, mem, rtt } };
+    peers[fleet.self] = { time: clock(), ...latest, load: latestLoad };
     writeState(root, "peers", peers);
   }
 }
@@ -252,15 +253,17 @@ function localNode(fleet) {
   if (!node?.address) throw new Error(`fleet address is required for ${fleet.self}`);
   return node;
 }
-async function healthy(node, instance, fetch, timeout) {
-  if (typeof instance !== "string" || !instance) return false;
+async function probeHealth(node, instance, fetch, timeout) {
+  if (!node?.address || typeof instance !== "string" || !instance) return "unreachable";
   try {
     const response = await fetch(`${endpoint(node)}/health`, { signal: AbortSignal.timeout(Math.max(1, timeout)) });
-    if (response.status !== 200) return false;
+    if (response.status !== 200) return "unreachable";
     const health = await response.json();
-    return health.ok === true && health.instance === instance;
-  } catch { return false; }
+    if (health?.ok !== true || typeof health.instance !== "string" || !health.instance) return "unreachable";
+    return health.instance === instance ? "healthy" : "mismatch";
+  } catch { return "unreachable"; }
 }
+const healthy = async (...args) => await probeHealth(...args) === "healthy";
 
 export async function startNode({ root = process.cwd(), fleet, leader = false, spawn = spawnProcess,
   kill = process.kill, clock = Date.now, fetch = nodeFetch, sleep = sleepFor, env = process.env }) {
@@ -323,24 +326,32 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
     return `node=stopped leader=unknown peers=0/${fleet.nodes.filter(node => node.id !== fleet.self).length}`;
   }
   const record = readState(root, "node");
-  let status = "stopped";
-  if (Number.isSafeInteger(record.pid) && record.pid > 0) {
+  let status = "stopped", health;
+  if (isLive(record.pid, kill)) {
     const self = fleet.nodes.find(node => node.id === fleet.self);
-    status = self?.address && await healthy(self, record.instance, fetch, 1000)
-      ? (isLive(record.pid, kill) ? "running" : "stopped") : "stale";
+    health = await probeHealth(self, record.instance, fetch, 1000);
+    status = isLive(record.pid, kill) ? (health === "mismatch" ? "stale" : "running") : "stopped";
+    if (status === "stopped") health = undefined;
   }
   const running = status === "running";
   const time = clock(), peers = readState(root, "peers");
   const others = fleet.nodes.filter(node => node.id !== fleet.self);
-  const recent = others.filter(node => Number.isFinite(peers[node.id]?.time) && time - peers[node.id].time >= 0 && time - peers[node.id].time <= 90_000);
-  const leader = running && record.leader ? fleet.self : recent.find(node => peers[node.id].leader === true && (peers[node.id].term ?? 1) >= highestTerm(root))?.id ?? "unknown";
+  const recent = others.filter(node => livePeer(peers[node.id], time));
+  const leader = running && savedRole(root).leader ? fleet.self : recent.find(node => peers[node.id].leader === true && (peers[node.id].term ?? 1) >= highestTerm(root))?.id ?? "unknown";
   const proposal = readState(root, "proposal");
-  const loads = recent.map(node => {
-    const load = peers[node.id].load;
-    const percent = value => value == null ? "-" : `${Math.round(value * 100)}%`;
-    return `\nload ${node.id} cpu=${percent(load?.cpu)} mem=${percent(load?.mem)} rtt=${load?.rtt == null ? "-" : `${load.rtt}ms`}${overloaded(load).length ? " overloaded" : ""}`;
+  const loads = others.filter(node => recent.includes(node) || (Number.isFinite(peers[node.id]?.time) && time >= peers[node.id].time)).map(node => {
+    const peer = peers[node.id], load = peer.load, silent = !recent.includes(node);
+    const values = metrics.map(key => {
+      const value = load?.[key];
+      if (value == null) return `${key}=-`;
+      const formatted = key === "rtt" ? `${value}ms` : `${Math.round(value * 100)}%`;
+      return `${key}=${formatted}${metricFresh(load, key, time, peer.time) ? "" : "(cached)"}`;
+    }).join(" ");
+    const ages = load?.observed ? metrics.filter(key => load[key] != null).map(key =>
+      ` ${key}-age=${Math.max(0, Math.floor((time - metricTime(load, key, peer.time)) / 1000))}s`).join("") : "";
+    return `\n${silent ? `peer ${node.id} state=silent last-heartbeat=${Math.floor((time - peer.time) / 1000)}s` : `load ${node.id}`} ${values}${ages}${!silent && overloaded(freshLoad(load, time, peer.time)).length ? " overloaded" : ""}`;
   }).join("");
-  return `node=${status} leader=${leader} peers=${recent.length}/${others.length}` + loads +
+  return `node=${status}${health === "unreachable" ? " health=unreachable" : ""} leader=${leader} peers=${recent.length}/${others.length}` + loads +
     (proposal.id && validTerm(proposal.term) ? `\nproposed Leader ${proposal.id} term ${proposal.term}: run npx architecture-harness fleet confirm-leader` : "");
 }
 
@@ -390,7 +401,8 @@ async function assignWork({ root, fleet, repo, kit, term, clock, gh, git, holdLa
   const rows = JSON.parse(gh(["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", repo], { cwd: root }));
   if (!Array.isArray(rows) || !rows.every(row => Number.isSafeInteger(row?.number) && row.number > 0)) throw new Error("gh issue list returned no readable list");
   const result = assignTick({ fleet, repo, kit, now: clock(), free, open: new Set(rows.map(row => row.number)),
-    assignments: readState(root, "assignments"), peers: readState(root, "peers") });
+    assignments: readState(root, "assignments"), peers: Object.fromEntries(Object.entries(readState(root, "peers"))
+      .map(([id, peer]) => [id, { ...peer, load: freshLoad(peer.load, clock(), peer.time) }])) });
   writeState(root, "assignments", result.assignments);
   const outbox = readState(root, "outbox");
   const pending = result.messages.filter(({ node, body }) => !outbox.some(entry => entry.node === node &&
@@ -520,7 +532,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       fleet.secret = currentFile.secret;
       fleet.key = currentFile.key;
     } catch (error) { if (error.code !== "ENOENT") throw error; }
-    const current = effectiveFleet(configured, readDiscovered(root, configured.secret), clock(), interfaces);
+    const current = effectiveFleet(configured, pruneDiscovered(root, configured.secret, clock()), clock(), interfaces);
     fleet.nodes = current.nodes;
     fleet.leaders = current.leaders;
   };
