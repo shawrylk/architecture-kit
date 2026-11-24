@@ -289,6 +289,7 @@ They also deny `Read` of every file in `~/.ssh`.
 `.env.example` stays readable. Shell reads still need the operating system sandbox.
 The `statusLine.command` stays `node "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/statusline.js"`.
 The status line needs a Nerd Font for its powerline glyphs.
+The fleet segment shows the configured fleet name after git, with `leader` for a live leader or `off` when no live node runs in the checkout.
 
 Codex shares `approval_policy`, `default_permissions`, `model`, `model_reasoning_effort`, `model_auto_compact_token_limit`, `model_post_turn_compact_threshold_percent`, and `service_tier`.
 It also shares `enabled` in each listed `[plugins."<name>"]` table.
