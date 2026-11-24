@@ -42,10 +42,43 @@ test("reads only the three literal forms", () => {
   }
 });
 
-test("an incomplete scan passes without partial commands", () => {
+test("a malformed form preserves commands before and after it", () => {
+  assert.deepEqual(replCommands('$`git commit --no-verify`; // $("unterminated'),
+    ["git commit --no-verify"]);
+  assert.deepEqual(replCommands('$("bad\\xZZ"); $`git commit --no-verify`'),
+    ["git commit --no-verify"]);
+  assert.deepEqual(replCommands('tools.Bash({ command: "unterminated }); $`git commit --no-verify`'),
+    ["git commit --no-verify"]);
+});
+
+test("tools.Bash skips comments while scanning properties", () => {
+  assert.deepEqual(replCommands('tools.Bash({ /* ignored, command: "fake" */ command: "git commit --no-verify" })'),
+    ["git commit --no-verify"]);
+  assert.deepEqual(replCommands('tools.Bash({ timeout: 1000, // ignored, command: "fake"\n command /* key */ : /* value */ "git commit --no-verify" /* end */ })'),
+    ["git commit --no-verify"]);
+  assert.deepEqual(replCommands('tools.Bash({ timeout: 1000 /* comma, command: "fake" */, command: "git status" })'),
+    ["git status"]);
+});
+
+test("tools.Bash reads single- and double-quoted command keys", () => {
+  for (const key of ['"command"', "'command'"]) {
+    assert.deepEqual(replCommands(`tools.Bash({ ${key}: "git commit --no-verify" })`),
+      ["git commit --no-verify"]);
+  }
+});
+
+test("tools.Bash returns every literal value of duplicate command keys", () => {
+  assert.deepEqual(replCommands('tools.Bash({ command: "git status", command: "git commit --no-verify" })'),
+    ["git status", "git commit --no-verify"]);
+  assert.deepEqual(replCommands('tools.Bash({ command: getCommand(), "command": "git status", nested: { command: "fake" }, \'command\': "git commit --no-verify" })'),
+    ["git status", "git commit --no-verify"]);
+});
+
+test("an incomplete form contributes no command", () => {
   for (const code of ['$`unterminated', '$`echo ${value`', '$("unterminated)',
-    '$`git status`; $`unterminated', 'tools.Bash({ command: "unterminated })', '$("bad\\xZZ")']) {
+    'tools.Bash({ command: "unterminated })', '$("bad\\xZZ")']) {
     assert.deepEqual(replCommands(code), [], code);
   }
+  assert.deepEqual(replCommands('$`git status`; $`unterminated'), ["git status"]);
   assert.deepEqual(replCommands(null), []);
 });

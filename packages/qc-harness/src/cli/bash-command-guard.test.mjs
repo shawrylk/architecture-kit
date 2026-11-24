@@ -492,7 +492,7 @@ test("REPL shell forms use the Bash rules and name the first refused command", (
   const ws = workspace(t);
   const repl = (code) => ({ ...bash(ws.adopted, "git status"), tool_name: "REPL", tool_input: { code } });
   for (const code of ['$`git commit --no-verify`', '$("git commit --no-verify")',
-    'tools.Bash({ command: "git commit --no-verify" })']) {
+    'tools.Bash({ command: "git commit --no-verify" })', '$`git commit --no-verify`; $`broken']) {
     const reason = reasonOf(decide(repl(code)));
     assert.match(reason ?? "", /skips the git hooks/, code);
     assert.match(reason, /git commit --no-verify/, code);
@@ -500,7 +500,7 @@ test("REPL shell forms use the Bash rules and name the first refused command", (
   const first = reasonOf(decide(repl('$`git status`; $`git commit --no-verify`; $`git push --no-verify`')));
   assert.match(first ?? "", /git commit --no-verify/);
   assert.doesNotMatch(first, /git push --no-verify/);
-  for (const code of ['const answer = 42;', '$`git status`; $("git diff")', '$`git commit --no-verify`; $`broken']) {
+  for (const code of ['const answer = 42;', '$`git status`; $("git diff")']) {
     assert.equal(decide(repl(code)), null, code);
   }
   assert.equal(decide({ ...repl(''), tool_input: { command: "git commit --no-verify" } }), null);

@@ -1257,7 +1257,8 @@ test("REPL literal commands require the same merge approval and identify the fir
   const reason = denied(decide(repl('$`git status`; $`gh pr merge 60`; $`gh pr merge 61`')));
   assert.match(reason ?? "", /gh pr merge 60/);
   assert.doesNotMatch(reason, /gh pr merge 61/);
-  for (const code of ['const answer = 42;', '$`git status`; $("gh pr view 60")', '$`gh pr merge 60`; $`broken']) {
+  assert.match(denied(decide(repl('$`gh pr merge 60`; $`broken'))) ?? "", /gh pr merge 60/);
+  for (const code of ['const answer = 42;', '$`git status`; $("gh pr view 60")']) {
     assert.equal(decide(repl(code)), null, code);
   }
   assert.equal(decide({ ...repl(''), tool_input: { command: "gh pr merge 60" } }), null);
