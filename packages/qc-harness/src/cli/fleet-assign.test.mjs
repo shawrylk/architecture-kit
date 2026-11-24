@@ -41,7 +41,8 @@ test("liveness expires at the 90 second boundary; self is always live; drift war
     const result = assignTick({ ...base, fleet: { self: "a", nodes: [node("a", { maxSize: "S" }), node("b", extra)] },
       open: new Set([1]), free: [row(1)], peers: peer ? { b: peer } : {} });
     assert.equal(Boolean(result.assignments["o/r#1"]), expected);
-    assert.deepEqual(result.warnings, peer?.kit === "old" ? ["node b runs kit old, leader runs kit"] : []);
+    assert.deepEqual(result.warnings, []);
+    assert.deepEqual(result.kitMismatches, peer?.kit === "old" ? [{ node: "b", peerKit: "old", leaderKit: "kit" }] : []);
     const repeat = assignTick({ ...base, fleet: { ...base.fleet, nodes: [node("a"), node("b", extra)] },
       assignments: { "o/r#1": saved(1) }, free: [], peers: peer ? { b: peer } : {} });
     assert.deepEqual(repeat.messages, expected || peer?.kit === "old"
@@ -133,5 +134,40 @@ test("overloaded peers and Leader get no new work or takeover and keep held work
     assert.deepEqual(assignTick({ ...input, assignments: held }).assignments, held);
     const dead = { "o/r#1": saved(1, "dead") };
     assert.deepEqual(assignTick({ ...input, assignments: dead }).assignments, dead);
+  }
+});
+
+
+const remoteOnly = (kit, peerKit) => ({ ...base, kit, free: [row(1)], open: new Set([1]),
+  fleet: { self: "a", nodes: [node("a", { maxSize: "S" }), node("b")] }, peers: { b: { time: now, kit: peerKit } } });
+
+test("npm and checkout identities of the same release allow remote assignment", () => {
+  for (const kit of ["architecture-harness@0.29.0", "architecture-harness@0.30.0-rc.1+build.2"]) {
+    const result = assignTick(remoteOnly(kit, kit));
+    assert.equal(result.assignments["o/r#1"].node, "b");
+    assert.deepEqual(result.kitMismatches, []);
+  }
+});
+
+test("different releases and unknown identities block new work", () => {
+  for (const [kit, peerKit] of [["architecture-harness@0.29.0", "architecture-harness@0.28.0"],
+    ["architecture-harness@0.29.0", "a".repeat(40)], [null, null], ["", ""], [undefined, undefined],
+    [null, "kit"], ["kit", null], ["kit", ""], ["", "kit"], [42, 42]]) {
+    assert.deepEqual(assignTick(remoteOnly(kit, peerKit)).assignments, {});
+  }
+});
+
+test("equal legacy SHAs remain compatible", () => {
+  const sha = "a".repeat(40);
+  assert.equal(assignTick(remoteOnly(sha, sha)).assignments["o/r#1"].node, "b");
+});
+
+test("repeated mismatches still block assignment and return structured details", () => {
+  for (let i = 0; i < 3; i++) {
+    const result = assignTick(remoteOnly("architecture-harness@0.29.0", "old"));
+    assert.deepEqual(result.assignments, {});
+    assert.deepEqual(result.messages, []);
+    assert.deepEqual(result.kitMismatches, [{ node: "b", peerKit: "old", leaderKit: "architecture-harness@0.29.0" }]);
+    assert.deepEqual(result.warnings, []);
   }
 });
