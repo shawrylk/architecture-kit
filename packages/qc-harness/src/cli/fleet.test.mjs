@@ -683,6 +683,21 @@ test("kit identity comes from module package metadata without git, including ins
   }
 });
 
+test("start rejects invalid installed package metadata before spawning a child", async t => {
+  const { f, installed, moduleUrl } = installedKitFixture(t);
+  assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]).code, 0);
+  const { runFleet: runInstalledFleet } = await import(moduleUrl.href);
+  writeFileSync(path.join(installed, "package.json"), JSON.stringify({ name: "consumer", version: "99.0.0", type: "module" }));
+  let spawns = 0;
+  const errors = [];
+  const code = await runInstalledFleet(["start"], { cwd: f.cwd, env: f.env,
+    warn: message => errors.push(message),
+    node: { spawn: () => { spawns++; throw new Error("unexpected child spawn"); } } });
+  assert.equal(code, 1);
+  assert.deepEqual(errors, ["cannot read fleet kit identity: expected architecture-harness package metadata with a nonempty version"]);
+  assert.equal(spawns, 0);
+});
+
 test("kit identity rejects missing, unreadable or invalid package metadata", t => {
   const f = fixture(t), metadata = path.join(f.cwd, "package.json");
   assert.throws(() => kitIdentity(metadata), /kit identity.*ENOENT/i);

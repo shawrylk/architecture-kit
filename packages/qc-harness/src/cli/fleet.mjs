@@ -359,8 +359,8 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
 
 async function runNodeVerb(options, { root, fleet, configuredFleet, env, gh, git, origin, say, warn, node }) {
   const deps = { gh, git, ...node, root, fleet, configuredFleet, env, fleetFile: fleetPath(env), leader: options["--leader"] === true };
+  const kit = ["start", "serve"].includes(options.verb) ? kitIdentity() : null;
   if (options.verb === "serve") {
-    const kit = kitIdentity();
     const holdLabel = load(checkoutRootOf(root) ?? root).merge.holdLabel;
     const server = await serveNode({ ...deps, holdLabel, repo: origin(root) ?? "qc/fleet", kit, warn });
     return new Promise(resolve => server.once("close", () => resolve(0)));

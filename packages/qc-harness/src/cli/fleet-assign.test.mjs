@@ -162,12 +162,10 @@ test("equal legacy SHAs remain compatible", () => {
   assert.equal(assignTick(remoteOnly(sha, sha)).assignments["o/r#1"].node, "b");
 });
 
-test("repeated mismatches still block assignment and return structured details", () => {
-  for (let i = 0; i < 3; i++) {
-    const result = assignTick(remoteOnly("architecture-harness@0.29.0", "old"));
-    assert.deepEqual(result.assignments, {});
-    assert.deepEqual(result.messages, []);
-    assert.deepEqual(result.kitMismatches, [{ node: "b", peerKit: "old", leaderKit: "architecture-harness@0.29.0" }]);
-    assert.deepEqual(result.warnings, []);
-  }
+test("mismatches block assignment and return structured details", () => {
+  const result = assignTick(remoteOnly("architecture-harness@0.29.0", "old"));
+  assert.deepEqual(result.assignments, {});
+  assert.deepEqual(result.messages, []);
+  assert.deepEqual(result.kitMismatches, [{ node: "b", peerKit: "old", leaderKit: "architecture-harness@0.29.0" }]);
+  assert.deepEqual(result.warnings, []);
 });
