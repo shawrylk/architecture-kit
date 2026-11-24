@@ -4,6 +4,7 @@ import { hostOS } from "./legs.mjs";
 import { platformTick } from "./fleet-platform.mjs";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
+import { createServer as createProbeServer } from "node:net";
 import { spawn as spawnProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -62,10 +63,14 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
   if (["0.0.0.0", "[::]", "[::ffff:0:0]"].includes(normalized)) throw new Error("fleet address must name one interface");
   pairing ??= fleet.key ? createPairing({ root, fleet, clock, address }) : undefined;
   const wildcardPairing = fleet.discover && Boolean(pairing) && !address.includes(":");
-  if (wildcardPairing && !Object.values(os.networkInterfaces()).flat().some(entry => entry?.address === address)) {
-    const port = listen.port ?? self.port ?? 8080;
-    throw Object.assign(new Error(`listen EADDRNOTAVAIL: address not available ${address}:${port}`), {
-      code: "EADDRNOTAVAIL", syscall: "listen", address, port,
+  if (wildcardPairing) {
+    // The OS can bind addresses (such as loopback aliases) absent from its interface list.
+    await new Promise((resolve, reject) => {
+      const probe = createProbeServer();
+      probe.once("error", reject);
+      probe.listen({ host: address, port: 0 }, () => {
+        probe.close(error => error ? reject(error) : resolve());
+      });
     });
   }
   const server = createServer((req, res) => {
