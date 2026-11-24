@@ -488,3 +488,29 @@ test("status prints the pending Leader proposal", async t => {
   assert.equal(result.code, 0);
   assert.ok(result.lines.includes("proposed Leader b2 term 2: run qc fleet confirm-leader"));
 });
+
+
+test("pushed requires owns and strict branch/head and sends the held epoch to the Leader", async t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L", "--addresses", "a1@localhost:8080,b2@localhost:8081"]);
+  const head = "b".repeat(40), sent = [];
+  const deps = { origin: () => "o/r", gh: () => { throw new Error("pushed needs no gh"); }, node: {
+    fetch: async (url, options) => { sent.push({ url, message: JSON.parse(options.body) }); return { status: 202 }; }
+  } };
+  const args = ["pushed", "7", "--branch", "feat/7", "--head", head];
+  assert.equal((await f.run(args, deps)).code, 1);
+  writeState(f.cwd, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a1", epoch: 2 } });
+  assert.equal((await f.run(args, deps)).code, 1);
+  writeState(f.cwd, "peers", { b2: { time: 1, leader: true, assigned: [{ repo: "o/r", issue: 7, epoch: 1 }] } });
+  assert.equal((await f.run(args, deps)).code, 1);
+  writeState(f.cwd, "peers", { b2: { time: 2, leader: true, assigned: [{ repo: "o/r", issue: 7, epoch: 2 }] } });
+  for (const invalid of [["pushed", "7"], ["pushed", "7", "--branch", "bad;branch", "--head", head],
+    ["pushed", "7", "--branch", "feat/7", "--head", "bad"], ["pushed", "7", "--branch", "feat/7"]]) {
+    assert.equal((await f.run(invalid, deps)).code, 1);
+  }
+  assert.equal(sent.length, 0);
+  assert.equal((await f.run(args, deps)).code, 0);
+  assert.equal(sent[0].url, "http://localhost:8081/message");
+  assert.equal(sent[0].message.kind, "pushed");
+  assert.deepEqual(sent[0].message.body, { issue: 7, epoch: 2, branch: "feat/7", head });
+});

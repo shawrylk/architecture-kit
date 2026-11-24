@@ -1,3 +1,5 @@
+import { hostOS } from "./legs.mjs";
+import { platformTick } from "./fleet-platform.mjs";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
 import { spawn as spawnProcess } from "node:child_process";
@@ -191,7 +193,7 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
       return { repo: row.repo, issue: row.issue, epoch: row.epoch, step: current.step ?? null,
         branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
     });
-    return { kit, ...role, work, ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
+    return { kit, os: hostOS(), ...role, work, ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
       .map(({ repo, issue, epoch }) => ({ repo, issue, epoch })) } : {}) };
   };
   const local = bodyFor(fleet.self);
@@ -472,7 +474,7 @@ export function confirmLeader({ root, fleet, clock = Date.now }) {
 
 /** One serial tick avoids overlapping network retries and heartbeats. */
 export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now,
-  fetch = nodeFetch, gh = runGh, git, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
+  fetch = nodeFetch, gh = runGh, git, platform = {}, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
   const server = await createNodeServer({ root, fleet, clock, listen, instance });
   const sends = new AbortController();
@@ -505,6 +507,8 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       leader = savedRole(root).leader;
       receiveAssignments(root, fleet, clock(), leader);
       receiveTalk(root, fleet, leader, clock());
+      void platformTick({ ...platform, root, fleet, clock, gh, fetch, signal: sends.signal, warn })
+        .catch(error => warn(`fleet platform: ${error.message}`));
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
         allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) });
       if (!closing && clock() >= nextAssign) {

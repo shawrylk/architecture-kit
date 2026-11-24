@@ -9,12 +9,13 @@ import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
+import { sendPushed, validPlatformBranch } from "./fleet-platform.mjs";
 import { TALK_VERBS, parseTalkArgs, runTalk } from "./fleet-talk.mjs";
 import { highestTerm, latestLeader, readState, writeState } from "./fleet-state.mjs";
 import { confirmLeader, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue>";
+const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -133,9 +134,9 @@ export function freeIssues(repo, cwd, { gh = runGh, git = gitOut, holdLabel = "h
 function parseArgs(argv) {
   const [verb, ...args] = argv;
   if (TALK_VERBS.includes(verb)) return parseTalkArgs(verb, args);
-  const hasIssue = ["progress", "owns"].includes(verb);
+  const hasIssue = ["progress", "owns", "pushed"].includes(verb);
   const rest = hasIssue ? args.slice(1) : args;
-  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns", "confirm-leader"].includes(verb) ? [] : null;
+  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "pushed" ? ["--branch", "--head"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns", "confirm-leader"].includes(verb) ? [] : null;
   if (!allowed) throw new Error(USAGE);
   const options = { verb };
   if (hasIssue) {
@@ -153,6 +154,7 @@ function parseArgs(argv) {
     }
   }
   if (options["--repo"] && !/^[a-z0-9][a-z0-9-]*\/[a-z0-9_.-]+$/i.test(options["--repo"])) throw new Error("--repo needs owner/repository");
+  if (verb === "pushed" && (!validPlatformBranch(options["--branch"]) || !/^[0-9a-f]{40}$/i.test(options["--head"] ?? ""))) throw new Error("pushed needs --branch and a 40-character --head");
   if (verb === "progress") {
     if (!["plan", "code", "review", "merge"].includes(options["--step"])) throw new Error("--step needs plan, code, review or merge");
     if (options["--head"] !== undefined && !/^[0-9a-f]{40}$/i.test(options["--head"])) throw new Error("--head needs a 40-character SHA");
@@ -229,16 +231,18 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
       return runTalk(options, { root: cwd, fleet, repo, gh, say, node }).catch(error => { warn(error.message); return 1; });
     }
     const checkout = checkoutRootOf(cwd);
-    if (["progress", "owns"].includes(options.verb)) {
+    if (["progress", "owns", "pushed"].includes(options.verb)) {
       if (!checkout) throw new Error("fleet work needs a git checkout");
       const key = `${repo}#${options.issue}`, row = readState(checkout, "assignments")[key];
       if (!row || row.node !== fleet.self) throw new Error(`no own assignment for #${options.issue}`);
-      if (options.verb === "owns") {
+      if (["owns", "pushed"].includes(options.verb)) {
         const leader = latestLeader(readState(checkout, "peers"), highestTerm(checkout));
         if (!leader) throw new Error("no Leader heartbeat yet");
         const listed = leader.assigned?.find(item => item.repo === repo && item.issue === options.issue);
         if (!listed) throw new Error(`Leader does not list an assignment for #${options.issue}`);
         if (listed.epoch !== row.epoch) throw new Error(`#${options.issue} epoch ${row.epoch} differs from Leader epoch ${listed.epoch}`);
+        if (options.verb === "pushed") return sendPushed({ root: checkout, fleet, repo, issue: options.issue, epoch: row.epoch,
+          branch: options["--branch"], head: options["--head"], node, say }).catch(error => { warn(error.message); return 1; });
         return 0;
       }
       const work = readState(checkout, "work"), saved = work[key]?.epoch === row.epoch ? work[key] : {};

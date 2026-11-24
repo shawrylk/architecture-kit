@@ -23,8 +23,8 @@ export function legRecords(root) {
 
 export function appendLeg(root, record) {
   if (record.type !== undefined && !["leg", "leg-preview"].includes(record.type)) throw new Error("invalid platform leg type");
-  if (!["linux", "windows"].includes(record.os)) throw new Error("unknown platform for leg");
-  if (!record.head || !["local", "preview"].includes(record.source)) throw new Error("invalid platform leg");
+  if (!["linux", "windows", "darwin"].includes(record.os)) throw new Error("unknown platform for leg");
+  if (!record.head || !["local", "preview", "fleet"].includes(record.source)) throw new Error("invalid platform leg");
   const file = ledgerFileOf(root);
   if (!file) throw new Error("platform legs need a git worktree");
   mkdirSync(path.dirname(file), { recursive: true });
@@ -35,7 +35,7 @@ export function appendLeg(root, record) {
 export function readyProblems(root, head) {
   const config = load(root);
   const hits = platformRisk(root, config.check.base, head);
-  const passed = new Set(legRecords(root).filter((record) => record.type === "leg" && record.head === head && ["linux", "windows"].includes(record.os) && ["local", "preview"].includes(record.source)).map((record) => record.os));
+  const passed = new Set(legRecords(root).filter((record) => record.type === "leg" && record.head === head && ["linux", "windows", "darwin"].includes(record.os) && ["local", "preview", "fleet"].includes(record.source)).map((record) => record.os));
   const missing = hits.length > 0 || passed.size === 0 ? config.ready.platforms.filter((os) => !passed.has(os)) : [];
   return { missing, hits };
 }

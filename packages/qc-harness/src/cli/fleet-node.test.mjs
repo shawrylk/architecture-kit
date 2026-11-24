@@ -13,6 +13,7 @@ import { createNodeServer, sendMessage, flushOutbox, heartbeat, startNode, stopN
 import { runFleet } from "./fleet.mjs";
 import { assignTick } from "./fleet-assign.mjs";
 
+const host = process.platform === "win32" ? "windows" : process.platform;
 const apiResponse = args => JSON.stringify(args[1] === "user" ? { login: "me" } : []);
 const secret = "ab".repeat(32);
 const now = Date.parse("2026-11-24T00:00:00Z");
@@ -119,13 +120,14 @@ test("heartbeat targets only other active addressed nodes and records receipt ti
   assert.equal(received.length, 1);
   assert.equal(received[0].url, "http://127.0.0.1:8081/message");
   assert.equal(received[0].message.kind, "heartbeat");
-  assert.deepEqual(received[0].message.body, { kit: "commit", term: 1, leader: true, work: [], assigned: [] });
+  assert.equal(received[0].message.body.os, process.platform === "win32" ? "windows" : process.platform);
+  assert.deepEqual(received[0].message.body, { kit: "commit", os: process.platform === "win32" ? "windows" : process.platform, term: 1, leader: true, work: [], assigned: [] });
   const server = await createNodeServer({ root, fleet, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
   const beat = message({ kind: "heartbeat", body: { kit: null, term: 1, leader: false } });
   assert.equal((await post(beat)).status, 202);
-  assert.deepEqual(readState(root, "peers"), { a: { time: now, kit: "commit", term: 1, leader: true, work: [], assigned: [] }, b: { time: now, messageTime: beat.time, kit: null, term: 1, leader: false } });
+  assert.deepEqual(readState(root, "peers"), { a: { time: now, os: host, kit: "commit", term: 1, leader: true, work: [], assigned: [] }, b: { time: now, messageTime: beat.time, kit: null, term: 1, leader: false } });
   assert.equal((await post(message({ kind: "heartbeat", body: { leader: "yes" } }))).status, 400);
   assert.deepEqual(readState(root, "queue"), []);
 });
@@ -355,7 +357,7 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   time += 1000;
   await timers[0].fn();
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0].body, { kit: null, term: 1, leader: true, work: [], assigned: [] });
+  assert.deepEqual(sent[0].body, { os: host, kit: null, term: 1, leader: true, work: [], assigned: [] });
   assert.equal(readState(root, "node").leader, true);
   const closed = new Promise(resolve => server.once("close", resolve));
   signals.get("SIGTERM")();
@@ -711,19 +713,19 @@ test("heartbeats carry own work, per-recipient Leader assignments, and replace p
   const fetcher = async (_url, options) => { received.push(JSON.parse(options.body)); return { status: 202 }; };
   await heartbeat({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => now, fetch: fetcher });
   assert.deepEqual(received.map(row => row.body), [
-    { kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 2, epoch: 1 }] },
-    { kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 3, epoch: 1 }] },
+    { os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 2, epoch: 1 }] },
+    { os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 3, epoch: 1 }] },
   ]);
   received.length = 0;
   writeState(root, "assignments", { "o/r#1": held(1, "a", 2) });
   await heartbeat({ root, fleet: nodes, repo: "o/r", clock: () => now, fetch: fetcher });
-  assert.deepEqual(received[0].body, { kit: null, term: 1, leader: false, work: [{ repo: "o/r", issue: 1, epoch: 2, step: null, branch: null, head: null }] });
+  assert.deepEqual(received[0].body, { os: host, kit: null, term: 1, leader: false, work: [{ repo: "o/r", issue: 1, epoch: 2, step: null, branch: null, head: null }] });
   const server = await createNodeServer({ root, fleet: nodes, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   let sentTime = now;
   const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST",
     body: JSON.stringify(message({ kind: "heartbeat", body, time: new Date(sentTime++).toISOString() })) });
-  const body = { kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 1, epoch: 2 }] };
+  const body = { os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 1, epoch: 2 }] };
   assert.equal((await post(body)).status, 202);
   assert.deepEqual(readState(root, "peers").b, { time: now, messageTime: new Date(now).toISOString(), ...body });
   assert.equal((await post({ ...body, work: [], assigned: [] })).status, 202);
@@ -1003,7 +1005,7 @@ test("promotion during the heartbeat send to A gives C the rebuilt assignment at
   } });
   assert.equal(sent.length, 2);
   assert.equal(sent[1].url, "http://127.0.0.1:18082/message");
-  assert.deepEqual(sent[1].body, { kit: null, leader: true, term: 2, work: [],
+  assert.deepEqual(sent[1].body, { os: host, kit: null, leader: true, term: 2, work: [],
     assigned: [{ repo: "o/r", issue: 7, epoch: 3 }] });
 });
 
@@ -1207,8 +1209,8 @@ test("node ticks poll GitHub every 120 seconds and receive authenticated work th
   let tick, time = now;
   writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a", epoch: 1 } });
   const { roleComment } = await import("./role-line.mjs");
-  const incoming = message({ kind: "pushed", body: { issue: 7 } });
-  const body = roleComment({ role: "coder", node: "b", kind: "pushed", ref: "#7", summary: "pushed for #7",
+  const incoming = message({ kind: "verdict", body: { issue: 7 } });
+  const body = roleComment({ role: "coder", node: "b", kind: "verdict", ref: "#7", summary: "verdict for #7",
     body: `<!-- qc:msg to=a ${Buffer.from(JSON.stringify(incoming)).toString("base64url")} -->` }, { secret });
   const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
     timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, fetch: async () => ({ status: 202 }),
@@ -1248,4 +1250,33 @@ test("node tick supplies the Leader role to GitHub fallback and keeps polling af
   assert.equal(reads, 1);
   time += 120_000; await tick();
   assert.equal(reads, 2);
+});
+
+
+test("platform child checks leave serve ticks free to heartbeat and retain the peer OS", async t => {
+  const root = fixture(t), sent = [];
+  let tick, time = now, release, started;
+  const waiting = new Promise(resolve => { release = resolve; });
+  const running = new Promise(resolve => { started = resolve; });
+  writeState(root, "peers", { b: { time, term: 1, leader: true, os: "windows" } });
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, gh: apiResponse,
+    fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); return { status: 202 }; },
+    platform: { git: async () => {}, check: async () => { started(); await waiting; return { ok: true, tail: "done" }; } } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const incoming = message({ kind: "platform-check", body: { issue: 7, epoch: 1, branch: "feat/7", head: "a".repeat(40), pusher: "b" } });
+  await fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(incoming) });
+  await tick();
+  // If serve does not dispatch to the injected runner this assertion fails without hanging.
+  await Promise.race([running, new Promise((_, reject) => setTimeout(() => reject(new Error("platform runner not started")), 1000))]);
+  time += 30_000;
+  await tick();
+  assert.equal(sent.filter(row => row.kind === "heartbeat").length, 1);
+  assert.equal(sent.filter(row => row.kind === "platform-result").length, 0);
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent.filter(row => row.kind === "platform-result").length, 1);
+  const beat = message({ kind: "heartbeat", time: new Date(time).toISOString(), body: { kit: null, term: 1, leader: true, os: "windows" } });
+  await fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(beat) });
+  assert.equal(readState(root, "peers").b.os, "windows");
 });

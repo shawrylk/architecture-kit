@@ -797,8 +797,8 @@ export function load(root = process.cwd()) {
   }
   if (typeof review !== "boolean") throw new TypeError("integrate.review must be a boolean");
   if (!isPlainObject(config.ready) || !Array.isArray(config.ready.platforms) || config.ready.platforms.length === 0 ||
-      config.ready.platforms.some((os) => !["linux", "windows"].includes(os)) || new Set(config.ready.platforms).size !== config.ready.platforms.length) {
-    throw new TypeError("ready.platforms must be a non-empty array of distinct linux and windows platforms");
+      config.ready.platforms.some((os) => !["linux", "windows", "darwin"].includes(os)) || new Set(config.ready.platforms).size !== config.ready.platforms.length) {
+    throw new TypeError("ready.platforms must be a non-empty array of distinct linux, windows and darwin platforms");
   }
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
   const { related, sincePush, e2e, commands, base } = config.check;
