@@ -556,3 +556,75 @@ test("fleet watch announces each proposed Leader term once", async t => {
   assert.equal(await runWatch(["--fleet"], { cwd: root, say: text => lines.push(text), sleep: async () => { throw new Error("proposal event missing"); } }), 0);
   assert.deepEqual(lines, ["EVENT fleet:propose-leader 2", "EVENT fleet:propose-leader 3"]);
 });
+
+for (const [kind, collection, flag, leader] of [
+  ["join-request", "requests", "allowed", true],
+  ["join-offer", "offers", "accepted", false],
+]) {
+  test(`fleet ${kind} reports each ID and code once across watcher restarts`, async t => {
+    const { readState, stateDir, writeState } = await import("./fleet-state.mjs");
+    const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-pairing-"));
+    mkdirSync(path.join(root, ".git"));
+    t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+    writeState(root, "node", { leader });
+    const time = fakeClock();
+    time.clock.now = 1_000_000;
+    const pairingFile = path.join(stateDir(root), "pairing.json");
+    const entry = { code: "012345", address: "192.0.2.1", port: 8080, hostname: "new-pc", os: "linux", seen: time.now(), [flag]: false };
+    const save = entries => writeFileSync(pairingFile, JSON.stringify({ requests: {}, offers: {}, [collection]: entries }));
+    save({ pc: entry, other: { ...entry, code: "654321", seen: time.now() - 600_000 } });
+    const deps = { cwd: root, ...time, requiredChecks: [], gh: () => { throw new Error("unexpected gh"); } };
+    const run = () => watch(["--fleet", "--max", "1"], { ...deps, time });
+    assert.deepEqual((await run()).lines, [`EVENT fleet:${kind} pc 012345`, `EVENT fleet:${kind} other 654321`]);
+    assert.equal(Object.keys(readState(root, "watched")).length, 2);
+    assert.deepEqual((await run()).lines, ["EVENT timeout"]);
+    save({ pc: { ...entry, code: "234567", seen: time.now() } });
+    assert.deepEqual((await run()).lines, [`EVENT fleet:${kind} pc 234567`]);
+    assert.equal(Object.keys(readState(root, "watched")).length, 3);
+  });
+
+  test(`fleet ${kind} ignores old, flagged, and malformed entries`, async t => {
+    const { stateDir, writeState } = await import("./fleet-state.mjs");
+    const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-pairing-ignore-"));
+    mkdirSync(path.join(root, ".git"));
+    t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+    writeState(root, "node", { leader });
+    const time = fakeClock();
+    time.clock.now = 1_000_000;
+    const entry = { code: "012345", seen: time.now(), [flag]: false };
+    writeFileSync(path.join(stateDir(root), "pairing.json"), JSON.stringify({ [collection]: {
+      old: { ...entry, seen: time.now() - 600_001 },
+      flagged: { ...entry, [flag]: true },
+      missingTime: { code: "123456" },
+      badTime: { ...entry, seen: "1000000" },
+      badCode: { ...entry, code: "12345\n" },
+      numericCode: { ...entry, code: 123456 },
+      empty: null,
+    } }));
+    const result = await watch(["--fleet", "--max", "1"], { cwd: root, time, requiredChecks: [] });
+    assert.equal(result.code, 4);
+    assert.deepEqual(result.lines, ["EVENT timeout"]);
+  });
+}
+
+test("a follower ignores Leader pairing requests", async t => {
+  const { stateDir, writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-pairing-role-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  writeState(root, "node", { leader: false });
+  writeFileSync(path.join(stateDir(root), "pairing.json"), JSON.stringify({ requests: { pc: { code: "123456", seen: 0, allowed: false } } }));
+  assert.equal((await watch(["--fleet", "--max", "1"], { cwd: root, time: fakeClock(), requiredChecks: [] })).code, 4);
+});
+
+test("the fleet command documents startup, monitoring, pairing decisions, and secret handling", () => {
+  const command = readFileSync(new URL("../../../../commands/fleet.md", import.meta.url), "utf8");
+  assert.match(command, /^---\ndescription: .+\nargument-hint: .+\n---/);
+  for (const text of ["$ARGUMENTS", "npx --yes architecture-harness fleet", "npx --yes architecture-harness watch --fleet", "Monitor", "AskUserQuestion", "fleet allow <code>", "fleet deny <code>", "fleet accept <code>", "fleet status", "--leader", "QC_FLEET_FILE"]) {
+    assert.ok(command.includes(text), text);
+  }
+  assert.match(command, /after each exit/);
+  assert.match(command, /Never print the secret/);
+  const readme = readFileSync(new URL("../../../../README.md", import.meta.url), "utf8");
+  assert.match(readme, /`\/fleet start` runs the fleet from Claude/);
+});

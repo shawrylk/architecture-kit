@@ -1,8 +1,8 @@
 // `qc watch`: block until the first event among the pull requests, Codex jobs and workflow runs it watches.
 // The wait is a shell command, so it costs no model tokens, and its exit is the event.
 
-import { readState, writeState } from "./fleet-state.mjs";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { readState, stateDir, writeState } from "./fleet-state.mjs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import path from "node:path";
 import { parseApiList, runGhResult } from "./gh-run.mjs";
 import { checkVerdict, pendingCiReason } from "./check-verdict.mjs";
@@ -143,6 +143,28 @@ function codexWatcher(file) {
   };
 }
 
+function pairingMessages(cwd, leader, at) {
+  let pairing;
+  try {
+    pairing = JSON.parse(readFileSync(path.join(stateDir(cwd), "pairing.json"), "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+  const messages = [];
+  for (const [collection, kind, flag] of [
+    [leader ? pairing.requests : {}, "join-request", "allowed"],
+    [pairing.offers, "join-offer", "accepted"],
+  ]) {
+    for (const [id, entry] of Object.entries(collection ?? {})) {
+      if (!entry || entry[flag] || !Number.isFinite(entry.seen) || at - entry.seen > 600_000 ||
+          typeof entry.code !== "string" || entry.code.length !== 6 || !/^\d{6}$/.test(entry.code)) continue;
+      messages.push({ id: JSON.stringify([kind, id, entry.code]), kind, detail: `${id} ${entry.code}` });
+    }
+  }
+  return messages;
+}
+
 /**
  * Watches one workflow on one branch. Only a run of the armed head counts: the head the branch has at each poll,
  * or the one that `@<sha>` pins. A run of an earlier head never fires.
@@ -227,9 +249,11 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
     if (parsed.fleet) {
       try {
         const watched = readState(cwd, "watched");
-        const messages = readState(cwd, "node").leader === true
+        const leader = readState(cwd, "node").leader === true;
+        const messages = leader
           ? readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind))
           : readState(cwd, "inbox");
+        messages.push(...pairingMessages(cwd, leader, now()));
         const proposal = readState(cwd, "proposal");
         if (Number.isSafeInteger(proposal.term) && proposal.term > 0) {
           messages.push({ id: `propose-leader:${proposal.term}`, kind: "propose-leader", term: proposal.term });
@@ -239,7 +263,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
           for (const message of fresh) {
             if (Object.hasOwn(watched, message.id)) continue;
             Object.defineProperty(watched, message.id, { value: true, enumerable: true, configurable: true });
-            say(`EVENT fleet:${message.kind} ${message.term ?? message.id}`);
+            say(`EVENT fleet:${message.kind} ${message.detail ?? message.term ?? message.id}`);
           }
           writeState(cwd, "watched", watched);
           return EXIT.PASSED;
