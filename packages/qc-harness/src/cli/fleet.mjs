@@ -4,13 +4,15 @@ import { closeSync, fchmodSync, mkdirSync, openSync, readFileSync, writeFileSync
 import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
+import { nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>]";
+const USAGE = "usage: qc fleet init --self <id> --nodes <id:weight:size,...> [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | start [--leader] | serve [--leader] | stop";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -112,14 +114,14 @@ export function freeIssues(repo, cwd, { gh = runGh, git = gitOut, holdLabel = "h
 
 function parseArgs(argv) {
   const [verb, ...rest] = argv;
-  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : [];
-  if (!allowed.length) throw new Error(USAGE);
+  const allowed = verb === "init" ? ["--self", "--nodes", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "stop" ? [] : null;
+  if (!allowed) throw new Error(USAGE);
   const options = { verb };
   for (let i = 0; i < rest.length; i++) {
     const flag = rest[i];
     if (!allowed.includes(flag)) throw new Error(`unknown argument ${flag}`);
     if (Object.hasOwn(options, flag)) throw new Error(`duplicate argument ${flag}`);
-    if (flag === "--force" || flag === "--all") options[flag] = true;
+    if (["--force", "--all", "--leader"].includes(flag)) options[flag] = true;
     else {
       if (!rest[i + 1] || rest[i + 1].startsWith("--")) throw new Error(`${flag} needs a value`);
       options[flag] = rest[++i];
@@ -167,8 +169,8 @@ function initialize(options, file, say) {
   return 0;
 }
 
-/** The three fleet verbs return exit codes; injected readers keep tests off the network. */
-export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = runGh, git, origin = originOf, say = console.log, warn = console.error } = {}) {
+/** Fleet verbs return exit codes; injected readers and node operations keep tests local. */
+export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = runGh, git, origin = originOf, say = console.log, warn = console.error, node = {} } = {}) {
   try {
     const options = parseArgs(argv);
     const file = fleetPath(env);
@@ -181,6 +183,9 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     let value;
     try { value = JSON.parse(text); } catch { throw new Error(`fleet file has invalid JSON: ${file}`); }
     const fleet = validateFleet(value);
+    if (["start", "stop", "serve"].includes(options.verb)) {
+      return runNodeVerb(options, { root: cwd, fleet, env, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
+    }
     const localRepo = origin(cwd);
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
@@ -200,9 +205,28 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     }
     const omitted = fleet.nodes.length > 14 ? `; ${fleet.nodes.length - 14} more nodes` : "";
     say(`taken=${taken} unassigned=${owned.filter(row => row.owner === null).length}${omitted}`);
+    say(nodeStatus({ ...node, root: cwd, fleet }));
     return 0;
   } catch (error) {
     warn(error.message);
     return 1;
   }
+}
+
+async function runNodeVerb(options, { root, fleet, env, origin, say, warn, node }) {
+  const deps = { ...node, root, fleet, env, leader: options["--leader"] === true };
+  if (options.verb === "serve") {
+    const kitRoot = fileURLToPath(new URL("../../../../", import.meta.url));
+    const kit = gitOut(kitRoot, "rev-parse", "HEAD")?.trim() || null;
+    const server = await serveNode({ ...deps, repo: origin(root) ?? "qc/fleet", kit, warn });
+    return new Promise(resolve => server.once("close", () => resolve(0)));
+  }
+  if (options.verb === "start") {
+    const result = await startNode(deps);
+    say(`fleet node ${result.already ? "already running" : "started"}: ${fleet.self}`);
+  } else {
+    const result = await stopNode(deps);
+    say(`fleet node ${result.already ? "already stopped" : "stopped"}: ${fleet.self}`);
+  }
+  return 0;
 }

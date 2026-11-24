@@ -15,9 +15,9 @@ function fixture(t) {
 test("state files default to empty, round trip, and replace atomically without temporary leftovers", t => {
   const root = fixture(t);
   assert.equal(stateDir(root), path.join(root, ".git", "qc", "fleet"));
-  const values = { assignments: { 238: "a1" }, questions: { q1: { text: "Ready?" } }, seen: { m1: 1234 }, queue: [{ id: "m1" }] };
+  const values = { assignments: { 238: "a1" }, questions: { q1: { text: "Ready?" } }, seen: { m1: 1234 }, queue: [{ id: "m1" }], outbox: [{ message: { id: "m2" } }], peers: { a1: { time: 1234, kit: null, leader: false } }, node: { pid: 123 } };
   for (const [name, value] of Object.entries(values)) {
-    const empty = name === "queue" ? [] : {};
+    const empty = ["queue", "outbox"].includes(name) ? [] : {};
     assert.deepEqual(readState(root, name), empty);
     writeState(root, name, value);
     assert.deepEqual(readState(root, name), value);
@@ -29,7 +29,7 @@ test("state files default to empty, round trip, and replace atomically without t
   const broken = {}; broken.cycle = broken;
   assert.throws(() => writeState(root, "queue", broken));
   assert.deepEqual(readState(root, "queue"), []);
-  assert.equal(readdirSync(stateDir(root)).length, 4);
+  assert.equal(readdirSync(stateDir(root)).length, 7);
 });
 
 test("linked worktrees share the git common directory", t => {
@@ -43,6 +43,16 @@ test("linked worktrees share the git common directory", t => {
   assert.equal(stateDir(linked), stateDir(root));
   writeState(linked, "assignments", { 238: "a1" });
   assert.deepEqual(readState(root, "assignments"), { 238: "a1" });
+});
+
+test("undefined JSON values refuse replacement and preserve the previous file", t => {
+  const root = fixture(t);
+  writeState(root, "queue", [{ id: "saved" }]);
+  for (const value of [undefined, () => {}, Symbol("value"), { toJSON: () => undefined }]) {
+    assert.throws(() => writeState(root, "queue", value), /JSON/);
+    assert.deepEqual(readState(root, "queue"), [{ id: "saved" }]);
+    assert.deepEqual(readdirSync(stateDir(root)), ["queue.json"]);
+  }
 });
 
 test("only named state files are allowed and read errors are not hidden as missing", t => {

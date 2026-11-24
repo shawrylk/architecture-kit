@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { commonDirOf } from "./ledger.mjs";
 
-const FILES = ["assignments", "questions", "seen", "queue"];
+const FILES = ["assignments", "questions", "seen", "queue", "outbox", "peers", "node"];
 
 /** State is private to git's shared directory, outside every worktree's tracked files. */
 export function stateDir(root = process.cwd()) {
@@ -23,7 +23,7 @@ export function readState(root, name) {
   try {
     return JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") return name === "queue" ? [] : {};
+    if (error.code === "ENOENT") return ["queue", "outbox"].includes(name) ? [] : {};
     throw error;
   }
 }
@@ -31,7 +31,9 @@ export function readState(root, name) {
 /** Replace one complete snapshot, using a unique temporary file in the same directory. */
 export function writeState(root, name, value) {
   const file = stateFile(root, name);
-  const data = `${JSON.stringify(value, null, 2)}\n`;
+  const serialized = JSON.stringify(value, null, 2);
+  if (serialized === undefined) throw new TypeError("fleet state value must serialize to JSON");
+  const data = `${serialized}\n`;
   mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`;
   try {
