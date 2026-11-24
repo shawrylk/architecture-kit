@@ -22,6 +22,10 @@ function fixture(t, { checkout = true, checkoutName = "project" } = {}) {
   const nodeFile = path.join(cwd, ".git", "qc", "fleet", "node.json");
   return {
     fleet, cwd, root, home,
+    pairing(value) {
+      mkdirSync(path.dirname(nodeFile), { recursive: true });
+      writeFileSync(path.join(path.dirname(nodeFile), "pairing.json"), JSON.stringify(value));
+    },
     node(value) {
       mkdirSync(path.dirname(nodeFile), { recursive: true });
       writeFileSync(nodeFile, JSON.stringify(value));
@@ -78,6 +82,78 @@ test("marks a live leader", t => {
   writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
   f.node({ pid: process.pid, leader: true });
   assert.match(f.run(), /fleet dev-1 leader /);
+});
+
+test("shows a pending join request for a fleet with a secret", t => {
+  const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1", secret: "test-secret" }));
+  f.pairing({ requests: { "dev-2": { code: "012345", seen: Date.now(), allowed: false } } });
+  assert.match(f.run(), /fleet dev-1 off join\? dev-2 012345 /);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
+  assert.doesNotMatch(f.run(), /join\?/);
+});
+
+test("shows the newest request and counts the other pending requests", t => {
+  const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1", secret: "test-secret" }));
+  f.pairing({ requests: {
+    "dev-2": { code: "123456", seen: Date.now() - 1000 },
+    "dev-3": { code: "234567", seen: Date.now() },
+  } });
+  assert.match(f.run(), /join\? dev-3 234567 \+1 /);
+});
+
+test("omits allowed join requests", t => {
+  const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1", secret: "test-secret" }));
+  f.pairing({ requests: { "dev-2": { code: "123456", seen: Date.now(), allowed: true } } });
+  assert.doesNotMatch(f.run(), /join\?/);
+});
+
+test("omits pairing entries older than ten minutes", t => {
+  const f = fixture(t);
+  for (const secret of ["test-secret", undefined]) {
+    writeFileSync(f.fleet, JSON.stringify({ self: "dev-1", secret }));
+    const entry = { code: "123456", seen: Date.now() - 600001 };
+    f.pairing({ requests: { "dev-2": entry }, offers: { "dev-3": entry } });
+    assert.doesNotMatch(f.run(), /join\?|joining/);
+  }
+});
+
+test("shows the newest pending offer for a fleet without a secret", t => {
+  const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
+  f.pairing({ offers: {
+    "dev-2": { code: "123456", seen: Date.now() - 1000, accepted: false },
+    "dev-3": { code: "012345", seen: Date.now(), accepted: false },
+  } });
+  assert.match(f.run(), /fleet dev-1 off joining dev-3 012345 /);
+  assert.doesNotMatch(f.run(), /\+1/);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1", secret: "test-secret" }));
+  assert.doesNotMatch(f.run(), /joining/);
+});
+
+test("omits accepted offers", t => {
+  const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
+  f.pairing({ offers: { "dev-2": { code: "123456", seen: Date.now(), accepted: true } } });
+  assert.doesNotMatch(f.run(), /joining/);
+});
+
+test("silently ignores missing, malformed, and invalid pairing files", t => {
+  const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1", secret: "test-secret" }));
+  assert.match(f.run(), /fleet dev-1 off /);
+  f.pairing(null);
+  const pairingFile = path.join(f.cwd, ".git", "qc", "fleet", "pairing.json");
+  for (const value of ["{", "null", "{}", '{"requests":null}', '{"requests":{"dev-2":null}}']) {
+    writeFileSync(pairingFile, value);
+    assert.match(f.run(), /fleet dev-1 off /);
+  }
+  rmSync(pairingFile);
+  mkdirSync(pairingFile);
+  assert.throws(() => readFileSync(pairingFile, "utf8"), /EISDIR|EPERM|EACCES/);
+  assert.match(f.run(), /fleet dev-1 off /);
 });
 
 test("marks a live leader in a checkout whose path contains a newline", { skip: process.platform === "win32" }, t => {
