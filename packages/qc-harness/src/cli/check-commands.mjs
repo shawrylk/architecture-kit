@@ -116,33 +116,38 @@ const inSuite = (file) => /^packages\/qc-harness\/src\/.+\.test\.mjs$/.test(file
 async function testGraph(root) {
   const allFiles = await repoFiles(root);
   const files = allFiles.filter((file) => extension.test(file));
-  const known = new Set(files), readers = new Map(), uncertainFiles = new Set();
+  const known = new Set(files), readers = new Map(), strippedReaders = new Map(), uncertainFiles = new Set();
   const testTexts = new Map();
   for (const file of files) {
     const text = readFileSync(path.join(root, file), "utf8");
     if (inSuite(file)) testTexts.set(file, text);
     let uncertain = false;
-    const add = (value) => {
+    const add = (value, certain) => {
       if (/\\|\$\{/.test(value)) { uncertain = true; return; }
       if (value.startsWith(".")) {
         const target = path.posix.normalize(path.posix.join(path.posix.dirname(file), value));
         if (!known.has(target)) uncertain = true;
-        else readers.set(target, [...(readers.get(target) ?? []), file]);
+        else {
+          readers.set(target, [...(readers.get(target) ?? []), file]);
+          if (certain) strippedReaders.set(target, [...(strippedReaders.get(target) ?? []), file]);
+        }
       } else if (!value.startsWith("node:")) uncertain = true;
     };
     // Retain original matches when comment stripping misreads regexes or nested templates.
     const stripped = text.replace(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1|\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, (token) => token.startsWith("/") ? " " : token);
+    const strings = [...stripped.matchAll(/(["'`])(?:\\[\s\S]|(?!\1)[^\\])*\1/g)];
+    const outsideString = (index) => !strings.some((match) => index >= match.index && index < match.index + match[0].length);
     for (const source of new Set([text, stripped])) {
-      for (const match of source.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2]);
+      for (const match of source.matchAll(/\b(?:import|from)\s*(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1/g)) add(match[2], source === stripped && outsideString(match.index));
       for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*/g)) {
         const literal = /^(["'`])((?:\\[\s\S]|(?!\1)[^\\\r\n])*)\1\s*(?=[,)])/.exec(source.slice(match.index + match[0].length));
-        if (literal) add(literal[2]);
+        if (literal) add(literal[2], source === stripped && outsideString(match.index));
         else uncertain = true;
       }
     }
     if (uncertain) uncertainFiles.add(file);
   }
-  return { allFiles, files, known, readers, testTexts, uncertainFiles };
+  return { allFiles, files, known, readers, strippedReaders, testTexts, uncertainFiles };
 }
 
 function coveringTests(file, { known, readers, testTexts }, namedTests) {
@@ -171,7 +176,7 @@ export async function testsCovering(root, paths) {
     const file = path.posix.normalize(entry.replace(/\\/g, "/")).replace(/\/$/, "");
     const children = graph.allFiles.filter((candidate) => file === "." || candidate.startsWith(`${file}/`));
     for (const target of children.length ? children : [file]) {
-      result.set(target, [...coveringTests(target, graph)].sort());
+      result.set(target, [...coveringTests(target, { ...graph, readers: graph.strippedReaders })].sort());
     }
   }
   return result;

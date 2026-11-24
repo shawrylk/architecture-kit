@@ -62,6 +62,22 @@ test("testsCovering finds sibling and reader-chain tests without basename-only m
   assert.deepEqual(await testsCovering(root, [`${base}/missing.mjs`]), new Map([[`${base}/missing.mjs`, []]]));
 });
 
+for (const [kind, text] of [
+  ["comment", "// import './source.mjs';"],
+  ["string", 'export const example = "import(\'./source.mjs\')";'],
+]) test(`testsCovering ignores import-looking text in a ${kind}`, async (t) => {
+  const root = fixture(t);
+  const base = "packages/qc-harness/src";
+  mkdirSync(path.join(root, base), { recursive: true });
+  writeFileSync(path.join(root, base, "source.mjs"), "export {};\n");
+  writeFileSync(path.join(root, base, "example.test.mjs"), text);
+  writeFileSync(path.join(root, base, "reader.test.mjs"), "import './source.mjs';\n");
+  git(root, "add", ".");
+  assert.deepEqual(await testsCovering(root, [`${base}/source.mjs`]), new Map([
+    [`${base}/source.mjs`, [`${base}/reader.test.mjs`]],
+  ]));
+});
+
 test("testsCovering normalizes config file and folder backslashes", async (t) => {
   const root = fixture(t);
   const source = "packages/qc-harness/src/config.mjs";
