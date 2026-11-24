@@ -405,7 +405,7 @@ function completeScout(settings, started, originalStamp, message, say) {
     if (stamp === originalStamp || statSync(settings.report).mtimeMs < started) throw new Error(`stale scout report: ${settings.report}`);
     const text = readFileSync(settings.report, "utf8");
     for (const label of ["Gap", "Plan", "Check", "Risks", "Questions"]) {
-      if (!new RegExp(`^${label}:[ \t]*\\S`, "m").test(text)) throw new Error(`scout report requires ${label}:`);
+      if (!new RegExp(`^${label}:[ \t]*(?:\\S|\\r?\\n(?:[ \t]*\\r?\\n)*[ \t]*(?:[-*]|\\d+[.)]))`, "m").test(text)) throw new Error(`scout report requires ${label}:`);
     }
     if (!/^Breaking:[ \t]*(yes|no)[ \t]*\r?$/m.test(text)) throw new Error("scout report requires Breaking: yes|no");
     return finish(say, message, 0);

@@ -1939,6 +1939,43 @@ test("scout run that commits → exit 4", async (t) => {
   }
 });
 
+test("scout report accepts Plan: followed by five numbered steps", async (t) => {
+  for (const separator of [".", ")"]) {
+    const f = scoutFixture(t);
+    const plan = `Plan:\n\n${Array.from({ length: 5 }, (_, i) => `  ${i + 1}${separator} step ${i + 1}`).join("\n")}`;
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+      writeFileSync(f.report, SCOUT_REPORT.replace("Plan: add behavior", plan));
+      writeFileSync(f.progress, DONE_MARKER);
+      return { status: 0 };
+    } }), 0);
+  }
+});
+
+test("scout report accepts Risks: followed by a bulleted list", async (t) => {
+  for (const marker of ["-", "*"]) {
+    for (const newline of ["\n", "\r\n"]) {
+      const f = scoutFixture(t);
+      const report = SCOUT_REPORT.replace("Risks: none", `Risks: \n \t\n  ${marker} regression risk\n  ${marker} mitigated by tests`).replaceAll("\n", newline);
+      assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+        writeFileSync(f.report, report);
+        writeFileSync(f.progress, DONE_MARKER);
+        return { status: 0 };
+      } }), 0);
+    }
+  }
+});
+
+test("scout report refuses Plan: followed by the next label without a list", async (t) => {
+  const f = scoutFixture(t);
+  const messages = [];
+  assert.equal(await runCodexImplement(f.argv, { say: (s) => messages.push(s), out: quiet, run: async () => {
+    writeFileSync(f.report, SCOUT_REPORT.replace("Plan: add behavior", "Plan:"));
+    writeFileSync(f.progress, DONE_MARKER);
+    return { status: 0 };
+  } }), 3);
+  assert.match(messages.join("\n"), /scout report requires Plan:/);
+});
+
 test("scout report without Breaking: → exit 3", async (t) => {
   const f = scoutFixture(t);
   const messages = [];
