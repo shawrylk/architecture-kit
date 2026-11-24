@@ -37,7 +37,7 @@ function fakeGh(issues, prs = []) {
   return (args, options) => {
     assert.ok(options.cwd);
     const expected = args[0] === "issue"
-      ? ["issue", "list", "--state", "open", "--limit", "500", "--json", "number,labels,createdAt", "--repo", "o/r"]
+      ? ["issue", "list", "--state", "open", "--limit", "500", "--json", args.includes("number") ? "number" : "number,labels,createdAt", "--repo", "o/r"]
       : ["pr", "list", "--state", "open", "--limit", "200", "--json", "number,headRefName,body", "--repo", "o/r"];
     assert.deepEqual(args, expected);
     return JSON.stringify(args[0] === "issue" ? issues : prs);
@@ -319,7 +319,7 @@ test("CLI serve runs the node loop and exits after an injected stop signal", asy
   assert.equal(signals.size, 0);
 });
 
-test("next prints this node's repo assignments before any GitHub read", t => {
+test("next prints this node's open repo assignments before free-issue reads", t => {
   const f = fixture(t);
   f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L"]);
   writeState(f.cwd, "assignments", {
@@ -327,11 +327,12 @@ test("next prints this node's repo assignments before any GitHub read", t => {
     "o/r#8": { repo: "o/r", issue: 8, node: "b2", epoch: 1, time: 1 },
     "else/r#9": { repo: "else/r", issue: 9, node: "a1", epoch: 1, time: 1 },
   });
-  const result = f.run(["next"], { origin: () => "o/r", gh: () => { throw new Error("unexpected GitHub read"); } });
+  const extra = { origin: () => "o/r", gh: fakeGh([issue(7)]) };
+  const result = f.run(["next"], extra);
   assert.deepEqual(result, { code: 0, lines: ["#7 epoch=2"], errors: [] });
   const nested = path.join(f.cwd, "nested");
   mkdirSync(nested);
-  assert.deepEqual(f.run(["next"], { cwd: nested, origin: () => "o/r" }), result);
+  assert.deepEqual(f.run(["next"], { ...extra, cwd: nested }), result);
 });
 
 
@@ -341,4 +342,29 @@ test("next retains free-issue output outside a checkout", t => {
   rmSync(path.join(f.cwd, ".git"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   assert.deepEqual(f.run(["next", "--repo", "o/r"], { origin: () => null, gh: fakeGh([issue(1)]), git: () => "" }),
     { code: 0, lines: ["1"], errors: [] });
+});
+
+test("regression: next removes closed local assignments and preserves them on an unreadable open list", t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L"]);
+  const held = {
+    "o/r#7": { repo: "o/r", issue: 7, node: "a1", epoch: 2, time: 1 },
+    "o/r#8": { repo: "o/r", issue: 8, node: "a1", epoch: 1, time: 1 },
+    "else/r#9": { repo: "else/r", issue: 9, node: "a1", epoch: 1, time: 1 },
+  };
+  writeState(f.cwd, "assignments", held);
+  const calls = [];
+  const result = f.run(["next"], { origin: () => "o/r", gh: args => { calls.push(args); return JSON.stringify([{ number: 8 }]); } });
+  assert.deepEqual(result, { code: 0, lines: ["#8 epoch=1"], errors: [] });
+  assert.deepEqual(calls, [["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", "o/r"]]);
+  assert.deepEqual(Object.keys(readState(f.cwd, "assignments")), ["o/r#8", "else/r#9"]);
+  for (const reply of [null, "bad", "{}", '[{"number":"8"}]']) {
+    const kept = readState(f.cwd, "assignments");
+    assert.deepEqual(f.run(["next"], { origin: () => "o/r", gh: () => reply }), result);
+    assert.deepEqual(readState(f.cwd, "assignments"), kept);
+  }
+  assert.deepEqual(f.run(["next"], { origin: () => "o/r", gh: () => { throw new Error("offline"); } }), result);
+  const fallback = f.run(["next"], { origin: () => "o/r", gh: fakeGh([issue(10)]), git: () => "" });
+  assert.deepEqual(fallback, { code: 0, lines: ["10"], errors: [] });
+  assert.deepEqual(Object.keys(readState(f.cwd, "assignments")), ["else/r#9"]);
 });

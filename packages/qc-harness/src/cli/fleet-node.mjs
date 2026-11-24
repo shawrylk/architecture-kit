@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { lookup } from "node:dns/promises";
 import { assignTick } from "./fleet-assign.mjs";
-import { freeIssues } from "./fleet.mjs";
+import { clearClosedAssignments, freeIssues } from "./fleet.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage, verifyMessage } from "./fleet-message.mjs";
 import { pruneSeen, readState, stateDir, writeState } from "./fleet-state.mjs";
@@ -270,10 +270,16 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
 /** Consume assignments only after checking the sender's latest leadership claim. */
 function receiveAssignments(root, fleet, now) {
   const queue = readState(root, "queue"), peers = readState(root, "peers"), assignments = readState(root, "assignments");
+  const kept = [];
   for (const message of queue) {
-    if (message.kind !== "assign" || peers[message.from]?.leader !== true) continue;
+    if (message.kind !== "assign") { kept.push(message); continue; }
     const { issue, epoch } = message.body ?? {};
     if (!Number.isSafeInteger(issue) || issue <= 0 || !Number.isSafeInteger(epoch) || epoch <= 0) continue;
+    const claim = peers[message.from]?.leader;
+    if (claim !== true) {
+      if (claim !== false && now - Date.parse(message.time) < 600_000) kept.push(message);
+      continue;
+    }
     const key = `${message.repo}#${issue}`;
     if (!assignments[key] || epoch > assignments[key].epoch) {
       assignments[key] = { repo: message.repo, issue, node: fleet.self, epoch, time: now };
@@ -281,7 +287,7 @@ function receiveAssignments(root, fleet, now) {
   }
   if (queue.some(message => message.kind === "assign")) {
     writeState(root, "assignments", assignments);
-    writeState(root, "queue", queue.filter(message => message.kind !== "assign"));
+    writeState(root, "queue", kept);
   }
 }
 
@@ -292,12 +298,11 @@ async function assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, f
   const result = assignTick({ fleet, repo, kit, now: clock(), free, open: new Set(rows.map(row => row.number)),
     assignments: readState(root, "assignments"), peers: readState(root, "peers") });
   writeState(root, "assignments", result.assignments);
+  const pending = result.messages.map(({ node, kind, body }) => ({ node, attempts: 0, nextAttempt: clock(),
+    message: unsignedFields(createMessage({ from: fleet.self, repo, kind, body, time: new Date(clock()).toISOString() }, fleet.secret)) }));
+  if (pending.length) writeState(root, "outbox", [...readState(root, "outbox"), ...pending]);
   for (const warning of result.warnings) warn(warning);
-  for (const { node, kind, body } of result.messages) {
-    if (signal.aborted) return;
-    const message = createMessage({ from: fleet.self, repo, kind, body, time: new Date(clock()).toISOString() }, fleet.secret);
-    await sendMessage({ root, fleet, node: fleet.nodes.find(peer => peer.id === node), message, clock, fetch, signal });
-  }
+  await flushOutbox({ root, fleet, clock, fetch, signal });
 }
 
 /** One serial tick avoids overlapping network retries and heartbeats. */
@@ -328,9 +333,13 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
         await heartbeat({ root, fleet, repo, kit, leader, clock, fetch, signal: sends.signal });
       }
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal });
-      if (leader && !closing && clock() >= nextAssign) {
+      if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;
-        await assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
+        if (leader) await assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
+        else {
+          const repos = new Set(Object.values(readState(root, "assignments")).filter(row => row.node === fleet.self).map(row => row.repo));
+          for (const repo of repos) clearClosedAssignments({ root, fleet, repo, gh, warn });
+        }
       }
     } catch (error) { warn(`fleet node: ${error.message}`); }
     finally { busy = false; }

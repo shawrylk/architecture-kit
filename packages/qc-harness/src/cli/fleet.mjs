@@ -9,7 +9,7 @@ import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
-import { readState } from "./fleet-state.mjs";
+import { readState, writeState } from "./fleet-state.mjs";
 import { nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
@@ -81,6 +81,25 @@ function readList(gh, args, cwd, valid) {
   try { list = JSON.parse(text); } catch { /* The error below names the failed read. */ }
   if (!Array.isArray(list) || !list.every(valid)) throw new Error(`gh ${args[0]} list returned no readable list`);
   return list;
+}
+
+/** Prune this node's closed work only after a readable open-issue list. */
+export function clearClosedAssignments({ root, fleet, repo, gh = runGh, warn = () => {} }) {
+  const assignments = readState(root, "assignments");
+  const held = Object.entries(assignments).filter(([, row]) => row.repo === repo && row.node === fleet.self);
+  if (!held.length) return [];
+  let open;
+  try {
+    open = new Set(readList(gh, ["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", repo], root,
+      row => Number.isSafeInteger(row?.number) && row.number > 0).map(row => row.number));
+  } catch (error) {
+    warn(`fleet node: ${error.message}`);
+    return held.map(([, row]) => row);
+  }
+  const closed = held.filter(([, row]) => !open.has(row.issue));
+  for (const [key] of closed) delete assignments[key];
+  if (closed.length) writeState(root, "assignments", assignments);
+  return held.filter(([, row]) => open.has(row.issue)).map(([, row]) => row);
 }
 
 /** Read free open issues and count those already taken by a PR or an origin branch. */
@@ -192,7 +211,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     if (!repo) throw new Error("--repo is required when origin has no repository");
     const checkout = checkoutRootOf(cwd);
     if (options.verb === "next" && checkout) {
-      const assigned = Object.values(readState(checkout, "assignments")).filter(row => row.repo === repo && row.node === fleet.self);
+      const assigned = clearClosedAssignments({ root: checkout, fleet, repo, gh });
       if (assigned.length) {
         for (const row of assigned) say(`#${row.issue} epoch=${row.epoch}`);
         return 0;
