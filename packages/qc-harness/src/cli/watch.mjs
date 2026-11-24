@@ -148,15 +148,17 @@ function pairingMessages(cwd, leader, at) {
   try {
     pairing = JSON.parse(readFileSync(path.join(stateDir(cwd), "pairing.json"), "utf8"));
   } catch (error) {
-    if (error.code === "ENOENT") return [];
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return [];
     throw error;
   }
+  if (!pairing || typeof pairing !== "object" || Array.isArray(pairing)) return [];
   const messages = [];
   for (const [collection, kind, flag] of [
     [leader ? pairing.requests : {}, "join-request", "allowed"],
     [pairing.offers, "join-offer", "accepted"],
   ]) {
-    for (const [id, entry] of Object.entries(collection ?? {})) {
+    if (!collection || typeof collection !== "object" || Array.isArray(collection)) continue;
+    for (const [id, entry] of Object.entries(collection)) {
       if (!entry || entry[flag] || !Number.isFinite(entry.seen) || at - entry.seen > 600_000 ||
           typeof entry.code !== "string" || entry.code.length !== 6 || !/^\d{6}$/.test(entry.code)) continue;
       messages.push({ id: JSON.stringify([kind, id, entry.code]), kind, detail: `${id} ${entry.code}` });

@@ -557,6 +557,27 @@ test("fleet watch announces each proposed Leader term once", async t => {
   assert.deepEqual(lines, ["EVENT fleet:propose-leader 2", "EVENT fleet:propose-leader 3"]);
 });
 
+for (const [label, contents] of [
+  ["truncated JSON", '{"requests":'],
+  ["null", "null"],
+  ["an array", "[]"],
+  ["primitive collections", '{"requests":42,"offers":"bad"}'],
+  ["array collections", JSON.stringify({ requests: [{ code: "123456", seen: 0 }], offers: [{ code: "654321", seen: 0 }] })],
+]) {
+  test(`fleet watch skips ${label} in pairing.json and reports queued questions`, async t => {
+    const { stateDir, writeState } = await import("./fleet-state.mjs");
+    const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-bad-pairing-"));
+    t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+    mkdirSync(path.join(root, ".git"));
+    writeState(root, "node", { leader: true });
+    writeState(root, "queue", [{ id: "question", kind: "question" }]);
+    writeFileSync(path.join(stateDir(root), "pairing.json"), contents);
+    const result = await watch(["--fleet", "--max", "1"], { cwd: root, time: fakeClock(), requiredChecks: [] });
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.lines, ["EVENT fleet:question question"]);
+  });
+}
+
 for (const [kind, collection, flag, leader] of [
   ["join-request", "requests", "allowed", true],
   ["join-offer", "offers", "accepted", false],
