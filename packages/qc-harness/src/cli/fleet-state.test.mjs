@@ -15,9 +15,9 @@ function fixture(t) {
 test("state files default to empty, round trip, and replace atomically without temporary leftovers", t => {
   const root = fixture(t);
   assert.equal(stateDir(root), path.join(root, ".git", "qc", "fleet"));
-  const values = { assignments: { 238: "a1" }, questions: { q1: { text: "Ready?" } }, seen: { m1: 1234 }, queue: [{ id: "m1" }], outbox: [{ message: { id: "m2" } }], dead: [{ message: { id: "m3" }, status: 403, reason: "refused" }], peers: { a1: { time: 1234, kit: null, leader: false } }, node: { pid: 123 } };
+  const values = { inbox: [{ id: "reply", kind: "approve", repo: "o/r", issue: 7, time: "2026-11-24T00:00:00.000Z" }], assignments: { 238: "a1" }, questions: { q1: { text: "Ready?" } }, seen: { m1: 1234 }, queue: [{ id: "m1" }], outbox: [{ message: { id: "m2" } }], dead: [{ message: { id: "m3" }, status: 403, reason: "refused" }], peers: { a1: { time: 1234, kit: null, leader: false } }, node: { pid: 123 } };
   for (const [name, value] of Object.entries(values)) {
-    const empty = ["queue", "outbox", "dead"].includes(name) ? [] : {};
+    const empty = ["queue", "outbox", "dead", "inbox"].includes(name) ? [] : {};
     assert.deepEqual(readState(root, name), empty);
     writeState(root, name, value);
     assert.deepEqual(readState(root, name), value);
@@ -29,7 +29,7 @@ test("state files default to empty, round trip, and replace atomically without t
   const broken = {}; broken.cycle = broken;
   assert.throws(() => writeState(root, "queue", broken));
   assert.deepEqual(readState(root, "queue"), []);
-  assert.equal(readdirSync(stateDir(root)).length, 8);
+  assert.equal(readdirSync(stateDir(root)).length, Object.keys(values).length);
 });
 
 test("linked worktrees share the git common directory", t => {
@@ -81,4 +81,13 @@ test("seen pruning removes only entries older than ten minutes and persists", t 
   writeState(root, "seen", pruned);
   assert.deepEqual(readState(root, "seen"), pruned);
   assert.deepEqual(pruneSeen({}, now), {});
+});
+
+test("plan decisions, answers and watched IDs are durable object snapshots", t => {
+  const root = fixture(t);
+  for (const name of ["plans", "answers", "watched"]) {
+    assert.deepEqual(readState(root, name), {});
+    writeState(root, name, { id: { text: "saved" } });
+    assert.deepEqual(readState(root, name), { id: { text: "saved" } });
+  }
 });
