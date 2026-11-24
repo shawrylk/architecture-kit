@@ -87,9 +87,8 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
         if (message.kind === "heartbeat") {
           const peers = readState(root, "peers");
           if (Date.parse(message.time) <= Date.parse(peers[message.from]?.messageTime)) {
-            reply(202, { ok: true }); return;
-          }
-          Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, leader: message.body.leader,
+            peers[message.from].time = time;
+          } else Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, leader: message.body.leader,
             ...(message.body.work === undefined ? {} : { work: message.body.work }),
             ...(message.body.assigned === undefined ? {} : { assigned: message.body.assigned }) }, enumerable: true, configurable: true, writable: true });
           writeState(root, "peers", peers);

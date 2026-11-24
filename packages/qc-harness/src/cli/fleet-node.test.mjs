@@ -11,6 +11,7 @@ import { createMessage, verifyMessage } from "./fleet-message.mjs";
 import { readState, stateDir, writeState } from "./fleet-state.mjs";
 import { createNodeServer, sendMessage, flushOutbox, heartbeat, startNode, stopNode, nodeStatus, serveNode } from "./fleet-node.mjs";
 import { runFleet } from "./fleet.mjs";
+import { assignTick } from "./fleet-assign.mjs";
 
 const secret = "ab".repeat(32);
 const now = Date.parse("2026-11-24T00:00:00Z");
@@ -146,10 +147,34 @@ test("heartbeat ordering saves signed time and ignores older or equal snapshots 
   for (const sent of [now - 1, now]) {
     time++;
     assert.equal((await post(sent, { kit: "old", leader: false })).status, 202);
-    assert.deepEqual(readState(root, "peers"), saved, "stale heartbeats change no peer fields or liveness");
+    assert.deepEqual(readState(root, "peers"), { ...saved, b: { ...saved.b, time } },
+      "older or equal heartbeats refresh receipt time while preserving snapshot fields");
   }
   assert.equal((await post(now + 1, { kit: null, leader: false })).status, 202);
   assert.deepEqual(readState(root, "peers").b, { time, messageTime: new Date(now + 1).toISOString(), kit: null, leader: false });
+});
+
+test("regression: a sender clock rollback keeps live work at epoch 1", async t => {
+  const root = fixture(t);
+  let time = now;
+  const server = await createNodeServer({ root, fleet, clock: () => time, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const post = sent => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST",
+    body: JSON.stringify(message({ kind: "heartbeat", time: new Date(sent).toISOString(),
+      body: { kit: "kit", leader: false, work: [] } })) });
+  assert.equal((await post(now + 240_000)).status, 202);
+  for (const seconds of [30, 60, 90, 120]) {
+    time = now + seconds * 1000;
+    assert.equal((await post(time)).status, 202);
+  }
+  const assignment = { repo: "o/r", issue: 7, node: "b", epoch: 1, time: now, size: "M" };
+  const peers = readState(root, "peers");
+  const result = assignTick({ fleet: { ...fleet, nodes: fleet.nodes.map(node => ({ ...node, weight: 1, maxSize: "L" })) },
+    repo: "o/r", kit: "kit", now: time, open: new Set([7]), free: [],
+    assignments: { "o/r#7": assignment }, peers });
+  assert.deepEqual(result.assignments["o/r#7"], assignment, "a live worker keeps #7 at epoch 1");
+  assert.equal(peers.b.time, time, "each valid heartbeat refreshes receipt time");
+  assert.equal(peers.b.messageTime, new Date(now + 240_000).toISOString());
 });
 
 test("regression: a peer offline for four heartbeat ticks leaves the outbox empty", async t => {
