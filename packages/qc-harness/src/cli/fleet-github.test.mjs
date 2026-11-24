@@ -38,17 +38,20 @@ const fakeReader = (comments, calls = []) => args => {
 };
 
 test("every work kind falls back after three failures, is re-signed, and posts only its hidden payload", async t => {
-  for (const leader of [true]) {
+  for (const leader of [true, false]) {
     const root = fixture(t), calls = [];
-    writeState(root, "node", { leader: true, term: 1 });
+    writeState(root, "node", { leader, term: 1 });
     const pending = kinds.map(kind => entry({ message: message({ from: "a", kind, time: new Date(now - 600_000).toISOString() }) }));
+    const leaderOnly = new Set(["assign", "approve", "answer"]);
+    const posted = pending.filter(row => leader || !leaderOnly.has(row.message.kind));
+    const rejected = pending.filter(row => !leader && leaderOnly.has(row.message.kind));
     writeState(root, "outbox", pending);
     await flushOutbox({ root, fleet, leader, clock: () => now, fetch: async () => assert.fail("no HTTP after threshold"),
       gh: args => { calls.push(args); return "posted"; } });
-    assert.equal(calls.length, kinds.length);
+    assert.equal(calls.length, leader ? 9 : 6);
     for (const [index, args] of calls.entries()) {
       assert.deepEqual(args.slice(0, 6), ["issue", "comment", "7", "--repo", "o/r", "--body"]);
-      const body = args[6], kind = kinds[index];
+      const body = args[6], kind = posted[index].message.kind;
       assert.ok(body.startsWith(`**${leader ? "Leader" : "Coder"}** · ${kind} for #7\n\n`));
       assert.equal(parseMarker(body, { secret, nodes: ["a", "b"], ownAuthor: true }).node, "a");
       const payload = /^<!-- qc:msg to=b ([\w-]+) -->$/m.exec(body);
@@ -56,11 +59,12 @@ test("every work kind falls back after three failures, is re-signed, and posts o
       assert.equal(body.split("\n\n")[1], payload[0]);
       const signed = JSON.parse(Buffer.from(payload[1], "base64url"));
       assert.deepEqual(verifyMessage(signed, { secret, nodes: fleet.nodes, now }), { ok: true });
-      assert.equal(signed.id, pending[index].message.id);
+      assert.equal(signed.id, posted[index].message.id);
       assert.equal(signed.time, new Date(now).toISOString());
-      assert.deepEqual(signed.body, pending[index].message.body);
+      assert.deepEqual(signed.body, posted[index].message.body);
     }
     assert.deepEqual(readState(root, "outbox"), []);
+    assert.deepEqual(readState(root, "dead", []), rejected.map(row => ({ ...row, reason: "not leader" })));
   }
 });
 
