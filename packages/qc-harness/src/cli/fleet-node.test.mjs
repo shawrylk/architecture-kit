@@ -11,6 +11,7 @@ import { createMessage, verifyMessage } from "./fleet-message.mjs";
 import { readState, stateDir, writeState } from "./fleet-state.mjs";
 import { createNodeServer, sendMessage, flushOutbox, heartbeat, startNode, stopNode, nodeStatus, serveNode } from "./fleet-node.mjs";
 
+const apiResponse = args => JSON.stringify(args[1] === "user" ? { login: "me" } : []);
 const secret = "ab".repeat(32);
 const now = Date.parse("2026-11-24T00:00:00Z");
 const fleet = { self: "a", secret, nodes: [
@@ -488,7 +489,7 @@ test("leader assigns every 60 seconds through gh, persists and sends; gh failure
   writeState(root, "peers", { b: { time: now, kit: "kit", leader: false } });
   const server = await serveNode({ root, fleet: nodes, repo: "o/r", kit: "kit", leader: true, clock: () => time, listen: { port: 0 },
     timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: text => warnings.push(text), git: () => "",
-    gh: args => { calls.push(args); if (fail && args.includes("number")) throw new Error("gh offline"); return JSON.stringify(args[0] === "pr" ? [] : args.includes("number,labels,createdAt")
+    gh: args => { if (args[0] === "api") return apiResponse(args); calls.push(args); if (fail && args.includes("number")) throw new Error("gh offline"); return JSON.stringify(args[0] === "pr" ? [] : args.includes("number,labels,createdAt")
       ? [1, 2].map(number => ({ number, labels: [], createdAt: "2026-01-01" })) : [1, 2, 99].map(number => ({ number }))); },
     fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); return { status: 202 }; } });
   t.after(() => new Promise(resolve => server.close(resolve)));
@@ -523,6 +524,7 @@ test("regression: follower clears closed assignments in every held repo and keep
   const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
     timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: text => warnings.push(text),
     fetch: async () => ({ status: 202 }), gh: (args, options) => {
+      if (args[0] === "api") return apiResponse(args);
       const repo = args.at(-1); calls.push(repo);
       assert.equal(options.cwd, root);
       assert.deepEqual(args, ["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", repo]);
@@ -547,7 +549,7 @@ test("regression: leader queues every new assign before a stop during the first 
   writeState(root, "peers", { b: { time: now, kit: null, leader: false }, c: { time: now, kit: null, leader: false } });
   const server = await serveNode({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => time, listen: { port: 0 },
     timer: fn => { tick = fn; }, clearTimer() {}, onSignal: (name, fn) => signals.set(name, fn), offSignal() {}, git: () => "",
-    gh: args => JSON.stringify(args[0] === "pr" ? [] : args.includes("number") ? [1, 2, 99].map(number => ({ number }))
+    gh: args => args[0] === "api" ? apiResponse(args) : JSON.stringify(args[0] === "pr" ? [] : args.includes("number") ? [1, 2, 99].map(number => ({ number }))
       : [1, 2].map(number => ({ number, labels: [], createdAt: "2026-01-01" }))),
     fetch: async (_url, options) => {
       if (JSON.parse(options.body).kind === "assign") {
@@ -569,7 +571,7 @@ test("regression: assign waits for a Leader heartbeat, expires after ten minutes
   let tick, time = now;
   const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
     timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, fetch: async () => ({ status: 202 }),
-    gh: () => JSON.stringify([{ number: 7 }]) });
+    gh: args => args[0] === "api" ? apiResponse(args) : JSON.stringify([{ number: 7 }]) });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const post = fields => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST",
     body: JSON.stringify(message({ ...fields, time: new Date(time).toISOString() })) });
@@ -603,7 +605,7 @@ test("regression: Leader resends a dropped unclaimed assign and skips an identic
   const nodes = { ...fleet, nodes: fleet.nodes.slice(0, 2).map(node => ({ ...node, weight: 1, maxSize: "L" })) };
   const follower = await serveNode({ root: followerRoot, fleet: { ...nodes, self: "b" }, repo: "o/r", clock: () => time,
     listen: { port: 0 }, timer: fn => { followerTick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {},
-    fetch: async () => ({ status: 202 }), gh: () => JSON.stringify([{ number: 7 }]) });
+    fetch: async () => ({ status: 202 }), gh: args => args[0] === "api" ? apiResponse(args) : JSON.stringify([{ number: 7 }]) });
   t.after(() => new Promise(resolve => follower.close(resolve)));
   const held = { "o/r#7": { repo: "o/r", issue: 7, node: "b", epoch: 2, time: now } };
   writeState(root, "assignments", held);
@@ -611,7 +613,7 @@ test("regression: Leader resends a dropped unclaimed assign and skips an identic
   writeState(followerRoot, "queue", [initial]);
   const leader = await serveNode({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => time,
     listen: { port: 0 }, timer: fn => { leaderTick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, git: () => "",
-    gh: args => JSON.stringify(args[0] === "pr" || args.includes("number,labels,createdAt") ? [] : [{ number: 7 }]),
+    gh: args => args[0] === "api" ? apiResponse(args) : JSON.stringify(args[0] === "pr" || args.includes("number,labels,createdAt") ? [] : [{ number: 7 }]),
     fetch: async (_url, options) => {
       sent.push(JSON.parse(options.body));
       return fetch(`http://127.0.0.1:${follower.address().port}/message`, options);
@@ -690,4 +692,51 @@ test("follower records replies only from claimed Leaders at the held epoch, with
   assert.deepEqual(readState(root, "plans"), { "o/r#7": approve });
   assert.deepEqual(readState(root, "answers"), { q1: answer });
   assert.deepEqual(readState(root, "inbox"), [approve, answer].map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
+});
+
+test("node ticks poll GitHub every 120 seconds and receive authenticated work through the shared queue", async t => {
+  const root = fixture(t), calls = [];
+  let tick, time = now;
+  writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a", epoch: 1 } });
+  const { roleComment } = await import("./role-line.mjs");
+  const incoming = message({ kind: "pushed", body: { issue: 7 } });
+  const body = roleComment({ role: "coder", node: "b", kind: "pushed", ref: "#7", summary: "pushed for #7",
+    body: `<!-- qc:msg to=a ${Buffer.from(JSON.stringify(incoming)).toString("base64url")} -->` }, { secret });
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, fetch: async () => ({ status: 202 }),
+    gh: args => {
+      if (args[0] !== "api") return JSON.stringify([{ number: 7 }]);
+      calls.push(args);
+      return JSON.stringify(args[1] === "user" ? { login: "me" } : [{ user: { login: "me" }, body }]);
+    } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await tick();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(readState(root, "queue"), [incoming]);
+  time += 119_999; await tick(); assert.equal(calls.length, 2);
+  time++; await tick(); assert.equal(calls.length, 4);
+  assert.deepEqual(readState(root, "queue"), [incoming], "repeat GitHub reads cannot replay a message");
+});
+
+test("node tick supplies the Leader role to GitHub fallback and keeps polling after read failures", async t => {
+  const root = fixture(t), posts = [], warnings = [];
+  let tick, time = now, reads = 0;
+  writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "b", epoch: 1 } });
+  writeState(root, "outbox", [{ node: "b", message: message({ from: "a", body: { issue: 7 } }), attempts: 3, nextAttempt: now + 60_000 }]);
+  const server = await serveNode({ root, fleet, repo: "o/r", leader: true, clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: value => warnings.push(value),
+    fetch: async () => ({ status: 202 }), gh: args => {
+      if (args[0] === "api") { reads++; throw new Error("offline"); }
+      if (args[1] === "comment") { posts.push(args[6]); return "posted"; }
+      return "[]";
+    }, git: () => "" });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await tick();
+  assert.equal(posts.length, 1);
+  assert.match(posts[0], /^\*\*Leader\*\*/);
+  assert.deepEqual(readState(root, "outbox"), []);
+  assert.deepEqual(readState(root, "github"), {});
+  assert.equal(reads, 1);
+  time += 120_000; await tick();
+  assert.equal(reads, 2);
 });

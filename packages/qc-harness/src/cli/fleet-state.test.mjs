@@ -91,3 +91,11 @@ test("plan decisions, answers and watched IDs are durable object snapshots", t =
     assert.deepEqual(readState(root, name), { id: { text: "saved" } });
   }
 });
+
+test("GitHub cursors default empty and survive snapshots", t => {
+  const root = fixture(t);
+  assert.deepEqual(readState(root, "github"), {});
+  const cursors = { cursors: { "o/r#7": "2026-11-24T00:00:00.000Z" } };
+  writeState(root, "github", cursors);
+  assert.deepEqual(readState(root, "github"), cursors);
+});
