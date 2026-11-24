@@ -205,8 +205,9 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     }
     const omitted = fleet.nodes.length > 14 ? `; ${fleet.nodes.length - 14} more nodes` : "";
     say(`taken=${taken} unassigned=${owned.filter(row => row.owner === null).length}${omitted}`);
-    say(nodeStatus({ ...node, root: cwd, fleet }));
-    return 0;
+    return nodeStatus({ ...node, root: cwd, fleet })
+      .then(status => { say(status); return 0; })
+      .catch(error => { warn(error.message); return 1; });
   } catch (error) {
     warn(error.message);
     return 1;

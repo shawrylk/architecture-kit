@@ -15,9 +15,9 @@ function fixture(t) {
 test("state files default to empty, round trip, and replace atomically without temporary leftovers", t => {
   const root = fixture(t);
   assert.equal(stateDir(root), path.join(root, ".git", "qc", "fleet"));
-  const values = { assignments: { 238: "a1" }, questions: { q1: { text: "Ready?" } }, seen: { m1: 1234 }, queue: [{ id: "m1" }], outbox: [{ message: { id: "m2" } }], peers: { a1: { time: 1234, kit: null, leader: false } }, node: { pid: 123 } };
+  const values = { assignments: { 238: "a1" }, questions: { q1: { text: "Ready?" } }, seen: { m1: 1234 }, queue: [{ id: "m1" }], outbox: [{ message: { id: "m2" } }], dead: [{ message: { id: "m3" }, status: 403, reason: "refused" }], peers: { a1: { time: 1234, kit: null, leader: false } }, node: { pid: 123 } };
   for (const [name, value] of Object.entries(values)) {
-    const empty = ["queue", "outbox"].includes(name) ? [] : {};
+    const empty = ["queue", "outbox", "dead"].includes(name) ? [] : {};
     assert.deepEqual(readState(root, name), empty);
     writeState(root, name, value);
     assert.deepEqual(readState(root, name), value);
@@ -29,7 +29,7 @@ test("state files default to empty, round trip, and replace atomically without t
   const broken = {}; broken.cycle = broken;
   assert.throws(() => writeState(root, "queue", broken));
   assert.deepEqual(readState(root, "queue"), []);
-  assert.equal(readdirSync(stateDir(root)).length, 7);
+  assert.equal(readdirSync(stateDir(root)).length, 8);
 });
 
 test("linked worktrees share the git common directory", t => {

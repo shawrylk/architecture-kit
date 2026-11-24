@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { createMessage } from "./fleet-message.mjs";
+import { connect } from "node:net";
+import { once } from "node:events";
+import { createMessage, verifyMessage } from "./fleet-message.mjs";
 import { readState, stateDir, writeState } from "./fleet-state.mjs";
 import { createNodeServer, sendMessage, flushOutbox, heartbeat, startNode, stopNode, nodeStatus, serveNode } from "./fleet-node.mjs";
 
@@ -31,7 +33,9 @@ test("HTTP routes, JSON, signature refusal, replay, byte limit and durable queue
   assert.equal(server.address().address, fleet.nodes[0].address);
   const health = await fetch(`${base}/health`);
   assert.equal(health.status, 200);
-  assert.equal(await health.text(), '{"ok":true}');
+  const healthBody = await health.json();
+  assert.equal(healthBody.ok, true);
+  assert.match(healthBody.instance, /^[0-9a-f-]{36}$/);
   for (const [route, method] of [["/", "GET"], ["/message", "GET"], ["/health", "POST"], ["/health?x=1", "GET"]]) {
     assert.equal((await fetch(base + route, { method })).status, 404);
   }
@@ -113,7 +117,7 @@ test("heartbeat targets only other active addressed nodes and records receipt ti
   assert.equal((await post(beat)).status, 202);
   assert.deepEqual(readState(root, "peers"), { b: { time: now, kit: null, leader: false } });
   assert.equal((await post(message({ kind: "heartbeat", body: { leader: "yes" } }))).status, 400);
-  assert.deepEqual(readState(root, "queue"), [beat]);
+  assert.deepEqual(readState(root, "queue"), []);
 });
 
 test("node:http client sends to the server and queues network failure", async t => {
@@ -122,10 +126,10 @@ test("node:http client sends to the server and queues network failure", async t 
   t.after(() => new Promise(resolve => server.close(resolve)));
   const node = { ...fleet.nodes[0], port: server.address().port };
   const first = message();
-  assert.equal(await sendMessage({ root, node, message: first }), true);
+  assert.equal(await sendMessage({ root, fleet, node, message: first, clock: () => now }), true);
   assert.deepEqual(readState(root, "queue"), [first]);
   await new Promise(resolve => server.close(resolve));
-  assert.equal(await sendMessage({ root, node, message: message(), clock: () => now }), false);
+  assert.equal(await sendMessage({ root, fleet, node, message: message(), clock: () => now }), false);
   assert.equal(readState(root, "outbox").length, 1);
 });
 
@@ -148,7 +152,7 @@ function processDeps(root) {
       assert.equal(url, "http://127.0.0.1:8080/health");
       assert.ok(options.signal instanceof AbortSignal);
       if (!ready) throw new Error("not ready");
-      return { status: 200, json: async () => ({ ok: true }) };
+      return { status: 200, json: async () => ({ ok: true, instance: spawned.at(-1)?.options.env.QC_FLEET_INSTANCE }) };
     },
   };
   return { deps, spawned, signals, setReady: value => { ready = value; }, setStubborn: value => { stubborn = value; }, setLive: value => { live = value; }, time: () => time };
@@ -161,7 +165,7 @@ test("start detaches with a log, start twice is idempotent, stop keeps state and
   writeState(root, "peers", { b: { time: now, leader: true, kit: null } });
   const p = processDeps(root);
   assert.deepEqual(await startNode({ ...p.deps, leader: true }), { running: true, already: false });
-  assert.deepEqual(readState(root, "node"), { pid: 12345, leader: true });
+  assert.deepEqual(readState(root, "node"), { pid: 12345, leader: true, instance: p.spawned[0].options.env.QC_FLEET_INSTANCE });
   assert.equal(p.spawned.length, 1);
   const spawned = p.spawned[0];
   assert.equal(spawned.command, process.execPath);
@@ -173,7 +177,7 @@ test("start detaches with a log, start twice is idempotent, stop keeps state and
   assert.equal(readFileSync(path.join(stateDir(root), "node.log"), "utf8"), "");
   assert.deepEqual(await startNode(p.deps), { running: true, already: true });
   assert.equal(p.spawned.length, 1);
-  assert.equal(nodeStatus(p.deps), "node=running leader=a peers=1/3");
+  assert.equal(await nodeStatus(p.deps), "node=running leader=a peers=1/3");
   assert.deepEqual(await stopNode(p.deps), { stopped: true, already: false });
   assert.ok(p.signals.includes("SIGTERM"));
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
@@ -182,8 +186,8 @@ test("start detaches with a log, start twice is idempotent, stop keeps state and
   assert.equal(readState(root, "peers").b.leader, true);
   assert.equal(existsSync(path.join(stateDir(root), "node.log")), true);
   assert.deepEqual(await stopNode(p.deps), { stopped: true, already: true });
-  assert.equal(nodeStatus(p.deps), "node=stopped leader=b peers=1/3");
-  assert.equal(nodeStatus({ ...p.deps, clock: () => now + 90_001 }), "node=stopped leader=unknown peers=0/3");
+  assert.equal(await nodeStatus(p.deps), "node=stopped leader=b peers=1/3");
+  assert.equal(await nodeStatus({ ...p.deps, clock: () => now + 90_001 }), "node=stopped leader=unknown peers=0/3");
 });
 
 test("start names missing secret/address, times out and cleans up; stale records and stop timeout", async t => {
@@ -195,7 +199,9 @@ test("start names missing secret/address, times out and cleans up; stale records
   await assert.rejects(startNode(p.deps), /health.*5 s/);
   assert.equal(p.time() - now, 5000);
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
-  writeState(root, "node", { pid: 12345, leader: true });
+  writeState(root, "node", { pid: 12345, leader: true, instance: p.spawned[0].options.env.QC_FLEET_INSTANCE });
+  p.setLive(false);
+  p.setReady(true);
   assert.deepEqual(await stopNode(p.deps), { stopped: true, already: true });
   p.setReady(true);
   await startNode(p.deps);
@@ -206,11 +212,11 @@ test("start names missing secret/address, times out and cleans up; stale records
   assert.deepEqual(await startNode(p.deps), { running: true, already: false });
 });
 
-test("status counts only known other senders in the inclusive 90-second window", t => {
+test("status counts only known other senders in the inclusive 90-second window", async t => {
   const root = fixture(t), p = processDeps(root);
   writeState(root, "peers", { a: { time: now, leader: true }, b: { time: now - 90000, leader: true },
     inactive: { time: now - 90001, leader: true }, unaddressed: { time: now + 1, leader: true }, unknown: { time: now, leader: true } });
-  assert.equal(nodeStatus(p.deps), "node=stopped leader=b peers=1/3");
+  assert.equal(await nodeStatus(p.deps), "node=stopped leader=b peers=1/3");
 });
 
 test("serve schedules heartbeats every 30 seconds, retries every second and closes cleanly", async t => {
@@ -246,8 +252,137 @@ test("server refuses addresses that resolve to wildcard interfaces", async t => 
   }
 });
 
-test("status remains available outside a checkout with no process or peer state", t => {
+test("status remains available outside a checkout with no process or peer state", async t => {
   const root = fixture(t);
   rmSync(path.join(root, ".git"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  assert.equal(nodeStatus({ root, fleet }), "node=stopped leader=unknown peers=0/3");
+  assert.equal(await nodeStatus({ root, fleet }), "node=stopped leader=unknown peers=0/3");
+});
+
+
+test("regression: lifecycle requires the saved instance before readiness or signals", async t => {
+  await t.test("start saves and passes a random instance, and waits for that instance", async t => {
+    const root = fixture(t), p = processDeps(root);
+    const observed = [];
+    p.deps.fetch = async () => {
+      const instance = readState(root, "node").instance;
+      observed.push(instance);
+      return { status: 200, json: async () => ({ ok: true, instance }) };
+    };
+    await startNode(p.deps);
+    const record = readState(root, "node");
+    assert.match(record.instance, /^[0-9a-f-]{36}$/);
+    assert.equal(p.spawned[0].options.env.QC_FLEET_INSTANCE, record.instance);
+    assert.ok(observed.includes(record.instance));
+    p.setLive(false);
+    await startNode(p.deps);
+    assert.notEqual(readState(root, "node").instance, record.instance);
+  });
+  await t.test("another listener cannot make a new child ready or receive cleanup signals", async t => {
+    const root = fixture(t), p = processDeps(root);
+    p.deps.fetch = async () => ({ status: 200, json: async () => ({ ok: true, instance: "another-instance" }) });
+    await assert.rejects(startNode(p.deps), /stale|health.*5 s/);
+    assert.deepEqual(p.signals, []);
+  });
+  await t.test("status, stop and repeated start reject a reused PID without signaling it", async t => {
+    const root = fixture(t), p = processDeps(root);
+    writeState(root, "node", { pid: 12345, leader: true, instance: "saved-instance" });
+    p.setLive(true);
+    p.deps.fetch = async () => ({ status: 200, json: async () => ({ ok: true, instance: "another-instance" }) });
+    assert.equal(await nodeStatus(p.deps), "node=stale leader=unknown peers=0/3");
+    await assert.rejects(stopNode(p.deps), /stale/);
+    await assert.rejects(startNode(p.deps), /stale/);
+    assert.deepEqual(p.signals, []);
+    assert.equal(p.spawned.length, 0);
+    assert.equal(readState(root, "node").instance, "saved-instance");
+  });
+});
+
+test("regression: heartbeats update peers without growing the work queue", async t => {
+  const root = fixture(t), queued = message();
+  writeState(root, "queue", [queued]);
+  const server = await createNodeServer({ root, fleet, clock: () => now, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
+  const beats = Array.from({ length: 4 }, () => message({ kind: "heartbeat", body: { kit: null, leader: false } }));
+  for (const beat of beats) assert.equal((await post(beat)).status, 202);
+  assert.deepEqual(readState(root, "queue"), [queued]);
+  assert.deepEqual(readState(root, "peers"), { b: { time: now, kit: null, leader: false } });
+  assert.equal((await post(beats[0])).status, 400);
+});
+
+test("regression: outbox retries sign unsigned fixed IDs at the current time", async t => {
+  const root = fixture(t);
+  let time = now;
+  const original = message();
+  await sendMessage({ root, fleet, node: fleet.nodes[1], message: original, clock: () => time,
+    fetch: async () => { throw new Error("offline"); } });
+  const saved = readState(root, "outbox")[0].message;
+  assert.equal(saved.sig, undefined);
+  assert.equal(saved.time, undefined);
+  assert.equal(saved.id, original.id);
+  time += 600_001;
+  let retry;
+  await flushOutbox({ root, fleet, clock: () => time, fetch: async (_url, options) => {
+    retry = JSON.parse(options.body);
+    assert.equal(retry.id, original.id);
+    assert.equal(retry.time, new Date(time).toISOString());
+    const checked = verifyMessage(retry, { secret, nodes: fleet.nodes, now: time });
+    return { status: checked.ok ? 202 : 400, json: async () => checked };
+  } });
+  assert.ok(retry);
+  assert.notEqual(retry.sig, original.sig);
+  assert.deepEqual(readState(root, "outbox"), []);
+});
+
+test("regression: terminal outbox replies drain and dead letters keep only the last 100", async t => {
+  const root = fixture(t);
+  let time = now;
+  const messages = Array.from({ length: 104 }, () => message());
+  const opts = { root, fleet, clock: () => time };
+  for (const item of messages) await sendMessage({ ...opts, node: fleet.nodes[1], message: item,
+    fetch: async () => { throw new Error("offline"); } });
+  time += 1000;
+  let calls = 0;
+  await flushOutbox({ ...opts, fetch: async () => {
+    const index = calls++;
+    return { status: index === 0 ? 400 : index === 103 ? 202 : 422,
+      json: async () => ({ ok: false, reason: index === 0 ? "seen-id" : "bad-repo" }) };
+  } });
+  assert.deepEqual(readState(root, "outbox"), []);
+  assert.equal(calls, 104);
+  const dead = readState(root, "dead");
+  assert.equal(dead.length, 100);
+  assert.deepEqual(dead.map(entry => entry.message.id), messages.slice(3, 103).map(item => item.id));
+  assert.equal(dead[0].status, 422);
+  assert.equal(dead[0].reason, "bad-repo");
+  assert.equal(await sendMessage({ ...opts, node: fleet.nodes[1], message: message(),
+    fetch: async () => ({ status: 400, json: async () => ({ reason: "seen-id" }) }) }), true);
+  assert.equal(await sendMessage({ ...opts, node: fleet.nodes[1], message: message(),
+    fetch: async () => ({ status: 403, json: async () => { throw new Error("not JSON"); } }) }), false);
+  assert.equal(readState(root, "dead").length, 100);
+  assert.equal(readState(root, "dead").at(-1).status, 403);
+  await sendMessage({ ...opts, node: fleet.nodes[1], message: message(), fetch: async () => ({ status: 503 }) });
+  assert.equal(readState(root, "outbox").length, 1);
+});
+
+test("regression: SIGTERM closes a partial request within the stop deadline", async t => {
+  const root = fixture(t), signals = new Map();
+  const server = await serveNode({ root, fleet, repo: "o/r", listen: { port: 0 }, instance: "shutdown-instance",
+    onSignal: (name, fn) => signals.set(name, fn), offSignal: name => signals.delete(name) });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const socket = connect({ host: "127.0.0.1", port: server.address().port });
+  t.after(() => socket.destroy());
+  await once(socket, "connect");
+  socket.write("POST /message HTTP/1.1\r\nHost: localhost\r\nContent-Length: 100\r\n\r\n{");
+  await new Promise(resolve => setImmediate(resolve));
+  let timeout;
+  const closed = once(server, "close").then(() => true);
+  signals.get("SIGTERM")();
+  assert.equal(server.listening, false);
+  try {
+    const bounded = new Promise(resolve => { timeout = setTimeout(() => resolve(false), 1800); });
+    assert.equal(await Promise.race([closed, bounded]), true, "shutdown must force-close partial requests after 1 s");
+  } finally { clearTimeout(timeout); }
+  assert.equal(server.requestTimeout, 10_000);
+  assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
 });

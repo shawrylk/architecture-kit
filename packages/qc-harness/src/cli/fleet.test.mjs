@@ -27,7 +27,8 @@ function fixture(t) {
   const run = (args, extra = {}) => {
     lines.length = errors.length = 0;
     const code = runFleet(args, { ...deps, ...extra });
-    return { code, lines: [...lines], errors: [...errors] };
+    const result = value => ({ code: value, lines: [...lines], errors: [...errors] });
+    return code instanceof Promise ? code.then(result) : result(code);
   };
   return { cwd, env, run };
 }
@@ -192,7 +193,7 @@ test("free issues exclude hold labels and taken PR bodies, PR branches and origi
   }).free.map(row => row.number), [1]);
 });
 
-test("next prints the oldest five or all, exits 3 when empty, and status adds the node line", t => {
+test("next prints the oldest five or all, exits 3 when empty, and status adds the node line", async t => {
   const remoteFixture = fixture(t);
   const git = (...args) => {
     const result = spawnSync("git", args, { cwd: remoteFixture.cwd, encoding: "utf8" });
@@ -224,7 +225,7 @@ test("next prints the oldest five or all, exits 3 when empty, and status adds th
   assert.equal(f.run(["next", "--repo", "o/r"], { ...extra, gh: fakeGh([issue(99, ["custom-hold"])]) }).code, 3);
   const empty = f.run(["next", "--repo", "o/r"], { ...extra, gh: fakeGh([]) });
   assert.deepEqual(empty, { code: 3, lines: [], errors: ["no free issue for a1"] });
-  const status = f.run(["status", "--repo", "o/r"], extra);
+  const status = await f.run(["status", "--repo", "o/r"], extra);
   assert.equal(status.code, 0);
   assert.equal(status.lines.length, 4);
   assert.match(status.lines[0], /a1.*1.*L.*true.*12.*12,11,10,9,8,7,6,5,4,3$/);
@@ -233,12 +234,12 @@ test("next prints the oldest five or all, exits 3 when empty, and status adds th
   assert.equal(status.lines[3], "node=stopped leader=unknown peers=0/1");
   const many = Array.from({ length: 20 }, (_, i) => ({ id: `pc${i}`, weight: 1, maxSize: "L", active: true }));
   writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify({ self: "pc0", nodes: many }));
-  const capped = f.run(["status", "--repo", "o/r"], extra);
+  const capped = await f.run(["status", "--repo", "o/r"], extra);
   assert.equal(capped.lines.length, 16);
   assert.match(capped.lines.at(-2), /6 more nodes/);
   assert.equal(capped.lines.at(-1), "node=stopped leader=unknown peers=0/19");
   writeFileSync(f.env.QC_FLEET_FILE, JSON.stringify({ self: "a1", nodes: [{ ...nodes[0], active: false }] }));
-  assert.match(f.run(["status", "--repo", "o/r"], extra).lines.at(-2), /unassigned.*12/);
+  assert.match((await f.run(["status", "--repo", "o/r"], extra)).lines.at(-2), /unassigned.*12/);
 });
 
 test("init routes through qc from an empty folder, creates mode 0600 and refuses replacement", t => {
@@ -266,10 +267,10 @@ test("init routes through qc from an empty folder, creates mode 0600 and refuses
 test("CLI starts, starts twice, reports running and stops without reading GitHub", async t => {
   const f = fixture(t), lines = [], errors = [];
   assert.equal(f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L", "--addresses", "a1@127.0.0.1:8080"]).code, 0);
-  let live = false, spawns = 0;
-  const node = { spawn: () => { live = true; spawns++; return { pid: 45678, unref() {}, once() {} }; },
+  let live = false, spawns = 0, instance;
+  const node = { spawn: (_command, _args, options) => { instance = options.env.QC_FLEET_INSTANCE; live = true; spawns++; return { pid: 45678, unref() {}, once() {} }; },
     kill: (_pid, signal) => { if (!live) throw Object.assign(new Error("gone"), { code: "ESRCH" }); if (signal !== 0) live = false; },
-    fetch: async () => ({ status: 200, json: async () => ({ ok: true }) }), clock: () => 1_000_000 };
+    fetch: async () => ({ status: 200, json: async () => ({ ok: true, instance }) }), clock: () => 1_000_000 };
   const deps = { cwd: f.cwd, env: f.env, node, origin: () => null, gh: () => { throw new Error("unexpected GitHub read"); },
     say: line => lines.push(line), warn: line => errors.push(line) };
   assert.equal(await runFleet(["start", "--leader"], deps), 0, errors.join("\n"));
@@ -279,7 +280,7 @@ test("CLI starts, starts twice, reports running and stops without reading GitHub
   assert.equal(spawns, 1);
   assert.equal(readState(f.cwd, "node").leader, true);
   writeState(f.cwd, "peers", { b2: { time: 999999, kit: null, leader: false } });
-  assert.equal(runFleet(["status", "--repo", "o/r"], { ...deps, gh: fakeGh([]), git: () => "" }), 0);
+  assert.equal(await runFleet(["status", "--repo", "o/r"], { ...deps, gh: fakeGh([]), git: () => "" }), 0);
   assert.equal(lines.splice(0).at(-1), "node=running leader=a1 peers=1/1");
   assert.equal(await runFleet(["stop"], deps), 0);
   assert.deepEqual(lines.splice(0), ["fleet node stopped: a1"]);
