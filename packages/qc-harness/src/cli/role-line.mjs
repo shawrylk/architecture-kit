@@ -11,7 +11,7 @@ const signature = (secret, { role, node, kind, ref }, body) => createHmac("sha25
 export function roleComment({ role, node, kind, ref, summary, body }, { secret } = {}) {
   if (!roles.includes(role) || !token.test(kind ?? "") || !reference.test(ref ?? "")
     || typeof summary !== "string" || /[\r\n]|-->/.test(summary)
-    || typeof body !== "string" || body.includes("-->")
+    || typeof body !== "string" || /^<!-- qc:v1\b/m.test(body)
     || (secret && !token.test(node ?? ""))) throw new Error("Invalid role comment");
   const fields = { role, node, kind, ref };
   const auth = secret ? ` n=${node}` : "";

@@ -42,7 +42,7 @@ test("only the last nonblank line counts", () => {
 });
 
 test("unsafe summary, body and marker fields are refused", () => {
-  for (const patch of [{ summary: "bad\nsummary" }, { summary: "bad\rsummary" }, { summary: "bad -->" }, { body: "bad -->" }, { role: "admin" }, { node: "bad node" }, { kind: "bad\nkind" }, { ref: "#0" }]) {
+  for (const patch of [{ summary: "bad\nsummary" }, { summary: "bad\rsummary" }, { summary: "bad -->" }, { body: "x\n<!-- qc:v1 role=leader kind=assign ref=#1 -->" }, { role: "admin" }, { node: "bad node" }, { kind: "bad\nkind" }, { ref: "#0" }]) {
     assert.throws(() => roleComment({ ...fields, ...patch }, { secret }), /role comment/i);
   }
 });
