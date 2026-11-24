@@ -129,7 +129,7 @@ function reportHooks(config) {
   const { problems, notes } = hookDrift(config.root, requiredHooks(config));
   for (const problem of problems) console.error(`FAIL  hooks        ${problem.path}: ${problem.detail}`);
   for (const note of notes) console.log(`NOTE  hooks        ${note}`);
-  if (problems.length === 0) console.log("OK  hooks        each git hook makes the calls hooks.required names");
+  if (problems.length === 0) console.log(config.hooks?.required === null ? "OK  hooks        off: hooks.required is null" : "OK  hooks        each git hook makes the calls hooks.required names");
   return problems.length > 0;
 }
 

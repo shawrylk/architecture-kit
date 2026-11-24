@@ -17,8 +17,10 @@ export function switchedOff(shipped, configured) {
 
 /** @returns each hook whose required calls lack one the kit ships. */
 export function weakenedHooks(shipped = {}, configured = {}) {
+  // `hooks.required: null` switches every shipped hook off.
+  const kept = configured ?? {};
   return Object.keys(shipped)
-    .filter((name) => shipped[name].some((call) => !(configured[name] ?? []).includes(call)))
+    .filter((name) => shipped[name].some((call) => !(kept[name] ?? []).includes(call)))
     .sort();
 }
 

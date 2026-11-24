@@ -93,6 +93,17 @@ test("drift alone never blocks: the stop passes with a note that names the setup
   assert.match(message, /FAIL {2}doctor from installed/);
 });
 
+test("a drift note shows once per session, so a repeat stop with the same drift is silent", (t) => {
+  const ws = workspace(t, { codes: { doctor: 1 }, withDoctor: true });
+  const first = ws.run({ session_id: "session-drift" });
+  assert.match(JSON.parse(first.stdout).systemMessage, /kit setup drifts/);
+  const repeat = ws.run({ session_id: "session-drift" });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  assert.equal(repeat.stdout, "");
+  const other = ws.run({ session_id: "session-other" });
+  assert.match(JSON.parse(other.stdout).systemMessage, /kit setup drifts/);
+});
+
 test("a red check beside drift blocks, and the block text carries the code failure, not the drift", (t) => {
   const ws = workspace(t, { codes: { doctor: 1, check: 1 }, withDoctor: true });
   const result = ws.run();

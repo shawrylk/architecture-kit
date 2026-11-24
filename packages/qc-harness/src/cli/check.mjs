@@ -994,7 +994,7 @@ export async function runCheck(config, only = [], { lister = repoFiles } = {}) {
     lines.push("OK  floor        every check the kit ships on is in force, or names the decision that switched it off");
     const hooks = hookDrift(config.root, requiredHooks(config));
     problems.push(...hooks.problems);
-    lines.push("OK  hooks        each git hook makes the calls hooks.required names");
+    lines.push(config.hooks?.required === null ? "OK  hooks        off: hooks.required is null" : "OK  hooks        each git hook makes the calls hooks.required names");
     for (const note of hooks.notes) lines.push(`NOTE  hooks      ${note}`);
   }
 

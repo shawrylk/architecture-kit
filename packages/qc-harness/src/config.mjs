@@ -340,6 +340,7 @@ export const defaults = {
   // A null `pattern` switches the rule off.
   branches: { pattern: "^[a-z]+/[0-9]+-", allow: ["main", "master", "release/**"] },
 
+  // A null `required` switches the git hook rule off. An empty object keeps the defaults, because merge combines objects.
   hooks: {
     required: { "pre-commit": ["qc work-order-check"], "commit-msg": ["qc commit-msg"], "pre-push": ["qc check"] },
   },

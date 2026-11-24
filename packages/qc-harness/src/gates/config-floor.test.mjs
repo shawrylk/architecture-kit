@@ -130,3 +130,13 @@ test("the dropped-default-helper detail says a default in either list counts as 
   const [problem] = checkConfigFloor(shippedHelpers, withHelpers([insert]));
   assert.match(problem.detail, /neither exemptHelpers nor extraExemptHelpers/);
 });
+
+test("a null hooks.required switches every shipped hook off and needs an exemption, not a crash", () => {
+  const withHooks = { ...shipped, hooks: { required: { "pre-commit": ["qc work-order-check"] } } };
+  const findings = checkConfigFloor(withHooks, { ...allOn, hooks: { required: null } });
+  assert.equal(findings.length, 1);
+  assert.match(JSON.stringify(findings), /hooks\.pre-commit/);
+  const exempt = checkConfigFloor(withHooks, { ...allOn, hooks: { required: null } },
+    { exemptions: { "hooks.pre-commit": "QC-001" }, pattern: /^QC-\d{3}$/ });
+  assert.deepEqual(exempt, []);
+});

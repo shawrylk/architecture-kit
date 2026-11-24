@@ -409,6 +409,11 @@ structure. `pre-push` is the full pass — every repository-wide gate (citations
 predicate, route agreement, sagas) — once per push instead of once per commit. A human and an agent
 both go through the same two hooks; neither can commit past the fast tier or push past the full one.
 
+A repository that keeps its own git hooks sets `hooks.required` to `null`. `qc doctor` and `qc check`
+then print `OK  hooks        off: hooks.required is null`. An empty object does not switch the rule
+off, because the config merge keeps the default calls. The config floor still needs a `hooks.<name>`
+exemption for each shipped hook.
+
 While `commitMessage.conventional` is on, the default `hooks.required` also requires a `commit-msg`
 hook that calls `qc commit-msg`. Setting `conventional` to `false` drops that requirement. The
 conventional rules are commitlint's. Without commitlint in the repository, they skip, and the hook

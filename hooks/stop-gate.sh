@@ -190,7 +190,10 @@ node -e "$MEMORY_JS" clear "$SESSION" </dev/null 2>/dev/null
 node -e "$FINGERPRINT_JS" store "$ROOT" "$FINGERPRINT" </dev/null 2>/dev/null
 # Drift is in the setup, which a session cannot repair: a stale plugin or a hooks path the user chose.
 # Refusing a stop for it ends no turn, so it is a note to the user and never a block.
-if [ -n "$DRIFT" ]; then
+# A drift note shows once per session, and again only when its text changes.
+printf '%s' "$DRIFT" | node -e "$MEMORY_JS" same "${SESSION:+$SESSION.drift}" 1 2>/dev/null
+DRIFT_SEEN=$?
+if [ -n "$DRIFT" ] && [ "$DRIFT_SEEN" -ne 10 ]; then
   MESSAGE="The kit setup drifts (qc doctor or hook-drift), not the code: $(printf '%s' "$DRIFT" | grep -m1 .)"
   node -e 'process.stdout.write(JSON.stringify({systemMessage: process.argv[1]}))' "$MESSAGE"
 fi
