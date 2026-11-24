@@ -594,3 +594,46 @@ test("regression: assign waits for a Leader heartbeat, expires after ten minutes
   assert.deepEqual(readState(root, "queue"), []);
   assert.deepEqual(Object.keys(readState(root, "assignments")), ["o/r#7"]);
 });
+
+test("regression: Leader resends a dropped unclaimed assign and skips an identical pending assign", async t => {
+  const root = fixture(t), followerRoot = fixture(t), sent = [];
+  let leaderTick, followerTick, time = now;
+  const nodes = { ...fleet, nodes: fleet.nodes.slice(0, 2).map(node => ({ ...node, weight: 1, maxSize: "L" })) };
+  const follower = await serveNode({ root: followerRoot, fleet: { ...nodes, self: "b" }, repo: "o/r", clock: () => time,
+    listen: { port: 0 }, timer: fn => { followerTick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {},
+    fetch: async () => ({ status: 202 }), gh: () => JSON.stringify([{ number: 7 }]) });
+  t.after(() => new Promise(resolve => follower.close(resolve)));
+  const held = { "o/r#7": { repo: "o/r", issue: 7, node: "b", epoch: 2, time: now } };
+  writeState(root, "assignments", held);
+  const initial = message({ from: "a", kind: "assign", body: { issue: 7, epoch: 2 } });
+  writeState(followerRoot, "queue", [initial]);
+  const leader = await serveNode({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => time,
+    listen: { port: 0 }, timer: fn => { leaderTick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, git: () => "",
+    gh: args => JSON.stringify(args[0] === "pr" || args.includes("number,labels,createdAt") ? [] : [{ number: 7 }]),
+    fetch: async (_url, options) => {
+      sent.push(JSON.parse(options.body));
+      return fetch(`http://127.0.0.1:${follower.address().port}/message`, options);
+    } });
+  t.after(() => new Promise(resolve => leader.close(resolve)));
+  time += 600_000;
+  await followerTick();
+  assert.deepEqual(readState(followerRoot, "queue"), []);
+  assert.deepEqual(readState(followerRoot, "assignments"), {});
+  const live = () => writeState(root, "peers", { b: { time, kit: null, leader: false } });
+  live(); await leaderTick();
+  assert.equal(readState(followerRoot, "queue").filter(row => row.kind === "assign").length, 1);
+  await followerTick();
+  const accepted = readState(followerRoot, "assignments");
+  assert.deepEqual(accepted["o/r#7"], { ...held["o/r#7"], time });
+  time += 60_000; live(); await leaderTick(); await followerTick();
+  const repeats = sent.filter(row => row.kind === "assign");
+  assert.equal(repeats.length, 2);
+  assert.notEqual(repeats[0].id, repeats[1].id);
+  assert.deepEqual(repeats.map(row => row.body), [{ issue: 7, epoch: 2 }, { issue: 7, epoch: 2 }]);
+  assert.deepEqual(readState(followerRoot, "assignments"), accepted);
+  const pending = { node: "b", attempts: 1, nextAttempt: time + 300_000, message: repeats[1] };
+  writeState(root, "outbox", [pending]);
+  time += 60_000; live(); await leaderTick();
+  assert.deepEqual(readState(root, "outbox"), [pending]);
+  assert.equal(sent.filter(row => row.kind === "assign").length, 2);
+});

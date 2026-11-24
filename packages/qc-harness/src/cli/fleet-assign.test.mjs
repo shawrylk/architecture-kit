@@ -10,7 +10,7 @@ const base = { fleet: { self: "a", nodes: [node("a"), node("b")] }, repo: "o/r",
   open: new Set([1, 2, 3]), free: [row(1), row(3, ["ci-red"]), row(2)], assignments: {}, peers: { b: { time: now, kit: "kit" } } };
 const saved = (issue, node = "b", repo = "o/r") => ({ repo, issue, node, epoch: 1, time: 42 });
 
-test("tick is pure, sorts ci-red then issue number, hashes only idle nodes, and sends once per remote assignment", () => {
+test("tick is pure, sorts ci-red then issue number, hashes only idle nodes, and resends remote assignments", () => {
   const input = structuredClone(base), before = structuredClone(input);
   const result = assignTick(input);
   const first = ownerOf("o/r", 3, "M", base.fleet.nodes), second = first === "a" ? "b" : "a";
@@ -18,7 +18,7 @@ test("tick is pure, sorts ci-red then issue number, hashes only idle nodes, and 
   assert.deepEqual(result.messages, [{ node: "b", kind: "assign", body: { issue: first === "b" ? 3 : 1, epoch: 1 } }]);
   assert.deepEqual(result.warnings, []);
   assert.deepEqual(input, before);
-  assert.deepEqual(assignTick({ ...input, assignments: result.assignments }).messages, []);
+  assert.deepEqual(assignTick({ ...input, assignments: result.assignments }).messages, result.messages);
 });
 
 test("open assignments persist even when busy, stale or drifted; closed issues release their node", () => {
@@ -42,6 +42,10 @@ test("liveness has an inclusive 90 second boundary; self is always live; drift w
       open: new Set([1]), free: [row(1)], peers: peer ? { b: peer } : {} });
     assert.equal(Boolean(result.assignments["o/r#1"]), expected);
     assert.deepEqual(result.warnings, peer?.kit === "old" ? ["node b runs kit old, leader runs kit"] : []);
+    const repeat = assignTick({ ...base, fleet: { ...base.fleet, nodes: [node("a"), node("b", extra)] },
+      assignments: { "o/r#1": saved(1) }, free: [], peers: peer ? { b: peer } : {} });
+    assert.deepEqual(repeat.messages, expected || peer?.kit === "old"
+      ? [{ node: "b", kind: "assign", body: { issue: 1, epoch: 1 } }] : []);
   }
   const self = assignTick({ ...base, fleet: { self: "a", nodes: [node("a", { active: false, address: undefined })] }, peers: {}, free: [row(1)] });
   assert.equal(self.assignments["o/r#1"].node, "a");

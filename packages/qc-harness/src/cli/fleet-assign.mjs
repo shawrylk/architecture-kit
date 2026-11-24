@@ -20,7 +20,12 @@ export function assignTick({ fleet, repo, open, free, assignments, peers, kit, n
     if (!node) continue;
     kept[key] = { repo, issue: row.number, node, epoch: 1, time: now };
     busy.add(node);
-    if (node !== fleet.self) messages.push({ node, kind: "assign", body: { issue: row.number, epoch: 1 } });
+  }
+  for (const row of Object.values(kept)) {
+    if (row.repo !== repo || row.node === fleet.self) continue;
+    const node = fleet.nodes.find(node => node.id === row.node), peer = peers[row.node];
+    if (node?.active === false || !node?.address || !Number.isFinite(peer?.time) || now - peer.time < 0 || now - peer.time > 90_000) continue;
+    messages.push({ node: row.node, kind: "assign", body: { issue: row.issue, epoch: row.epoch } });
   }
   return { assignments: kept, messages, warnings };
 }

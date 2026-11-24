@@ -344,7 +344,7 @@ test("next retains free-issue output outside a checkout", t => {
     { code: 0, lines: ["1"], errors: [] });
 });
 
-test("regression: next removes closed local assignments and preserves them on an unreadable open list", t => {
+test("regression: next hides closed local assignments and preserves them on an unreadable open list", t => {
   const f = fixture(t);
   f.run(["init", "--self", "a1", "--nodes", "a1:1:L"]);
   const held = {
@@ -357,14 +357,33 @@ test("regression: next removes closed local assignments and preserves them on an
   const result = f.run(["next"], { origin: () => "o/r", gh: args => { calls.push(args); return JSON.stringify([{ number: 8 }]); } });
   assert.deepEqual(result, { code: 0, lines: ["#8 epoch=1"], errors: [] });
   assert.deepEqual(calls, [["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", "o/r"]]);
-  assert.deepEqual(Object.keys(readState(f.cwd, "assignments")), ["o/r#8", "else/r#9"]);
+  assert.deepEqual(readState(f.cwd, "assignments"), held);
+  const unfiltered = { code: 0, lines: ["#7 epoch=2", "#8 epoch=1"], errors: [] };
   for (const reply of [null, "bad", "{}", '[{"number":"8"}]']) {
     const kept = readState(f.cwd, "assignments");
-    assert.deepEqual(f.run(["next"], { origin: () => "o/r", gh: () => reply }), result);
+    assert.deepEqual(f.run(["next"], { origin: () => "o/r", gh: () => reply }), unfiltered);
     assert.deepEqual(readState(f.cwd, "assignments"), kept);
   }
-  assert.deepEqual(f.run(["next"], { origin: () => "o/r", gh: () => { throw new Error("offline"); } }), result);
+  assert.deepEqual(f.run(["next"], { origin: () => "o/r", gh: () => { throw new Error("offline"); } }), unfiltered);
   const fallback = f.run(["next"], { origin: () => "o/r", gh: fakeGh([issue(10)]), git: () => "" });
   assert.deepEqual(fallback, { code: 0, lines: ["10"], errors: [] });
-  assert.deepEqual(Object.keys(readState(f.cwd, "assignments")), ["else/r#9"]);
+  assert.deepEqual(readState(f.cwd, "assignments"), held);
+});
+
+test("regression: next hides closed assignments without overwriting a concurrent serve update", t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L"]);
+  const held = {
+    "o/r#7": { repo: "o/r", issue: 7, node: "a1", epoch: 1, time: 1 },
+    "o/r#8": { repo: "o/r", issue: 8, node: "a1", epoch: 1, time: 1 },
+  };
+  writeState(f.cwd, "assignments", held);
+  const latest = { ...held, "o/r#9": { repo: "o/r", issue: 9, node: "a1", epoch: 2, time: 2 } };
+  const result = f.run(["next"], { origin: () => "o/r", gh: () => {
+    // The serve loop writes while next is reading GitHub's open-issue list.
+    writeState(f.cwd, "assignments", latest);
+    return JSON.stringify([{ number: 8 }, { number: 9 }]);
+  } });
+  assert.deepEqual(result, { code: 0, lines: ["#8 epoch=1"], errors: [] });
+  assert.deepEqual(readState(f.cwd, "assignments"), latest);
 });

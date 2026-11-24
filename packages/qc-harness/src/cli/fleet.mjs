@@ -9,7 +9,7 @@ import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
-import { readState, writeState } from "./fleet-state.mjs";
+import { readState } from "./fleet-state.mjs";
 import { nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
@@ -83,8 +83,8 @@ function readList(gh, args, cwd, valid) {
   return list;
 }
 
-/** Prune this node's closed work only after a readable open-issue list. */
-export function clearClosedAssignments({ root, fleet, repo, gh = runGh, warn = () => {} }) {
+/** Read this node's open work without changing the serve loop's saved snapshot. */
+export function readOpenAssignments({ root, fleet, repo, gh = runGh, warn = () => {} }) {
   const assignments = readState(root, "assignments");
   const held = Object.entries(assignments).filter(([, row]) => row.repo === repo && row.node === fleet.self);
   if (!held.length) return [];
@@ -96,9 +96,6 @@ export function clearClosedAssignments({ root, fleet, repo, gh = runGh, warn = (
     warn(`fleet node: ${error.message}`);
     return held.map(([, row]) => row);
   }
-  const closed = held.filter(([, row]) => !open.has(row.issue));
-  for (const [key] of closed) delete assignments[key];
-  if (closed.length) writeState(root, "assignments", assignments);
   return held.filter(([, row]) => open.has(row.issue)).map(([, row]) => row);
 }
 
@@ -211,7 +208,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     if (!repo) throw new Error("--repo is required when origin has no repository");
     const checkout = checkoutRootOf(cwd);
     if (options.verb === "next" && checkout) {
-      const assigned = clearClosedAssignments({ root: checkout, fleet, repo, gh });
+      const assigned = readOpenAssignments({ root: checkout, fleet, repo, gh });
       if (assigned.length) {
         for (const row of assigned) say(`#${row.issue} epoch=${row.epoch}`);
         return 0;

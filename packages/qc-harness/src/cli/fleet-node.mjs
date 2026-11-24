@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { lookup } from "node:dns/promises";
 import { assignTick } from "./fleet-assign.mjs";
-import { clearClosedAssignments, freeIssues } from "./fleet.mjs";
+import { readOpenAssignments, freeIssues } from "./fleet.mjs";
 import { runGh } from "./gh-run.mjs";
 import { createMessage, verifyMessage } from "./fleet-message.mjs";
 import { pruneSeen, readState, stateDir, writeState } from "./fleet-state.mjs";
@@ -298,9 +298,13 @@ async function assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, f
   const result = assignTick({ fleet, repo, kit, now: clock(), free, open: new Set(rows.map(row => row.number)),
     assignments: readState(root, "assignments"), peers: readState(root, "peers") });
   writeState(root, "assignments", result.assignments);
-  const pending = result.messages.map(({ node, kind, body }) => ({ node, attempts: 0, nextAttempt: clock(),
+  const outbox = readState(root, "outbox");
+  const pending = result.messages.filter(({ node, body }) => !outbox.some(entry => entry.node === node &&
+    entry.message.kind === "assign" && entry.message.repo === repo &&
+    entry.message.body.issue === body.issue && entry.message.body.epoch === body.epoch))
+    .map(({ node, kind, body }) => ({ node, attempts: 0, nextAttempt: clock(),
     message: unsignedFields(createMessage({ from: fleet.self, repo, kind, body, time: new Date(clock()).toISOString() }, fleet.secret)) }));
-  if (pending.length) writeState(root, "outbox", [...readState(root, "outbox"), ...pending]);
+  if (pending.length) writeState(root, "outbox", [...outbox, ...pending]);
   for (const warning of result.warnings) warn(warning);
   await flushOutbox({ root, fleet, clock, fetch, signal });
 }
@@ -338,7 +342,13 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
         if (leader) await assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
         else {
           const repos = new Set(Object.values(readState(root, "assignments")).filter(row => row.node === fleet.self).map(row => row.repo));
-          for (const repo of repos) clearClosedAssignments({ root, fleet, repo, gh, warn });
+          for (const repo of repos) {
+            const open = new Set(readOpenAssignments({ root, fleet, repo, gh, warn }).map(row => row.issue));
+            const assignments = readState(root, "assignments");
+            const kept = Object.fromEntries(Object.entries(assignments).filter(([, row]) =>
+              row.repo !== repo || row.node !== fleet.self || open.has(row.issue)));
+            if (Object.keys(kept).length !== Object.keys(assignments).length) writeState(root, "assignments", kept);
+          }
         }
       }
     } catch (error) { warn(`fleet node: ${error.message}`); }
