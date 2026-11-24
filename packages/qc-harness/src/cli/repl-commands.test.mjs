@@ -27,6 +27,50 @@ test("balances nested templates, braces, comments, and quotes inside values", ()
   assert.deepEqual(replCommands('$`echo ${await $`git status`} tail`'), ["echo QC_VALUE tail", "git status"]);
 });
 
+test("regex literals in interpolations preserve the remaining shell command", () => {
+  assert.deepEqual(replCommands("$`echo ${/'/.test(\"\")}; git commit --no-verify`"),
+    ["echo QC_VALUE; git commit --no-verify"]);
+});
+
+test("tools.Bash skips regex literals in property values", () => {
+  assert.deepEqual(replCommands('tools.Bash({ description: /}/.source, command: "git commit --no-verify" })'),
+    ["git commit --no-verify"]);
+  assert.deepEqual(replCommands(String.raw`tools.Bash({ description: /[},'\/]*/gi.source, command: "git commit --no-verify" })`),
+    ["git commit --no-verify"]);
+});
+
+test("regex scanning follows expression starts and preserves division", () => {
+  const expressions = [
+    "(/'/)", "(0, /'/)", "value = /'/", "({ pattern: /'/ })", "[/'/]", "!/'/", "value && /'/",
+    "value || /'/", "value ? /'/ : /}/", "(() => { /'/; })()", "(() => { {} /'/; })()",
+    "(() => { value; /'/; })()", "(() => { return /'/; })()", "(() => { value\n/'/; })()",
+    "(() => { return /* note */ /'/; })()", String.raw`/\/'[}]/gi`,
+    "12 / 3", "(12) / 3", "values[0] / 3", "value / /* note */ 3", "value / /}/.source.length",
+  ];
+  for (const expression of expressions) {
+    assert.deepEqual(replCommands('$`echo ${' + expression + '}; git commit --no-verify`'),
+      ["echo QC_VALUE; git commit --no-verify"], expression);
+    assert.deepEqual(replCommands(`tools.Bash({ description: ${expression}, command: "git commit --no-verify" })`),
+      ["git commit --no-verify"], expression);
+  }
+});
+
+test("line comments end at every JavaScript line terminator", () => {
+  for (const lineEnd of ["\r", "\n", "\u2028", "\u2029"]) {
+    assert.deepEqual(replCommands(`tools.Bash({ // note${lineEnd}command: "git commit --no-verify" })`),
+      ["git commit --no-verify"], JSON.stringify(lineEnd));
+    assert.deepEqual(replCommands('$`echo ${value // note' + lineEnd + '}; git commit --no-verify`'),
+      ["echo QC_VALUE; git commit --no-verify"], JSON.stringify(lineEnd));
+  }
+});
+
+test("string calls skip comments and whitespace around the argument", () => {
+  assert.deepEqual(replCommands('$("git commit --no-verify" /* note */)'),
+    ["git commit --no-verify"]);
+  assert.deepEqual(replCommands('$( /* before */ // note\r "git commit --no-verify" // after\u2028 /* end */ )'),
+    ["git commit --no-verify"]);
+});
+
 test("reads two commands and retains templates inside comments and strings", () => {
   assert.deepEqual(replCommands('await $`git status`; await $`git commit --no-verify`;'),
     ["git status", "git commit --no-verify"]);
