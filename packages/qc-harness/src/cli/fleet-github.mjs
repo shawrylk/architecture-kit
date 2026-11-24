@@ -46,7 +46,10 @@ export function postGithubMessage({ root, fleet, entry, leader = false, clock = 
   } catch { return false; }
 }
 
-function commentMessage(comment, { fleet, login, repo, issue }) {
+function commentMessage(comment, { fleet, login, repo }) {
+  const source = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/]+)\/issues\/([1-9]\d*)$/.exec(comment?.issue_url);
+  const issue = Number(source?.[2]);
+  if (source?.[1] !== repo || !Number.isSafeInteger(issue)) return null;
   const marker = parseMarker(comment?.body, { secret: fleet.secret, nodes: fleet.nodes.map(node => node.id), ownAuthor: comment?.user?.login === login });
   if (marker.refused) return null;
   const lines = comment.body.split("\n").filter(line => line.startsWith("<!-- qc:msg"));
@@ -63,28 +66,32 @@ function commentMessage(comment, { fleet, login, repo, issue }) {
   } catch { return null; }
 }
 
-/** Poll every held issue (and every assigned issue on the Leader), preserving failed cursors. */
-export function readGithub({ root, fleet, leader = false, clock = Date.now, gh = runGh }) {
-  const issues = Object.values(readState(root, "assignments")).filter(row => leader || row.node === fleet.self);
-  if (!issues.length) return;
+/** Discover work across repositories using GitHub timestamps and a replay-safe overlap. */
+export function readGithub({ root, fleet, repo, clock = Date.now, gh = runGh }) {
+  const repos = new Set([repo, ...Object.values(readState(root, "assignments")).map(row => row.repo)].filter(Boolean));
+  if (!repos.size) return;
   let login;
   try { login = JSON.parse(gh(["api", "user"], { cwd: root }))?.login; }
   catch { return; }
   if (typeof login !== "string" || !login) return;
   const state = readState(root, "github");
   const cursors = { ...state.cursors };
-  for (const { repo, issue } of issues) {
-    const key = `${repo}#${issue}`, until = new Date(clock()).toISOString();
+  for (const repo of repos) {
     try {
-      const pages = parsePages(gh(["api", `repos/${repo}/issues/${issue}/comments`, "--method", "GET", "--paginate",
-        "-f", `since=${cursors[key] ?? new Date(0).toISOString()}`], { cwd: root }));
+      const since = cursors[repo] ?? new Date(clock() - 600_000).toISOString();
+      const pages = parsePages(gh(["api", "--paginate", `repos/${repo}/issues/comments?per_page=100&since=${since}`], { cwd: root }));
       if (!pages?.length || !pages.every(Array.isArray)) continue;
+      let newest = -Infinity;
       for (const comment of pages.flat()) {
-        const message = commentMessage(comment, { fleet, login, repo, issue });
+        const updated = Date.parse(comment?.updated_at);
+        if (Number.isFinite(updated)) newest = Math.max(newest, updated);
+        const message = commentMessage(comment, { fleet, login, repo });
         if (message) receiveMessage({ root, fleet, message, clock });
       }
-      Object.defineProperty(cursors, key, { value: until, enumerable: true, configurable: true, writable: true });
-      writeState(root, "github", { ...state, cursors });
-    } catch { /* A gh/read failure keeps this issue's cursor for the next poll. */ }
+      if (Number.isFinite(newest)) {
+        Object.defineProperty(cursors, repo, { value: new Date(newest - 60_000).toISOString(), enumerable: true, configurable: true, writable: true });
+        writeState(root, "github", { ...state, cursors });
+      }
+    } catch { /* A gh/read failure keeps this repository's cursor for the next poll. */ }
   }
 }

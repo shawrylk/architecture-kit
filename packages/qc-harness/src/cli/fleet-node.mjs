@@ -338,7 +338,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     try {
       if (clock() >= nextGithub) {
         nextGithub = clock() + 120_000;
-        readGithub({ root, fleet, leader, clock, gh });
+        readGithub({ root, fleet, repo, clock, gh });
       }
       receiveAssignments(root, fleet, clock());
       receiveTalk(root, fleet, leader, clock());

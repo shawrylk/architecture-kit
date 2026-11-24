@@ -133,7 +133,7 @@ test("regression: a peer offline for four heartbeat ticks leaves the outbox empt
   let time = now, tick;
   const sent = [];
   const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
-    timer: fn => { tick = fn; }, clearTimer() {},
+    gh: apiResponse, timer: fn => { tick = fn; }, clearTimer() {},
     onSignal: (name, fn) => signals.set(name, fn), offSignal: name => signals.delete(name),
     fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); throw new Error("offline"); } });
   t.after(async () => { const closed = once(server, "close"); signals.get("SIGTERM")(); await closed; });
@@ -167,6 +167,7 @@ test("regression: stop ends a child with a hung peer and starts no further sends
       import { serveNode } from ${JSON.stringify(new URL("./fleet-node.mjs", import.meta.url).href)};
       let time = ${now};
       const server = await serveNode({ root: ${JSON.stringify(root)}, fleet: ${JSON.stringify(nodes)}, repo: "o/r",
+        gh: args => JSON.stringify(args[1] === "user" ? { login: "me" } : []),
         clock: () => time, listen: { port: 0 }, timer: fn => setInterval(() => {
           time = ${now} + ${kind === "heartbeat" ? 30_000 : 1000};
           void fn();
@@ -293,7 +294,7 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   let time = now;
   const timers = [], signals = new Map(), sent = [], cleared = [];
   const server = await serveNode({ root, fleet, repo: "o/r", kit: null, leader: true, clock: () => time,
-    listen: { port: 0 }, pid: 12345, timer: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },
+    gh: apiResponse, listen: { port: 0 }, pid: 12345, timer: (fn, ms) => { const timer = { fn, ms }; timers.push(timer); return timer; },
     clearTimer: timer => cleared.push(timer), onSignal: (name, fn) => signals.set(name, fn), offSignal: name => signals.delete(name),
     fetch: async (url, options) => { sent.push(JSON.parse(options.body)); return { status: 202 }; } });
   t.after(() => new Promise(resolve => server.close(resolve)));
@@ -439,7 +440,7 @@ test("regression: terminal outbox replies drain and dead letters keep only the l
 test("regression: SIGTERM closes a partial request within the stop deadline", async t => {
   const root = fixture(t), signals = new Map();
   const server = await serveNode({ root, fleet, repo: "o/r", listen: { port: 0 }, instance: "shutdown-instance",
-    onSignal: (name, fn) => signals.set(name, fn), offSignal: name => signals.delete(name) });
+    gh: apiResponse, onSignal: (name, fn) => signals.set(name, fn), offSignal: name => signals.delete(name) });
   t.after(() => { server.closeAllConnections(); server.close(); });
   const socket = connect({ host: "127.0.0.1", port: server.address().port });
   t.after(() => socket.destroy());
@@ -468,7 +469,7 @@ test("node ticks consume only leader assignments, validate bodies, and keep the 
     assign({ issue: 7, epoch: 2 }), assign({ issue: 8, epoch: 1 }, "inactive"), unclaimed,
     ...[0, -1, 1.5, "3", null].flatMap(value => [assign({ issue: value, epoch: 1 }), assign({ issue: 8, epoch: value })])]);
   const server = await serveNode({ root, fleet, repo: "o/r", clock: () => now, listen: { port: 0 },
-    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
+    gh: apiResponse, timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
   t.after(() => new Promise(resolve => server.close(resolve)));
   await tick();
   assert.deepEqual(readState(root, "assignments"), { "o/r#7": { repo: "o/r", issue: 7, node: "a", epoch: 2, time: now } });
@@ -653,7 +654,7 @@ test("Leader keeps plans and questions only for the assigned sender and epoch", 
     message({ kind: "plan", body: { issue: 7, epoch: 3, text: "x".repeat(20001) } })]);
   let tick;
   const server = await serveNode({ root, fleet, repo: "o/r", leader: true, clock: () => now, listen: { port: 0 },
-    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
+    gh: apiResponse, timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
   t.after(() => new Promise(resolve => server.close(resolve)));
   await tick();
   assert.deepEqual(readState(root, "queue"), valid);
@@ -668,7 +669,7 @@ test("follower records replies only from claimed Leaders at the held epoch, with
   writeState(root, "queue", [approve, answer, old]);
   let tick;
   const server = await serveNode({ root, fleet, repo: "o/r", clock: () => now, listen: { port: 0 },
-    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
+    gh: apiResponse, timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
   t.after(() => new Promise(resolve => server.close(resolve)));
   await tick();
   assert.deepEqual(readState(root, "queue"), [approve, answer]);
@@ -694,6 +695,31 @@ test("follower records replies only from claimed Leaders at the held epoch, with
   assert.deepEqual(readState(root, "inbox"), [approve, answer].map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
 });
 
+test("an unassigned follower discovers its first GitHub assign while HTTP is unavailable", async t => {
+  const root = fixture(t), calls = [], warnings = [];
+  let tick;
+  writeState(root, "peers", { b: { time: now, leader: true, kit: null } });
+  const incoming = message({ kind: "assign", body: { issue: 7, epoch: 1 } });
+  const { roleComment } = await import("./role-line.mjs");
+  const body = roleComment({ role: "leader", node: "b", kind: "assign", ref: "#7", summary: "assign for #7",
+    body: `<!-- qc:msg to=a ${Buffer.from(JSON.stringify(incoming)).toString("base64url")} -->` }, { secret });
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => now, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: value => warnings.push(value),
+    fetch: async () => { throw new Error("HTTP unavailable"); }, gh: args => {
+      calls.push(args);
+      return JSON.stringify(args[1] === "user" ? { login: "me" } : [{ user: { login: "me" }, body,
+        issue_url: "https://api.github.com/repos/o/r/issues/7", updated_at: new Date(now).toISOString() }]);
+    } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  assert.deepEqual(readState(root, "assignments"), {});
+  await tick();
+  assert.deepEqual(readState(root, "assignments"), { "o/r#7": { repo: "o/r", issue: 7, node: "a", epoch: 1, time: now } });
+  assert.deepEqual(calls, [["api", "user"], ["api", "--paginate",
+    `repos/o/r/issues/comments?per_page=100&since=${new Date(now - 600_000).toISOString()}`]]);
+  assert.deepEqual(readState(root, "queue"), []);
+  assert.deepEqual(warnings, []);
+});
+
 test("node ticks poll GitHub every 120 seconds and receive authenticated work through the shared queue", async t => {
   const root = fixture(t), calls = [];
   let tick, time = now;
@@ -707,7 +733,8 @@ test("node ticks poll GitHub every 120 seconds and receive authenticated work th
     gh: args => {
       if (args[0] !== "api") return JSON.stringify([{ number: 7 }]);
       calls.push(args);
-      return JSON.stringify(args[1] === "user" ? { login: "me" } : [{ user: { login: "me" }, body }]);
+      return JSON.stringify(args[1] === "user" ? { login: "me" } : [{ user: { login: "me" }, body,
+        issue_url: "https://api.github.com/repos/o/r/issues/7", updated_at: new Date(now).toISOString() }]);
     } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   await tick();

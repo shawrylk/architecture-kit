@@ -23,17 +23,17 @@ function fixture(t) {
 const message = (patch = {}) => createMessage({ from: "b", repo: "o/r", kind: "question", body: { issue: 7, text: "private payload" }, time: new Date(now).toISOString(), ...patch }, secret);
 const entry = (patch = {}) => ({ node: "b", message: message({ from: "a", time: new Date(now - 600_000).toISOString() }), attempts: 3, nextAttempt: now + 60_000, ...patch });
 function comment(msg = message(), { to = "a", author = "me", marker = {}, body } = {}) {
-  return { user: { login: author }, body: body ?? roleComment({ role: "coder", node: msg.from, kind: msg.kind, ref: `#${msg.body.issue}`, summary: `${msg.kind} for #${msg.body.issue}`,
+  return { user: { login: author }, issue_url: `https://api.github.com/repos/${msg.repo}/issues/${msg.body.issue}`,
+    updated_at: new Date(now).toISOString(), body: body ?? roleComment({ role: "coder", node: msg.from, kind: msg.kind, ref: `#${msg.body.issue}`, summary: `${msg.kind} for #${msg.body.issue}`,
     body: `<!-- qc:msg to=${to} ${Buffer.from(JSON.stringify(msg)).toString("base64url")} -->`, ...marker }, { secret }) };
 }
 const fakeReader = (comments, calls = []) => args => {
   calls.push(args);
   if (args[0] === "api" && args[1] === "user") return JSON.stringify({ login: "me" });
   assert.equal(args[0], "api");
-  assert.match(args[1], /^repos\/o\/[rs]\/issues\/\d+\/comments$/);
-  assert.ok(args.includes("--paginate"));
-  assert.ok(args.includes("GET"));
-  assert.ok(args.some(arg => arg.startsWith("since=")));
+  assert.deepEqual(args.slice(0, 2), ["api", "--paginate"]);
+  assert.match(args[2], /^repos\/o\/[rst]\/issues\/comments\?per_page=100&since=/);
+  assert.ok(Number.isFinite(Date.parse(new URL(`https://api.github.com/${args[2]}`).searchParams.get("since"))));
   return typeof comments === "string" ? comments : JSON.stringify(comments);
 };
 
@@ -117,22 +117,60 @@ test("failed posts remain for the next tick and do not block another eligible en
   }
 });
 
-test("GitHub reads held issues and Leader assignments across repositories with durable per-issue cursors", t => {
+test("a receiver clock 60 seconds ahead cannot skip a comment after an empty poll", t => {
+  const root = fixture(t), calls = [];
+  let serverTime = now;
+  const good = message({ time: new Date(now + 1000).toISOString() });
+  const posted = { ...comment(good), issue_url: "https://api.github.com/repos/o/r/issues/7",
+    updated_at: new Date(now + 1000).toISOString() };
+  const unrelated = { user: { login: "someone-else" }, body: "ordinary comment",
+    issue_url: "https://api.github.com/repos/o/r/issues/99", updated_at: new Date(now + 3000).toISOString() };
+  writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a" } });
+  const opts = { root, fleet, repo: "o/r", clock: () => serverTime + 60_000, gh: args => {
+    calls.push(args);
+    if (args[1] === "user") return JSON.stringify({ login: "me" });
+    const endpoint = args.find(arg => arg.startsWith("repos/"));
+    const since = new URL(`https://api.github.com/${endpoint}`).searchParams.get("since")
+      ?? args.find(arg => arg.startsWith("since="))?.slice(6);
+    return JSON.stringify([posted, unrelated].filter(row => Date.parse(row.updated_at) <= serverTime && Date.parse(row.updated_at) >= Date.parse(since)));
+  } };
+  readGithub(opts);
+  serverTime += 1000;
+  readGithub(opts);
+  assert.deepEqual(readState(root, "queue"), [good], "the empty poll must not advance past the next GitHub comment");
+  assert.equal(readState(root, "github").cursors["o/r"], new Date(now - 59_000).toISOString());
+  assert.deepEqual(calls.filter(args => args[1] !== "user").map(args => args.find(arg => arg.startsWith("repos/"))), [
+    `repos/o/r/issues/comments?per_page=100&since=${new Date(now - 540_000).toISOString()}`,
+    `repos/o/r/issues/comments?per_page=100&since=${new Date(now - 539_000).toISOString()}`,
+  ]);
+  serverTime += 2000;
+  readGithub(opts);
+  assert.equal(readState(root, "github").cursors["o/r"], new Date(now - 57_000).toISOString());
+  assert.deepEqual(readState(root, "queue"), [good], "overlapping reads silently discard seen IDs");
+  const saved = readState(root, "github");
+  readGithub({ ...opts, gh: fakeReader([]) });
+  assert.deepEqual(readState(root, "github"), saved, "an empty read preserves the cursor");
+  readGithub({ ...opts, gh: args => { if (args[1] === "user") return JSON.stringify({ login: "me" }); throw new Error("offline"); } });
+  assert.deepEqual(readState(root, "github"), saved, "a gh error preserves the cursor");
+});
+
+test("GitHub reads the serve repository and every assigned repository once with durable repository cursors", t => {
   for (const leader of [false, true]) {
     const root = fixture(t), calls = [];
     writeState(root, "assignments", {
       "o/r#7": { repo: "o/r", issue: 7, node: "a" }, "o/r#8": { repo: "o/r", issue: 8, node: "b" },
       "o/s#9": { repo: "o/s", issue: 9, node: "a" },
+      "o/t#10": { repo: "o/t", issue: 10, node: "b" },
     });
-    const opts = { root, fleet, leader, clock: () => now, gh: fakeReader([comment()], calls) };
+    const opts = { root, fleet, repo: "o/r", leader, clock: () => now, gh: fakeReader([comment()], calls) };
     readGithub(opts);
     const reads = calls.filter(args => args[1] !== "user");
-    assert.equal(reads.length, leader ? 3 : 2);
-    assert.deepEqual(readState(root, "queue").map(msg => msg.id).length, 1, "duplicate across issues is received once");
-    assert.ok(Object.values(readState(root, "github").cursors).every(cursor => cursor === new Date(now).toISOString()));
+    assert.deepEqual(reads.map(args => args[2].split("?")[0]), ["repos/o/r/issues/comments", "repos/o/s/issues/comments", "repos/o/t/issues/comments"]);
+    assert.deepEqual(readState(root, "queue").map(msg => msg.id).length, 1, "comments must match their repository");
+    assert.deepEqual(readState(root, "github").cursors, Object.fromEntries(["o/r", "o/s", "o/t"].map(repo => [repo, new Date(now - 60_000).toISOString()])));
     calls.length = 0;
     readGithub({ ...opts, clock: () => now + 120_000 });
-    assert.ok(calls.filter(args => args[1] !== "user").every(args => args.includes(`since=${new Date(now).toISOString()}`)));
+    assert.ok(calls.filter(args => args[1] !== "user").every(args => args[2].endsWith(`since=${new Date(now - 60_000).toISOString()}`)));
   }
 });
 
@@ -150,11 +188,14 @@ test("GitHub accepts only own authenticated addressed work, and shares HTTP sign
     comment(message({ time: new Date(now - 300_001).toISOString() })), comment(httpFirst),
     comment(message({ kind: "leader" })), comment(message({ kind: "heartbeat" })),
     comment(message(), { marker: { ref: "#8" } }),
-    comment(message({ repo: "o/s" })),
+    { ...comment(message({ repo: "o/s" })), issue_url: "https://api.github.com/repos/o/r/issues/7" },
+    { ...comment(message()), issue_url: "https://api.github.com/repos/o/r/issues/8" },
+    { ...comment(message()), issue_url: "invalid" },
+    { ...comment(message()), issue_url: "https://api.github.com/repos/o/s/issues/7" },
     comment(message(), { body: comment().body.replace(/sig=./, "sig=z") }),
   ];
   const malformed = roleComment({ role: "coder", node: "b", kind: "question", ref: "#7", summary: "question for #7", body: "<!-- qc:msg to=a eA -->" }, { secret });
-  readGithub({ root, fleet, clock: () => now, gh: fakeReader([...invalid, { user: { login: "me" }, body: malformed }, comment(good), comment(good)]) });
+  readGithub({ root, fleet, clock: () => now, gh: fakeReader([...invalid, comment(message(), { body: malformed }), comment(good), comment(good)]) });
   assert.deepEqual(readState(root, "queue"), [httpFirst, good]);
   const server = await createNodeServer({ root, fleet, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
@@ -166,13 +207,13 @@ test("paginated comments are read and gh errors or invalid responses preserve ea
   const root = fixture(t), cursor = new Date(now - 120_000).toISOString();
   writeState(root, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a" } });
   for (const result of [null, "bad-json", "{}", new Error("offline")]) {
-    writeState(root, "github", { cursors: { "o/r#7": cursor } });
+    writeState(root, "github", { cursors: { "o/r": cursor } });
     readGithub({ root, fleet, clock: () => now, gh: args => {
       if (args[1] === "user") return JSON.stringify({ login: "me" });
       if (result instanceof Error) throw result;
       return result;
     } });
-    assert.equal(readState(root, "github").cursors["o/r#7"], cursor);
+    assert.equal(readState(root, "github").cursors["o/r"], cursor);
   }
   const good = message();
   readGithub({ root, fleet, clock: () => now, gh: fakeReader(`[]\n${JSON.stringify([comment(good)])}`) });
