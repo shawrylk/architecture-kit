@@ -456,3 +456,186 @@ test("regression: SIGTERM closes a partial request within the stop deadline", as
   assert.equal(server.requestTimeout, 10_000);
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
 });
+
+test("node ticks consume only leader assignments, validate bodies, and keep the higher epoch", async t => {
+  const root = fixture(t);
+  let tick;
+  writeState(root, "peers", { b: { time: now, leader: true }, inactive: { time: now, leader: false } });
+  const assign = (body, from = "b") => message({ kind: "assign", from, body });
+  const other = message(), unclaimed = assign({ issue: 9, epoch: 1 }, "unaddressed");
+  writeState(root, "queue", [other, assign({ issue: 7, epoch: 2 }), assign({ issue: 7, epoch: 1 }),
+    assign({ issue: 7, epoch: 2 }), assign({ issue: 8, epoch: 1 }, "inactive"), unclaimed,
+    ...[0, -1, 1.5, "3", null].flatMap(value => [assign({ issue: value, epoch: 1 }), assign({ issue: 8, epoch: value })])]);
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => now, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await tick();
+  assert.deepEqual(readState(root, "assignments"), { "o/r#7": { repo: "o/r", issue: 7, node: "a", epoch: 2, time: now } });
+  assert.deepEqual(readState(root, "queue"), [other, unclaimed]);
+  writeState(root, "queue", [assign({ issue: 7, epoch: 3 })]);
+  await tick();
+  assert.equal(readState(root, "assignments")["o/r#7"].epoch, 3);
+  writeState(root, "peers", { b: { time: now, leader: false } });
+  writeState(root, "queue", [assign({ issue: 7, epoch: 4 })]);
+  await tick();
+  assert.equal(readState(root, "assignments")["o/r#7"].epoch, 3);
+});
+
+test("leader assigns every 60 seconds through gh, persists and sends; gh failure skips the whole tick", async t => {
+  const root = fixture(t), calls = [], sent = [], warnings = [];
+  let tick, time = now, fail = false;
+  const nodes = { ...fleet, nodes: fleet.nodes.slice(0, 2).map(node => ({ ...node, weight: 1, maxSize: "L" })) };
+  writeState(root, "peers", { b: { time: now, kit: "kit", leader: false } });
+  const server = await serveNode({ root, fleet: nodes, repo: "o/r", kit: "kit", leader: true, clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: text => warnings.push(text), git: () => "",
+    gh: args => { calls.push(args); if (fail && args.includes("number")) throw new Error("gh offline"); return JSON.stringify(args[0] === "pr" ? [] : args.includes("number,labels,createdAt")
+      ? [1, 2].map(number => ({ number, labels: [], createdAt: "2026-01-01" })) : [1, 2, 99].map(number => ({ number }))); },
+    fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); return { status: 202 }; } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  time += 59_999; await tick(); assert.equal(calls.length, 0);
+  time++; await tick();
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(args => args[1] === "list"));
+  assert.ok(calls.some(args => args[0] === "issue" && args.includes("number") && args.includes("open")));
+  assert.equal(Object.keys(readState(root, "assignments")).length, 2);
+  const remote = Object.values(readState(root, "assignments")).find(row => row.node === "b");
+  const outgoing = sent.filter(item => item.kind === "assign");
+  assert.equal(outgoing.length, 1);
+  assert.deepEqual(outgoing[0].body, { issue: remote.issue, epoch: 1 });
+  assert.equal(verifyMessage(outgoing[0], { secret, nodes: nodes.nodes, seen: {}, now: time }).ok, true);
+  const kept = { ...readState(root, "assignments"), "o/r#99": { repo: "o/r", issue: 99, node: "b", epoch: 1, time: now } };
+  writeState(root, "assignments", kept);
+  time += 60_000; fail = true; await tick();
+  assert.deepEqual(readState(root, "assignments"), kept);
+  assert.match(warnings.at(-1), /gh offline/);
+  fail = false; time += 60_000; await tick();
+  assert.deepEqual(readState(root, "assignments"), kept);
+});
+
+test("regression: follower clears closed assignments in every held repo and keeps them on gh errors", async t => {
+  const root = fixture(t), calls = [], warnings = [];
+  let tick, time = now, fail = true;
+  const held = (repo, issue, node = "a") => ({ repo, issue, node, epoch: 1, time: now });
+  writeState(root, "assignments", {
+    "o/r#7": held("o/r", 7), "o/r#8": held("o/r", 8),
+    "else/r#9": held("else/r", 9), "third/r#10": held("third/r", 10, "b"),
+  });
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: text => warnings.push(text),
+    fetch: async () => ({ status: 202 }), gh: (args, options) => {
+      const repo = args.at(-1); calls.push(repo);
+      assert.equal(options.cwd, root);
+      assert.deepEqual(args, ["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", repo]);
+      if (repo === "else/r" && fail) throw new Error("gh offline");
+      return JSON.stringify(repo === "o/r" ? [{ number: 8 }] : []);
+    } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  time += 59_999; await tick(); assert.deepEqual(calls, []);
+  time++; await tick();
+  assert.deepEqual(calls, ["o/r", "else/r"]);
+  assert.deepEqual(Object.keys(readState(root, "assignments")), ["o/r#8", "else/r#9", "third/r#10"]);
+  assert.match(warnings.at(-1), /gh offline/);
+  fail = false; time += 60_000; await tick();
+  assert.deepEqual(Object.keys(readState(root, "assignments")), ["o/r#8", "third/r#10"]);
+});
+
+test("regression: leader queues every new assign before a stop during the first send", async t => {
+  const root = fixture(t), signals = new Map();
+  let tick, time = now, savedAtSend;
+  const nodes = { ...fleet, nodes: ["a", "b", "c"].map((id, index) => ({ id, address: "127.0.0.1", port: 8080 + index, weight: 1, maxSize: "L" })) };
+  writeState(root, "assignments", { "o/r#99": { repo: "o/r", issue: 99, node: "a", epoch: 1, time: now } });
+  writeState(root, "peers", { b: { time: now, kit: null, leader: false }, c: { time: now, kit: null, leader: false } });
+  const server = await serveNode({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal: (name, fn) => signals.set(name, fn), offSignal() {}, git: () => "",
+    gh: args => JSON.stringify(args[0] === "pr" ? [] : args.includes("number") ? [1, 2, 99].map(number => ({ number }))
+      : [1, 2].map(number => ({ number, labels: [], createdAt: "2026-01-01" }))),
+    fetch: async (_url, options) => {
+      if (JSON.parse(options.body).kind === "assign") {
+        savedAtSend = readState(root, "outbox");
+        signals.get("SIGTERM")();
+      }
+      return { status: 202 };
+    } });
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  time += 60_000; await tick();
+  assert.equal(savedAtSend?.length, 2, "all remote assigns must be durable before the first send");
+  assert.deepEqual(new Set(savedAtSend.map(entry => entry.node)), new Set(["b", "c"]));
+  assert.ok(savedAtSend.every(entry => entry.message.kind === "assign" && !entry.message.sig && !entry.message.time));
+  assert.deepEqual(readState(root, "outbox"), savedAtSend);
+});
+
+test("regression: assign waits for a Leader heartbeat, expires after ten minutes, or drops on denial", async t => {
+  const root = fixture(t);
+  let tick, time = now;
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, fetch: async () => ({ status: 202 }),
+    gh: () => JSON.stringify([{ number: 7 }]) });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const post = fields => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST",
+    body: JSON.stringify(message({ ...fields, time: new Date(time).toISOString() })) });
+  const pending = message({ kind: "assign", body: { issue: 7, epoch: 1 } });
+  assert.equal((await post(pending)).status, 202);
+  await tick();
+  assert.deepEqual(readState(root, "queue"), [pending]);
+  assert.deepEqual(readState(root, "assignments"), {});
+  time += 599_999; await tick();
+  assert.deepEqual(readState(root, "queue"), [pending]);
+  assert.equal((await post({ kind: "heartbeat", body: { kit: null, leader: true } })).status, 202);
+  await tick();
+  assert.equal(readState(root, "assignments")["o/r#7"].epoch, 1);
+  assert.deepEqual(readState(root, "queue"), []);
+  writeState(root, "peers", {});
+  const expired = message({ kind: "assign", body: { issue: 8, epoch: 1 }, time: new Date(time).toISOString() });
+  writeState(root, "queue", [expired]);
+  time += 600_000; await tick();
+  assert.deepEqual(readState(root, "queue"), []);
+  const denied = message({ kind: "assign", body: { issue: 9, epoch: 1 }, time: new Date(time).toISOString() });
+  assert.equal((await post(denied)).status, 202);
+  assert.equal((await post({ kind: "heartbeat", body: { kit: null, leader: false } })).status, 202);
+  await tick();
+  assert.deepEqual(readState(root, "queue"), []);
+  assert.deepEqual(Object.keys(readState(root, "assignments")), ["o/r#7"]);
+});
+
+test("regression: Leader resends a dropped unclaimed assign and skips an identical pending assign", async t => {
+  const root = fixture(t), followerRoot = fixture(t), sent = [];
+  let leaderTick, followerTick, time = now;
+  const nodes = { ...fleet, nodes: fleet.nodes.slice(0, 2).map(node => ({ ...node, weight: 1, maxSize: "L" })) };
+  const follower = await serveNode({ root: followerRoot, fleet: { ...nodes, self: "b" }, repo: "o/r", clock: () => time,
+    listen: { port: 0 }, timer: fn => { followerTick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {},
+    fetch: async () => ({ status: 202 }), gh: () => JSON.stringify([{ number: 7 }]) });
+  t.after(() => new Promise(resolve => follower.close(resolve)));
+  const held = { "o/r#7": { repo: "o/r", issue: 7, node: "b", epoch: 2, time: now } };
+  writeState(root, "assignments", held);
+  const initial = message({ from: "a", kind: "assign", body: { issue: 7, epoch: 2 } });
+  writeState(followerRoot, "queue", [initial]);
+  const leader = await serveNode({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => time,
+    listen: { port: 0 }, timer: fn => { leaderTick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, git: () => "",
+    gh: args => JSON.stringify(args[0] === "pr" || args.includes("number,labels,createdAt") ? [] : [{ number: 7 }]),
+    fetch: async (_url, options) => {
+      sent.push(JSON.parse(options.body));
+      return fetch(`http://127.0.0.1:${follower.address().port}/message`, options);
+    } });
+  t.after(() => new Promise(resolve => leader.close(resolve)));
+  time += 600_000;
+  await followerTick();
+  assert.deepEqual(readState(followerRoot, "queue"), []);
+  assert.deepEqual(readState(followerRoot, "assignments"), {});
+  const live = () => writeState(root, "peers", { b: { time, kit: null, leader: false } });
+  live(); await leaderTick();
+  assert.equal(readState(followerRoot, "queue").filter(row => row.kind === "assign").length, 1);
+  await followerTick();
+  const accepted = readState(followerRoot, "assignments");
+  assert.deepEqual(accepted["o/r#7"], { ...held["o/r#7"], time });
+  time += 60_000; live(); await leaderTick(); await followerTick();
+  const repeats = sent.filter(row => row.kind === "assign");
+  assert.equal(repeats.length, 2);
+  assert.notEqual(repeats[0].id, repeats[1].id);
+  assert.deepEqual(repeats.map(row => row.body), [{ issue: 7, epoch: 2 }, { issue: 7, epoch: 2 }]);
+  assert.deepEqual(readState(followerRoot, "assignments"), accepted);
+  const pending = { node: "b", attempts: 1, nextAttempt: time + 300_000, message: repeats[1] };
+  writeState(root, "outbox", [pending]);
+  time += 60_000; live(); await leaderTick();
+  assert.deepEqual(readState(root, "outbox"), [pending]);
+  assert.equal(sent.filter(row => row.kind === "assign").length, 2);
+});
