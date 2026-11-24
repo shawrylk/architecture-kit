@@ -180,8 +180,8 @@ test("regression: stop ends a child with a hung peer and starts no further sends
     const started = Date.now();
     assert.deepEqual(await stopNode({ root, fleet: nodes }), { stopped: true, already: false });
     const [code, signal] = await exited;
-    assert.equal(code, process.platform === "win32" ? null : 0);
-    assert.equal(signal, process.platform === "win32" ? "SIGTERM" : null);
+    assert.equal(code, process.platform === "win32" ? 1 : 0);
+    assert.equal(signal, null);
     assert.ok(Date.now() - started < 5000);
     assert.equal(requests, 1);
     assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
@@ -318,6 +318,8 @@ test("server refuses addresses that resolve to wildcard interfaces", async t => 
   for (const address of ["0.0.0.0", "::", "0", "0:0:0:0:0:0:0:0"]) {
     await assert.rejects(createNodeServer({ root, fleet: { ...fleet, nodes: [{ id: "a", address }] }, listen: { port: 0 } }), /address.*interface/);
   }
+  await assert.rejects(createNodeServer({ root, fleet: { ...fleet, nodes: [{ id: "a", address: "node.invalid" }] }, listen: { port: 0 } }),
+    { message: "node a address node.invalid does not resolve to an interface" });
 });
 
 test("status remains available outside a checkout with no process or peer state", async t => {

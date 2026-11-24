@@ -35,7 +35,9 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
   const self = fleet.nodes.find(node => node.id === fleet.self);
   if (!fleet.secret) throw new Error("fleet secret is required");
   if (!self?.address) throw new Error(`fleet address is required for ${fleet.self}`);
-  const { address } = await lookup(self.address);
+  let address;
+  try { ({ address } = await lookup(self.address)); }
+  catch { throw new Error(`node ${self.id} address ${self.address} does not resolve to an interface`); }
   const normalized = address.includes(":") ? new URL(`http://[${address}]/`).hostname : address;
   if (["0.0.0.0", "[::]", "[::ffff:0:0]"].includes(normalized)) throw new Error("fleet address must name one interface");
   const server = createServer((req, res) => {
