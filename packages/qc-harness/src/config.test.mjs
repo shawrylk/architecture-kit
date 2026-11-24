@@ -178,6 +178,7 @@ test("codex defaults bound a short session and disable the skill plugin", () => 
     model: null,
     reviewModel: "gpt-6.1-sol",
     reviewEffort: "high",
+    pathsTests: "warn",
     compactTokens: 300000,
     disablePlugins: ["superpowers@claude-plugins-official"],
     envAllow: [],
@@ -188,6 +189,19 @@ test("codex defaults bound a short session and disable the skill plugin", () => 
     requireApproval: false,
     maxDiffLines: 400,
   });
+});
+
+test("codex.pathsTests accepts warn and add and rejects other values", (t) => {
+  const root = mkdtempSync(path.join(tmpdir(), "qc-paths-tests-config-"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  for (const pathsTests of ["warn", "add"]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ codex: { pathsTests } }));
+    assert.equal(load(root).codex.pathsTests, pathsTests);
+  }
+  for (const pathsTests of [null, "off", "WARN", 1, false]) {
+    writeFileSync(path.join(root, "qc.config.json"), JSON.stringify({ codex: { pathsTests } }));
+    assert.throws(() => load(root), { name: "TypeError", message: "codex.pathsTests must be warn or add" });
+  }
 });
 
 test("codex configuration raises limits and preserves omitted defaults", (t) => {

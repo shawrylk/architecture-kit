@@ -29,6 +29,7 @@ export const defaults = {
     model: null,
     reviewModel: "gpt-6.1-sol",
     reviewEffort: "high",
+    pathsTests: "warn",
     compactTokens: 300000,
     disablePlugins: ["superpowers@claude-plugins-official"],
     envAllow: [],
@@ -746,6 +747,7 @@ export function load(root = process.cwd()) {
       if (typeof value !== "string" || !value.trim()) throw new TypeError(`codex.${key} must be a non-empty string${key === "model" ? " or null" : ""}`);
     }
     if (!["low", "medium", "high"].includes(config.codex.reviewEffort)) throw new TypeError("codex.reviewEffort must be low, medium, or high");
+    if (!["warn", "add"].includes(config.codex.pathsTests)) throw new TypeError("codex.pathsTests must be warn or add");
   }
   if (isPlainObject(config.codex) && (!Array.isArray(config.codex.envAllow)
     || !config.codex.envAllow.every((name) => typeof name === "string" && name.length > 0 && name === name.trim()))) {
