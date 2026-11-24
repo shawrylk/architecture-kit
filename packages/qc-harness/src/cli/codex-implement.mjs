@@ -541,7 +541,7 @@ async function runJob(argv, {
       const result = await mutate({ worktree: settings.worktree, base: testBase, command: tests.command, files: Object.keys(locked), say: (line) => { const redacted = redactOutput(line); diagnostics.push(redacted); say(redacted); } });
       const report = briefPath(readFileSync(settings.brief, "utf8"), "Report", settings.brief);
       if (!report) { say("mutation: no Report: path in brief; cannot append survivors"); return; }
-      const rows = result.survived.map(({ file, line, mutant }) => redactOutput(`- ${file}:${line}: ${JSON.stringify(mutant)}`));
+      const rows = result.survived.map(({ file, line, mutant }) => redactOutput(`- ${file}:${line}: ${JSON.stringify(redactOutput(mutant))}`));
       mkdirSync(path.dirname(report), { recursive: true });
       appendFileSync(report, `\n## Survivors\n\n${diagnostics.length ? diagnostics.join("\n") : rows.length ? rows.join("\n") : "No survivors."}\n${result.skippedLines} lines skipped by syntax errors, the budget or ten-line cap.\n`);
     } catch (error) { say(redactOutput(`mutation: ${error.message.replace(/[\r\n]+/g, " ")}; no mutation coverage`)); }

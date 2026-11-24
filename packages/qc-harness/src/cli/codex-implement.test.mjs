@@ -2163,9 +2163,11 @@ test("implement completion mutates only after green locked runner tests and appe
 for (const source of ["diagnostic", "row", "error"]) {
   test(`mutation survivor ${source} text redacts every shared secret shape`, async (t) => {
     const { lockTests } = await import("./locked-tests.mjs");
+    const quotedAwsCredential = "z".repeat(40);
     const secrets = [
       ...["AKIA", "ASIA"].map((prefix) => `${prefix}${"A".repeat(16)}`),
       `${["aws_secret", "_access_key"].join("")} = ${"a".repeat(40)}`,
+      `const ${["aws_secret", "_access_key"].join("")} = "${quotedAwsCredential}"; const enabled = true;`,
       ...["p", "o", "u", "s", "r"].map((kind) => `gh${kind}_${"b".repeat(40)}`),
       `${["github", "pat"].join("_")}_${"c".repeat(50)}`,
       `${["-----BEGIN RSA", "PRIVATE KEY-----"].join(" ")} key material -----END RSA PRIVATE KEY-----`,
@@ -2196,6 +2198,7 @@ for (const source of ["diagnostic", "row", "error"]) {
     assert.equal(exit, 0);
     const output = messages.join("\n");
     const text = existsSync(report) ? readFileSync(report, "utf8") : "";
+    assert.ok(!text.includes(quotedAwsCredential), `${source} report leaked a double-quoted AWS credential value`);
     for (const secret of secrets) {
       assert.ok(!text.includes(secret), `${source} report leaked a synthetic secret`);
       assert.ok(!output.includes(secret), `${source} output leaked a synthetic secret`);
