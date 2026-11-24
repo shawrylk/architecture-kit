@@ -1798,7 +1798,7 @@ for (const verdict of ["APPROVED", "CHANGES_REQUIRED"]) {
       say: quiet, out: quiet,
       run: async () => {
         calls += 1;
-        writeFileSync(f.report, `VERDICT: ${verdict}\nVERDICT: APPROVED\n`);
+        writeFileSync(f.report, `VERDICT: APPROVED\nVERDICT: ${verdict}\n`);
         if (calls === 2) writeFileSync(f.progress, DONE_MARKER);
         assert.deepEqual(readLedger(ledgerFileOf(f.worktree)), []);
         return { status: 0 };
@@ -2437,6 +2437,27 @@ test("fresh review verdict and finding count come from contract lines", async (t
     } }), 0);
     const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
     assert.equal(row.verdict, verdict); assert.equal(row.findings, count);
+  }
+});
+
+test("only the FINDINGS line directly above the final unfenced verdict counts", async (t) => {
+  for (const [report, expected] of [
+    ["## Findings\n- [P2] bug; evidence:\n  ```text\n  FINDINGS: 99\n  ```\n## Debt\nNone.\nFINDINGS: 1\nVERDICT: CHANGES_REQUIRED\n", 1],
+    ["FINDINGS: 99\nVERDICT: APPROVED\nFINDINGS: 2\nVERDICT: CHANGES_REQUIRED\n", 2],
+    ["FINDINGS: 99\n\nVERDICT: CHANGES_REQUIRED\n", null],
+    ["> FINDINGS: 99\nVERDICT: CHANGES_REQUIRED\n", null],
+    ["```text\nFINDINGS: 99\n```\nVERDICT: CHANGES_REQUIRED\n", null],
+    ["FINDINGS: 3\nVERDICT: CHANGES_REQUIRED\n~~~text\nFINDINGS: 99\nVERDICT: APPROVED\n~~~\n", 3],
+    ["```text\nFINDINGS: 99\nVERDICT: APPROVED\n```\nFINDINGS: 4\nVERDICT: CHANGES_REQUIRED\n", 4],
+  ]) {
+    const f = reviewFixture(t);
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+      writeFileSync(f.report, report);
+      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), 0);
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
+    assert.equal(row.verdict, "CHANGES_REQUIRED", report);
+    assert.equal(row.findings, expected, report);
   }
 });
 

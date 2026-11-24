@@ -415,7 +415,30 @@ function completeReview(settings, started, originalStamp, message, say, metrics)
     if (stamp === null) throw new Error(`missing review report: ${settings.report}`);
     if (stamp === originalStamp || statSync(settings.report).mtimeMs < started) throw new Error(`stale review report: ${settings.report}`);
     const text = readFileSync(settings.report, "utf8");
-    const verdict = /^[ \t]*VERDICT:[ \t]*(APPROVED|CHANGES_REQUIRED)[ \t]*\r?$/m.exec(text)?.[1];
+    const lines = text.split(/\r?\n/);
+    let fence = null;
+    let verdict;
+    let count;
+    let previous;
+    for (const line of lines) {
+      const marker = /^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
+      if (fence) {
+        if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+        previous = undefined;
+        continue;
+      }
+      if (marker) {
+        fence = marker[1];
+        previous = undefined;
+        continue;
+      }
+      const match = /^[ \t]*VERDICT:[ \t]*(APPROVED|CHANGES_REQUIRED)[ \t]*$/.exec(line);
+      if (match) {
+        verdict = match[1];
+        count = /^[ \t]*FINDINGS:[ \t]*(\d+)[ \t]*$/.exec(previous ?? "")?.[1];
+      }
+      previous = line;
+    }
     if (!verdict) throw new Error(`review report has no VERDICT: line: ${settings.report}`);
     const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     const sha = git("rev-parse", "--verify", "HEAD^{commit}");
@@ -423,7 +446,6 @@ function completeReview(settings, started, originalStamp, message, say, metrics)
     const ledger = ledgerFileOf(settings.worktree);
     if (!ledger) throw new Error("cannot find the worktree ledger");
     appendRecord(ledger, { type: "verdict", kind: "codex", verdict, sha, branch });
-    const count = /^[ \t]*FINDINGS:[ \t]*(\d+)[ \t]*\r?$/m.exec(text)?.[1];
     const findings = count !== undefined && Number.isSafeInteger(Number(count)) ? Number(count) : null;
     metrics.review = { verdict, findings };
     return finish(say, `${message}; recorded ${verdict} on ${sha}`, 0);
