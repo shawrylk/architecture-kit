@@ -9,6 +9,54 @@ import { riskHits } from "./platform-risk.mjs";
 
 const cli = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+for (const source of [
+  'import value from "pkg/value";',
+  'export { value } from "./value.js";',
+  'import "./setup.js";',
+  'import("./lazy.js");',
+  'require("pkg/value");',
+  'new URL("./asset.svg", import.meta.url);',
+  'const url = "http://example.com/file";',
+  'const url = "https://example.com/file";',
+  'const builtin = "node:fs/promises";',
+]) {
+  test(`ignores specifier or URL: ${source}`, () => {
+    assert.deepEqual(riskHits(`+++ b/a.js\n@@ -0,0 +1 @@\n+${source}\n`), []);
+  });
+}
+
+for (const source of ['"a/b"', String.raw`'C:\\x'`, 'listen(3000)', String.raw`"\r\n"`, 'EPERM', 'process.platform']) {
+  test(`trailing opt-out suppresses every reason: ${source}`, () => {
+    assert.deepEqual(riskHits(`+++ b/a.js\n@@ -0,0 +1 @@\n+${source}; // qc-platform-ok\n`), []);
+  });
+}
+
+for (const source of ['"a/b"', String.raw`'C:\\x'`]) {
+  test(`still flags a plain path: ${source}`, () => {
+    assert.deepEqual(riskHits(`+++ b/a.js\n@@ -0,0 +1 @@\n+${source}\n`), [
+      { file: 'a.js', line: 1, reason: 'hard-coded path separator' },
+    ]);
+  });
+}
+
+test('specifier exemptions preserve other strings and risk reasons', () => {
+  for (const source of [
+    'import value from "pkg/value"; const fixture = "a/b";',
+    'require("pkg/value"); const fixture = "a/b";',
+    'new URL("./asset.svg", otherBase);',
+    'const fixture = "a/b"; // qc-platform-ok followed by more text',
+  ]) {
+    assert.deepEqual(riskHits(`+++ b/a.js\n+${source}\n`).map(({ reason }) => reason), ['hard-coded path separator']);
+  }
+  assert.deepEqual(riskHits('+++ b/a.js\n+const url = "http://localhost:3000/file";\n').map(({ reason }) => reason), ['fixed port']);
+});
+
+test('opt-out preserves line numbers and accepts trailing whitespace and CRLF', () => {
+  assert.deepEqual(riskHits('+++ b/a.js\n@@ -0,0 +7 @@\n+"a/b"; // qc-platform-ok  \r\n+EPERM\n'), [
+    { file: 'a.js', line: 8, reason: 'EPERM' },
+  ]);
+});
+
 for (const source of ['listen(3000)', 'listen(7)', 'const port = 8080', '"foo/bar"', '"foo\\\\bar"', '"/tmp"', 'split("/")', '"\\r\\n"', 'EPERM', 'process.platform']) {
   test(`flags added platform risk: ${source}`, () => {
     assert.equal(riskHits(`diff --git a/a.js b/a.js\n+++ b/a.js\n@@ -1 +7 @@\n+${source}\n`)[0].file, 'a.js');

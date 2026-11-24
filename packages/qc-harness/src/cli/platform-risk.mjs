@@ -32,7 +32,21 @@ export function riskHits(diff) {
     } else if (/^(?:new file mode|old mode|new mode) 120000$/.test(text)) add("symlink");
     else if (text.startsWith("@@")) line = Number(/\+(\d+)/.exec(text)?.[1] ?? 1);
     else if (text.startsWith("+") && !text.startsWith("+++")) {
-      if (CODE_FILE.test(file)) for (const [reason, pattern] of patterns) if (pattern.test(text.slice(1))) add(reason);
+      const source = text.slice(1);
+      if (CODE_FILE.test(file) && !/\/\/ qc-platform-ok\s*$/.test(source)) {
+        // Mask only exempt literals; other reasons still inspect the original line.
+        const paths = source.replace(/(["'`])(?:\\.|(?!\1)[^\\\n])*\1/g, (literal, quote, offset) => {
+          const before = source.slice(0, offset);
+          const after = source.slice(offset + literal.length);
+          const url = /^(?:https?:\/\/|node:)/.test(literal.slice(1));
+          const specifier = /\b(?:import|export)\s+[^;"'`]*\bfrom\s*$|\bimport\s*$|\b(?:import|require)\s*\(\s*$/.test(before);
+          const relativeUrl = /\bnew\s+URL\s*\(\s*$/.test(before) && /^\s*,\s*import\s*\.\s*meta\s*\.\s*url\s*\)/.test(after);
+          return url || specifier || relativeUrl ? "" : literal;
+        });
+        for (const [reason, pattern] of patterns) {
+          if (pattern.test(reason === "hard-coded path separator" ? paths : source)) add(reason);
+        }
+      }
       line += 1;
     } else if (text.startsWith(" ")) line += 1;
   }
