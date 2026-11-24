@@ -8,11 +8,11 @@ import { execFileSync, spawnSync } from "node:child_process";
 
 const script = fileURLToPath(new URL("../../../../user-config/claude/statusline.js", import.meta.url));
 
-function fixture(t, { checkout = true } = {}) {
+function fixture(t, { checkout = true, checkoutName = "project" } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "qc-statusline-"));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const home = path.join(root, "home");
-  const cwd = path.join(root, "project");
+  const cwd = path.join(root, checkoutName);
   mkdirSync(home);
   mkdirSync(cwd);
   const installed = path.join(home, "statusline.cjs");
@@ -75,6 +75,13 @@ test("shows the name after git and no mark for a live follower", t => {
 
 test("marks a live leader", t => {
   const f = fixture(t);
+  writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
+  f.node({ pid: process.pid, leader: true });
+  assert.match(f.run(), /fleet dev-1 leader /);
+});
+
+test("marks a live leader in a checkout whose path contains a newline", { skip: process.platform === "win32" }, t => {
+  const f = fixture(t, { checkoutName: "project\ncheckout" });
   writeFileSync(f.fleet, JSON.stringify({ self: "dev-1" }));
   f.node({ pid: process.pid, leader: true });
   assert.match(f.run(), /fleet dev-1 leader /);

@@ -100,8 +100,10 @@ function gitCommonDir(dir) {
       'git',
       ['-C', dir, 'rev-parse', '--is-inside-work-tree', '--path-format=absolute', '--git-common-dir'],
       { stdio: ['ignore', 'pipe', 'ignore'], timeout: 500 }
-    ).toString().trim().split('\n');
-    return output[0] === 'true' ? output[1] || null : null;
+    ).toString();
+    const separator = output.indexOf('\n');
+    const commonDir = output.slice(separator + 1).replace(/\n$/, '');
+    return separator >= 0 && output.slice(0, separator) === 'true' ? commonDir || null : null;
   } catch { return null; }
 }
 
