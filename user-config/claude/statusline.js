@@ -21,6 +21,7 @@ const NAVY = [16, 26, 58];
 const GREEN = [30, 120, 60];
 const BLUE = [30, 80, 170];
 const AMBER = [196, 110, 0];
+const TEAL = [25, 110, 115];
 
 function fg(rgb) { return `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`; }
 function bg(rgb) { return `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`; }
@@ -61,7 +62,7 @@ function gitInfo(dir) {
     raw = execFileSync(
       'git',
       ['-C', dir, '--no-optional-locks', 'status', '--porcelain=v2', '--branch'],
-      { stdio: ['ignore', 'pipe', 'ignore'] }
+      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 500 }
     ).toString();
   } catch {
     return null; // Not a repository, or git is missing.
@@ -71,9 +72,12 @@ function gitInfo(dir) {
   let ahead = 0;
   let behind = 0;
   let dirty = false;
+  let oid = '';
   for (const line of raw.split('\n')) {
     if (line.startsWith('# branch.head ')) {
       branch = line.slice('# branch.head '.length).trim();
+    } else if (line.startsWith('# branch.oid ')) {
+      oid = line.slice('# branch.oid '.length).trim();
     } else if (line.startsWith('# branch.ab ')) {
       const m = line.match(/\+(\d+) -(\d+)/);
       if (m) { ahead = Number(m[1]); behind = Number(m[2]); }
@@ -83,16 +87,50 @@ function gitInfo(dir) {
   }
 
   if (!branch || branch === '(detached)') {
-    try {
-      branch = execFileSync(
-        'git',
-        ['-C', dir, '--no-optional-locks', 'rev-parse', '--short', 'HEAD'],
-        { stdio: ['ignore', 'pipe', 'ignore'] }
-      ).toString().trim();
-    } catch { /* leave branch as whatever branch.head reported */ }
+    if (/^[a-f0-9]+$/.test(oid)) branch = oid.slice(0, 7);
   }
 
   return { branch, ahead, behind, dirty };
+}
+
+// Let git resolve symlinks, linked worktrees, and repository environment variables.
+function gitCommonDir(dir) {
+  try {
+    const output = execFileSync(
+      'git',
+      ['-C', dir, 'rev-parse', '--is-inside-work-tree', '--path-format=absolute', '--git-common-dir'],
+      { stdio: ['ignore', 'pipe', 'ignore'], timeout: 500 }
+    ).toString();
+    const separator = output.indexOf('\n');
+    const commonDir = output.slice(separator + 1).replace(/\n$/, '');
+    return separator >= 0 && output.slice(0, separator) === 'true' ? commonDir || null : null;
+  } catch { return null; }
+}
+
+function fleetSegment(dir) {
+  try {
+    // Keep in sync with fleetPath in the CLI; this script runs standalone.
+    const base = process.platform === 'win32' && process.env.APPDATA
+      ? process.env.APPDATA : process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+    const file = process.env.QC_FLEET_FILE || path.join(base, 'qc', 'fleet.json');
+    const self = JSON.parse(fs.readFileSync(file, 'utf8'))?.self;
+    if (typeof self !== 'string' || !/^[a-z0-9-]{1,32}$/.test(self)) return null;
+    let mark = '';
+    const commonDir = gitCommonDir(dir);
+    if (commonDir) {
+      mark = ' off';
+      try {
+        const node = JSON.parse(fs.readFileSync(path.join(commonDir, 'qc', 'fleet', 'node.json'), 'utf8'));
+        if (Number.isSafeInteger(node?.pid) && node.pid > 0) {
+          let alive = false;
+          try { process.kill(node.pid, 0); alive = true; }
+          catch (error) { alive = error.code === 'EPERM'; }
+          if (alive) mark = node.leader === true ? ' leader' : '';
+        }
+      } catch { /* missing or invalid node state means off */ }
+    }
+    return { text: `fleet ${self}${mark}`, color: TEAL };
+  } catch { return null; }
 }
 
 function gitSegmentText(info) {
@@ -285,6 +323,7 @@ process.stdin.on('data', (d) => { raw += d; }).on('end', () => {
   const line1 = [
     { text: tildePath(dir), color: ORANGE_BROWN },
     git ? { text: gitSegmentText(git), color: DARK_GREY } : null,
+    fleetSegment(dir),
     typeof ctxPct === 'number' ? { text: contextText(ctxPct, j.context_window?.context_window_size), color: SLATE } : null,
   ];
 
