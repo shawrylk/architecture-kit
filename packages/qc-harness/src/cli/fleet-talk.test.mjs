@@ -44,6 +44,22 @@ test("plan and ask send held issue and epoch to the heartbeat Leader; only plan 
   assert.match(body, /First line\nSecond line/);
 });
 
+test("plan and ask refuse queued Leader-only messages when the node is not Leader", async t => {
+  for (const verb of ["plan", "ask"]) {
+    const f = fixture(t);
+    const pending = ["assign", "approve", "answer"].map(kind => ({
+      node: "b", message: { ...f.queued(kind, `stale-${kind}`), from: "a" }, attempts: 1, nextAttempt: 0,
+    }));
+    writeState(f.root, "outbox", pending);
+
+    assert.equal(await f.run([verb, "7", "--file", f.file]), 0, f.errors.join("\n"));
+    assert.deepEqual(f.sent.map(message => message.kind), [verb === "plan" ? "plan" : "question"]);
+    assert.deepEqual(readState(f.root, "outbox"), []);
+    assert.deepEqual(readState(f.root, "dead"), pending.map(entry => ({ ...entry, reason: "not leader" })));
+    assert.equal(f.comments.length, verb === "plan" ? 1 : 0);
+  }
+});
+
 test("talk rejects invalid arguments, absent ownership or Leader, oversized text and unreadable files", async t => {
   const f = fixture(t);
   for (const args of [["plan", "7"], ["ask", "0", "--file", f.file], ["ask", "7", "--changes"], ["plan", "7", "--file", f.file, "extra"], ["plan", "7", "--file", f.file, "--file", f.file]]) {

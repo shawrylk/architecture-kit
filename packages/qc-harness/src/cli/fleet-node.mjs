@@ -123,7 +123,8 @@ export async function sendMessage({ root = process.cwd(), fleet, node, message, 
 }
 
 /** Transient HTTP failures hold later HTTP sends; eligible GitHub work can still pass. */
-export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal, gh, leader = false, allow = () => true }) {
+export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal, gh, leader = false,
+  allow = (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) }) {
   if (signal?.aborted) return;
   const fallback = entry => gh && githubFallback({ root, entry, now: clock() });
   const permittedRole = entry => {
