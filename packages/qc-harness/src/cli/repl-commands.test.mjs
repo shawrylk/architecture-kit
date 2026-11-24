@@ -39,11 +39,16 @@ test("tools.Bash skips regex literals in property values", () => {
     ["git commit --no-verify"]);
 });
 
+test("division across a line end keeps the Bash command", () => {
+  assert.deepEqual(replCommands('const timeoutMs = 120000; tools.Bash({ command: "git commit --no-verify", timeout: timeoutMs\n  / 2 });'),
+    ["git commit --no-verify"]);
+});
+
 test("regex scanning follows expression starts and preserves division", () => {
   const expressions = [
     "(/'/)", "(0, /'/)", "value = /'/", "({ pattern: /'/ })", "[/'/]", "!/'/", "value && /'/",
     "value || /'/", "value ? /'/ : /}/", "(() => { /'/; })()", "(() => { {} /'/; })()",
-    "(() => { value; /'/; })()", "(() => { return /'/; })()", "(() => { value\n/'/; })()",
+    "(() => { value; /'/; })()", "(() => { return /'/; })()", "value\n/ 2",
     "(() => { return /* note */ /'/; })()", String.raw`/\/'[}]/gi`,
     "12 / 3", "(12) / 3", "values[0] / 3", "value / /* note */ 3", "value / /}/.source.length",
   ];

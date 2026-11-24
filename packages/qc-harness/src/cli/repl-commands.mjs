@@ -88,7 +88,8 @@ function regexEnd(code, at) {
 // Track expression starts just far enough to distinguish regex literals from division.
 function expressionToken(code, at, regexAllowed) {
   const next = trivia(code, at);
-  if (next !== at) return [next, regexAllowed || LINE_END.test(code.slice(at, next))];
+  // Division can continue across a line end, so trivia keeps the state it found.
+  if (next !== at) return [next, regexAllowed];
   const char = code[at];
   if ('\'"`'.includes(char)) return [literalAt(code, at)[1], false];
   if ("{([".includes(char)) return [groupEnd(code, at), char === "{"];
