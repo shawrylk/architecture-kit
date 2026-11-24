@@ -5,6 +5,9 @@ import { closeSync, mkdirSync, openSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { lookup } from "node:dns/promises";
+import { assignTick } from "./fleet-assign.mjs";
+import { freeIssues } from "./fleet.mjs";
+import { runGh } from "./gh-run.mjs";
 import { createMessage, verifyMessage } from "./fleet-message.mjs";
 import { pruneSeen, readState, stateDir, writeState } from "./fleet-state.mjs";
 
@@ -264,13 +267,46 @@ export async function nodeStatus({ root = process.cwd(), fleet, fetch = nodeFetc
   return `node=${status} leader=${leader} peers=${recent.length}/${others.length}`;
 }
 
+/** Consume assignments only after checking the sender's latest leadership claim. */
+function receiveAssignments(root, fleet, now) {
+  const queue = readState(root, "queue"), peers = readState(root, "peers"), assignments = readState(root, "assignments");
+  for (const message of queue) {
+    if (message.kind !== "assign" || peers[message.from]?.leader !== true) continue;
+    const { issue, epoch } = message.body ?? {};
+    if (!Number.isSafeInteger(issue) || issue <= 0 || !Number.isSafeInteger(epoch) || epoch <= 0) continue;
+    const key = `${message.repo}#${issue}`;
+    if (!assignments[key] || epoch > assignments[key].epoch) {
+      assignments[key] = { repo: message.repo, issue, node: fleet.self, epoch, time: now };
+    }
+  }
+  if (queue.some(message => message.kind === "assign")) {
+    writeState(root, "assignments", assignments);
+    writeState(root, "queue", queue.filter(message => message.kind !== "assign"));
+  }
+}
+
+async function assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal, warn }) {
+  const { free } = freeIssues(repo, root, { gh, git, holdLabel });
+  const rows = JSON.parse(gh(["issue", "list", "--state", "open", "--limit", "500", "--json", "number", "--repo", repo], { cwd: root }));
+  if (!Array.isArray(rows) || !rows.every(row => Number.isSafeInteger(row?.number) && row.number > 0)) throw new Error("gh issue list returned no readable list");
+  const result = assignTick({ fleet, repo, kit, now: clock(), free, open: new Set(rows.map(row => row.number)),
+    assignments: readState(root, "assignments"), peers: readState(root, "peers") });
+  writeState(root, "assignments", result.assignments);
+  for (const warning of result.warnings) warn(warning);
+  for (const { node, kind, body } of result.messages) {
+    if (signal.aborted) return;
+    const message = createMessage({ from: fleet.self, repo, kind, body, time: new Date(clock()).toISOString() }, fleet.secret);
+    await sendMessage({ root, fleet, node: fleet.nodes.find(peer => peer.id === node), message, clock, fetch, signal });
+  }
+}
+
 /** One serial tick avoids overlapping network retries and heartbeats. */
 export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now,
-  fetch = nodeFetch, listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
+  fetch = nodeFetch, gh = runGh, git, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
   const server = await createNodeServer({ root, fleet, clock, listen, instance });
   const sends = new AbortController();
-  let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000;
+  let interval, forceClose, busy = false, closing = false, nextHeartbeat = clock() + 30_000, nextAssign = clock() + 60_000;
   const shutdown = () => {
     if (closing) return;
     closing = true;
@@ -286,11 +322,16 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
     if (busy || closing) return;
     busy = true;
     try {
+      receiveAssignments(root, fleet, clock());
       if (clock() >= nextHeartbeat) {
         nextHeartbeat = clock() + 30_000;
         await heartbeat({ root, fleet, repo, kit, leader, clock, fetch, signal: sends.signal });
       }
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal });
+      if (leader && !closing && clock() >= nextAssign) {
+        nextAssign = clock() + 60_000;
+        await assignWork({ root, fleet, repo, kit, clock, gh, git, holdLabel, fetch, signal: sends.signal, warn });
+      }
     } catch (error) { warn(`fleet node: ${error.message}`); }
     finally { busy = false; }
   }, 1000);

@@ -318,3 +318,27 @@ test("CLI serve runs the node loop and exits after an injected stop signal", asy
   assert.deepEqual(readState(f.cwd, "node"), {});
   assert.equal(signals.size, 0);
 });
+
+test("next prints this node's repo assignments before any GitHub read", t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L"]);
+  writeState(f.cwd, "assignments", {
+    "o/r#7": { repo: "o/r", issue: 7, node: "a1", epoch: 2, time: 1 },
+    "o/r#8": { repo: "o/r", issue: 8, node: "b2", epoch: 1, time: 1 },
+    "else/r#9": { repo: "else/r", issue: 9, node: "a1", epoch: 1, time: 1 },
+  });
+  const result = f.run(["next"], { origin: () => "o/r", gh: () => { throw new Error("unexpected GitHub read"); } });
+  assert.deepEqual(result, { code: 0, lines: ["#7 epoch=2"], errors: [] });
+  const nested = path.join(f.cwd, "nested");
+  mkdirSync(nested);
+  assert.deepEqual(f.run(["next"], { cwd: nested, origin: () => "o/r" }), result);
+});
+
+
+test("next retains free-issue output outside a checkout", t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L"]);
+  rmSync(path.join(f.cwd, ".git"), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  assert.deepEqual(f.run(["next", "--repo", "o/r"], { origin: () => null, gh: fakeGh([issue(1)]), git: () => "" }),
+    { code: 0, lines: ["1"], errors: [] });
+});

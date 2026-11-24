@@ -9,6 +9,7 @@ import { load } from "../config.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
+import { readState } from "./fleet-state.mjs";
 import { nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 
 const SIZES = ["S", "M", "L"];
@@ -184,13 +185,21 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     try { value = JSON.parse(text); } catch { throw new Error(`fleet file has invalid JSON: ${file}`); }
     const fleet = validateFleet(value);
     if (["start", "stop", "serve"].includes(options.verb)) {
-      return runNodeVerb(options, { root: cwd, fleet, env, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
+      return runNodeVerb(options, { root: cwd, fleet, env, gh, git, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
     }
     const localRepo = origin(cwd);
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
+    const checkout = checkoutRootOf(cwd);
+    if (options.verb === "next" && checkout) {
+      const assigned = Object.values(readState(checkout, "assignments")).filter(row => row.repo === repo && row.node === fleet.self);
+      if (assigned.length) {
+        for (const row of assigned) say(`#${row.issue} epoch=${row.epoch}`);
+        return 0;
+      }
+    }
     const remote = localRepo?.toLowerCase() === repo ? "origin" : `https://github.com/${repo}.git`;
-    const config = load(checkoutRootOf(cwd) ?? cwd);
+    const config = load(checkout ?? cwd);
     const { free, taken } = freeIssues(repo, cwd, { gh, git, remote, holdLabel: config.merge.holdLabel });
     const owned = free.map(row => ({ ...row, owner: ownerOf(repo, row.number, row.size, fleet.nodes) }));
     if (options.verb === "next") {
@@ -214,12 +223,13 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
   }
 }
 
-async function runNodeVerb(options, { root, fleet, env, origin, say, warn, node }) {
-  const deps = { ...node, root, fleet, env, leader: options["--leader"] === true };
+async function runNodeVerb(options, { root, fleet, env, gh, git, origin, say, warn, node }) {
+  const deps = { gh, git, ...node, root, fleet, env, leader: options["--leader"] === true };
   if (options.verb === "serve") {
     const kitRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const kit = gitOut(kitRoot, "rev-parse", "HEAD")?.trim() || null;
-    const server = await serveNode({ ...deps, repo: origin(root) ?? "qc/fleet", kit, warn });
+    const holdLabel = load(checkoutRootOf(root) ?? root).merge.holdLabel;
+    const server = await serveNode({ ...deps, holdLabel, repo: origin(root) ?? "qc/fleet", kit, warn });
     return new Promise(resolve => server.once("close", () => resolve(0)));
   }
   if (options.verb === "start") {

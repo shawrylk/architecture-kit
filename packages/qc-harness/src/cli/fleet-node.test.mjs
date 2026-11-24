@@ -454,3 +454,58 @@ test("regression: SIGTERM closes a partial request within the stop deadline", as
   assert.equal(server.requestTimeout, 10_000);
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
 });
+
+test("node ticks consume only leader assignments, validate bodies, and keep the higher epoch", async t => {
+  const root = fixture(t);
+  let tick;
+  writeState(root, "peers", { b: { time: now, leader: true }, inactive: { time: now, leader: false } });
+  const assign = (body, from = "b") => message({ kind: "assign", from, body });
+  const other = message();
+  writeState(root, "queue", [other, assign({ issue: 7, epoch: 2 }), assign({ issue: 7, epoch: 1 }),
+    assign({ issue: 7, epoch: 2 }), assign({ issue: 8, epoch: 1 }, "inactive"), assign({ issue: 9, epoch: 1 }, "unaddressed"),
+    ...[0, -1, 1.5, "3", null].flatMap(value => [assign({ issue: value, epoch: 1 }), assign({ issue: 8, epoch: value })])]);
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => now, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {} });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await tick();
+  assert.deepEqual(readState(root, "assignments"), { "o/r#7": { repo: "o/r", issue: 7, node: "a", epoch: 2, time: now } });
+  assert.deepEqual(readState(root, "queue"), [other]);
+  writeState(root, "queue", [assign({ issue: 7, epoch: 3 })]);
+  await tick();
+  assert.equal(readState(root, "assignments")["o/r#7"].epoch, 3);
+  writeState(root, "peers", { b: { time: now, leader: false } });
+  writeState(root, "queue", [assign({ issue: 7, epoch: 4 })]);
+  await tick();
+  assert.equal(readState(root, "assignments")["o/r#7"].epoch, 3);
+});
+
+test("leader assigns every 60 seconds through gh, persists and sends; gh failure skips the whole tick", async t => {
+  const root = fixture(t), calls = [], sent = [], warnings = [];
+  let tick, time = now, fail = false;
+  const nodes = { ...fleet, nodes: fleet.nodes.slice(0, 2).map(node => ({ ...node, weight: 1, maxSize: "L" })) };
+  writeState(root, "peers", { b: { time: now, kit: "kit", leader: false } });
+  const server = await serveNode({ root, fleet: nodes, repo: "o/r", kit: "kit", leader: true, clock: () => time, listen: { port: 0 },
+    timer: fn => { tick = fn; }, clearTimer() {}, onSignal() {}, offSignal() {}, warn: text => warnings.push(text), git: () => "",
+    gh: args => { calls.push(args); if (fail && args.includes("number")) throw new Error("gh offline"); return JSON.stringify(args[0] === "pr" ? [] : args.includes("number,labels,createdAt")
+      ? [1, 2].map(number => ({ number, labels: [], createdAt: "2026-01-01" })) : [1, 2, 99].map(number => ({ number }))); },
+    fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); return { status: 202 }; } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  time += 59_999; await tick(); assert.equal(calls.length, 0);
+  time++; await tick();
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(args => args[1] === "list"));
+  assert.ok(calls.some(args => args[0] === "issue" && args.includes("number") && args.includes("open")));
+  assert.equal(Object.keys(readState(root, "assignments")).length, 2);
+  const remote = Object.values(readState(root, "assignments")).find(row => row.node === "b");
+  const outgoing = sent.filter(item => item.kind === "assign");
+  assert.equal(outgoing.length, 1);
+  assert.deepEqual(outgoing[0].body, { issue: remote.issue, epoch: 1 });
+  assert.equal(verifyMessage(outgoing[0], { secret, nodes: nodes.nodes, seen: {}, now: time }).ok, true);
+  const kept = { ...readState(root, "assignments"), "o/r#99": { repo: "o/r", issue: 99, node: "b", epoch: 1, time: now } };
+  writeState(root, "assignments", kept);
+  time += 60_000; fail = true; await tick();
+  assert.deepEqual(readState(root, "assignments"), kept);
+  assert.match(warnings.at(-1), /gh offline/);
+  fail = false; time += 60_000; await tick();
+  assert.deepEqual(readState(root, "assignments"), kept);
+});
