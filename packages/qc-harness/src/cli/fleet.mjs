@@ -201,7 +201,7 @@ function initialize(options, file, say) {
       Object.assign(node, { address: ipv6 ?? host, port: Number(port) });
     }
   }
-  const secret = options["--secret"];
+  const secret = options["--secret"] ?? (options["--nodes"] === undefined ? undefined : randomBytes(32).toString("hex"));
   const fleet = validateFleet({ self, nodes, secret, key: createKey(), ...(options["--nodes"] === undefined ? { discover: true } : {}) });
   mkdirSync(path.dirname(file), { recursive: true });
   let fd;
@@ -215,7 +215,9 @@ function initialize(options, file, say) {
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
+  if (options["--nodes"] !== undefined) say(`fleet initialized: ${file}`);
   say(`fleet name: ${self}`);
+  if (options["--nodes"] !== undefined && !options["--secret"]) say(`run on the other PCs: npx architecture-harness fleet init --secret ${secret}`);
   return 0;
 }
 
@@ -263,7 +265,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
       const now = node.clock?.() ?? Date.now(), pairing = readPairing(cwd);
       const live = row => Number.isFinite(row.seen) && now >= row.seen && now - row.seen <= 600_000;
       if (fleet.secret && readState(cwd, "node").leader) {
-        for (const [id, row] of Object.entries(pairing.requests)) if (live(row)) say(`join? ${id} code=${row.code} host=${row.hostname} address=${row.address}`);
+        for (const [id, row] of Object.entries(pairing.requests)) if (live(row) && /^\d{6}$/.test(row.code ?? "")) say(`join? ${id} code=${row.code} host=${row.hostname} address=${row.address}`);
       } else if (!fleet.secret) {
         for (const [id, row] of Object.entries(pairing.offers)) if (live(row)) say(`joining ${id} code=${row.code}`);
       }

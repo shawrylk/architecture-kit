@@ -218,6 +218,11 @@ test("no-secret discovery broadcasts joins and forwards only small joins to pair
   const join = JSON.parse(f.socket.sent[0].data.toString());
   assert.equal(join.kind, "join");
   assert.equal(join.sig, undefined);
+  assert.equal(join.pub, undefined);
+  assert.equal(join.nonce, undefined);
+  assert.match(join.commit, /^[0-9a-f]{64}$/);
+  f.timers[0].fn();
+  assert.equal(JSON.parse(f.socket.sent.at(-1).data.toString()).commit, join.commit);
   assert.equal(join.address, "192.168.1.10");
   assert.equal(f.timers[0].ms, 15_000);
   const received = [], signed = [];

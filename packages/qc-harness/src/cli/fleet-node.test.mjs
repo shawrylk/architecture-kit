@@ -1393,17 +1393,17 @@ test("join mode exposes health and pair only, enforces 2 KB and sender validatio
   assert.equal((await fetch(`${base}/message`, { method: "POST", body: JSON.stringify(message()) })).status, 404);
   assert.equal((await fetch(`${base}/pair`, { method: "GET" })).status, 404);
   assert.equal((await fetch(`${base}/pair`, { method: "POST", body: "x".repeat(2049) })).status, 413);
-  const body = { kind: "offer", leader: "leader", pub: createKey().public, port: 8080, time: now };
+  const body = { kind: "offer", leader: "leader", pub: createKey().public, nonce: "11".repeat(16), port: 8080, time: now };
   assert.equal((await fetch(`${base}/pair`, { method: "POST", body: JSON.stringify(body) })).status, 202);
   assert.equal((await fetch(`${base}/pair`, { method: "POST", body: JSON.stringify({ ...body, address: "192.168.1.1" }) })).status, 400);
 });
 
 test("serve rereads the fleet file and leaves join mode on a tick without restarting", async t => {
-  const { createKey, createPairing, pairCode, pairingDecision } = await import("./fleet-pair.mjs");
+  const { createKey, createPairing, readPairing, pairingDecision } = await import("./fleet-pair.mjs");
   const root = fixture(t), leaderRoot = fixture(t), ticks = [], beacons = [];
   const file = path.join(root, "fleet.json");
   const joining = { self: "joiner", discover: true, key: createKey(), nodes: [{ id: "joiner", address: "127.0.0.1", port: 8080, weight: 1 }] };
-  const leading = { self: "leader", secret, key: createKey(), nodes: [{ id: "leader", port: 8081 }] };
+  const leading = { self: "leader", secret, key: createKey(), nodes: [{ id: "leader", address: "127.0.0.1", port: 8081 }] };
   writeFileSync(file, JSON.stringify(joining));
   let githubReads = 0;
   class Socket extends EventEmitter {
@@ -1423,11 +1423,17 @@ test("serve rereads the fleet file and leaves join mode on a tick without restar
   const sent = [];
   const pairing = createPairing({ root: leaderRoot, fleet: leading, address: "127.0.0.1", leader: () => true, clock: () => now,
     fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); return { status: 202 }; } });
+  const leaderServer = await createNodeServer({ root: leaderRoot, fleet: leading, pairing, clock: () => now, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => leaderServer.close(resolve)));
+  leading.nodes[0].port = leaderServer.address().port;
   pairing.receiveJoin(beacons[0], "127.0.0.1");
   await pairing.tick();
   const base = `http://127.0.0.1:${server.address().port}`;
   assert.equal((await fetch(`${base}/pair`, { method: "POST", body: JSON.stringify(sent[0]) })).status, 202);
-  const code = pairCode(joining.key.public, leading.key.public);
+  // The reveal travels through the Leader's HTTP /pair handler.
+  for (let i = 0; i < 100 && !readPairing(leaderRoot).requests.joiner.code; i++) await new Promise(resolve => setTimeout(resolve, 10));
+  const code = readPairing(leaderRoot).requests.joiner.code;
+  assert.match(code, /^\d{6}$/);
   pairingDecision(leaderRoot, "allow", code, now);
   await pairing.tick();
   assert.equal((await fetch(`${base}/pair`, { method: "POST", body: JSON.stringify(sent.find(body => body.kind === "grant")) })).status, 202);

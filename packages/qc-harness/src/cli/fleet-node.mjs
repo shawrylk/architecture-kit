@@ -60,7 +60,7 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
       res.end(JSON.stringify(data));
     };
     if (req.method === "GET" && req.url === "/health") { reply(200, { ok: true, instance }); return; }
-    const pairRoute = !fleet.secret && req.url === "/pair";
+    const pairRoute = Boolean(pairing) && req.url === "/pair";
     if (req.method !== "POST" || !(pairRoute || (fleet.secret && req.url === "/message"))) { reply(404, { ok: false, reason: "not-found" }); req.resume(); return; }
     const chunks = [];
     let size = 0;

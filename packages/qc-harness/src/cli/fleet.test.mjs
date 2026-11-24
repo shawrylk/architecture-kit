@@ -99,7 +99,7 @@ test("fleet settings accept optional secrets, ordered leaders and node endpoints
   ]) assert.throws(() => validateFleet({ ...old, ...changes }), new RegExp(field));
 });
 
-test("init accepts explicit secrets and addresses and writes a fresh key without a secret by default", t => {
+test("init accepts explicit secrets and addresses and generates a secret for static nodes", t => {
   const f = fixture(t);
   const args = ["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:S"];
   const secret = "ab".repeat(32);
@@ -120,9 +120,11 @@ test("init accepts explicit secrets and addresses and writes a fresh key without
   const generated = f.run([...args, "--force"]);
   assert.equal(generated.code, 0);
   saved = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
-  assert.equal(saved.secret, undefined);
+  assert.match(saved.secret, /^[a-f0-9]{64}$/);
   assert.ok(saved.key.public && saved.key.private);
-  assert.deepEqual(generated.lines, ["fleet name: a1"]);
+  assert.ok(generated.lines.includes(`fleet initialized: ${f.env.QC_FLEET_FILE}`));
+  assert.ok(generated.lines.includes("fleet name: a1"));
+  assert.ok(generated.lines.includes(`run on the other PCs: npx architecture-harness fleet init --secret ${saved.secret}`));
   assert.equal(f.run([...args, "--force"]).code, 0);
   assert.notEqual(JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8")).key.public, saved.key.public);
 });
@@ -583,7 +585,7 @@ test("pushed requires owns and strict branch/head and sends the held epoch to th
 });
 
 test("start migrates keys, leader creates secret, and pairing CLI and status share the state contract", async t => {
-  const { createKey, createPairing, pairCode, readPairing } = await import("./fleet-pair.mjs");
+  const { createKey, createPairing, readPairing } = await import("./fleet-pair.mjs");
   const f = fixture(t), now = 1_800_000_000_000, address = "127.0.0.1";
   assert.equal(f.run(["init", "--self", "leader"]).code, 0);
   const old = JSON.parse(readFileSync(f.env.QC_FLEET_FILE, "utf8"));
@@ -600,10 +602,17 @@ test("start migrates keys, leader creates secret, and pairing CLI and status sha
   assert.ok(saved.key.public && saved.key.private);
   assert.match(saved.secret, /^[a-f0-9]{64}$/);
   const joinFleet = { self: "new-pc", key: createKey(), nodes: [{ id: "new-pc", port: 8081 }] };
-  const joining = createPairing({ root: f.cwd, fleet: joinFleet, address, clock: () => now });
-  const pairing = createPairing({ root: f.cwd, fleet: saved, address, leader: () => true, clock: () => now });
+  const joining = createPairing({ root: f.cwd, fleet: joinFleet, address, clock: () => now,
+    fetch: async (_url, options) => { pairing.receivePair(JSON.parse(options.body), address); } });
+  const sent = [];
+  const pairing = createPairing({ root: f.cwd, fleet: saved, address, leader: () => true, clock: () => now,
+    fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); } });
   assert.equal(pairing.receiveJoin(joining.beacon(), address), true);
-  const code = pairCode(saved.key.public, joinFleet.key.public);
+  const pending = f.run(["status"], { origin: () => null, node: { clock: () => now } });
+  assert.equal(pending.lines.some(line => line.startsWith("join?")), false);
+  await pairing.tick();
+  assert.equal(joining.receivePair(sent[0], address), true);
+  const code = readPairing(f.cwd).requests["new-pc"].code;
   const status = f.run(["status"], { origin: () => null, node: { clock: () => now } });
   assert.equal(status.code, 0, status.errors.join("\n"));
   assert.ok(status.lines.includes(`join? new-pc code=${code} host=${os.hostname()} address=${address}`));

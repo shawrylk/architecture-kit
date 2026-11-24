@@ -39,9 +39,9 @@ function saveDiscovered(root, secret, nodes) {
 }
 
 /** A fresh, signed announcement always fits a single small UDP datagram. */
-export function createBeacon({ fleet, address, clock = Date.now }) {
+export function createBeacon({ fleet, address, clock = Date.now, pairing }) {
   const self = fleet.nodes.find(node => node.id === fleet.self);
-  if (!fleet.secret) return createPairing({ fleet, address, clock }).beacon();
+  if (!fleet.secret) return (pairing ?? createPairing({ fleet, address, clock })).beacon();
   if (isIP(address ?? "") !== 4) throw new Error("fleet discovery needs an IPv4 node address");
   const fields = { v: 1, id: fleet.self, port: self.port ?? 8080, addresses: [address], weight: self.weight ?? 1,
     maxSize: self.maxSize ?? "L", time: clock(), nonce: randomBytes(16).toString("hex") };
@@ -76,6 +76,7 @@ function broadcastAddresses(interfaces, address) {
 export async function startDiscovery({ root, fleet, address, clock = Date.now, interfaces = os.networkInterfaces,
   createSocket = udpSocket, timer = setInterval, clearTimer = clearInterval, warn = console.error, pairing }) {
   if (!fleet.secret && !fleet.discover) throw new Error("fleet secret is required for discovery");
+  if (!fleet.secret) pairing ??= createPairing({ root, fleet, address, clock });
   const ipv4 = isIP(address ?? "") === 4;
   const socket = createSocket({ type: "udp4", reuseAddr: true });
   const nonces = new Map();
@@ -85,7 +86,7 @@ export async function startDiscovery({ root, fleet, address, clock = Date.now, i
   const announce = () => {
     if (closed || !ipv4) return;
     try {
-      const beacon = createBeacon({ fleet, address, clock });
+      const beacon = createBeacon({ fleet, address, clock, pairing });
       const data = Buffer.from(JSON.stringify(beacon));
       for (const address of broadcastAddresses(interfaces, beacon.address ?? beacon.addresses[0])) socket.send(data, port, address, error => {
         if (error) warn(`fleet discovery: ${error.message}`);
