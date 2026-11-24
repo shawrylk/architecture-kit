@@ -58,8 +58,8 @@ export function latestLeader(peers, minimum = 1) {
 
 export const validTerm = term => Number.isSafeInteger(term) && term > 0;
 export const livePeer = (peer, now) => Number.isFinite(peer?.time) && now - peer.time >= 0 && now - peer.time < 90_000;
-export function highestTerm(root) {
-  return Math.max(1, readState(root, "election").highest ?? 1, readState(root, "node").term ?? 1,
+export function highestTerm(root, node = readState(root, "node")) {
+  return Math.max(1, readState(root, "election").highest ?? 1, node.term ?? 1,
     ...Object.values(readState(root, "peers")).map(peer => peer.term ?? 1));
 }
 export function leaderDead(root, now) {

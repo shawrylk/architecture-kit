@@ -978,6 +978,35 @@ test("heartbeat terms fence old Leaders and malformed terms; a higher-term Leade
   assert.deepEqual(warnings, [], "a swallowed gh error must fail this test");
 });
 
+test("promotion during the heartbeat send to A gives C the rebuilt assignment at epoch 3", async t => {
+  const root = fixture(t), config = electionFleet("b"), sent = [];
+  const held = { repo: "o/r", issue: 7, epoch: 3, step: "code", branch: "feat/7", head: "a".repeat(40) };
+  writeState(root, "node", { leader: false, term: 1 });
+  writeState(root, "election", { highest: 2, started: now - 90_000 });
+  writeState(root, "proposal", { id: "b", term: 2 });
+  writeState(root, "peers", {
+    a: { leader: true, term: 1, time: now - 90_000 },
+    c: { leader: false, term: 1, time: now, work: [held] },
+  });
+  const { confirmLeader } = await import("./fleet-node.mjs");
+  await heartbeat({ root, fleet: config, repo: "o/r", clock: () => now, fetch: async (url, options) => {
+    const outgoing = JSON.parse(options.body);
+    sent.push({ url, body: outgoing.body });
+    if (sent.length === 1) {
+      assert.equal(url, "http://127.0.0.1:18080/message");
+      assert.equal(outgoing.body.leader, false);
+      assert.equal(outgoing.body.term, 2);
+      assert.equal(Object.hasOwn(outgoing.body, "assigned"), false);
+      assert.equal(confirmLeader({ root, fleet: config, clock: () => now }), 2);
+    }
+    return { status: 202 };
+  } });
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].url, "http://127.0.0.1:18082/message");
+  assert.deepEqual(sent[1].body, { kit: null, leader: true, term: 2, work: [],
+    assigned: [{ repo: "o/r", issue: 7, epoch: 3 }] });
+});
+
 test("demotion during an awaited send fences the next assignment, Leader send and retry", async t => {
   for (const phase of ["retry", "assignment", "heartbeat"]) await t.test(phase, async t => {
     let f, demoted = false, readsAfterDemotion = 0;

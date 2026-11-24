@@ -167,25 +167,29 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
 }
 
 export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, clock = Date.now, fetch = nodeFetch, signal }) {
-  let role = savedRole(root, leader);
-  const assignments = Object.values(readState(root, "assignments")), saved = readState(root, "work");
-  const work = assignments.filter(row => row.node === fleet.self).map(row => {
-    const current = saved[`${row.repo}#${row.issue}`]?.epoch === row.epoch ? saved[`${row.repo}#${row.issue}`] : {};
-    return { repo: row.repo, issue: row.issue, epoch: row.epoch, step: current.step ?? null,
-      branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
-  });
-  const assignedTo = id => assignments.filter(row => row.node === id).map(({ repo, issue, epoch }) => ({ repo, issue, epoch }));
-  if (role.leader) {
+  // No snapshot survives a network await: confirmation may rebuild assignments during a send.
+  const bodyFor = id => {
+    const role = savedRole(root, leader);
+    const assignments = Object.values(readState(root, "assignments")), saved = readState(root, "work");
+    const work = assignments.filter(row => row.node === fleet.self).map(row => {
+      const current = saved[`${row.repo}#${row.issue}`]?.epoch === row.epoch ? saved[`${row.repo}#${row.issue}`] : {};
+      return { repo: row.repo, issue: row.issue, epoch: row.epoch, step: current.step ?? null,
+        branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
+    });
+    return { kit, ...role, work, ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
+      .map(({ repo, issue, epoch }) => ({ repo, issue, epoch })) } : {}) };
+  };
+  const local = bodyFor(fleet.self);
+  if (local.leader) {
     const peers = readState(root, "peers");
-    peers[fleet.self] = { time: clock(), kit, ...role, work, assigned: assignedTo(fleet.self) };
+    peers[fleet.self] = { time: clock(), ...local };
     writeState(root, "peers", peers);
   }
   for (const node of fleet.nodes) {
     if (signal?.aborted) return;
     if (node.id === fleet.self || node.active === false || !node.address) continue;
-    role = savedRole(root, leader);
-    const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: { kit, ...role, work,
-      ...(role.leader ? { assigned: assignedTo(node.id) } : {}) }, time: new Date(clock()).toISOString() }, fleet.secret);
+    const message = createMessage({ from: fleet.self, repo, kind: "heartbeat", body: bodyFor(node.id),
+      time: new Date(clock()).toISOString() }, fleet.secret);
     await sendMessage({ root, fleet, node, message, clock, fetch, signal });
   }
 }
@@ -352,7 +356,7 @@ async function assignWork({ root, fleet, repo, kit, term, clock, gh, git, holdLa
 
 /** Read the durable role before every Leader action, including after a network await. */
 function savedRole(root, fallbackLeader = false) {
-  const record = readState(root, "node"), term = highestTerm(root);
+  const record = readState(root, "node"), term = highestTerm(root, record);
   if (record.leader && term > (record.term ?? 1)) {
     writeState(root, "node", { ...record, leader: false, term });
     return { leader: false, term };
