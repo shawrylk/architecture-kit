@@ -251,7 +251,8 @@ Review checklist:
 2. Which input gives a wrong result? Give \`file:line\` and the input.
 3. Do the tests prove the issue? Name any test that adds nothing.
 4. Is there a simpler way with less code?
-5. Put debt outside the scope under \`## Debt\`, not under findings.` : "";
+5. Put debt outside the scope under \`## Debt\`, not under findings.
+6. Write one line \`FINDINGS: <n>\` directly before the \`VERDICT:\` line, counting only severity-tagged findings in the findings section, excluding Debt.` : "";
   return `${preamble}\n\n${promptBrief}${review}${roleRule}${checklist}${lessons}${continuationNote(settings.progress)}`;
 };
 
@@ -422,20 +423,8 @@ function completeReview(settings, started, originalStamp, message, say, metrics)
     const ledger = ledgerFileOf(settings.worktree);
     if (!ledger) throw new Error("cannot find the worktree ledger");
     appendRecord(ledger, { type: "verdict", kind: "codex", verdict, sha, branch });
-    let inFindings = false;
-    let findingsDepth = 0;
-    let findings = 0;
-    for (const line of text.split(/\r?\n/)) {
-      const heading = /^[ \t]*(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*$/.exec(line);
-      const severityHeading = heading && /^\[P[0-3]\][ \t]+\S/.test(heading[2]);
-      if (heading && !severityHeading) {
-        if (/^Findings$/i.test(heading[2])) {
-          inFindings = true;
-          findingsDepth = heading[1].length;
-        } else if (/^Debt$/i.test(heading[2]) || heading[1].length <= findingsDepth) inFindings = false;
-      }
-      if (inFindings && (severityHeading || /^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[P[0-3]\][ \t]+\S/.test(line))) findings += 1;
-    }
+    const count = /^[ \t]*FINDINGS:[ \t]*(\d+)[ \t]*\r?$/m.exec(text)?.[1];
+    const findings = count !== undefined && Number.isSafeInteger(Number(count)) ? Number(count) : null;
     metrics.review = { verdict, findings };
     return finish(say, `${message}; recorded ${verdict} on ${sha}`, 0);
   } catch (error) {

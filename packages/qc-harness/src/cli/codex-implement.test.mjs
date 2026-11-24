@@ -640,6 +640,7 @@ test("--review pins the model and effort on every run and reset retry", async (t
       "Do the tests prove the issue? Name any test that adds nothing.",
       "Is there a simpler way with less code?",
       "Put debt outside the scope under `## Debt`, not under findings.",
+      "Write one line `FINDINGS: <n>` directly before the `VERDICT:` line, counting only severity-tagged findings in the findings section, excluding Debt.",
     ]) assert.ok(input.includes(item), item);
     for (const override of [`model="${defaults.codex.reviewModel}"`, `model_reasoning_effort="${defaults.codex.reviewEffort}"`]) {
       const index = args.indexOf(override);
@@ -2427,30 +2428,47 @@ test("explicit fix preserves approval and child protections", async (t) => {
   }
 });
 
-test("fresh review verdict and finding count match accepted report", async (t) => {
-  for (const verdict of ["APPROVED", "CHANGES_REQUIRED"]) {
+test("fresh review verdict and finding count come from contract lines", async (t) => {
+  for (const [verdict, count] of [["APPROVED", 0], ["CHANGES_REQUIRED", 4]]) {
     const f = reviewFixture(t);
     assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
-      writeFileSync(f.report, `# Review\nVERDICT: ${verdict}\n## Findings\n- [P0] one\n- [P1] two\n- [P2] three\n- [P3] four\n- [P4] invalid\n- [P1ish] invalid\n- no severity\n## Debt\n- [P1] excluded\n`);
+      writeFileSync(f.report, `# Review\n  FINDINGS: ${count}\r\nVERDICT: ${verdict}\r\n`);
       writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
     } }), 0);
     const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
-    assert.equal(row.verdict, verdict); assert.equal(row.findings, 4);
+    assert.equal(row.verdict, verdict); assert.equal(row.findings, count);
   }
 });
 
-for (const prefix of ["-", "*", "+", "1.", "1)", "#", "##", "###", "####", "#####", "######"]) {
-  test(`review findings count ${prefix} entries and exclude Debt`, async (t) => {
+test("missing or invalid FINDINGS lines log null", async (t) => {
+  for (const line of ["", "FINDINGS:", "FINDINGS: -1", "FINDINGS: 1.5", "FINDINGS: two", "FINDINGS: 2 extra", "FINDINGS: 9007199254740992"]) {
     const f = reviewFixture(t);
     assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
-      writeFileSync(f.report, `# Review\n## Findings\n${prefix} [P1] wrong result\n${prefix} [P4] invalid severity\n${prefix} no severity\n## Debt\n${prefix} [P2] excluded\nVERDICT: CHANGES_REQUIRED\n`);
+      writeFileSync(f.report, `${line}\nVERDICT: APPROVED\n`);
+      writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
+    } }), 0);
+    const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
+    assert.equal(row.verdict, "APPROVED");
+    assert.equal(row.findings, null, line);
+  }
+});
+
+test("Markdown findings, fenced bullets and Debt never change the contract count", async (t) => {
+  for (const count of [null, 1]) {
+    const f = reviewFixture(t);
+    assert.equal(await runCodexImplement(f.argv, { say: quiet, out: quiet, run: async () => {
+      writeFileSync(f.report, [
+        "# Review", "## Findings", "- [P1] wrong result", "  ```markdown",
+        "  - [P2] example input", "  ## Debt", "  ```", "## Debt", "- [P3] deferred",
+        ...(count === null ? [] : [`FINDINGS: ${count}`]), "VERDICT: CHANGES_REQUIRED", "",
+      ].join("\n"));
       writeFileSync(f.progress, DONE_MARKER); return { status: 0 };
     } }), 0);
     const row = JSON.parse(readFileSync(path.join(f.worktree, ".git/qc/runs.jsonl"), "utf8").trim());
     assert.equal(row.verdict, "CHANGES_REQUIRED");
-    assert.equal(row.findings, 1);
-  });
-}
+    assert.equal(row.findings, count);
+  }
+});
 
 test("stale or invalid review has no metrics", async (t) => {
   for (const mode of ["missing", "stale", "invalid"]) {
