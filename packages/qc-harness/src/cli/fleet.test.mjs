@@ -388,6 +388,58 @@ test("regression: next hides closed assignments without overwriting a concurrent
   assert.deepEqual(readState(f.cwd, "assignments"), latest);
 });
 
+test("progress records each step at the own saved epoch and preserves optional branch/head", t => {
+  const f = fixture(t), head = "a".repeat(40);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L"]);
+  const held = { repo: "o/r", issue: 7, node: "a1", epoch: 2, time: 1 };
+  writeState(f.cwd, "assignments", { "o/r#7": held });
+  const deps = { origin: () => "O/R", gh: () => { throw new Error("progress must be local"); } };
+  for (const step of ["plan", "code", "review", "merge"]) {
+    const result = f.run(["progress", "7", "--step", step, ...(step === "plan" ? ["--branch", "feat/7", "--head", head] : [])], deps);
+    assert.equal(result.code, 0, result.errors.join("\n"));
+    assert.deepEqual(readState(f.cwd, "work")["o/r#7"], { repo: "o/r", issue: 7, epoch: 2, step, branch: "feat/7", head });
+  }
+  writeState(f.cwd, "assignments", { "o/r#7": { ...held, epoch: 3 } });
+  assert.equal(f.run(["progress", "7", "--step", "code"], deps).code, 0);
+  assert.deepEqual(readState(f.cwd, "work")["o/r#7"], { repo: "o/r", issue: 7, epoch: 3, step: "code", branch: null, head: null });
+  const before = readState(f.cwd, "work");
+  for (const args of [["progress", "8", "--step", "plan"], ["progress", "7"], ["progress", "7", "--step", "push"],
+    ["progress", "0", "--step", "plan"], ["progress", "7.5", "--step", "plan"], ["progress", "7", "--step", "plan", "--head", "bad"],
+    ["progress", "7", "--step", "plan", "--branch", "bad branch"], ["progress", "7", "--step", "plan", "--step", "code"]]) {
+    assert.equal(f.run(args, deps).code, 1, args.join(" "));
+    assert.deepEqual(readState(f.cwd, "work"), before);
+  }
+  writeState(f.cwd, "assignments", { "o/r#7": { ...held, node: "b2" } });
+  assert.equal(f.run(["progress", "7", "--step", "code"], deps).code, 1);
+});
+
+test("next prints takeover source branch/head", t => {
+  const f = fixture(t), head = "b".repeat(40);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L"]);
+  writeState(f.cwd, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "a1", epoch: 2, branch: "feat/7-old", head } });
+  assert.deepEqual(f.run(["next"], { origin: () => "o/r", gh: fakeGh([issue(7)]) }).lines, [`#7 epoch=2 from feat/7-old@${head}`]);
+});
+
+test("owns requires the latest Leader snapshot and the saved own epoch, with local failure reasons", t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L,b2:1:L,c3:1:L"]);
+  const held = { repo: "o/r", issue: 7, node: "a1", epoch: 2, time: 1 };
+  const deps = { origin: () => "o/r", gh: () => { throw new Error("owns must be local"); } };
+  const check = reason => { const result = f.run(["owns", "7"], deps); assert.equal(result.code, 1); assert.match([...result.lines, ...result.errors].join("\n"), reason); };
+  check(/assignment/i);
+  writeState(f.cwd, "assignments", { "o/r#7": held });
+  check(/Leader heartbeat/i);
+  writeState(f.cwd, "peers", { b2: { time: 1, leader: true, assigned: [{ repo: "o/r", issue: 7, epoch: 2 }] } });
+  assert.equal(f.run(["owns", "7"], deps).code, 0);
+  writeState(f.cwd, "peers", { b2: { time: 1, leader: true, assigned: [{ repo: "o/r", issue: 7, epoch: 2 }] }, c3: { time: 2, leader: true, assigned: [{ repo: "o/r", issue: 7, epoch: 3 }] } });
+  check(/epoch/i);
+  writeState(f.cwd, "peers", { b2: { time: 3, leader: true, assigned: [] } });
+  check(/list|assign/i);
+  writeState(f.cwd, "assignments", { "o/r#7": { ...held, node: "b2" } });
+  check(/assignment/i);
+  assert.equal(f.run(["owns", "0"], deps).code, 1);
+});
+
 test("next adds the saved plan decision only for the assignment epoch", async t => {
   const { cwd, run } = fixture(t);
   run(["init", "--self", "a1", "--nodes", "a1:1:L"]);
@@ -396,4 +448,43 @@ test("next adds the saved plan decision only for the assignment epoch", async t 
   const result = await run(["next"], { origin: () => "o/r", gh: () => JSON.stringify([7, 8, 9].map(number => ({ number }))) });
   assert.equal(result.code, 0);
   assert.deepEqual(result.lines, ["#7 epoch=3 plan approved", "#8 epoch=3 plan needs changes", "#9 epoch=3"]);
+});
+
+test("confirm-leader requires a current proposal in three nodes and rebuilds highest live work epochs", t => {
+  const f = fixture(t), time = Date.now(), deps = { origin: () => "o/r", node: { clock: () => time } };
+  f.run(["init", "--self", "b2", "--nodes", "a1:1:L,b2:1:L,c3:1:L"]);
+  writeState(f.cwd, "node", { pid: 123, leader: false, instance: "serve" });
+  writeState(f.cwd, "peers", { a1: { leader: true, term: 1, time: time - 90_000 },
+    c3: { term: 1, time, work: [{ repo: "o/r", issue: 7, epoch: 4, step: "review", branch: "feat/7", head: "a".repeat(40) }] } });
+  writeState(f.cwd, "assignments", { "o/r#7": { repo: "o/r", issue: 7, node: "b2", epoch: 2 }, "o/r#8": { repo: "o/r", issue: 8, node: "a1", epoch: 9 } });
+  writeState(f.cwd, "work", { "o/r#7": { repo: "o/r", issue: 7, epoch: 2, step: "code" } });
+  assert.equal(f.run(["confirm-leader"], deps).code, 1);
+  writeState(f.cwd, "proposal", { id: "b2", term: 2 });
+  assert.equal(f.run(["confirm-leader"], deps).code, 0);
+  assert.deepEqual(readState(f.cwd, "node"), { pid: 123, leader: true, term: 2, instance: "serve" });
+  assert.deepEqual(readState(f.cwd, "assignments"), { "o/r#7": { repo: "o/r", issue: 7, epoch: 4, node: "c3", time, branch: "feat/7", head: "a".repeat(40), step: "review" } });
+  assert.deepEqual(readState(f.cwd, "proposal"), {});
+});
+
+test("two nodes confirm without a proposal only after Leader death; stale proposals cannot win", t => {
+  const f = fixture(t), time = Date.now(), deps = { origin: () => "o/r", node: { clock: () => time } };
+  f.run(["init", "--self", "b2", "--nodes", "a1:1:L,b2:1:L"]);
+  writeState(f.cwd, "node", { leader: false, started: time - 90_000 });
+  writeState(f.cwd, "peers", { a1: { leader: true, term: 5, time: time - 89_999 } });
+  assert.equal(f.run(["confirm-leader"], deps).code, 1);
+  writeState(f.cwd, "peers", { a1: { leader: true, term: 5, time: time - 90_000 } });
+  assert.equal(f.run(["confirm-leader"], deps).code, 0);
+  assert.equal(readState(f.cwd, "node").term, 6);
+  writeState(f.cwd, "node", { leader: false });
+  writeState(f.cwd, "proposal", { id: "b2", term: 4 });
+  assert.equal(f.run(["confirm-leader"], deps).code, 1);
+});
+
+test("status prints the pending Leader proposal", async t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "b2", "--nodes", "a1:1:L,b2:1:L,c3:1:L"]);
+  writeState(f.cwd, "proposal", { id: "b2", term: 2 });
+  const result = await f.run(["status"], { origin: () => "o/r", gh: fakeGh([]), git: () => "" });
+  assert.equal(result.code, 0);
+  assert.ok(result.lines.includes("proposed Leader b2 term 2: run qc fleet confirm-leader"));
 });

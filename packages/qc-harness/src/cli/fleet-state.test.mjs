@@ -15,7 +15,7 @@ function fixture(t) {
 test("state files default to empty, round trip, and replace atomically without temporary leftovers", t => {
   const root = fixture(t);
   assert.equal(stateDir(root), path.join(root, ".git", "qc", "fleet"));
-  const values = { inbox: [{ id: "reply", kind: "approve", repo: "o/r", issue: 7, time: "2026-11-24T00:00:00.000Z" }], assignments: { 238: "a1" }, questions: { q1: { text: "Ready?" } }, seen: { m1: 1234 }, queue: [{ id: "m1" }], outbox: [{ message: { id: "m2" } }], dead: [{ message: { id: "m3" }, status: 403, reason: "refused" }], peers: { a1: { time: 1234, kit: null, leader: false } }, node: { pid: 123 } };
+  const values = { work: { sample: { epoch: 2 } }, inbox: [{ id: "reply", kind: "approve", repo: "o/r", issue: 7, time: "2026-11-24T00:00:00.000Z" }], assignments: { 238: "a1" }, questions: { q1: { text: "Ready?" } }, seen: { m1: 1234 }, queue: [{ id: "m1" }], outbox: [{ message: { id: "m2" } }], dead: [{ message: { id: "m3" }, status: 403, reason: "refused" }], peers: { a1: { time: 1234, kit: null, leader: false } }, node: { pid: 123 } };
   for (const [name, value] of Object.entries(values)) {
     const empty = ["queue", "outbox", "dead", "inbox"].includes(name) ? [] : {};
     assert.deepEqual(readState(root, name), empty);
@@ -90,4 +90,25 @@ test("plan decisions, answers and watched IDs are durable object snapshots", t =
     writeState(root, name, { id: { text: "saved" } });
     assert.deepEqual(readState(root, name), { id: { text: "saved" } });
   }
+});
+
+test("election and proposal state persist and leadership chooses term before receipt time", async t => {
+  const root = fixture(t);
+  for (const name of ["election", "proposal"]) {
+    assert.deepEqual(readState(root, name), {});
+    writeState(root, name, { term: 4 });
+    assert.deepEqual(readState(root, name), { term: 4 });
+  }
+  const { latestLeader } = await import("./fleet-state.mjs");
+  const high = { leader: true, term: 4, time: 1 };
+  assert.equal(latestLeader({ a: { leader: true, term: 3, time: 100 }, b: high }), high);
+  assert.equal(latestLeader({ a: high, b: { leader: false, term: 5, time: 2 } }), undefined);
+});
+
+test("GitHub cursors default empty and survive snapshots", t => {
+  const root = fixture(t);
+  assert.deepEqual(readState(root, "github"), {});
+  const cursors = { cursors: { "o/r#7": "2026-11-24T00:00:00.000Z" } };
+  writeState(root, "github", cursors);
+  assert.deepEqual(readState(root, "github"), cursors);
 });
