@@ -39,6 +39,23 @@ test("0.172.0 fixtures cover add, delete, multi-chunk update, move, and literal 
 const wire = (cwd, command, extra = {}) => ({ cwd, session_id: "stable", turn_id: "turn", tool_use_id: "call",
   hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: { command }, ...extra });
 const options = { role: "leader" };
+test("0.172.0 Rust whitespace preserves native path and context identity", (t) => {
+  const cwd = workspace(t);
+  for (const suffix of ["\u0085", "\uFEFF"]) {
+    const tail = suffix === "\u0085" ? "" : suffix;
+    const input = patch(`*** Add File: add.ts${suffix}`, "+x", `*** Delete File: gone.ts${suffix}`,
+      `*** Update File: old.ts${suffix}`, `*** Move to: moved.ts${suffix}`, `@@ anchor${suffix}`, "-x", "+y");
+    const ops = parseCodexPatch(input, cwd);
+    assert.deepEqual(ops.map(op => op.file), ["add.ts", "gone.ts", "old.ts"].map(file => path.join(cwd, file + tail)));
+    assert.equal(ops[2].destination, path.join(cwd, `moved.ts${tail}`));
+    assert.equal(ops[2].chunks[0].skip, `anchor${tail}`);
+  }
+  const input = patch("*** Add File: a.ts", "+x");
+  assert.equal(parseCodexPatch(`\u0085${input}\u0085`, cwd)[0].file, path.join(cwd, "a.ts"));
+  assert.throws(() => parseCodexPatch(`\uFEFF${input}\uFEFF`, cwd), /invalid patch boundaries/);
+  assert.equal(parseCodexPatch(patch("*** Update File: a.ts", "@@", "-x", "+y", "*** End of File\u0085"), cwd)[0].chunks[0].eof, true);
+});
+
 test("every patch member and both move endpoints reach all shared entry points with stable identity and notes", async (t) => {
   const cwd = workspace(t), seen = [];
   writeFileSync(path.join(cwd, "old.ts"), "before\nold\n");
@@ -75,6 +92,20 @@ test("real scope, generated regions, controller, reuse hints, and slot policies 
   assert.match(nested.hookSpecificOutput.permissionDecisionReason, /outside this work order/);
   rmSync(path.join(cwd, ".claude/work-order.local.json"));
   await denied(["*** Add File: routes.generated.ts", "+x"], /Generated-file guard/);
+  writeFileSync(path.join(cwd, "old.ts"), "x\n");
+  for (const suffix of ["\u0085", "\uFEFF"]) {
+    const protectedName = `routes.generated.ts${suffix === "\u0085" ? "" : suffix}`;
+    config({ generated: { globs: [protectedName] } });
+    writeFileSync(path.join(cwd, protectedName), "x\n");
+    for (const lines of [[`*** Add File: routes.generated.ts${suffix}`, "+x"],
+      [`*** Delete File: routes.generated.ts${suffix}`],
+      [`*** Update File: routes.generated.ts${suffix}`, "@@", "-x", "+y"],
+      ["*** Update File: old.ts", `*** Move to: routes.generated.ts${suffix}`, "@@", "-x", "+y"]]) {
+      await denied(lines, /Generated-file guard/);
+      assert.equal(readFileSync(path.join(cwd, protectedName), "utf8"), "x\n");
+    }
+  }
+  config({});
   const doc = "Intro\n<!-- generated: test. -->\nlocked\n<!-- /generated -->\n";
   writeFileSync(path.join(cwd, "doc.md"), doc);
   await denied(["*** Update File: doc.md", "@@", "-locked", "+changed"], /generated region/);
@@ -156,7 +187,7 @@ test("uncertain previews fail closed, CRLF stays intact, and denial notes surviv
 
 test("malformed and unsupported patch operations fail closed before any member is checked", (t) => {
   const cwd = workspace(t);
-  for (const input of [null, {}, "", "*** Begin Patch\n", patch("*** Rename File: a"),
+  for (const input of [null, {}, "", "<<EOF\nEOF", "*** Begin Patch\n", patch("*** Rename File: a"),
     patch("*** Add File: a", "unprefixed"), patch("*** Delete File: a", "+bad"),
     patch("*** Update File: a"), patch("*** Update File: a", "@@", "bad"), patch("*** Add File: ", "+x"),
     patch("*** Update File: a", "*** Move to: ", "@@", "+x"), patch("*** Add File: a\0b", "+x"),

@@ -12,6 +12,9 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 
 const fail = reason => { throw new Error(`Codex patch: ${reason}`); };
 const nonempty = chunk => chunk && (chunk.old.length || chunk.next.length);
+// Rust str::trim[_end] uses Unicode White_Space: includes U+0085, excludes U+FEFF.
+const rustTrimEnd = value => value.replace(/\p{White_Space}+$/u, "");
+const rustTrim = value => rustTrimEnd(value.replace(/^\p{White_Space}+/u, ""));
 const localPath = (cwd, value) => {
   if (!value || /[\0\r\n]/.test(value) || /^[a-z][a-z\d+.-]*:\/\//i.test(value)) fail("unsupported local path");
   return path.resolve(cwd, value);
@@ -20,16 +23,16 @@ const localPath = (cwd, value) => {
 /** Parse data only: filenames are literal, never shell words or quoted-path escapes. */
 export function parseCodexPatch(input, cwd) {
   if (typeof input !== "string") fail("expected tool_input.command patch string");
-  let lines = input.trim().split(/\r?\n/);
+  let lines = rustTrim(input).split(/\r?\n/);
   if (["<<EOF", "<<'EOF'", '<<"EOF"'].includes(lines[0]) && lines.at(-1).endsWith("EOF")) lines = lines.slice(1, -1);
-  if (lines[0]?.trim() !== "*** Begin Patch" || lines.at(-1)?.trim() !== "*** End Patch") fail("invalid patch boundaries");
+  if (!lines.length || rustTrim(lines[0]) !== "*** Begin Patch" || rustTrim(lines.at(-1)) !== "*** End Patch") fail("invalid patch boundaries");
   const operations = [];
   let op, chunk;
   const finish = () => {
     if (op?.kind === "update" && (!op.chunks.length || !nonempty(chunk))) fail("empty update chunk");
   };
   for (const line of lines.slice(1, -1)) {
-    const marker = op?.kind === "update" ? line.trimEnd() : line.trim();
+    const marker = op?.kind === "update" ? rustTrimEnd(line) : rustTrim(line);
     const header = /^\*\*\* (Add|Delete|Update) File: (.+)$/.exec(marker);
     if (header) {
       finish();
