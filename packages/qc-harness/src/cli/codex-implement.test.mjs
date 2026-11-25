@@ -53,11 +53,11 @@ function setup(t, { progress = "" } = {}) {
 
 const quiet = () => {};
 
-test("owned native launch is per invocation and unsupported roles fail before launch", async t => {
+test("owned native launch is per invocation and unsupported continuations fail before launch", async t => {
   const f = setup(t);
   assert.equal(parseArgs(f.argv).ownedNative, false);
   assert.equal(parseArgs([...f.argv, "--owned-native"]).ownedNative, true);
-  for (const extra of [["--role", "scout"], ["--role", "tests"], ["--role", "review"], ["--max-runs", "2"], ["--resume", "old"], ["--wait-reset"]]) {
+  for (const extra of [["--role", "scout"], ["--role", "tests"], ["--max-runs", "2"], ["--resume", "old"], ["--wait-reset"]]) {
     const messages = [];
     assert.equal(await runCodexImplement([...f.argv, "--owned-native", ...extra], {
       env: {}, say: line => messages.push(line), out: quiet,
@@ -73,8 +73,9 @@ test("owned native launch is per invocation and unsupported roles fail before la
   }), 4);
 });
 
-for (const mode of ["hook-first", "stdout-first", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify"]) {
+for (const mode of ["hook-first", "stdout-first", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify", "review-ok", "review-changes", "review-missing", "review-stale", "review-malformed", "review-handback", "review-nonzero", "review-proof", "review-profile", "review-identity", "review-recovery", "review-admission", "review-marker", "review-no-report", "review-old", "review-brief-report", "review-drift", "review-guard"]) {
   test(`actual owned runner ${mode}`, { skip: !["linux", "darwin"].includes(process.platform) }, async t => {
+    const review = mode.startsWith("review-");
     const f = setup(t), executable = path.join(f.dir, "native"), script = path.join(f.dir, "native.mjs"), parent = path.basename(f.dir);
     const source = path.join(f.dir, "native.c");
     writeFileSync(source, `#include <stdio.h>
@@ -88,7 +89,7 @@ int main(int argc, char **argv) {
     const built = spawnSync("cc", [source, "-o", executable], { encoding: "utf8" });
     if (built.error?.code === "ENOENT") { t.skip("native fixture requires cc"); return; }
     assert.equal(built.status, 0, built.stderr);
-    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { model: "gpt-6.1-sol" }, swarm: { dispatch: { implementerSlots: 1 } } }));
+    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { model: review ? null : "gpt-6.1-sol", reviewModel: mode === "review-admission" ? "unadmitted-model" : "gpt-6.1-sol", reviewEffort: "high" }, budgets: { codex: { compactAt: 123456, toolOutputTokens: 3333 }, reviewer: { remindAt: 10000, handoffAt: 20000 } }, swarm: { dispatch: { implementerSlots: 1 } } }));
     for (const args of [["add", "."], ["-c", "user.name=qc", "-c", "user.email=qc@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "seed"]])
       assert.equal(spawnSync("git", args, { cwd: f.worktree, env: f.gitEnv }).status, 0);
     const linked = path.join(f.dir, "linked");
@@ -97,14 +98,26 @@ int main(int argc, char **argv) {
     const checkpoint = checkpointPathOf(f.worktree, parent);
     mkdirSync(path.dirname(checkpoint), { recursive: true });
     if (mode !== "no-checkpoint") writeFileSync(checkpoint, "## Goal\n## Rules\n## Tasks\n## Next\n");
-    if (mode === "verify") appendFileSync(f.brief, '\nVerify: `node -e "process.exit(9)"`\n');
+    const roleReport = path.join(f.dir, "review.md");
+    if (review && mode !== "review-no-report") {
+      f.argv.push("--review");
+      if (mode === "review-brief-report") appendFileSync(f.brief, `\nReport: ${roleReport}\n`);
+      else f.argv.push("--report", roleReport);
+      if (mode === "review-stale") writeFileSync(roleReport, "VERDICT: APPROVED\n");
+    }
+    if (mode === "review-no-report") f.argv.push("--review");
+    const restoreText = "## Goal\nreview recovery\n## Rules\n## Tasks\n## Next\n";
+    const restoreFile = checkpointPathOf(f.worktree, "thread");
+    if (mode === "review-recovery") { mkdirSync(path.dirname(restoreFile), { recursive: true }); writeFileSync(restoreFile, restoreText); }
+    if (["verify", "review-proof"].includes(mode)) appendFileSync(f.brief, '\nVerify: `node -e "process.exit(9)"`\n');
     writeFileSync(script, `import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 const mode = ${JSON.stringify(mode)}, cwd = process.cwd();
 writeFileSync(${JSON.stringify(path.join(f.dir, "started"))}, JSON.stringify({ pid: process.pid, port: process.env.QC_CODEX_REPORT_PORT }));
-if (process.env.QC_ROLE !== 'implementer' || process.env.QC_CODEX_WORKER !== '1') throw Error('worker identity missing');
-for (const flag of ['features.multi_agent=false', 'features.multi_agent_v2=false', 'features.codex_hooks=true'])
+if (process.env.QC_ROLE !== ${JSON.stringify(review ? 'review' : 'implementer')} || process.env.QC_CODEX_WORKER !== '1') throw Error('worker identity missing');
+for (const flag of ['features.multi_agent=false', 'features.multi_agent_v2=false', 'features.codex_hooks=true', 'model_auto_compact_token_limit=123456', 'tool_output_token_limit=3333'])
   if (!process.argv.includes(flag)) throw Error('missing '+flag);
+if (${review} && (!process.argv.includes('model="gpt-6.1-sol"') || !process.argv.includes('model_reasoning_effort="high"'))) throw Error('review model/effort missing');
 const hooks = process.argv.find(arg => arg.startsWith('hooks='));
 if (!hooks || (hooks.match(/codex-hook/g) || []).length !== 4) throw Error('canonical hooks missing');
 const command = JSON.parse(hooks.slice(hooks.indexOf('command=') + 8, hooks.indexOf(',timeout=')));
@@ -118,21 +131,34 @@ const hook = input => {
 if (mode === 'stdout-first') process.stdout.write('{"type":"thread.started","thread_id":"thread"}\\n');
 if (mode === 'channel') process.env.QC_CODEX_REPORT_TOKEN = '0'.repeat(64);
 if (mode === 'no-hooks') await new Promise(() => setInterval(() => {}, 1000));
-hook({ ...base, hook_event_name: 'SessionStart', source: 'startup', model: 'fixture', permission_mode: 'default' });
+hook({ ...base, ...(mode === 'review-profile' ? { role: 'implementer' } : {}), hook_event_name: 'SessionStart', source: 'startup', model: 'fixture', permission_mode: 'default' });
 if (mode !== 'stdout-first') process.stdout.write('{"type":"thread.started","thread_id":"thread"}\\n');
 await new Promise(resolve => setTimeout(resolve, 40));
+if (mode === 'review-recovery') for (const source of ['compact', 'resume', 'compact']) {
+  const restored = hook({ ...base, hook_event_name: 'SessionStart', source, model: 'fixture', permission_mode: 'default' });
+  if (restored?.hookSpecificOutput?.additionalContext !== ${JSON.stringify(restoreText)}) throw Error('recovery lost checkpoint');
+}
 if (['cancel', 'timeout'].includes(mode)) { writeFileSync(${JSON.stringify(path.join(f.dir, "ready"))}, 'ready'); await new Promise(() => setInterval(() => {}, 1000)); }
 const nested = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(QC)}, 'codex-implement'], { env: { ...process.env, QC_ROLE: 'leader' }, encoding: 'utf8' });
 if (nested.status !== 4) process.exit(9);
 const denied = hook({ ...base, hook_event_name: 'PreToolUse', turn_id: 'turn', tool_use_id: 'tool', tool_name: 'Bash', tool_input: { command: 'git -c core.hooksPath=/dev/null status' } });
 if (denied?.hookSpecificOutput?.permissionDecision !== 'deny') process.exit(10);
 hook({ ...base, hook_event_name: 'PostToolUse', turn_id: 'turn', tool_use_id: 'post', tool_name: 'Bash', tool_input: { command: 'true' }, tool_response: 'ok' });
-if (mode === 'drift') writeFileSync('qc.config.json', '{}');
+if (['drift', 'review-drift'].includes(mode)) writeFileSync('qc.config.json', '{}');
+if (mode === 'review-guard') {
+  mkdirSync('.githooks'); writeFileSync('.githooks/bad', 'changed');
+  for (const args of [['add', '.githooks/bad'], ['-c', 'user.name=qc', '-c', 'user.email=qc@example.test', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'guard fixture']])
+    if (spawnSync('git', args).status !== 0) throw Error('guard commit failed');
+}
 if (mode === 'guard') writeFileSync('outside-brief.mjs', 'export const bad = 1;');
-writeFileSync(${JSON.stringify(f.progress)}, ${JSON.stringify(DONE_MARKER)});
-hook({ ...base, ...(mode === 'provenance' ? { session_id: 'sibling' } : {}), hook_event_name: 'Stop', turn_id: 'turn', stop_hook_active: false,
-  last_assistant_message: mode === 'malformed' ? 'done' : 'RED: node --test failed\\nGREEN: node --test passed' });
-process.exit(mode === 'nonzero' ? 6 : 0);
+const sha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+const verdict = 'VERDICT: '+(mode === 'review-changes' ? 'CHANGES_REQUIRED' : 'APPROVED')+' '+sha+'\\nRED-CHECKED: saved failing test proof';
+if (${review} && !['review-missing', 'review-stale'].includes(mode)) writeFileSync(${JSON.stringify(roleReport)}, mode === 'review-malformed' ? 'bad report' : 'VERDICT: '+(mode === 'review-changes' ? 'CHANGES_REQUIRED' : 'APPROVED')+'\\n');
+if (mode === 'review-old') utimesSync(${JSON.stringify(roleReport)}, 1, 1);
+if (mode !== 'review-marker') writeFileSync(${JSON.stringify(f.progress)}, ${JSON.stringify(DONE_MARKER)});
+hook({ ...base, ...(['provenance', 'review-identity'].includes(mode) ? { session_id: 'sibling' } : {}), hook_event_name: 'Stop', turn_id: 'turn', stop_hook_active: false,
+  last_assistant_message: mode === 'malformed' || mode === 'review-handback' ? 'done' : ${review} ? verdict : 'RED: node --test failed\\nGREEN: node --test passed' });
+process.exit(['nonzero', 'review-nonzero'].includes(mode) ? 6 : 0);
 `);
     const controller = new AbortController();
     if (mode === "cancel") {
@@ -141,12 +167,12 @@ process.exit(mode === 'nonzero' ? 6 : 0);
     }
     const messages = [];
     const code = await runCodexImplement([...f.argv, "--owned-native", "--parent-session", parent, ...(mode === "timeout" ? ["--max-hours", "0.0005"] : [])], {
-      codexCommand: [executable], env: { ...f.gitEnv, CODEX_HOME: path.join(f.dir, "home") }, signal: controller.signal, say: line => messages.push(line), out: quiet,
+      run: () => assert.fail("owned runner used legacy callback"), codexCommand: [executable], env: { ...f.gitEnv, CODEX_HOME: path.join(f.dir, "home") }, signal: controller.signal, say: line => messages.push(line), out: quiet,
     });
-    assert.equal(code, ["hook-first", "stdout-first"].includes(mode) ? 0 : mode === "guard" ? 4 : mode === "verify" ? 7 : 1,
+    assert.equal(code, ["hook-first", "stdout-first", "review-ok", "review-changes", "review-proof", "review-recovery", "review-brief-report"].includes(mode) ? 0 : ["guard", "review-guard"].includes(mode) ? 4 : mode === "verify" ? 7 : ["review-missing", "review-stale", "review-malformed", "review-marker", "review-no-report", "review-old"].includes(mode) ? 3 : 1,
       messages.join("\n") + JSON.stringify({ probe: existsSync(path.join(f.dir, "probe")), started: existsSync(path.join(f.dir, "started")) }) +
       (existsSync(`${f.progress}.log`) ? readFileSync(`${f.progress}.log`, "utf8") : ""));
-    assert.equal(existsSync(path.join(f.dir, "started")), !["no-checkpoint", "pin"].includes(mode), messages.join("\n"));
+    assert.equal(existsSync(path.join(f.dir, "started")), !["no-checkpoint", "pin", "review-admission", "review-no-report"].includes(mode), messages.join("\n"));
     if (mode === "cancel") assert.equal(controller.signal.aborted, true);
     if (existsSync(path.join(f.dir, "started"))) {
       const { pid, port } = JSON.parse(readFileSync(path.join(f.dir, "started"), "utf8"));
@@ -157,7 +183,7 @@ process.exit(mode === 'nonzero' ? 6 : 0);
         socket.once("connect", () => { socket.destroy(); reject(Error("owned channel still open")); }); socket.once("error", resolve);
       });
     }
-    if (mode === "no-checkpoint") {
+    if (["no-checkpoint", "review-admission", "review-no-report"].includes(mode)) {
       assert.equal(existsSync(path.join(f.dir, "probe")), false);
       assert.equal(existsSync(`${f.progress}.log`), false);
     }
@@ -165,6 +191,10 @@ process.exit(mode === 'nonzero' ? 6 : 0);
     assert.equal(existsSync(slotDir) ? readdirSync(slotDir).filter(n => n.endsWith(".claim")).length : 0, 0);
     const stops = readLedger(ledgerFileOf(f.worktree)).filter(r => r.type === "stop");
     assert.equal(stops.length, code === 0 ? 1 : 0);
+    if (review) {
+      assert.equal(readLedger(ledgerFileOf(f.worktree)).filter(r => r.type === "verdict").length, code === 0 ? 2 : 0);
+      if (code === 0) assert.equal(stops[0].role, "task");
+    }
   });
 }
 

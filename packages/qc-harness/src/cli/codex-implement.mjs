@@ -314,8 +314,8 @@ function spawnRun({ invocation: { args, env }, input, log, cwd, launch }, codexC
   });
 }
 
-// H3a: a single implement invocation. Workflow and native budgets stay separate:
-// native argv uses budgets.codex; the private implementer reservation uses budgets.implementer.
+// Single owned implement/review invocation. Native argv uses budgets.codex;
+// the fixed dispatch role selects the separate implementer/reviewer workflow budget.
 async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
   if (codexCommand.length !== 1 || !model) throw Error("Owned runner requires one native executable and an explicit model");
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
@@ -334,7 +334,7 @@ async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
     return owned[name](...args);
   }]));
   const dispatch = createCodexDispatch({ parentSessionId: settings.parentSession, workerSessionId: randomUUID(),
-    role: "implementer", worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime });
+    role: settings.review ? "reviewer" : "implementer", worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime });
   let bridge, starting, child, retired = false, cancelled = false, cleanupNeeded = false;
   const close = async () => {
     try { await dispatch.error(); retired = true; await bridge?.close(); }
@@ -497,7 +497,7 @@ function completeScout(settings, started, originalStamp, message, say) {
 }
 
 /** Records a completed review once; every report, git or ledger error remains a failed job. */
-function completeReview(settings, started, originalStamp, message, say) {
+function completeReview(settings, started, originalStamp, message, say, recordVerdict = true) {
   if (settings.role === "scout") return completeScout(settings, started, originalStamp, message, say);
   if (!settings.report) return finish(say, message, 0);
   try {
@@ -507,6 +507,7 @@ function completeReview(settings, started, originalStamp, message, say) {
     const text = readFileSync(settings.report, "utf8");
     const verdict = /^[ \t]*VERDICT:[ \t]*(APPROVED|CHANGES_REQUIRED)[ \t]*\r?$/m.exec(text)?.[1];
     if (!verdict) throw new Error(`review report has no VERDICT: line: ${settings.report}`);
+    if (!recordVerdict) return 0;
     const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     const sha = git("rev-parse", "--verify", "HEAD^{commit}");
     const branch = git("symbolic-ref", "--quiet", "--short", "HEAD");
@@ -546,14 +547,18 @@ async function runJob(argv, {
     return finish(say, message, code);
   };
   const started = Date.now();
-  if (settings.ownedNative && (settings.role !== "implement" || settings.maxRuns !== 1 || settings.resume || settings.waitReset))
-    return refuse("other", "H3b role-lifecycle and retry/resume continuation required for this owned runner mode");
+  if (settings.ownedNative && (!["implement", "review"].includes(settings.role) || settings.maxRuns !== 1 || settings.resume || settings.waitReset))
+    return refuse("other", "H3b scout/tests role-lifecycle and retry/resume continuation required for this owned runner mode");
   if (settings.ownedNative && !/^[A-Za-z0-9_-]{1,128}$/.test(settings.parentSession ?? ""))
     return refuse("other", "Owned runner requires --parent-session for checkpoint admission");
   if (settings.ownedNative && isDone(settings.progress)) return refuse("other", "Owned runner cannot accept a prewritten completion marker");
   if (settings.ownedNative && settings.maxHours * 3600000 > 2147483647) return refuse("other", "Owned runner timeout exceeds the timer bound");
   let originalStamp;
   try {
+    if (settings.ownedNative && settings.review) {
+      settings.report ??= briefPath(readFileSync(settings.brief, "utf8"), "Report", settings.brief);
+      if (!settings.report) return finish(say, "owned review requires --report or Report:", 3);
+    }
     if (settings.role === "scout") {
       settings.report ??= briefPath(readFileSync(settings.brief, "utf8"), "Report", settings.brief);
       if (!settings.report) return finish(say, "scout requires --report or Report:", 1);
@@ -641,6 +646,10 @@ async function runJob(argv, {
       if (!passed) return finish(say, "verify failed", 7);
     } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
     if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
+    if (metrics.ownedLifecycle && settings.review) {
+      const valid = completeReview(settings, started, originalStamp, message, say, false);
+      if (valid !== 0) return valid;
+    }
     try { await metrics.ownedLifecycle?.finish(); }
     catch (error) { return finish(say, error.message, 1); }
     return completeReview(settings, started, originalStamp, message, say);

@@ -509,6 +509,23 @@ test("admitted external usage freezes role policy, serializes decisions and reta
     f.save(20000);
     assert.equal((await f.decide({ tool_use_id: "close" })).hookSpecificOutput.permissionDecision, "deny");
     const closed = f.states()[0];
+    const proof = await f.runtime.ready(f.r);
+    const { checkpointPathOf } = await import("./checkpoint.mjs");
+    const checkpoint = checkpointPathOf(f.dir, proof.nativeThreadId), text = "## Goal\nfrozen role recovery\n## Rules\n## Tasks\n## Next\n";
+    mkdirSync(path.dirname(checkpoint), { recursive: true }); writeFileSync(checkpoint, text);
+    f.save(1000); // A smaller observed context after simulated recovery must not reopen this reservation.
+    const count = f.states()[0].count;
+    for (const source of ["compact", "resume", "compact"]) {
+      const input = { ...f.hook, source, transcript_path: f.file, model: "fixture", permission_mode: "default" };
+      assert.deepEqual(await f.runtime.recover(f.r, input), { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } });
+      for (const extra of [{ role: "leader" }, { agent_type: "implementer" }, { session_id: "sibling" }])
+        await assert.rejects(f.runtime.recover(f.r, { ...input, ...extra }), /unavailable/);
+      assert.strictEqual(await f.runtime.ready(f.r), proof);
+      assert.equal(f.states()[0].count, count);
+    }
+    assert.equal((await f.decide({ tool_use_id: "after-recovery" })).hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(f.states()[0].root, closed.root); assert.equal(f.states()[0].policy.budgetClosed, true);
+    assert.equal(proof.role, role); assert.deepEqual(proof.budget, { remindAt: 10000, handoffAt: 20000 });
     rmSync(f.file);
     assert.equal((await f.decide({ tool_use_id: "missing" })).hookSpecificOutput.permissionDecision, "deny");
     assert.equal(await f.decide({ tool_input: { command: "git status" } }), null);
