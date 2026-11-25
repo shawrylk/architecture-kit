@@ -6,6 +6,21 @@ import { createCodexBridge, reportCodexHook } from "./codex-bridge.mjs";
 
 const startup = { hook_event_name: "SessionStart", source: "startup", cwd: process.cwd(), session_id: "thread",
   transcript_path: null, model: "fixture", permission_mode: "default" };
+for (const mode of ["credential", "disconnect", "overflow"]) test(`owned channel closes on ${mode} with idempotent cleanup`, { timeout: 3000 }, async t => {
+  const bridge = await createCodexBridge({ runtime: { startup: () => assert.fail("wrong credential") },
+    reservation: { hookCredential: {} }, closeOnReject: true });
+  t.after(() => bridge.close());
+  if (mode === "credential") await assert.rejects(reportCodexHook(startup, { env: { ...bridge.env, QC_CODEX_REPORT_TOKEN: "0".repeat(64) } }));
+  else {
+    const { createConnection } = await import("node:net");
+    const socket = createConnection({ host: "127.0.0.1", port: Number(bridge.env.QC_CODEX_REPORT_PORT) });
+    socket.on("error", () => {}); socket.resume(); await once(socket, "connect");
+    if (mode === "disconnect") socket.destroy(); else socket.end("x".repeat(65537));
+  }
+  await bridge.closed;
+  await bridge.close(); await bridge.close();
+  await assert.rejects(reportCodexHook(startup, { env: bridge.env }));
+});
 test("subprocess client acknowledges startup without waiting for runner readiness", async t => {
   const reservation = { hookCredential: {} };
   let accepted;

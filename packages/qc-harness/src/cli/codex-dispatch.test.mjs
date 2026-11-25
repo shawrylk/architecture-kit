@@ -56,6 +56,14 @@ function fixture(t, role = "implementer", dispatch = {}) {
 const native = { session_id: "native" };
 const report = "RED: node --test fails\nGREEN: node --test passes";
 
+test("runner may establish its private bridge asynchronously before launching", async t => {
+  const f = fixture(t), b = f.bridge();
+  await b.start(async () => { await Promise.resolve(); return f.child; });
+  b.handback(native, report); f.exit();
+  assert.equal((await b.finish()).accepted, true);
+  assert.equal(f.slots(), 0);
+});
+
 test("admission precedes spawn; handback and exit together record one placed stop", async t => {
   const f = fixture(t), b = f.bridge();
   await b.start(() => { assert.equal(f.slots(), 1); return f.child; });

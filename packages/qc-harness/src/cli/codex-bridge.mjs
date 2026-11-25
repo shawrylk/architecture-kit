@@ -8,21 +8,21 @@ const unavailable = () => new Error("Codex report channel unavailable");
 const deadline = ms => Number.isInteger(ms) && ms > 0 && ms <= 30000;
 
 // Cooperative invocation bearer channel, not native-event attestation. Opaque authority never leaves this closure.
-export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000, maxConnections = 4, signal, onStop } = {}) {
+export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000, maxConnections = 4, signal, onStop, closeOnReject = false } = {}) {
   if (!runtime || !reservation || !deadline(timeoutMs) || !Number.isInteger(maxConnections) ||
       maxConnections < 1 || maxConnections > 16 || signal?.aborted) throw unavailable();
   const token = randomBytes(32).toString("hex"), sockets = new Set();
   let open = true, closing, busy = false, closed;
   const stopped = new Promise(resolve => { closed = resolve; });
   const server = net.createServer({ allowHalfOpen: true }, socket => {
-    if (!open || sockets.size >= maxConnections) { socket.destroy(); return; }
+    if (!open || sockets.size >= maxConnections) { socket.destroy(); if (closeOnReject) void close(); return; }
     sockets.add(socket);
-    let size = 0, chunks = [], routing = false, cancelRoute;
+    let size = 0, chunks = [], routing = false, cancelRoute, responded = false;
     const expires = performance.now() + timeoutMs, timer = setTimeout(() => socket.destroy(), timeoutMs);
     socket.on("error", () => socket.destroy());
     socket.once("close", () => {
       clearTimeout(timer); chunks = []; sockets.delete(socket);
-      if (routing) { cancelRoute?.(); void close(); }
+      if (routing || closeOnReject && !responded) { cancelRoute?.(); void close(); }
     });
     socket.on("data", chunk => {
       size += chunk.length;
@@ -62,12 +62,13 @@ export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000
         if (!active()) throw unavailable();
         const reply = JSON.stringify({ ok: true, output });
         if (Buffer.byteLength(reply) > LIMIT) throw unavailable();
-        socket.end(reply);
-      } catch { if (active()) socket.end('{"ok":false}'); else void close(); }
+        responded = true; socket.end(reply);
+      } catch { if (active()) socket.end('{"ok":false}'); if (closeOnReject || !active()) void close(); }
       finally { if (owned) busy = routing = false; cancelRoute = undefined; }
     });
   });
   server.maxConnections = maxConnections;
+  server.on("drop", () => { if (closeOnReject) void close(); });
   const close = () => {
     if (closing) return closing;
     open = false; signal?.removeEventListener("abort", close);

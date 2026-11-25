@@ -143,7 +143,7 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
         projection = mkdtempSync(path.join(tmp, "codex-worker-"));
         writeFileSync(path.join(projection, "brief.jsonl"), JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n");
         handle = runtime.reserve({ role: input.role === "implementer" ? "implementer" : "reviewer", workflowParentId: input.parentSessionId });
-        child = launch(handle, prompt);
+        child = await launch(handle, prompt);
         child.once("error", () => { if (!child.pid) spawnFailed = true; });
         const proof = await runtime.ready(handle);
         if (proof.pid !== child.pid) fail("Owned child identity mismatch");

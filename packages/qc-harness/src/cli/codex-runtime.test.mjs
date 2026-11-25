@@ -134,6 +134,13 @@ async function start(t, f, reservation, session = "native-thread") {
   await child.output;
   return child;
 }
+test("launch channel can only supply a bounded port/token pair, never worker authority", { skip: !["linux", "darwin"].includes(process.platform) }, t => {
+  const f = fixture(t), reservation = f.reserve("implementer");
+  for (const channel of [{ QC_ROLE: "leader" }, { QC_CODEX_REPORT_PORT: "0", QC_CODEX_REPORT_TOKEN: "a".repeat(64) },
+    { QC_CODEX_REPORT_PORT: "65536", QC_CODEX_REPORT_TOKEN: "a".repeat(64) }, { QC_CODEX_REPORT_PORT: "1234" }])
+    assert.throws(() => f.runtime.launch(reservation, "", channel), /unavailable/);
+  f.runtime.terminal(reservation);
+});
 test("startup fixture collects fragmented output through its completion delimiter", async t => {
   const child = new EventEmitter();
   child.stdout = new PassThrough(); child.stdin = new PassThrough(); child.kill = () => {};

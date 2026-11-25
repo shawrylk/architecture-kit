@@ -2,6 +2,11 @@
 // after each stop until the progress file says it is done. It never calls Claude; exit 2 hands the brief back.
 
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { createCodexDispatch } from "./codex-dispatch.mjs";
+import { createCodexBridge } from "./codex-bridge.mjs";
+import { pinCodexNativeExecutable } from "./codex-native-executable.mjs";
 import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 import { appendRun, runLogFileOf } from "./run-log.mjs";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
@@ -22,7 +27,7 @@ import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCo
 import { runMutation } from "./mutate.mjs";
 import { redactOutput } from "./output-redaction.mjs";
 import { reviewContext, validatePaths, verificationPolicy, verifyBrief } from "./codex-verify.mjs";
-import { CODEX_WORKER_FEATURES, codexWorkerEnvironment, codexWorkerRestricted, createCodexInvocation } from "./codex-runtime.mjs";
+import { CODEX_WORKER_FEATURES, codexWorkerEnvironment, codexWorkerRestricted, createCodexInvocation, createCodexRuntime } from "./codex-runtime.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -56,15 +61,16 @@ export function codexEnvironment(env, envAllow = [], platform = process.platform
 }
 
 const USAGE =
-  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]\n" +
+  "usage: qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>] [--owned-native --parent-session <id>]\n" +
   "exit 0 every task done, 1 bad input or no codex, 2 a Codex usage or spend limit, 3 out of runs or report failure, 4 guard or diff shape refused, 5 paused, 7 verify failed";
 
-const FLAGS = { "--role": "role", "--resume": "resume", "--report": "report", "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
+const FLAGS = { "--parent-session": "parentSession", "--role": "role", "--resume": "resume", "--report": "report", "--brief": "brief", "--worktree": "worktree", "--progress": "progress", "--log": "log", "--max-runs": "maxRuns", "--max-hours": "maxHours", "--effort": "effort", "--poll-minutes": "pollMinutes" };
 
 /** @returns the settings with resolved paths; throws an Error naming the bad or missing flag. */
 export function parseArgs(argv) {
   const found = {};
   for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--owned-native") { found.ownedNative = true; continue; }
     if (argv[index] === "--review") { found.review = true; continue; }
     if (argv[index] === "--wait-reset") { found.waitReset = true; continue; }
     const key = FLAGS[argv[index]];
@@ -92,6 +98,8 @@ export function parseArgs(argv) {
     maxRuns,
     effort: found.effort,
     role,
+    ownedNative: found.ownedNative ?? false,
+    parentSession: found.parentSession,
     resume: found.resume,
     review: role === "review",
     report: found.report === undefined ? undefined : path.resolve(path.dirname(path.resolve(found.brief)), found.report),
@@ -254,10 +262,11 @@ Review checklist:
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
-function spawnRun({ invocation: { args, env }, input, log, cwd }, codexCommand) {
+function spawnRun({ invocation: { args, env }, input, log, cwd, launch }, codexCommand) {
   const [bin, ...prefix] = codexCommand;
-  mkdirSync(path.dirname(log), { recursive: true });
-  const fd = openSync(log, "a");
+  let fd;
+  const openLog = () => { mkdirSync(path.dirname(log), { recursive: true }); fd = openSync(log, "a"); };
+  if (!launch) openLog();
   return new Promise((resolve, reject) => {
     let child;
     let tail = Buffer.alloc(0);
@@ -266,6 +275,7 @@ function spawnRun({ invocation: { args, env }, input, log, cwd }, codexCommand) 
     let inputTokens = 0;
     let outputTokens = 0;
     const capture = (chunk, json) => {
+      chunk = Buffer.from(chunk);
       writeSync(fd, chunk);
       tail = Buffer.concat([tail, chunk]).subarray(-TAIL_CHARS);
       if (!json) return;
@@ -283,22 +293,87 @@ function spawnRun({ invocation: { args, env }, input, log, cwd }, codexCommand) 
         } catch { /* Non-JSON output remains in the log, without inventing a session. */ }
       }
     };
+    const observe = owned => {
+      child = owned;
+      child.stdout.on("data", (chunk) => capture(chunk, true));
+      child.stderr.on("data", (chunk) => capture(chunk, false));
+      child.on("error", reject);
+      child.stdin.on("error", (error) => {
+        if (error.code !== "EPIPE" && error.code !== "EOF") reject(error);
+      });
+      child.on("close", (status) => {
+        if (pending) capture(Buffer.from("\n"), true);
+        closeSync(fd);
+        resolve({ status, tail: tail.toString("utf8"), session, inputTokens, outputTokens });
+      });
+    };
     try {
-      child = spawn(bin, [...prefix, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    } catch (error) { closeSync(fd); reject(error); return; }
-    child.stdout.on("data", (chunk) => capture(chunk, true));
-    child.stderr.on("data", (chunk) => capture(chunk, false));
-    child.on("error", reject);
-    child.stdin.on("error", (error) => {
-      if (error.code !== "EPIPE" && error.code !== "EOF") reject(error);
-    });
-    child.stdin.end(input);
-    child.on("close", (status) => {
-      if (pending) capture(Buffer.from("\n"), true);
-      closeSync(fd);
-      resolve({ status, tail: tail.toString("utf8"), session, inputTokens, outputTokens });
-    });
+      if (launch) Promise.resolve(launch(observe, openLog)).catch(error => { if (!child && fd !== undefined) closeSync(fd); reject(error); });
+      else { observe(spawn(bin, [...prefix, ...args], { env, cwd, stdio: ["pipe", "pipe", "pipe"], windowsHide: true })); child.stdin.end(input); }
+    } catch (error) { if (fd !== undefined) closeSync(fd); reject(error); }
   });
+}
+
+// H3a: a single implement invocation. Workflow and native budgets stay separate:
+// native argv uses budgets.codex; the private implementer reservation uses budgets.implementer.
+async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
+  if (codexCommand.length !== 1 || !model) throw Error("Owned runner requires one native executable and an explicit model");
+  const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
+  const command = `${quote(process.execPath)} ${quote(fileURLToPath(new URL("./qc.mjs", import.meta.url)))} codex-hook`;
+  const hooks = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"].map(event =>
+    `${event}=[{hooks=[{type="command",command=${JSON.stringify(command)},timeout=10}]}]`).join(",");
+  const invocation = createCodexInvocation({ ...call.invocation, args: ["-c", "features.codex_hooks=true", "-c", `hooks={${hooks}}`, ...call.args] });
+  let owned;
+  const runtime = Object.fromEntries(["reserve", "ready", "validate", "context", "terminal", "startup", "recover", "hook", "launch"].map(name => [name, (...args) => {
+    if (name === "reserve") {
+      // G has admitted checkpoint/task/model/route/slot before even the version probe spawns.
+      const pin = pinCodexNativeExecutable({ command: codexCommand[0], cwd: call.cwd, env: call.env });
+      owned = createCodexRuntime({ worktree: call.cwd, executable: pin.realpath, executablePin: pin,
+        workflowId: settings.parentSession, invocation, config: load(call.cwd), codexHome: call.env.CODEX_HOME });
+    }
+    return owned[name](...args);
+  }]));
+  const dispatch = createCodexDispatch({ parentSessionId: settings.parentSession, workerSessionId: randomUUID(),
+    role: "implementer", worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime });
+  let bridge, starting, child, retired = false, cancelled = false, cleanupNeeded = false;
+  const close = async () => {
+    try { await dispatch.error(); retired = true; await bridge?.close(); }
+    catch (error) { cleanupNeeded = true; throw error; }
+  };
+  const cancel = () => { cancelled = true; if (child) void close().catch(() => {}); };
+  signal?.addEventListener("abort", cancel, { once: true });
+  process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
+  const timer = setTimeout(cancel, settings.maxHours * 3600000); timer.unref();
+  try {
+    if (signal?.aborted) throw Error("Owned runner cancelled");
+    const result = await spawnRun({ ...call, invocation, launch: (observe, openLog) => starting = dispatch.start(async reservation => {
+      bridge = await createCodexBridge({ runtime, reservation, closeOnReject: true,
+        onStop: (native, text) => dispatch.handback(native, text) });
+      if (cancelled || signal?.aborted) throw Error("Owned runner cancelled");
+      openLog();
+      child = runtime.launch(reservation, call.input, bridge.env); observe(child);
+      child.once("exit", () => { if (cleanupNeeded && !retired) void close().catch(() => {}); });
+      bridge.closed.then(() => { if (!retired) cancel(); });
+      return child;
+    }) }, codexCommand);
+    await starting;
+    if (result.status !== 0 || cancelled) throw Error("Owned worker exit/cancellation rejected");
+    metrics.ownedLifecycle = { close, finish: async () => {
+      const verdict = await dispatch.finish(); retired = true;
+      if (!verdict.accepted) throw Error(`Owned report/exit rejected: ${verdict.notes.join("; ")}`);
+    } };
+    return result;
+  } catch (error) { await close(); throw error; }
+  finally {
+    const cleanup = async () => {
+      clearTimeout(timer); signal?.removeEventListener("abort", cancel);
+      process.off("SIGINT", cancel); process.off("SIGTERM", cancel);
+      if (retired) await bridge?.close();
+    };
+    if (metrics.ownedLifecycle) {
+      metrics.ownedLifecycle.close = async () => { try { await close(); } finally { await cleanup(); } };
+    } else await cleanup();
+  }
 }
 
 /** Writes one stdout line and resolves once it is flushed, so the `process.exit` that follows cannot cut it. */
@@ -338,6 +413,8 @@ export async function runCodexImplement(argv, { out = writeLine, warn = console.
     metrics.refusal ??= error.refusal ?? null;
     code = finish(report, error.message, 1);
   }
+  try { await metrics.ownedLifecycle?.close(); }
+  catch (error) { code = finish(report, error.message, 1); }
   try {
     const settings = metrics.settings;
     const worktreeIndex = argv.indexOf("--worktree");
@@ -444,7 +521,7 @@ function completeReview(settings, started, originalStamp, message, say) {
 
 async function runJob(argv, {
   run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
-  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation, metrics,
+  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation, metrics, signal,
 } = {}) {
   let settings;
   try {
@@ -469,6 +546,12 @@ async function runJob(argv, {
     return finish(say, message, code);
   };
   const started = Date.now();
+  if (settings.ownedNative && (settings.role !== "implement" || settings.maxRuns !== 1 || settings.resume || settings.waitReset))
+    return refuse("other", "H3b role-lifecycle and retry/resume continuation required for this owned runner mode");
+  if (settings.ownedNative && !/^[A-Za-z0-9_-]{1,128}$/.test(settings.parentSession ?? ""))
+    return refuse("other", "Owned runner requires --parent-session for checkpoint admission");
+  if (settings.ownedNative && isDone(settings.progress)) return refuse("other", "Owned runner cannot accept a prewritten completion marker");
+  if (settings.ownedNative && settings.maxHours * 3600000 > 2147483647) return refuse("other", "Owned runner timeout exceeds the timer bound");
   let originalStamp;
   try {
     if (settings.role === "scout") {
@@ -558,6 +641,8 @@ async function runJob(argv, {
       if (!passed) return finish(say, "verify failed", 7);
     } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
     if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
+    try { await metrics.ownedLifecycle?.finish(); }
+    catch (error) { return finish(say, error.message, 1); }
     return completeReview(settings, started, originalStamp, message, say);
   };
   let resetDeadline;
@@ -634,8 +719,9 @@ async function runJob(argv, {
       const invocation = createCodexInvocation({ args,
         env: codexWorkerEnvironment({ ...childEnv, QC_PROTECTED_ALLOW: allow.join(",") }, settings.role === "implement" ? "implementer" : settings.role),
         role: settings.role === "review" ? "reviewer" : settings.role === "implement" ? "implementer" : settings.role });
-      result = await execute({ command: codexCommand[0], args: invocation.args, env: invocation.env, invocation, input: prompt,
-        log: settings.log, cwd: settings.worktree });
+      const call = { command: codexCommand[0], args: invocation.args, env: invocation.env, invocation, input: prompt,
+        log: settings.log, cwd: settings.worktree };
+      result = settings.ownedNative ? await ownedRun(call, settings, codexCommand, model, signal, metrics) : await execute(call);
     } catch (error) {
       runError = error;
     }

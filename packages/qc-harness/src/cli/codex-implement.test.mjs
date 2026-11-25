@@ -10,6 +10,8 @@ import { defaults } from "../config.mjs";
 import { readLimit, writeLimit } from "./codex-limit.mjs";
 import { recordRun } from "./ci-failures.mjs";
 import { holdBranch } from "./pause.mjs";
+import { checkpointPathOf } from "./checkpoint.mjs";
+import { slotDirOf } from "./dispatch-slot.mjs";
 import { appendRecord, ledgerFileOf, readLedger } from "./ledger.mjs";
 
 const QC = fileURLToPath(new URL("./qc.mjs", import.meta.url));
@@ -50,6 +52,121 @@ function setup(t, { progress = "" } = {}) {
 }
 
 const quiet = () => {};
+
+test("owned native launch is per invocation and unsupported roles fail before launch", async t => {
+  const f = setup(t);
+  assert.equal(parseArgs(f.argv).ownedNative, false);
+  assert.equal(parseArgs([...f.argv, "--owned-native"]).ownedNative, true);
+  for (const extra of [["--role", "scout"], ["--role", "tests"], ["--role", "review"], ["--max-runs", "2"], ["--resume", "old"], ["--wait-reset"]]) {
+    const messages = [];
+    assert.equal(await runCodexImplement([...f.argv, "--owned-native", ...extra], {
+      env: {}, say: line => messages.push(line), out: quiet,
+      run: () => assert.fail("unsupported role launched"),
+    }), 4);
+    assert.match(messages.join("\n"), /H3b.*continuation/);
+    assert.equal(readFileSync(f.progress, "utf8"), "");
+  }
+  assert.equal(await runCodexImplement([...f.argv, "--owned-native"], { env: {}, say: quiet, out: quiet }), 4);
+  writeFileSync(f.progress, DONE_MARKER);
+  assert.equal(await runCodexImplement([...f.argv, "--owned-native", "--parent-session", "parent"], {
+    env: {}, say: quiet, out: quiet, run: () => assert.fail("prewritten marker"),
+  }), 4);
+});
+
+for (const mode of ["hook-first", "stdout-first", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify"]) {
+  test(`actual owned runner ${mode}`, { skip: !["linux", "darwin"].includes(process.platform) }, async t => {
+    const f = setup(t), executable = path.join(f.dir, "native"), script = path.join(f.dir, "native.mjs"), parent = path.basename(f.dir);
+    const source = path.join(f.dir, "native.c");
+    writeFileSync(source, `#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+  if (argc == 2 && !strcmp(argv[1], "--version")) { FILE *f = fopen(${JSON.stringify(path.join(f.dir, "probe"))}, "w"); fclose(f); puts("codex-cli ${mode === "pin" ? "0.171.0" : "0.172.0"}"); return 0; }
+  char *args[argc+2]; args[0] = ${JSON.stringify(process.execPath)}; args[1] = ${JSON.stringify(script)};
+  for (int i = 1; i < argc; i++) args[i+1] = argv[i]; args[argc+1] = NULL; execv(args[0], args); return 1;
+}`);
+    const built = spawnSync("cc", [source, "-o", executable], { encoding: "utf8" });
+    if (built.error?.code === "ENOENT") { t.skip("native fixture requires cc"); return; }
+    assert.equal(built.status, 0, built.stderr);
+    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { model: "gpt-6.1-sol" }, swarm: { dispatch: { implementerSlots: 1 } } }));
+    for (const args of [["add", "."], ["-c", "user.name=qc", "-c", "user.email=qc@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "seed"]])
+      assert.equal(spawnSync("git", args, { cwd: f.worktree, env: f.gitEnv }).status, 0);
+    const linked = path.join(f.dir, "linked");
+    assert.equal(spawnSync("git", ["worktree", "add", "-qb", "feat/owned", linked], { cwd: f.worktree, env: f.gitEnv }).status, 0);
+    f.worktree = linked; f.argv[f.argv.indexOf("--worktree") + 1] = linked;
+    const checkpoint = checkpointPathOf(f.worktree, parent);
+    mkdirSync(path.dirname(checkpoint), { recursive: true });
+    if (mode !== "no-checkpoint") writeFileSync(checkpoint, "## Goal\n## Rules\n## Tasks\n## Next\n");
+    if (mode === "verify") appendFileSync(f.brief, '\nVerify: `node -e "process.exit(9)"`\n');
+    writeFileSync(script, `import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+const mode = ${JSON.stringify(mode)}, cwd = process.cwd();
+writeFileSync(${JSON.stringify(path.join(f.dir, "started"))}, JSON.stringify({ pid: process.pid, port: process.env.QC_CODEX_REPORT_PORT }));
+if (process.env.QC_ROLE !== 'implementer' || process.env.QC_CODEX_WORKER !== '1') throw Error('worker identity missing');
+for (const flag of ['features.multi_agent=false', 'features.multi_agent_v2=false', 'features.codex_hooks=true'])
+  if (!process.argv.includes(flag)) throw Error('missing '+flag);
+const hooks = process.argv.find(arg => arg.startsWith('hooks='));
+if (!hooks || (hooks.match(/codex-hook/g) || []).length !== 4) throw Error('canonical hooks missing');
+const command = JSON.parse(hooks.slice(hooks.indexOf('command=') + 8, hooks.indexOf(',timeout=')));
+const base = { session_id: 'thread', cwd, transcript_path: null };
+const hook = input => {
+  const r = spawnSync('sh', ['-c', command], {
+    input: JSON.stringify(input), env: process.env, encoding: 'utf8', timeout: 7000 });
+  if (r.status !== 0) { process.stderr.write(r.stderr || 'channel rejected'); process.exit(8); }
+  return r.stdout ? JSON.parse(r.stdout) : null;
+};
+if (mode === 'stdout-first') process.stdout.write('{"type":"thread.started","thread_id":"thread"}\\n');
+if (mode === 'channel') process.env.QC_CODEX_REPORT_TOKEN = '0'.repeat(64);
+if (mode === 'no-hooks') await new Promise(() => setInterval(() => {}, 1000));
+hook({ ...base, hook_event_name: 'SessionStart', source: 'startup', model: 'fixture', permission_mode: 'default' });
+if (mode !== 'stdout-first') process.stdout.write('{"type":"thread.started","thread_id":"thread"}\\n');
+await new Promise(resolve => setTimeout(resolve, 40));
+if (['cancel', 'timeout'].includes(mode)) { writeFileSync(${JSON.stringify(path.join(f.dir, "ready"))}, 'ready'); await new Promise(() => setInterval(() => {}, 1000)); }
+const nested = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(QC)}, 'codex-implement'], { env: { ...process.env, QC_ROLE: 'leader' }, encoding: 'utf8' });
+if (nested.status !== 4) process.exit(9);
+const denied = hook({ ...base, hook_event_name: 'PreToolUse', turn_id: 'turn', tool_use_id: 'tool', tool_name: 'Bash', tool_input: { command: 'git -c core.hooksPath=/dev/null status' } });
+if (denied?.hookSpecificOutput?.permissionDecision !== 'deny') process.exit(10);
+hook({ ...base, hook_event_name: 'PostToolUse', turn_id: 'turn', tool_use_id: 'post', tool_name: 'Bash', tool_input: { command: 'true' }, tool_response: 'ok' });
+if (mode === 'drift') writeFileSync('qc.config.json', '{}');
+if (mode === 'guard') writeFileSync('outside-brief.mjs', 'export const bad = 1;');
+writeFileSync(${JSON.stringify(f.progress)}, ${JSON.stringify(DONE_MARKER)});
+hook({ ...base, ...(mode === 'provenance' ? { session_id: 'sibling' } : {}), hook_event_name: 'Stop', turn_id: 'turn', stop_hook_active: false,
+  last_assistant_message: mode === 'malformed' ? 'done' : 'RED: node --test failed\\nGREEN: node --test passed' });
+process.exit(mode === 'nonzero' ? 6 : 0);
+`);
+    const controller = new AbortController();
+    if (mode === "cancel") {
+      const timer = setInterval(() => { if (existsSync(path.join(f.dir, "ready"))) controller.abort(); }, 20);
+      t.after(() => clearInterval(timer));
+    }
+    const messages = [];
+    const code = await runCodexImplement([...f.argv, "--owned-native", "--parent-session", parent, ...(mode === "timeout" ? ["--max-hours", "0.0005"] : [])], {
+      codexCommand: [executable], env: { ...f.gitEnv, CODEX_HOME: path.join(f.dir, "home") }, signal: controller.signal, say: line => messages.push(line), out: quiet,
+    });
+    assert.equal(code, ["hook-first", "stdout-first"].includes(mode) ? 0 : mode === "guard" ? 4 : mode === "verify" ? 7 : 1,
+      messages.join("\n") + JSON.stringify({ probe: existsSync(path.join(f.dir, "probe")), started: existsSync(path.join(f.dir, "started")) }) +
+      (existsSync(`${f.progress}.log`) ? readFileSync(`${f.progress}.log`, "utf8") : ""));
+    assert.equal(existsSync(path.join(f.dir, "started")), !["no-checkpoint", "pin"].includes(mode), messages.join("\n"));
+    if (mode === "cancel") assert.equal(controller.signal.aborted, true);
+    if (existsSync(path.join(f.dir, "started"))) {
+      const { pid, port } = JSON.parse(readFileSync(path.join(f.dir, "started"), "utf8"));
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+      const { createConnection } = await import("node:net");
+      await new Promise((resolve, reject) => {
+        const socket = createConnection({ host: "127.0.0.1", port: Number(port) });
+        socket.once("connect", () => { socket.destroy(); reject(Error("owned channel still open")); }); socket.once("error", resolve);
+      });
+    }
+    if (mode === "no-checkpoint") {
+      assert.equal(existsSync(path.join(f.dir, "probe")), false);
+      assert.equal(existsSync(`${f.progress}.log`), false);
+    }
+    const slotDir = slotDirOf(parent, os.tmpdir());
+    assert.equal(existsSync(slotDir) ? readdirSync(slotDir).filter(n => n.endsWith(".claim")).length : 0, 0);
+    const stops = readLedger(ledgerFileOf(f.worktree)).filter(r => r.type === "stop");
+    assert.equal(stops.length, code === 0 ? 1 : 0);
+  });
+}
 
 for (const role of ["worker", "implement", "implementer", "reviewer", "branch-reviewer", "planner", "scout", "tests", "review"]) {
   test(`inherited ${role} cannot launch a nested runner or override its role`, async (t) => {

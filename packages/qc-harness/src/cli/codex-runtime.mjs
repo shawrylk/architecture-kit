@@ -233,8 +233,11 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       admitted++;
       return handle;
     },
-    launch(handle, input) {
+    launch(handle, input, channel = {}) {
       const record = get(handle);
+      if (Object.keys(channel).some(key => !["QC_CODEX_REPORT_PORT", "QC_CODEX_REPORT_TOKEN"].includes(key)) ||
+          Object.keys(channel).length && (!/^[1-9][0-9]{0,4}$/.test(channel.QC_CODEX_REPORT_PORT) ||
+            Number(channel.QC_CODEX_REPORT_PORT) > 65535 || !/^[a-f0-9]{64}$/.test(channel.QC_CODEX_REPORT_TOKEN))) unavailable();
       if (record.child || invocation && typeof input !== "string") unavailable();
       // Generated command has no caller-supplied flags; conflicting flags are rejected at reserve.
       const args = invocation?.args ?? ["exec", "-C", worktree, "--json", ...Object.entries(record.role === "leader" ? settings : {})
@@ -243,7 +246,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       try {
         if (executablePin && checkPin(executable, executablePin) !== executableIdentity) unavailable();
         const child = spawnCommand(executablePin?.realpath ?? executable, args, { cwd: worktree,
-          env: invocation?.env ?? (record.role === "leader" ? process.env : codexWorkerEnvironment(process.env, record.role)), stdio: ["pipe", "pipe", "pipe"] });
+          env: { ...(invocation?.env ?? (record.role === "leader" ? process.env : codexWorkerEnvironment(process.env, record.role))), ...channel }, stdio: ["pipe", "pipe", "pipe"] });
         record.child = child;
         let pending = "";
         const capture = chunk => {
