@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, symlinkSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, symlinkSync, readFileSync, renameSync } from "node:fs";
 import os from "node:os";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { once, EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -217,4 +218,124 @@ test("missing, malformed and oversized native identity streams stay unknown and 
   const bad = fixture(t, { executable: "/invalid\0", capacity: 1 }), pending = bad.reserve();
   assert.throws(() => bad.runtime.launch(pending), /unavailable/);
   bad.reserve();
+});
+
+for (const early of [true, false]) test(`startup correlation handles hook first=${early} without holding its acknowledgement`, { skip: !supported }, async t => {
+  const f = fixture(t), r = f.reserve(), ready = f.runtime.ready(r);
+  if (early) assert.equal(f.runtime.startup(r, r.hookCredential, f.hook), true);
+  const child = f.runtime.launch(r);
+  t.after(() => { child.stdin.end(); child.kill(); });
+  await once(child, "spawn");
+  child.stdin.write("native-thread\n");
+  if (!early) { await once(child.stdout, "data"); f.runtime.startup(r, r.hookCredential, f.hook); }
+  const proof = await ready;
+  assert.equal(proof.nativeThreadId, "native-thread");
+  assert.equal(f.runtime.startup(r, r.hookCredential, f.hook), true);
+  assert.strictEqual(await f.runtime.ready(r), proof);
+  for (const source of ["compact", "resume"]) assert.throws(() => f.runtime.startup(r, r.hookCredential, { ...f.hook, source }), /unavailable/);
+  assert.equal(child.stdout.listenerCount("data"), 0);
+});
+test("deferred local header establishes a distinct root once, with immutable admission and selected provenance", { skip: !supported }, async t => {
+  const home = mkdtempSync(path.join(os.tmpdir(), "qc-runtime-home-"));
+  t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
+  const f = fixture(t, { codexHome: home }), r = f.reserve(); await start(t, f, r);
+  mkdirSync(path.join(home, "sessions"));
+  const transcript = path.join(home, "sessions", "selected.jsonl"), hook = { ...f.hook, transcript_path: transcript };
+  assert.throws(() => f.runtime.bind(r, r.hookCredential, { ...hook, transcript_path: "relative.jsonl" }), /unavailable/);
+  assert.equal(f.runtime.validate(r, f.hook), null);
+  const admitted = f.runtime.bind(r, r.hookCredential, { ...hook, nativeRootSessionId: "forged", nativeConfig: { model_auto_compact_token_limit: 1 } });
+  assert.equal(admitted.nativeRootSessionId, null);
+  const timestamp = new Date().toISOString();
+  const header = (extra = {}) => JSON.stringify({ type: "session_meta", ordinal: 0, timestamp,
+    payload: { id: "native-thread", session_id: "native-root", cli_version: "0.172.0", cwd: f.dir, source: "exec", ...extra } }) + "\n";
+  for (const bad of [{ id: "wrong-thread" }, { cwd: os.tmpdir() }, { source: { subagent: { thread_spawn: { parent_thread_id: "parent", agent_role: "implementer", depth: 1 } } } }]) {
+    writeFileSync(transcript, header(bad)); assert.equal(f.runtime.validate(r, hook).nativeRootSessionId, null);
+  }
+  writeFileSync(transcript, header());
+  const known = f.runtime.validate(r, hook);
+  assert.equal(known.nativeRootSessionId, "native-root");
+  assert.equal(known.identityProvenance.provenance, "codex-0.172.0/session_meta/local-file");
+  for (const field of ["role", "budget", "incarnation", "settings"]) assert.strictEqual(known[field], admitted[field]);
+  assert.equal(known.nativeConfig, undefined);
+  assert.throws(() => f.runtime.bind(r, r.hookCredential, { ...hook, transcript_path: transcript + "other" }), /unavailable/);
+  assert.equal(f.runtime.validate(r, { ...hook, transcript_path: transcript + "other" }), null);
+  writeFileSync(transcript, header({ session_id: "replacement-root" }));
+  assert.equal(f.runtime.validate(r, hook), null);
+  assert.throws(() => f.runtime.bind(r, r.hookCredential, hook), /unavailable/);
+  writeFileSync(transcript, header()); assert.equal(f.runtime.validate(r, hook).nativeRootSessionId, "native-root");
+  const replacement = transcript + ".new"; writeFileSync(replacement, header()); renameSync(replacement, transcript);
+  assert.equal(f.runtime.validate(r, hook), null);
+});
+test("pending startup envelopes are bounded, authenticated and isolated", { skip: !supported }, async t => {
+  const f = fixture(t, { capacity: 2 }), a = f.reserve(), b = f.reserve();
+  const children = [a, b].map(r => f.runtime.launch(r));
+  t.after(() => children.forEach(c => { c.stdin.end(); c.kill(); }));
+  assert.throws(() => f.runtime.startup(a, b.hookCredential, f.hook), /unavailable/);
+  for (const extra of [{ cwd: os.tmpdir() }, { session_id: "bad!" }, { payload: "é".repeat(4096) },
+    { settings: {} }, Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`key${i}`, "x"]))])
+    assert.throws(() => f.runtime.startup(a, a.hookCredential, { ...f.hook, ...extra }), /unavailable/);
+  f.runtime.startup(a, a.hookCredential, f.hook);
+  f.runtime.startup(b, b.hookCredential, { ...f.hook, session_id: "second" });
+  assert.throws(() => f.runtime.startup(a, a.hookCredential, { ...f.hook, session_id: "second" }), /unavailable/);
+  await Promise.all(children.map(c => once(c, "spawn")));
+  const ready = [f.runtime.ready(a), f.runtime.ready(b)];
+  children[1].stdin.write("second\n"); children[0].stdin.write("native-thread\n");
+  assert.deepEqual((await Promise.all(ready)).map(p => p.nativeThreadId), ["native-thread", "second"]);
+  f.runtime.terminal(a);
+  const replay = f.reserve(); await start(t, f, replay);
+  const rejected = assert.rejects(f.runtime.ready(replay), /unavailable/);
+  f.runtime.startup(replay, replay.hookCredential, f.hook); await rejected;
+  assert.equal(f.runtime.validate(replay, f.hook), null);
+});
+test("startup deadlines and cancellation/error/exit remove listeners and release capacity", { skip: !supported }, async t => {
+  for (const mode of ["timeout", "cancel", "error", "exit", "malformed", "mismatch"]) {
+    const f = fixture(t, { capacity: 1, startupTimeoutMs: 200 }), r = f.reserve(), child = f.runtime.launch(r);
+    t.after(() => { child.stdin.end(); child.kill(); });
+    const failed = assert.rejects(f.runtime.ready(r), /unavailable/);
+    f.runtime.startup(r, r.hookCredential, f.hook);
+    await once(child, "spawn");
+    if (mode === "cancel") f.runtime.terminal(r);
+    if (mode === "error") child.emit("error", new Error("fixture failure"));
+    if (mode === "exit") child.stdin.end();
+    if (mode === "malformed") child.stdout.emit("data", "not-json\n");
+    if (mode === "mismatch") child.stdin.write("other-thread\n");
+    await failed;
+    for (const [emitter, event] of [[child.stdout, "data"], [child, "spawn"], [child, "exit"], [child, "error"]])
+      assert.equal(emitter.listenerCount(event), 0, `${mode}: ${event}`);
+    assert.equal(f.runtime.validate(r, f.hook), null); f.runtime.terminal(f.reserve());
+  }
+  for (const startupTimeoutMs of [0, 30001, NaN]) assert.throws(() => fixture(t, { startupTimeoutMs }), /unavailable/);
+});
+
+test("trusted runner pin binds real executable digest/version and detects prelaunch drift", { skip: !supported }, async t => {
+  for (const drift of [false, "bytes", "path", "replacement"]) {
+    const f = fixture(t), executable = path.join(f.dir, "native");
+    const pin = { realpath: executable, version: "0.172.0", sha256: createHash("sha256").update(readFileSync(executable)).digest("hex") };
+    const runtime = createCodexRuntime({ worktree: f.dir, executable, workflowId: "pinned", executablePin: pin });
+    pin.version = "forged";
+    const r = runtime.reserve({ role: "leader", workflowParentId: "parent" });
+    if (drift === "replacement") { writeFileSync(executable + ".new", readFileSync(executable), { mode: 0o700 }); renameSync(executable + ".new", executable); }
+    if (drift === "bytes") writeFileSync(executable, "#!/bin/sh\nexit 1\n");
+    if (drift === "path") { rmSync(executable); symlinkSync(process.execPath, executable); }
+    if (drift) { assert.throws(() => { const child = runtime.launch(r); t.after(() => child.kill()); }, /unavailable/); assert.throws(() => runtime.ready(r), /unavailable/); }
+    else {
+      await start(t, { runtime }, r);
+      assert.equal(runtime.bind(r, r.hookCredential, f.hook).executablePin.version, "0.172.0");
+    }
+    assert.throws(() => createCodexRuntime({ worktree: f.dir, executable, workflowId: "bad", executablePin: { ...pin, version: "0.171.0" } }), /unavailable/);
+  }
+});
+
+test("unlaunched reservations expire and cancellation before spawn drains process listeners", { skip: !supported }, async t => {
+  const f = fixture(t, { capacity: 1, startupTimeoutMs: 20 }), r = f.reserve();
+  const expired = assert.rejects(f.runtime.ready(r), /unavailable/);
+  await new Promise(resolve => setTimeout(resolve, 40)); await expired;
+  assert.throws(() => f.runtime.launch(r), /unavailable/);
+  for (const executable of [path.join(f.dir, "native"), path.join(f.dir, "missing")]) {
+    const g = fixture(t, { executable }), pending = g.reserve(), child = g.runtime.launch(pending);
+    const cancelled = assert.rejects(g.runtime.ready(pending), /unavailable/);
+    g.runtime.terminal(pending); child.stdin.end();
+    await new Promise(resolve => child.once("close", resolve)); await cancelled;
+    for (const event of ["error", "spawn", "exit"]) assert.equal(child.listenerCount(event), 0);
+  }
 });
