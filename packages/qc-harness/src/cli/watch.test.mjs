@@ -743,3 +743,21 @@ test("overlapping watchers claim unread escalation before emitting it", async t 
   assert.deepEqual(lines, ["EVENT fleet:unread b original", "EVENT timeout"]);
   assert.equal(readState(root, "sent").original.escalated, true);
 });
+
+test("fleet watcher emits unread at five minutes while renewing its session", async t => {
+  const { readState, writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-escalation-lease-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const time = fakeClock(), lines = [], samples = [];
+  writeState(root, "sent", { task: { node: "b", state: "sent", time: new Date(0).toISOString() } });
+  assert.equal(await runWatch(["--fleet", "--max", "6"], { cwd: root, now: time.now,
+    say: line => lines.push({ line, at: time.now() }), sleep: async ms => {
+      samples.push({ at: time.now(), heartbeat: readState(root, "node").sessionHeartbeat });
+      await time.sleep(ms);
+    } }), 0);
+  assert.deepEqual(lines, [{ line: "EVENT fleet:unread b task", at: 300_000 }]);
+  assert.ok(samples.every(({ at, heartbeat }) => at - heartbeat < 30_000));
+  assert.equal(readState(root, "node").sessionHeartbeat, 300_000);
+  assert.equal(readState(root, "sent").task.escalated, true);
+});

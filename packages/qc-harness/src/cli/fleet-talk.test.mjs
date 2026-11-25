@@ -618,3 +618,19 @@ test("say warns when no session listens; status exposes session and open-message
   assert.equal(await f.run(["status"], { gh: () => "[]", git: () => "", node: { clock: () => time + 90_000 } }), 0);
   assert.match(f.lines.join("\n"), /b .*session=none/);
 });
+
+test("status includes local session and every open state only for the selected repository", async t => {
+  const f = fixture(t, true), at = Date.now();
+  writeState(f.root, "node", { leader: true, sessionHeartbeat: at });
+  writeState(f.root, "sent", Object.fromEntries([
+    ...["sent", "delivered", "read", "done"].map(state => [state, { repo: "o/r", node: "b", state, time: new Date(at - 65_000).toISOString() }]),
+    ["other", { repo: "other/repo", node: "b", state: "sent", time: new Date(at).toISOString() }],
+  ]));
+  assert.equal(await f.run(["status"], { gh: () => "[]", git: () => "", node: { clock: () => at } }), 0, f.errors.join("\n"));
+  assert.match(f.lines.join("\n"), /^a .*session=live/m);
+  assert.deepEqual(f.lines.filter(line => line.startsWith("message ")), [
+    "message sent to=b state=sent age=65s",
+    "message delivered to=b state=delivered age=65s",
+    "message read to=b state=read age=65s",
+  ]);
+});

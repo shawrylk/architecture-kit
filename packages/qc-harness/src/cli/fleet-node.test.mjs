@@ -1573,3 +1573,27 @@ test("node startup preserves an active watcher lease through process and server 
     writeState(root, "node", { sessionHeartbeat: now });
   }
 });
+
+test("heartbeat refreshes session liveness between peer sends", async t => {
+  const root = fixture(t), beats = [];
+  const peers = { ...fleet, nodes: [...fleet.nodes, { id: "c", address: "localhost", port: 8083 }] };
+  let at = now + 89_999;
+  writeState(root, "node", { leader: true, term: 1, sessionHeartbeat: now });
+  await heartbeat({ root, fleet: peers, repo: "o/r", clock: () => at, fetch: async (_, options) => {
+    beats.push(JSON.parse(options.body));
+    at = now + 90_000;
+    return { status: 202 };
+  } });
+  assert.deepEqual(beats.map(beat => beat.body.session), ["live", "none"]);
+  assert.equal(readState(root, "peers").a.session, "none");
+  beats.length = 0;
+  await heartbeat({ root, fleet: peers, repo: "o/r", clock: () => at, fetch: async (_, options) => {
+    const beat = JSON.parse(options.body);
+    assert.equal(verifyMessage(beat, { secret, nodes: peers.nodes, now: at }).ok, true);
+    beats.push(beat);
+    writeState(root, "node", { ...readState(root, "node"), sessionHeartbeat: at });
+    return { status: 202 };
+  } });
+  assert.deepEqual(beats.map(beat => beat.body.session), ["none", "live"]);
+  assert.equal(readState(root, "peers").a.session, "live");
+});
