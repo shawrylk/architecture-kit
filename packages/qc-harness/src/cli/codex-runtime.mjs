@@ -96,11 +96,11 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
         let pending = "";
         const capture = chunk => {
           try {
-            pending += chunk;
+            const newline = chunk.indexOf("\n");
+            pending += newline < 0 ? chunk : chunk.slice(0, newline);
             if (Buffer.byteLength(pending) > 8192) unavailable();
-            const newline = pending.indexOf("\n");
             if (newline < 0) return;
-            const event = JSON.parse(pending.slice(0, newline));
+            const event = JSON.parse(pending);
             if (event.type !== "thread.started" || !id(event.thread_id)) unavailable();
             record.threadId = event.thread_id;
           } catch { retire(handle); }
