@@ -608,3 +608,37 @@ test("external source retains snapshot, freshness, cursor, file and root provena
   const replacement = f.file + ".replacement"; writeFileSync(replacement, text); renameSync(replacement, f.file);
   await assert.rejects(f.decide());
 });
+
+for (const early of [true, false]) test(`bridge startup correlation hook first=${early} accepts native null transcript`, { skip: !supported }, async t => {
+  const { createCodexBridge, reportCodexHook } = await import("./codex-bridge.mjs");
+  const f = fixture(t), r = f.reserve("implementer");
+  const bridge = await createCodexBridge({ runtime: f.runtime, reservation: r }), ready = bridge.ready();
+  t.after(() => bridge.close());
+  const input = { ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" };
+  const report = () => reportCodexHook(input, { env: bridge.env });
+  if (early) assert.equal(await report(), null);
+  await start(t, f, r);
+  if (!early) assert.equal(await report(), null);
+  const proof = await ready;
+  assert.equal(proof.nativeThreadId, input.session_id);
+  assert.equal(proof.nativeRootSessionId, null);
+  assert.equal(proof.role, "implementer");
+  assert.equal(await report(), null);
+  assert.strictEqual(await f.runtime.ready(r), proof);
+  for (const bad of [{ cwd: path.dirname(f.dir) }, { session_id: "sibling" }, { source: "compact" }, { source: "resume" }])
+    await assert.rejects(reportCodexHook({ ...input, ...bad }, { env: bridge.env }), /unavailable/);
+  assert.strictEqual(await f.runtime.ready(r), proof);
+  f.runtime.terminal(r);
+  await assert.rejects(report(), /unavailable/);
+});
+
+test("bridge late startup cannot revive an expired reservation", { skip: !supported }, async t => {
+  const { createCodexBridge, reportCodexHook } = await import("./codex-bridge.mjs");
+  const f = fixture(t, { startupTimeoutMs: 25 }), r = f.reserve();
+  const bridge = await createCodexBridge({ runtime: f.runtime, reservation: r });
+  t.after(() => bridge.close());
+  const rejected = assert.rejects(bridge.ready(), /unavailable/);
+  assert.equal(await reportCodexHook({ ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" }, { env: bridge.env }), null);
+  await rejected;
+  await assert.rejects(reportCodexHook({ ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" }, { env: bridge.env }), /unavailable/);
+});

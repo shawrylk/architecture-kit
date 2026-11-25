@@ -159,7 +159,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
   };
   const select = (record, input) => {
     const selected = input.transcript_path;
-    if (selected !== undefined) {
+    if (selected !== undefined && selected !== null) {
       if (typeof selected !== "string" || selected.length > 4096 || !path.isAbsolute(selected) ||
           record.transcriptPath && record.transcriptPath !== selected) unavailable();
       record.transcriptPath = selected;
