@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { watchedItems } from "./comment-watch.mjs";
+import { commentWatch, watchedItems } from "./comment-watch.mjs";
 import { PARSERS } from "./bash-command-guard.mjs";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -48,18 +48,27 @@ function fixture(t) {
     import cp from 'node:child_process';
     import { syncBuiltinESMExports } from 'node:module';
     import { appendFileSync, readFileSync } from 'node:fs';
+    import { createHash } from 'node:crypto';
     const original = cp.spawnSync;
     cp.spawnSync = (program, args, options) => {
       if (program === 'git' && args.join(' ') === 'remote get-url origin') return { status: 0, stdout: 'https://github.com/shawrylk/example.git' };
       if (program !== 'gh') return original(program, args, options);
       appendFileSync(process.env.CALLS, JSON.stringify({args, config: options.env.GH_CONFIG_DIR}) + '\\n');
       const data = JSON.parse(readFileSync(process.env.DATA, 'utf8'));
-      if (data.fail || args.some(arg => arg.includes(data.failEndpoint ?? 'NEVER_MATCH'))) return { status: 1, stderr: 'TOKEN_MUST_STAY_SECRET' };
+      if (data.fail || args.some(arg => arg.includes(data.failEndpoint ?? 'NEVER_MATCH'))) return { status: 1, stderr: data.failure ?? 'TOKEN_MUST_STAY_SECRET' };
       if (args[0] === 'api' && args[1].includes('/git/ref/heads/') && args.at(-2) === '--jq' && args.at(-1) === '.object.sha') return { status: 0, stdout: data.baseOid };
       let result;
       if (args[0] === 'pr') result = { baseRefName: 'main', baseRefOid: data.baseOid, labels: [], number: 7, body: data.body ?? 'Fixes #4; https://github.com/ArentInc/other/issues/8', commits: data.commits ?? [] };
       else if (args[1] === 'user') result = { login: 'self' };
-      else if (args[1] === 'graphql') result = { data: { node: { number: 7, repository: { nameWithOwner: 'shawrylk/example' } } } };
+      else if (args[1] === 'graphql') {
+        const query = args.find(arg => arg.startsWith('query=')) ?? '';
+        const repository = Object.fromEntries([...query.matchAll(/item_(\\d+):/g)].map(([, number]) => {
+          const rows = data.rows.filter(row => row.endpoint.startsWith('issues/' + number + '/') || row.endpoint.startsWith('pulls/' + number + '/'));
+          const updatedAt = new Date(parseInt(createHash('sha256').update(JSON.stringify(rows)).digest('hex').slice(0, 8), 16) * 1000).toISOString();
+          return ['item_' + number, { __typename: number === '7' ? 'PullRequest' : 'Issue', state: 'OPEN', updatedAt, ...data.metadata?.[number] }];
+        }));
+        result = data.graphqlReply ?? { data: { repository, node: { number: 7, repository: { nameWithOwner: 'shawrylk/example' } } } };
+      }
       else {
         const endpoint = args.at(-1);
         if (/issues\\/7$/.test(endpoint)) result = { pull_request: {} };
@@ -200,6 +209,23 @@ test("only session-created URLs are skipped, including reviews and PRs", (t) => 
   assert.match(output, /Comment 4/);
 });
 
+test("truncated comments print once across prompts and Stop but still block merging", (t) => {
+  const f = fixture(t);
+  f.rows[0].body = "x".repeat(850);
+  f.update();
+  f.run("PostToolUse", "gh issue view 4");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
+  assert.equal(f.run("UserPromptSubmit"), null);
+  assert.equal(f.run("Stop"), null);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const guard = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
+    assert.equal(guard?.hookSpecificOutput?.permissionDecision, "deny");
+    assert.match(JSON.stringify(guard), /truncated/);
+  }
+  f.run("PostToolUse", "gh issue view 4 --comments");
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+});
+
 test("full reads acknowledge only the comment kinds their output contains", (t) => {
   for (const [command, seen] of [
     ["gh issue view 4 --comments", [1]],
@@ -222,12 +248,14 @@ test("full reads acknowledge only the comment kinds their output contains", (t) 
     assert.match(output, /truncated/i, command);
     assert.match(output, /gh api repos\/shawrylk\/example\/pulls\/7\/comments --paginate/, command);
     assert.doesNotMatch(output, /hidden request/, command);
-    assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/i, command);
+    assert.equal(f.run("UserPromptSubmit"), null, command);
+    assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/i, command);
     assert.equal(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput?.permissionDecision, "deny", command);
     f.run("PostToolUse", command, "comment-watch.mjs", "session-a", { exit_code: 1 });
-    assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/i, command);
+    assert.equal(f.run("UserPromptSubmit"), null, command);
+    assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/i, command);
     f.run("PostToolUse", command);
-    const remaining = JSON.stringify(f.run("UserPromptSubmit"));
+    const remaining = JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs"));
     for (const row of f.rows) assert.equal(remaining.includes(`Comment ${row.id} `), !seen.includes(row.id), command);
   }
 });
@@ -373,20 +401,179 @@ test("API merges check comments with dispatch on and off in both shells", (t) =>
   }
 });
 
-test("polls use one issue request and three PR requests in parallel", (t) => {
+test("polls batch metadata per repository and fetch comments only when updatedAt changes", (t) => {
   const f = fixture(t);
   f.run("PostToolUse", "gh pr view 7");
   writeFileSync(f.calls, "");
-  f.update({ delay: 250 });
   f.run("UserPromptSubmit");
   const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start);
-  assert.equal(calls.length, 5);
+  const metadata = calls.filter(call => call.args[1] === "graphql");
+  assert.equal(metadata.length, 2);
+  const query = metadata.find(call => call.args.includes("owner=shawrylk")).args.join(" ");
+  for (const number of [4, 7]) assert.match(query, new RegExp(`item_${number}:.*issueOrPullRequest\\(number: ${number}\\)`));
+  assert.match(query, /state updatedAt/);
+  const commentCalls = calls.filter(call => call.args[1] !== "graphql");
+  assert.equal(commentCalls.length, 5);
   assert.ok(Math.max(...calls.map(call => call.start)) - Math.min(...calls.map(call => call.start)) < 200);
-  assert.ok(calls.every(call => call.args.includes("--paginate")));
+  assert.ok(commentCalls.every(call => call.args.includes("--paginate")));
   assert.ok(calls.every(call => !call.args.includes("--slurp")));
+  writeFileSync(f.calls, "");
+  assert.equal(f.run("UserPromptSubmit"), null);
+  const unchanged = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start);
+  assert.equal(unchanged.length, 2);
+  assert.ok(unchanged.every(call => call.args[1] === "graphql"));
+  f.run("PostToolUse", "gh issue view 4");
+  writeFileSync(f.calls, "");
+  assert.equal(f.run("UserPromptSubmit"), null);
+  const named = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
+  assert.ok(named.every(call => call.args[1] === "graphql"));
   f.rows[0].body = "Retry this item";
   f.update({ failEndpoint: "issues/4/comments" });
-  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /shawrylk\/example#4 could not be checked; retry on the next prompt/);
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment watch: 1 items could not be checked \(gh\); retry on the next prompt\./);
   f.update();
+  writeFileSync(f.calls, "");
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Retry this item/);
+  const retry = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start && call.args[1] !== "graphql");
+  assert.equal(retry.length, 1);
+  assert.match(retry[0].args.at(-1), /issues\/4\/comments/);
+});
+
+test("a Stop preview is acknowledged on the next prompt even when updatedAt is unchanged", (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 4");
+  assert.match(JSON.stringify(f.run("Stop")), /Comment 1/);
+  writeFileSync(f.calls, "");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment 1/);
+  const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
+  assert.ok(calls.every(call => call.args[1] === "graphql"));
+  const guard = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
+  assert.doesNotMatch(JSON.stringify(guard), /Comment 1/);
+});
+
+for (const state of ["CLOSED", "MERGED"]) test(`${state} items retire after one successful check and a named command watches them again`, (t) => {
+  const f = fixture(t);
+  const number = state === "MERGED" ? 7 : 4;
+  const command = state === "MERGED" ? "gh pr view 7" : "gh issue view 4";
+  f.update({ body: "", metadata: { [number]: { state } }, failEndpoint: `issues/${number}/comments` });
+  f.run("PostToolUse", command);
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /could not be checked/);
+  f.update({ body: "", metadata: { [number]: { state } } });
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), new RegExp(`Comment ${number === 4 ? 1 : 4}`));
+  writeFileSync(f.calls, "");
+  assert.equal(f.run("UserPromptSubmit"), null);
+  assert.equal(f.run("Stop"), null);
+  assert.equal(readFileSync(f.calls, "utf8"), "");
+  const ledgerPath = path.join(f.cwd, ".git", "qc", `comment-watch-${createHash("sha256").update("session-a").digest("hex")}.jsonl`);
+  const records = readFileSync(ledgerPath, "utf8").split("\n").filter(Boolean).map(JSON.parse);
+  assert.ok(records.some(record => record.retired === `shawrylk/example#${number}`));
+  f.run("PostToolUse", command);
+  writeFileSync(f.calls, "");
+  f.run("UserPromptSubmit");
+  const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start);
+  assert.equal(calls.filter(call => call.args[1] === "graphql").length, 1);
+  assert.equal(calls.filter(call => call.args.includes("--paginate")).length, number === 7 ? 3 : 1);
+});
+
+test("a merge checks a retired issue named in the PR body again", (t) => {
+  const f = fixture(t);
+  f.update({ metadata: { 4: { state: "CLOSED" } } });
+  f.run("PostToolUse", "gh issue close 4");
+  f.run("UserPromptSubmit");
+  f.rows[0].body = "Feedback after retirement";
+  f.update();
+  assert.equal(f.run("UserPromptSubmit"), null);
+  writeFileSync(f.calls, "");
+  const guard = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
+  assert.equal(guard?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.match(JSON.stringify(guard), /Feedback after retirement/);
+  assert.match(readFileSync(f.calls, "utf8"), /issues\/4\/comments/);
+});
+
+for (const failure of ["metadata", "comments", "partial GraphQL"]) test(`five ${failure} failures print one summary and retry`, (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", [1, 2, 3, 4, 5].map(number => `gh issue view ${number}`).join("; "));
+  f.update(failure === "partial GraphQL" ? { graphqlReply: { data: { repository: {} }, errors: [{ message: "TOKEN_MUST_STAY_SECRET" }] } }
+    : { failEndpoint: failure === "metadata" ? "graphql" : "/comments" });
+  const output = f.run("UserPromptSubmit").hookSpecificOutput.additionalContext;
+  assert.equal(output, `Comment watch: 5 items could not be checked (${failure === "partial GraphQL" ? "response" : "gh"}); retry on the next prompt.`);
+  f.update();
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment 1/);
+});
+
+for (const endpoint of ["graphql", "issues/1/comments"]) test(`rate limits on ${endpoint} end polling before further calls`, (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 1; gh issue view 4; gh issue view 8 -R ArentInc/other");
+  f.update({ failEndpoint: endpoint, failure: "API rate limit exceeded TOKEN_MUST_STAY_SECRET" });
+  writeFileSync(f.calls, "");
+  assert.equal(f.run("UserPromptSubmit").hookSpecificOutput.additionalContext,
+    "Comment watch: 3 items could not be checked (rate limit); retry on the next prompt.");
+  const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start);
+  assert.equal(calls.length, endpoint === "graphql" ? 1 : 2);
+  f.update();
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment 1/);
+});
+
+test("all poll requests share the 3.5 second deadline", async (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 4; gh issue view 5");
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const requests = [];
+  const output = await commentWatch({ cwd: f.cwd, session_id: "session-a", hook_event_name: "UserPromptSubmit" }, {
+    gh: async (args, options) => {
+      requests.push(args);
+      assert.equal(options.timeoutMs, 3500);
+      now += 3501;
+      return JSON.stringify({ data: { repository: {
+        item_4: { state: "OPEN", updatedAt: "2026-01-01T00:00:00Z" },
+        item_5: { state: "OPEN", updatedAt: "2026-01-01T00:00:00Z" },
+      } } });
+    },
+  });
+  assert.equal(requests.length, 1);
+  assert.equal(output.hookSpecificOutput.additionalContext,
+    "Comment watch: 2 items could not be checked (deadline); retry on the next prompt.");
+});
+
+test("old ledger records stay readable and previews append without replacing them", (t) => {
+  const f = fixture(t);
+  f.rows[0].body = "x".repeat(850);
+  f.update();
+  const row = f.rows[0];
+  const stamp = createHash("sha256").update(JSON.stringify([row.html_url, row.id, row.updated_at, row.body, row.state])).digest("hex");
+  const dir = path.join(f.cwd, ".git", "qc");
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `comment-watch-${createHash("sha256").update("session-a").digest("hex")}.jsonl`);
+  const old = JSON.stringify({ repo: "shawrylk/example", number: 4, kind: "issue", pending: [
+    { stamp, id: row.id, endpoint: "repos/shawrylk/example/issues/4/comments" },
+  ] }) + "\n";
+  writeFileSync(file, old);
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
+  assert.equal(f.run("UserPromptSubmit"), null);
+  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  f.run("PostToolUse", "gh issue view 4 --comments");
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.ok(readFileSync(file, "utf8").startsWith(old));
+});
+
+test("a closed item's short Stop preview is acknowledged on the next prompt without polling", (t) => {
+  const f = fixture(t);
+  f.update({ metadata: { 4: { state: "CLOSED" } } });
+  f.run("PostToolUse", "gh issue view 4");
+  assert.match(JSON.stringify(f.run("Stop")), /Comment 1/);
+  writeFileSync(f.calls, "");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment 1/);
+  assert.equal(readFileSync(f.calls, "utf8"), "");
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /Comment 1/);
+});
+
+test("a gh API command naming a retired item watches it again", (t) => {
+  const f = fixture(t);
+  f.update({ metadata: { 4: { state: "CLOSED" } } });
+  f.run("PostToolUse", "gh issue view 4");
+  f.run("UserPromptSubmit");
+  f.rows[0].body = "New feedback on the retired issue";
+  f.update();
+  f.run("PostToolUse", "gh api repos/shawrylk/example/issues/4");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /New feedback on the retired issue/);
 });

@@ -2,6 +2,7 @@
 // Trigger: surface GitHub comments and keep their acknowledgments in a session ledger.
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { load } from "../config.mjs";
@@ -10,7 +11,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { commonDirOf } from "./ledger.mjs";
 import { originOf } from "./git-read.mjs";
 import { ghCalls, ghCommand, ghMerges } from "./gh-merge-command.mjs";
-import { expandHome, parsePages, runGhAsync } from "./gh-run.mjs";
+import { expandHome, parsePages } from "./gh-run.mjs";
 import { commandWords } from "./shell-command.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
@@ -81,7 +82,12 @@ export function watchedItems(call, origin, parse = PARSERS[call.tool_name]) {
   };
   const command = call.tool_input?.command ?? "";
   for (const { words, env } of ghCalls(command, parse)) {
-    const { group, verb, args, repo } = ghCommand(words);
+    const parsed = ghCommand(words);
+    const { group, verb, args, repo } = parsed;
+    if (group === "api") {
+      const match = /^repos\/([^/]+\/[^/]+)\/(issues|pulls)\/(\d+)(?:\/|$)/.exec(apiRequest(parsed)?.endpoint ?? "");
+      if (match) add(match[1], Number(match[3]), match[2] === "pulls" ? "pr" : "issue");
+    }
     if (!["issue", "pr"].includes(group)) continue;
     const found = fields(args, call.cwd ?? process.cwd(), group === "pr" && verb === "review");
     const repository = found.repo ?? repo ?? env.GH_REPO ?? origin;
@@ -100,6 +106,11 @@ export function watchedItems(call, origin, parse = PARSERS[call.tool_name]) {
   const output = typeof call.tool_response === "string" ? call.tool_response : JSON.stringify(call.tool_response ?? "");
   if (ghCalls(command, parse).length) for (const match of output.matchAll(itemUrl)) add(match[1], Number(match[3]), match[2] === "pull" ? "pr" : "issue");
   return [...items.values()];
+}
+
+// Ledger: a named command reactivates a retired item without invalidating active watches.
+function watch(state, item) {
+  state.append({ ...item, retired: false, ...(state.items.get(itemKey(item))?.retired ? { updatedAt: null } : {}) });
 }
 
 // Resource: append records so simultaneous hooks preserve each other's watches and acknowledgments.
@@ -122,12 +133,16 @@ function ledger(root, session) {
         if (record.reviewDone) { reviews.delete(record.reviewDone); continue; }
         if (record.own) { for (const url of record.own) own.add(url); continue; }
         if (record.next) { next = record.next; continue; }
+        if (typeof record.retired === "string") { const item = items.get(record.retired); if (item) item.retired = true; continue; }
         const key = itemKey(record);
-        const item = items.get(key) ?? { repo: record.repo, number: record.number, seen: new Set(), pending: new Map(), prs: new Set() };
+        const item = items.get(key) ?? { repo: record.repo, number: record.number, seen: new Set(), shown: new Set(), pending: new Map(), prs: new Set() };
         if (record.kind) item.kind = record.kind;
+        if (record.retired === false) item.retired = false;
+        if (record.updatedAt !== undefined) item.updatedAt = record.updatedAt;
         for (const pr of record.prs ?? []) item.prs.add(pr);
         for (const pending of record.pending ?? []) item.pending.set(pending.stamp, pending);
         for (const stamp of record.seen ?? []) item.seen.add(stamp);
+        for (const stamp of record.shown ?? []) item.shown.add(stamp);
         items.set(key, item);
       } catch { /* A torn record leaves earlier acknowledgments intact. */ }
     }
@@ -136,6 +151,20 @@ function ledger(root, session) {
     mkdirSync(path.dirname(file), { recursive: true });
     appendFileSync(file, `\n${JSON.stringify(record)}\n`);
   } };
+}
+
+const rateLimited = (error) => /rate.?limit|RATE_LIMITED/i.test(String(error));
+const failureReason = (error) => rateLimited(error) ? "rate limit" : ["deadline", "pages", "response"].includes(error.message) ? error.message : "gh";
+
+// Resource: retain only a safe failure category from gh stderr.
+function runCommentGh(args, { cwd, env, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    execFile("gh", args, { cwd, env: { ...process.env, ...env }, encoding: "utf8", windowsHide: true,
+      timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) reject(new Error(rateLimited(stderr) ? "rate limit" : error.killed ? "deadline" : "gh"));
+      else resolve(stdout);
+    });
+  });
 }
 
 // Resource: bound all gh processes in one invocation to a shared deadline.
@@ -166,6 +195,17 @@ async function comments(item, gh) {
   return (await Promise.all(endpoints.map(list))).flat();
 }
 
+// Fragment: ask for every watched item's metadata in one request per repository.
+async function itemMetadata(repo, items, gh) {
+  const [owner, name] = repo.split("/");
+  const fields = items.map(item => `item_${item.number}: issueOrPullRequest(number: ${item.number}) { __typename ... on Issue { state updatedAt } ... on PullRequest { state updatedAt } }`).join(" ");
+  const result = await gh(repo, ["api", "graphql", "-f", `owner=${owner}`, "-f", `name=${name}`,
+    "-f", `query=query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`]);
+  if (result.errors?.length) throw new Error(result.errors.some(error => rateLimited(`${error.type} ${error.message}`)) ? "rate limit" : "response");
+  if (!result.data?.repository) throw new Error("response");
+  return result.data.repository;
+}
+
 async function unseen(item, gh, state) {
   const rows = await comments(item, gh);
   for (const marker of state.reviews.values()) {
@@ -194,8 +234,10 @@ const context = (event, text) => ({ hookSpecificOutput: { hookEventName: event, 
 // Ledger: retain truncated previews so a full read can acknowledge them from any hook.
 function recordPreview(state, item, fresh, acknowledge = false) {
   const seen = acknowledge ? fresh.filter(({ row }) => !truncated(row)).map(({ stamp }) => stamp) : [];
-  const pending = fresh.filter(({ row }) => truncated(row)).map(({ row, stamp }) => ({ stamp, id: row.id, endpoint: row.endpoint, url: row.url }));
-  if (seen.length || pending.length) state.append({ repo: item.repo, number: item.number, seen, pending });
+  const shown = fresh.filter(({ row }) => truncated(row)).map(({ stamp }) => stamp);
+  const pending = fresh.filter(({ row }) => truncated(row) || !acknowledge)
+    .map(({ row, stamp }) => ({ stamp, id: row.id, endpoint: row.endpoint, url: row.url, ...(!truncated(row) ? { row } : {}) }));
+  if (seen.length || pending.length) state.append({ repo: item.repo, number: item.number, seen, shown, pending });
 }
 
 // Ledger: acknowledge only pending comments covered by a successful full read.
@@ -259,7 +301,7 @@ function createdKeys(response, endpoint) {
     ...createdKeys(response.stdout ?? response.output ?? response.content ?? response.text, endpoint)].filter(Boolean);
 }
 
-export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTargets } = {}) {
+export async function commentWatch(call, { gh: run = runCommentGh, merges: mergeTargets } = {}) {
   const root = checkoutRootOf(call.cwd ?? process.cwd());
   if (!root || !call.session_id) return null;
   const event = call.hook_event_name;
@@ -277,7 +319,7 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
       if (call.tool_response?.is_error || call.tool_response?.exit_code > 0) return null;
       const watched = watchedItems(call, origin, parse);
       const prs = [...state.items.values(), ...watched].filter(item => item.kind === "pr");
-      for (const item of watched) state.append({ ...item, prs: prs.filter(pr => pr.repo === item.repo).map(itemKey) });
+      for (const item of watched) watch(state, { ...item, prs: prs.filter(pr => pr.repo === item.repo).map(itemKey) });
       for (const { words, env } of ghCalls(call.tool_input?.command ?? "", parse)) {
         const command = ghCommand(words);
         const request = apiRequest(command);
@@ -297,8 +339,8 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
           const pr = await gh(repo, ["pr", "view", ...(selector ? [selector] : []), "-R", repo, "--json", "number,body"]);
           number = pr.number;
           const key = itemKey({ repo, number });
-          state.append({ repo, number, kind: "pr" });
-          references(pr.body ?? "", repo, (repo, number) => state.append({ repo, number, kind: "issue", prs: [key] }), true);
+          watch(state, { repo, number, kind: "pr" });
+          references(pr.body ?? "", repo, (repo, number) => watch(state, { repo, number, kind: "issue", prs: [key] }), true);
         }
         if (Number.isSafeInteger(number) && ["create", "comment", "review"].includes(command.verb)) {
           const resource = command.verb === "review" ? `pulls/${number}/reviews` : `issues/${number}/comments`;
@@ -320,16 +362,59 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
     }
     if (event === "UserPromptSubmit" || event === "Stop") {
       const lines = [];
-      const items = [...state.items.values()];
+      if (event === "UserPromptSubmit") for (const item of state.items.values()) {
+        if (!item.retired) continue;
+        const pending = [...item.pending.values()].filter(pending => pending.row && !item.seen.has(pending.stamp)).map(({ row, stamp }) => ({ row, stamp }));
+        lines.push(...pending.map(({ row }) => describe(item, row)));
+        recordPreview(state, item, pending, true);
+      }
+      const items = [...state.items.values()].filter(item => !item.retired);
       const start = Math.max(0, items.findIndex(item => itemKey(item) === state.next));
-      await Promise.all(items.map(async (_, i) => {
+      const repos = new Map();
+      for (let i = 0; i < items.length; i++) {
         const item = items[(start + i) % items.length];
+        const repo = item.repo.toLowerCase();
+        if (!repos.has(repo)) repos.set(repo, []);
+        repos.get(repo).push(item);
+      }
+      let failed = 0;
+      let checked = 0;
+      const reasons = new Set();
+      let stopped = false;
+      for (const batch of repos.values()) {
+        let metadata;
         try {
-          const fresh = await unseen(item, gh, state);
-          lines.push(...fresh.map(({ row }) => describe(item, row)));
-          recordPreview(state, item, fresh, event === "UserPromptSubmit");
-        } catch { lines.push(`Comment watch: GitHub comments for ${itemKey(item)} could not be checked; retry on the next prompt.`); }
-      }));
+          metadata = await itemMetadata(batch[0].repo, batch, gh);
+        } catch (error) {
+          reasons.add(failureReason(error));
+          if (rateLimited(error) || error.message === "deadline") { stopped = true; break; }
+          failed += batch.length;
+          checked += batch.length;
+          continue;
+        }
+        for (const item of batch) {
+          try {
+            const info = metadata[`item_${item.number}`];
+            if (!info || !["OPEN", "CLOSED", "MERGED"].includes(info.state) || typeof info.updatedAt !== "string" || !info.updatedAt) throw new Error("response");
+            if (info.__typename === "PullRequest") item.kind = "pr";
+            const changed = info.updatedAt !== item.updatedAt;
+            const fresh = changed ? await unseen(item, gh, state)
+              : [...item.pending.values()].filter(pending => pending.row && !item.seen.has(pending.stamp)).map(({ row, stamp }) => ({ row, stamp }));
+            lines.push(...fresh.filter(({ stamp }) => !item.shown.has(stamp)).map(({ row }) => describe(item, row)));
+            recordPreview(state, item, fresh, event === "UserPromptSubmit");
+            if (changed) state.append({ repo: item.repo, number: item.number, kind: item.kind, updatedAt: info.updatedAt });
+            if (["CLOSED", "MERGED"].includes(info.state)) state.append({ retired: itemKey(item) });
+          } catch (error) {
+            reasons.add(failureReason(error));
+            if (rateLimited(error) || error.message === "deadline") { stopped = true; break; }
+            failed++;
+          }
+          checked++;
+        }
+        if (stopped) break;
+      }
+      if (stopped) failed += items.length - checked;
+      if (failed) lines.push(`Comment watch: ${failed} items could not be checked (${[...reasons].join(", ")}); retry on the next prompt.`);
       return lines.length ? (event === "Stop" ? { systemMessage: lines.join("\n") } : context(event, lines.join("\n"))) : null;
     }
     if (event === "PreToolUse") {
@@ -364,7 +449,7 @@ export async function commentWatch(call, { gh: run = runGhAsync, merges: mergeTa
         }
         add(repo, pr.number, "pr");
         await Promise.all([...targets.values()].map(async target => {
-          state.append(target);
+          watch(state, target);
           const item = { ...state.items.get(itemKey(target)), ...target };
           try {
             const fresh = await unseen(item, gh, state);
