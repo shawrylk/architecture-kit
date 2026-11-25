@@ -22,7 +22,7 @@ import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCo
 import { runMutation } from "./mutate.mjs";
 import { redactOutput } from "./output-redaction.mjs";
 import { reviewContext, validatePaths, verificationPolicy, verifyBrief } from "./codex-verify.mjs";
-import { CODEX_WORKER_FEATURES, codexWorkerEnvironment, codexWorkerRestricted } from "./codex-runtime.mjs";
+import { CODEX_WORKER_FEATURES, codexWorkerEnvironment, codexWorkerRestricted, createCodexInvocation } from "./codex-runtime.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -254,7 +254,7 @@ Review checklist:
 };
 
 /** Sends the prompt on stdin, appends output to the log, and returns the status and output tail. */
-function spawnRun({ args, input, env, log, cwd }, codexCommand) {
+function spawnRun({ invocation: { args, env }, input, log, cwd }, codexCommand) {
   const [bin, ...prefix] = codexCommand;
   mkdirSync(path.dirname(log), { recursive: true });
   const fd = openSync(log, "a");
@@ -631,8 +631,10 @@ async function runJob(argv, {
     let result;
     let runError;
     try {
-      result = await execute({ command: codexCommand[0], args, input: prompt,
+      const invocation = createCodexInvocation({ args,
         env: codexWorkerEnvironment({ ...childEnv, QC_PROTECTED_ALLOW: allow.join(",") }, settings.role === "implement" ? "implementer" : settings.role),
+        role: settings.role === "review" ? "reviewer" : settings.role === "implement" ? "implementer" : settings.role });
+      result = await execute({ command: codexCommand[0], args: invocation.args, env: invocation.env, invocation, input: prompt,
         log: settings.log, cwd: settings.worktree });
     } catch (error) {
       runError = error;

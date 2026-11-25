@@ -1,10 +1,11 @@
 import path from "node:path";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { realpathSync, statSync, constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { spawnCommand } from "./spawn-command.mjs";
 import { readCodexRolloutIdentity } from "./codex-rollout-identity.mjs";
+import { codexExecutableSnapshot, codexNativePinIdentity } from "./codex-native-executable.mjs";
 
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const roles = ["leader", "implementer", "reviewer"];
@@ -16,6 +17,21 @@ export const CODEX_WORKER_FEATURES = Object.freeze(["features.multi_agent=false"
 export const codexWorkerRestricted = env => Boolean(env.QC_CODEX_WORKER) ||
   ["worker", "implement", "implementer", "reviewer", "branch-reviewer", "planner", "scout", "tests", "review"].includes(env.QC_ROLE);
 export const codexWorkerEnvironment = (env, role) => ({ ...env, QC_CODEX_WORKER: "1", QC_ROLE: role });
+// Parent-only producer consumed by the runner; a serialized clone carries no launch authority.
+const invocations = new WeakSet();
+export function createCodexInvocation({ args, env, role }) {
+  if (!Array.isArray(args) || !args.every(value => typeof value === "string") || !env ||
+      !["leader", "implementer", "reviewer", "scout", "tests"].includes(role)) unavailable();
+  if (role === "leader" ? codexWorkerRestricted(env) : env.QC_CODEX_WORKER !== "1" ||
+      ({ implement: "implementer", review: "reviewer" }[env.QC_ROLE] ?? env.QC_ROLE) !== role) unavailable();
+  const required = [...CODEX_WORKER_FEATURES, ...(role === "leader" ? Object.entries(settings).map(([key, value]) => `${key}=${value}`) : [])];
+  if (required.some(feature => !args.some((value, index) => value === feature && args[index - 1] === "-c")) ||
+      args.some(value => (/^(?:(?:-c|--config=)?features\.multi_agent(?:_v2)?\s*=|(?:--enable=)?multi_agent(?:_v2)?(?:,|$))/.test(value) ||
+        role === "leader" && /^(?:-c|--config=)?model_(?:auto_compact_token_limit|post_turn_compact_threshold_percent)\s*=/.test(value)) && !required.includes(value))) unavailable();
+  if (Object.values(env).some(value => typeof value !== "string")) unavailable();
+  const invocation = Object.freeze({ args: Object.freeze([...args]), env: Object.freeze({ ...env }), role });
+  invocations.add(invocation); return invocation;
+}
 // Only exact runner-held reservations carry authority; serialized proofs cannot enroll themselves.
 export function codexAdmissionOf(handle, input) {
   const proof = admissions.get(handle)?.(input);
@@ -50,20 +66,9 @@ function repositoryOf(worktree) {
 // H supplies a trusted native binary/version/digest pin; this checks drift, not its origin or launch atomicity.
 function checkPin(executable, pin) {
   if (pin.version !== "0.172.0" || typeof pin.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(pin.sha256) || realpathSync(executable) !== pin.realpath) unavailable();
-  const fd = openSync(pin.realpath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const before = fstatSync(fd), hash = createHash("sha256"), buffer = Buffer.alloc(65536);
-    if (!before.isFile() || before.size > 512 * 1024 * 1024) unavailable();
-    for (let offset = 0; offset < before.size;) {
-      const size = readSync(fd, buffer, 0, Math.min(buffer.length, before.size - offset), offset);
-      if (!size) unavailable();
-      hash.update(buffer.subarray(0, size)); offset += size;
-    }
-    const after = fstatSync(fd), current = statSync(executable);
-    if (hash.digest("hex") !== pin.sha256 || before.dev !== current.dev || before.ino !== current.ino ||
-        before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || realpathSync(executable) !== pin.realpath) unavailable();
-    return `${before.dev}:${before.ino}:${before.size}:${before.mtimeMs}:${before.ctimeMs}`;
-  } finally { closeSync(fd); }
+  const snapshot = codexExecutableSnapshot(executable);
+  if (snapshot.sha256 !== pin.sha256) unavailable();
+  return snapshot.identity;
 }
 
 /** Runner-private, in-memory authority. Never give this factory's result, reservations or hook
@@ -78,8 +83,11 @@ function checkPin(executable, pin) {
  * Native root comes only from the selected local rollout header, never hook root/settings claims.
  * H/J must supply trusted pins, authenticate hook IPC and wire adoption; active settings stay unknown.
  */
-export function createCodexRuntime({ worktree, executable, workflowId, config = {}, inheritedRole = "leader", capacity = 64, startupTimeoutMs = 5000, codexHome, executablePin } = {}) {
+export function createCodexRuntime({ worktree, executable, workflowId, config = {}, inheritedRole = "leader", capacity = 64, startupTimeoutMs = 5000, codexHome, executablePin, invocation } = {}) {
   if (!["linux", "darwin"].includes(process.platform)) throw new Error("Codex invocation: unsupported platform");
+  if (invocation !== undefined && (!invocations.has(invocation) || !codexNativePinIdentity(executablePin) ||
+      codexWorkerRestricted(process.env) || inheritedRole !== "leader")) unavailable();
+  const selectedIdentity = invocation && codexNativePinIdentity(executablePin);
   let repository, executableIdentity;
   try {
     if (![worktree, executable].every(value => typeof value === "string" && value.length <= 4096 && path.isAbsolute(value))) unavailable();
@@ -92,6 +100,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       if (!executablePin || typeof executablePin.realpath !== "string" || executablePin.realpath.length > 4096 || !path.isAbsolute(executablePin.realpath)) unavailable();
       executablePin = Object.freeze({ realpath: executablePin.realpath, version: executablePin.version, sha256: executablePin.sha256 });
       executableIdentity = checkPin(executable, executablePin);
+      if (invocation && executableIdentity !== selectedIdentity) unavailable();
     }
   } catch { unavailable(); }
   if (!id(workflowId) || !roles.includes(inheritedRole) || !Number.isInteger(capacity) || capacity < 1 || capacity > 256 ||
@@ -107,6 +116,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
     const record = records.get(handle);
     if (!record) return;
     records.delete(handle); admissions.delete(handle); clearTimeout(record.timer); record.cleanup?.();
+    if (invocation && record.child) { record.child.stdin.destroy(); record.child.kill(); }
     record.reject(new Error("Codex invocation unavailable"));
   }; // Persistent closure belongs to codex-context.
   const envelope = (record, credential, input) => {
@@ -174,7 +184,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       if (!options || Object.keys(options).length > 3 || Object.keys(options).some(key => !["role", "workflowParentId", "parent"].includes(key))) unavailable();
       const { role, workflowParentId, parent } = options;
       if (!roles.includes(role) || !id(workflowParentId) || admitted >= 256 || records.size >= capacity ||
-          inheritedRole !== "leader") unavailable();
+          inheritedRole !== "leader" || invocation && role !== invocation.role) unavailable();
       const ancestor = parent === undefined ? null : get(parent);
       if (ancestor && (!live(ancestor) || !ancestor.proof || ancestor.role !== "leader")) unavailable();
       const credential = Object.freeze(Object.create(null));
@@ -191,17 +201,17 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       admitted++;
       return handle;
     },
-    launch(handle) {
+    launch(handle, input) {
       const record = get(handle);
-      if (record.child) unavailable();
+      if (record.child || invocation && typeof input !== "string") unavailable();
       // Generated command has no caller-supplied flags; conflicting flags are rejected at reserve.
-      const args = ["exec", "-C", worktree, "--json", ...Object.entries(record.role === "leader" ? settings : {})
+      const args = invocation?.args ?? ["exec", "-C", worktree, "--json", ...Object.entries(record.role === "leader" ? settings : {})
         .flatMap(([key, value]) => ["-c", `${key}=${value}`]),
       ...(record.role === "leader" ? [] : CODEX_WORKER_FEATURES.flatMap(feature => ["-c", feature])), "-"];
       try {
         if (executablePin && checkPin(executable, executablePin) !== executableIdentity) unavailable();
         const child = spawnCommand(executablePin?.realpath ?? executable, args, { cwd: worktree,
-          env: record.role === "leader" ? process.env : codexWorkerEnvironment(process.env, record.role), stdio: ["pipe", "pipe", "pipe"] });
+          env: invocation?.env ?? (record.role === "leader" ? process.env : codexWorkerEnvironment(process.env, record.role)), stdio: ["pipe", "pipe", "pipe"] });
         record.child = child;
         let pending = "";
         const capture = chunk => {
@@ -228,6 +238,11 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
           if (record.spawned || record.processEnded) { child.off("spawn", spawned); child.off("error", ended); }
         };
         child.once("spawn", spawned); child.once("error", ended); child.once("exit", ended);
+        if (invocation) {
+          const inputError = error => { if (!["EPIPE", "EOF"].includes(error.code)) retire(handle); };
+          child.stdin.on("error", inputError); child.once("close", () => child.stdin.off("error", inputError));
+          child.stdin.end(input); // Send before the runner waits on SessionStart/thread.started correlation.
+        }
         return child;
       } catch { retire(handle); unavailable(); }
     },

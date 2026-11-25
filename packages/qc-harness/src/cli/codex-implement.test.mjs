@@ -96,10 +96,12 @@ for (const role of [undefined, "leader", "controller"]) {
     let runs = 0;
     assert.equal(await runCodexImplement([...f.argv, "--max-runs", "2"], {
       env: role ? { QC_ROLE: role } : {}, say: quiet, out: quiet,
-      run: async ({ env, args, cwd }) => {
+      run: async ({ env, args, cwd, invocation }) => {
         assert.equal(env.QC_CODEX_WORKER, "1");
         assert.equal(env.QC_ROLE, "implementer");
         assert.equal(cwd, f.worktree);
+        assert.deepEqual(invocation.args, args); assert.deepEqual(invocation.env, env);
+        assert.ok(Object.isFrozen(invocation) && Object.isFrozen(invocation.args) && Object.isFrozen(invocation.env));
         for (const feature of ["features.multi_agent=false", "features.multi_agent_v2=false"]) {
           assert.equal(args[args.indexOf(feature) - 1], "-c");
         }
