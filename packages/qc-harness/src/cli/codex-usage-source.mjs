@@ -2,6 +2,7 @@
 import { withCodexRollout } from "./codex-rollout-identity.mjs";
 import { normalizeCodexContext } from "./codex-context.mjs";
 import { normalizeUsage } from "./codex-usage.mjs";
+import { codexAdmissionOf } from "./codex-runtime.mjs";
 
 const TAIL = 262144, MAX_LINES = 1024;
 const whole = value => Number.isSafeInteger(value) && value >= 0;
@@ -35,15 +36,19 @@ function envelope(row) {
     default: return false;
   }
 }
-// Supports local CLI/exec/VSCode roots and explicitly profiled ThreadSpawn workers; forks, remote/compressed sources and absent ordinals stay unknown.
+// Supports local roots, profiled ThreadSpawn workers and registry-admitted exec workers; unsupported sources stay unknown.
 /** On-demand local rollout only; no discovery, RPC, lifecycle changes, config resolution or persistent budget state. */
-export function readCodexUsage(input, { role, codexHome, now = Date.now(), previous } = {}) {
+export function readCodexUsage(input, { role, admission, codexHome, now = Date.now(), previous } = {}) {
   try {
-    const call = normalizeCodexContext(input, { role });
+    const call = normalizeCodexContext(input, { role, admission });
+    role = call.role;
+    const proof = admission === undefined ? null : codexAdmissionOf(admission, input);
     return withCodexRollout({ transcriptPath: call.transcript_path, checkout: call.cwd, threadId: call.session_id }, { codexHome, now }, ({ meta, first, source, before, key, decoder, read, validRow }) => {
       if (previous && (previous.file !== key || !whole(previous.bytes) || previous.bytes > before.size || !whole(previous.timestamp) || !Number.isSafeInteger(previous.ordinal) || previous.ordinal < -1)) return null;
       const spawn = meta.source?.subagent?.thread_spawn;
-      if (role === "leader" ? source === "thread_spawn" || meta.session_id !== meta.id :
+      if (proof ? source !== "exec" || meta.session_id !== proof.nativeRootSessionId || key !== proof.identityProvenance?.fileIdentity.file ||
+        Date.parse(first.timestamp) !== proof.identityProvenance.fileIdentity.timestamp || first.ordinal !== proof.identityProvenance.fileIdentity.ordinal :
+        role === "leader" ? source === "thread_spawn" || meta.session_id !== meta.id :
         source !== "thread_spawn" || spawn.agent_role !== call.agent_type || meta.session_id === meta.id) return null;
       const start = Math.max(0, before.size - TAIL), tail = read(start, before.size - start);
       if (tail.at(-1) !== 10) return null;
@@ -74,7 +79,7 @@ export function readCodexUsage(input, { role, codexHome, now = Date.now(), previ
         if (row.type !== "token_usage_record") continue;
         if (payload?.thread_id !== call.session_id || payload.turn_id !== call.turn_id) { sample = null; continue; }
         if (payload.session_id !== meta.session_id || !id(payload.response_id) || !id(payload.root_turn_id) ||
-            role === "leader" && payload.root_turn_id !== call.turn_id) return null;
+            (proof || role === "leader") && payload.root_turn_id !== call.turn_id) return null;
         if (now - time > 120000) { sample = null; continue; }
         candidate = payload;
       }

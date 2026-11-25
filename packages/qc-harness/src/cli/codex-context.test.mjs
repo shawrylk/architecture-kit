@@ -1,13 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { normalizeCodexContext } from "./codex-context.mjs";
+import { decideCodexContext, normalizeCodexContext } from "./codex-context.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const nativeCall = (cwd) => ({ hook_event_name: "PreToolUse", cwd, session_id: "thread", turn_id: "turn", tool_use_id: "call" });
+
+test("unregistered admission cannot fall back to a privileged legacy role", async t => {
+  const f = runtime(t, "leader");
+  for (const admission of [{}, { role: "leader", nativeThreadId: "thread", budget: null }, null]) {
+    await assert.rejects(decideCodexContext(f.call, { admission, role: "leader", codexHome: f.home }));
+  }
+});
 
 test("source identity requires an explicit trusted role and native pre-tool fields", () => {
   const call = nativeCall(process.cwd());

@@ -9,14 +9,17 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { codexBudgetCall } from "./codex-budget-call.mjs";
 import { decideCodexBudget } from "./context-watch.mjs";
+import { codexAdmissionOf } from "./codex-runtime.mjs";
 
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 
-/** Role is supplied by trusted hook configuration; external worker registration remains unsupported. */
-export function normalizeCodexContext(input, { role } = {}) {
+/** Legacy roles come from trusted hook configuration; external roles require a private reservation. */
+export function normalizeCodexContext(input, { role, admission } = {}) {
+  const proof = admission === undefined ? null : codexAdmissionOf(admission, input);
+  if (proof) role = proof.role;
   if (!input || !["leader", "implementer", "reviewer"].includes(role) || input.hook_event_name !== "PreToolUse" ||
       ![input.session_id, input.turn_id, input.tool_use_id].every(id) || typeof input.cwd !== "string" || !path.isAbsolute(input.cwd) ||
-      (role === "leader" ? input.agent_id !== undefined || input.agent_type !== undefined :
+      (proof || role === "leader" ? input.agent_id !== undefined || input.agent_type !== undefined :
         input.agent_id !== input.session_id || !id(input.agent_type))) throw new Error("unsupported native context identity");
   try { if (!statSync(input.cwd).isDirectory()) throw new Error(); }
   catch { throw new Error("unsupported native context identity"); }
@@ -43,7 +46,8 @@ function stored(file) {
         ["budgetClosed", "budgetReminded"].some(key => data.policy[key] !== undefined && typeof data.policy[key] !== "boolean") ||
         data.policy.budgetFiredAt !== undefined && (!whole(data.policy.budgetFiredAt) || data.policy.budgetFiredAt > data.count) ||
         data.budget !== undefined && !budgetSnapshot(data.budget) || data.policy.budgetClosed && data.budget === null ||
-        data.root !== undefined && !digest(data.root) || data.noted !== undefined && typeof data.noted !== "boolean" ||
+        data.root !== undefined && !digest(data.root) || data.admission !== undefined && !digest(data.admission) ||
+        data.noted !== undefined && typeof data.noted !== "boolean" ||
         data.cursor !== undefined && (!object(data.cursor) || !digest(data.cursor.file) || !whole(data.cursor.bytes) || !whole(data.cursor.timestamp) || !whole(data.cursor.ordinal))) throw new Error();
     return data;
   } catch (cause) {
@@ -53,8 +57,10 @@ function stored(file) {
 }
 
 /** Bounded on-demand native worker decisions; active leader settings are unavailable through hook JSON. */
-export async function decideCodexContext(input, { role, codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), now = Date.now() } = {}) {
-  const call = normalizeCodexContext(input, { role });
+export async function decideCodexContext(input, { role, admission, codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), now = Date.now() } = {}) {
+  const call = normalizeCodexContext(input, { role, admission });
+  role = call.role;
+  const proof = admission === undefined ? null : codexAdmissionOf(admission, input);
   const repository = realpathSync(checkoutRootOf(realpathSync(call.cwd)) ?? call.cwd);
   const directory = path.join(codexHome, "qc-role-budgets");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -67,19 +73,25 @@ export async function decideCodexContext(input, { role, codexHome = process.env.
   }
   if (!locked) throw new Error("unavailable state");
   try {
+    const { readCodexUsage } = await import("./codex-usage-source.mjs");
+    if (proof) codexAdmissionOf(admission, input); // Recheck liveness after waiting for the lock/import.
     const state = stored(file), key = hash(JSON.stringify([call.turn_id, call.tool_use_id]));
+    const binding = proof ? hash(JSON.stringify([proof.repository, proof.worktree, proof.nativeThreadId, role, proof.incarnation])) : undefined;
+    if (state.admission !== binding) {
+      if (state.admission !== undefined || !proof || state.count > 0) throw new Error("unavailable admission state");
+      state.admission = binding;
+    }
     if (role !== "leader" && state.budget === undefined) {
       // A pre-snapshot worker's initial policy is unknown; never reload a weaker one.
       if (state.count > 0 || state.policy.budgetClosed) throw new Error("unavailable initial policy");
-      state.budget = budgetsOf(load(repository))[role];
+      state.budget = proof ? proof.budget : budgetsOf(load(repository))[role];
       if (!budgetSnapshot(state.budget)) throw new Error("unavailable initial policy");
     }
     if (!state.calls.includes(key)) {
       if (state.count === Number.MAX_SAFE_INTEGER) throw new Error();
       state.count++; state.calls = [...state.calls.slice(-63), key];
     }
-    const { readCodexUsage } = await import("./codex-usage-source.mjs");
-    const sample = readCodexUsage(call, { role, codexHome, now, previous: state.cursor });
+    const sample = readCodexUsage(input, { role, admission, codexHome, now, previous: state.cursor });
     if (sample && state.root !== undefined && state.root !== hash(sample.rootSessionId)) throw new Error();
     if (sample) { state.cursor = sample.cursor; state.root = hash(sample.rootSessionId); }
     const verdict = role === "leader" ? null : decideCodexBudget(codexBudgetCall(call), {
@@ -90,7 +102,7 @@ export async function decideCodexContext(input, { role, codexHome = process.env.
       state.noted = true;
       result = { hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: role === "leader"
         ? "Codex context: active native settings unavailable; automatic compaction owns its threshold. Update the checkpoint at the next clean break. Leader threshold decisions remain unsupported."
-        : "Codex context: verified current-turn usage unavailable; budget usage stays unknown. External workers require trusted runner registration and are unsupported." } };
+        : "Codex context: verified current-turn usage unavailable; budget usage stays unknown. External workers require trusted runner registration." } };
     }
     if (JSON.stringify(state).length > 8192) throw new Error();
     writeState(file, state);

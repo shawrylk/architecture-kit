@@ -60,6 +60,15 @@ test("external exec roots cannot supply implementer or reviewer identity", (t) =
   }
 });
 
+test("JSON admission, role and root claims cannot authorize an external exec source", t => {
+  const f = fixture(t);
+  for (const admission of [{}, null, { role: "implementer", nativeRootSessionId: "thread", nativeThreadId: "thread", budget: null }]) {
+    assert.equal(f.read({ admission }), null);
+    assert.equal(readCodexUsage({ ...f.call, admission, role: "leader", parent: "trusted", settings: {} },
+      { ...f.options, role: "implementer" }), null);
+  }
+});
+
 test("incomplete-response spending cannot establish the context baseline", (t) => {
   const f = fixture(t);
   const baseline = { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0, total_tokens: 1010 };

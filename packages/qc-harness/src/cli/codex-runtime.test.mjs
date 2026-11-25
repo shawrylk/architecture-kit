@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, symlinkSync, readFileSync, renameSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, symlinkSync, readFileSync, renameSync, readdirSync } from "node:fs";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { once, EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { createCodexRuntime } from "./codex-runtime.mjs";
+import { decideCodexContext } from "./codex-context.mjs";
+import { readCodexUsage } from "./codex-usage-source.mjs";
 
 function fixture(t, options = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-runtime-"));
@@ -14,7 +18,7 @@ function fixture(t, options = {}) {
   mkdirSync(path.join(dir, ".git"));
   const bin = path.join(dir, "native");
   writeFileSync(bin, `#!/bin/sh\nread -r thread\nprintf '{"type":"thread.started","thread_id":"%s"}\\n' "$thread"\nprintf "%s\\n" "$@"\nprintf "QC_FIXTURE_DONE\\n"\ncat >/dev/null\n`, { mode: 0o700 });
-  const runtime = createCodexRuntime({ worktree: dir, executable: bin, workflowId: "workflow", ...options });
+  const runtime = createCodexRuntime({ worktree: dir, executable: bin, workflowId: "workflow", codexHome: dir, ...options });
   const reserve = (role = "leader", extra = {}) => runtime.reserve({ role, workflowParentId: "parent", ...extra });
   const hook = { hook_event_name: "SessionStart", source: "startup", cwd: dir, session_id: "native-thread" };
   return { dir, runtime, reserve, hook };
@@ -338,4 +342,151 @@ test("unlaunched reservations expire and cancellation before spawn drains proces
     await new Promise(resolve => child.once("close", resolve)); await cancelled;
     for (const event of ["error", "spawn", "exit"]) assert.equal(child.listenerCount(event), 0);
   }
+});
+
+async function external(t, role = "implementer", config = {}, deferred = false) {
+  const f = fixture(t, { config }), r = f.reserve(role);
+  mkdirSync(path.join(f.dir, "sessions"));
+  const file = path.join(f.dir, "sessions", "usage.jsonl"), timestamp = new Date().toISOString();
+  const row = (type, payload, ordinal) => JSON.stringify({ type, payload, ordinal, timestamp }) + "\n";
+  const save = (total = 150000, change = {}) => {
+    const usage = { input_tokens: total - 1000, cached_input_tokens: total - 1000, output_tokens: 1000, reasoning_output_tokens: 900, total_tokens: total };
+    const text = row("session_meta", { id: "native-thread", session_id: "distinct-root", cwd: f.dir, cli_version: "0.172.0", source: "exec" }, 0) +
+      row("token_usage_record", { thread_id: "native-thread", session_id: "distinct-root", turn_id: "turn", root_turn_id: "turn", response_id: "response", usage,
+        turn_token_usage: usage, thread_token_usage: { ...usage, total_tokens: 9999999 }, ...change }, 1) +
+      row("event_msg", { type: "token_count", info: { last_token_usage: usage, total_token_usage: { ...usage, total_tokens: 9999999 } } }, 2);
+    writeFileSync(file, text);
+  };
+  const call = { hook_event_name: "PreToolUse", cwd: f.dir, session_id: "native-thread", turn_id: "turn", tool_use_id: "call",
+    transcript_path: file, tool_name: "Bash", tool_input: { command: "npm test" } };
+  await start(t, f, r);
+  if (!deferred) save();
+  f.runtime.bind(r, r.hookCredential, { ...f.hook, transcript_path: file });
+  const states = () => readdirSync(path.join(f.dir, "qc-role-budgets")).filter(name => name.endsWith(".json"))
+    .map(name => JSON.parse(readFileSync(path.join(f.dir, "qc-role-budgets", name), "utf8")));
+  return { ...f, r, file, call, save, states, decide: extra => f.runtime.context(r, { ...call, ...extra }) };
+}
+
+test("admitted external usage freezes role policy, serializes decisions and retains closure through source loss", { skip: !supported }, async t => {
+  for (const role of ["implementer", "reviewer"]) {
+    const config = { budgets: { [role]: { remindAt: 10000, handoffAt: 20000 } } }, f = await external(t, role, config);
+    const before = structuredClone(f.call);
+    config.budgets[role].handoffAt = 900000;
+    writeFileSync(path.join(f.dir, "qc.config.json"), JSON.stringify({ budgets: { [role]: null } }));
+    f.save(15000);
+    assert.match((await f.decide()).hookSpecificOutput.additionalContext, new RegExp(`budgets.${role}.remindAt`));
+    assert.equal(await f.decide(), null);
+    assert.equal(f.states()[0].count, 1);
+    await Promise.all(Array.from({ length: 8 }, (_, i) => f.decide({ tool_use_id: `parallel_${i}` })));
+    assert.equal(f.states()[0].count, 9);
+    assert.deepEqual(f.states()[0].budget, { remindAt: 10000, handoffAt: 20000 });
+    assert.deepEqual(f.call, before); assert.equal(f.call.agent_id, undefined); assert.equal(f.call.agent_type, undefined);
+    f.save(20000);
+    assert.equal((await f.decide({ tool_use_id: "close" })).hookSpecificOutput.permissionDecision, "deny");
+    const closed = f.states()[0];
+    rmSync(f.file);
+    assert.equal((await f.decide({ tool_use_id: "missing" })).hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(await f.decide({ tool_input: { command: "git status" } }), null);
+    const command = "*** Begin Patch\n*** Add File: handoffs/resume.md\n+resume\n*** End Patch";
+    assert.equal(await f.decide({ tool_name: "apply_patch", tool_input: { command } }), null);
+    assert.equal(f.states()[0].root, closed.root); assert.equal(f.states()[0].policy.budgetClosed, true);
+    const saved = f.states(); f.runtime.terminal(f.r);
+    await assert.rejects(f.decide(), /unavailable/);
+    assert.deepEqual(f.states(), saved);
+    const replacement = createCodexRuntime({ worktree: f.dir, executable: path.join(f.dir, "native"), workflowId: "replacement", codexHome: f.dir,
+      config: { budgets: { [role]: null } } }), next = replacement.reserve({ role, workflowParentId: "parent" });
+    await start(t, { runtime: replacement }, next);
+    replacement.bind(next, next.hookCredential, { ...f.hook, transcript_path: f.file });
+    await assert.rejects(replacement.context(next, f.call), /unavailable/);
+    assert.deepEqual(f.states(), saved);
+  }
+});
+
+test("external admission rejects forged, serialized, sibling, terminal and repository substitutions", { skip: !supported }, async t => {
+  const f = await external(t), g = await external(t);
+  const proof = f.runtime.validate(f.r, f.call);
+  for (const admission of [{}, { ...f.r }, JSON.parse(JSON.stringify(proof)), g.r, null]) {
+    await assert.rejects(decideCodexContext(f.call, { admission, role: "leader", codexHome: f.dir }));
+    assert.equal(readCodexUsage(f.call, { admission, role: "leader", codexHome: f.dir }), null);
+  }
+  await assert.rejects(decideCodexContext({ ...f.call, admission: proof, role: "leader" }, { role: "implementer", codexHome: f.dir }));
+  const pending = f.reserve("reviewer");
+  await assert.rejects(f.runtime.context(pending, f.call)); f.runtime.terminal(pending);
+  for (const extra of [{ cwd: g.dir }, { session_id: "distinct-root" }, { role: "leader" }, { agent_id: "native-thread", agent_type: "profile" }])
+    await assert.rejects(f.decide(extra));
+  mkdirSync(path.join(f.dir, "nested")); await assert.rejects(f.decide({ cwd: path.join(f.dir, "nested") }));
+  const sample = readCodexUsage(f.call, { admission: f.r, codexHome: f.dir });
+  assert.equal(sample.rootSessionId, "distinct-root"); assert.equal(sample.usage.params.threadId, "native-thread");
+  assert.equal(readCodexUsage(f.call, { role: "implementer", codexHome: f.dir }), null);
+  await assert.rejects(g.runtime.context(f.r, f.call));
+  const input = JSON.stringify({ ...f.call, admission: proof, role: "leader", nativeConfig: proof.settings });
+  for (const args of [[], ["--role", "implementer"]]) {
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "codex-context", ...args],
+      { input, encoding: "utf8", env: { ...process.env, CODEX_HOME: f.dir } });
+    assert.equal(result.status, 2); assert.match(result.stderr, /unsupported input/);
+  }
+  f.save(150000, { session_id: "native-thread" });
+  assert.equal(readCodexUsage(f.call, { admission: f.r, codexHome: f.dir }), null);
+  f.save();
+  const sibling = f.reserve("reviewer"), siblingFile = path.join(f.dir, "sessions", "sibling.jsonl");
+  await start(t, f, sibling, "sibling-thread");
+  writeFileSync(siblingFile, readFileSync(f.file, "utf8").replaceAll("native-thread", "sibling-thread").replaceAll("distinct-root", "sibling-root"));
+  f.runtime.bind(sibling, sibling.hookCredential, { ...f.hook, session_id: "sibling-thread", transcript_path: siblingFile });
+  await assert.rejects(f.runtime.context(sibling, f.call));
+  await f.decide();
+  await f.runtime.context(sibling, { ...f.call, session_id: "sibling-thread", transcript_path: siblingFile });
+  assert.equal(f.states().length, 2); assert.equal(new Set(f.states().map(state => state.admission)).size, 2);
+  assert.equal(new Set(f.states().map(state => state.root)).size, 2);
+  renameSync(path.join(f.dir, ".git"), path.join(f.dir, "retired-git"));
+  await assert.rejects(f.decide());
+});
+
+test("external unknown sources and registered leaders keep active settings unknown with a deduplicated note", { skip: !supported }, async t => {
+  const worker = await external(t); rmSync(worker.file);
+  assert.match((await worker.decide()).hookSpecificOutput.additionalContext, /usage.*unknown/i);
+  assert.equal(await worker.decide(), null); assert.equal(worker.states()[0].policy.budgetClosed, undefined);
+  for (const fail of [() => mkdirSync(worker.file), () => writeFileSync(worker.file, "malformed\n")]) {
+    rmSync(worker.file, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }); fail();
+    assert.equal(await worker.decide(), null);
+  }
+  const leader = await external(t, "leader");
+  const note = await leader.decide({ nativeConfig: { model_auto_compact_token_limit: 200000 }, settings: { model_post_turn_compact_threshold_percent: 0 }, parent: "forged" });
+  assert.match(note.hookSpecificOutput.additionalContext, /active native settings unavailable.*automatic compaction/);
+  assert.equal(await leader.decide(), null); assert.equal(leader.states()[0].policy.budgetClosed, undefined);
+  const disabled = await external(t, "implementer", { budgets: { implementer: null } });
+  assert.equal(await disabled.decide(), null);
+  writeFileSync(path.join(disabled.dir, "qc.config.json"), '{"budgets":{"implementer":{"remindAt":1,"handoffAt":2}}}');
+  assert.equal(await disabled.decide(), null); assert.equal(disabled.states()[0].budget, null);
+});
+
+test("external source retains snapshot, freshness, cursor, file and root provenance checks", { skip: !supported }, async t => {
+  const f = await external(t, "implementer", {}, true), options = { admission: f.r, codexHome: f.dir };
+  assert.equal(f.runtime.validate(f.r, f.call).nativeRootSessionId, null);
+  assert.equal(readCodexUsage(f.call, options), null);
+  assert.match((await f.decide()).hookSpecificOutput.additionalContext, /usage.*unknown/i);
+  f.save(10000);
+  const sample = readCodexUsage(f.call, options);
+  assert.equal(sample.rootSessionId, "distinct-root");
+  assert.ok(readCodexUsage(f.call, { ...options, previous: sample.cursor }));
+  for (const previous of [{ ...sample.cursor, file: "0".repeat(64) }, { ...sample.cursor, bytes: sample.cursor.bytes + 1 },
+    { ...sample.cursor, timestamp: sample.cursor.timestamp + 1 }, { ...sample.cursor, ordinal: sample.cursor.ordinal + 1 }])
+    assert.equal(readCodexUsage(f.call, { ...options, previous }), null);
+  assert.equal(readCodexUsage(f.call, { ...options, now: Date.now() + 120001 }), null);
+  assert.equal(readCodexUsage({ ...f.call, turn_id: "other" }, options), null);
+  f.save(10000, { root_turn_id: "sibling-turn" });
+  assert.equal(readCodexUsage(f.call, options), null);
+  f.save(10000);
+  const text = readFileSync(f.file, "utf8"), lines = text.trimEnd().split("\n");
+  for (const rows of [[lines[0], lines[2]], [lines[0], lines[1]],
+    [lines[0], lines[1], JSON.stringify({ timestamp: JSON.parse(lines[2]).timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: "turn" } }),
+      lines[2].replace('"ordinal":2', '"ordinal":3')]]) {
+    writeFileSync(f.file, rows.join("\n") + "\n"); assert.equal(readCodexUsage(f.call, options), null);
+  }
+  for (const changed of [text.replaceAll("distinct-root", "forged-root"), text.replace('"source":"exec"', '"source":"cli"'),
+    text.replace('"ordinal":0', '"ordinal":1')]) {
+    writeFileSync(f.file, changed); await assert.rejects(f.decide());
+  }
+  writeFileSync(f.file, text); assert.ok(readCodexUsage(f.call, options));
+  const replacement = f.file + ".replacement"; writeFileSync(replacement, text); renameSync(replacement, f.file);
+  await assert.rejects(f.decide());
 });

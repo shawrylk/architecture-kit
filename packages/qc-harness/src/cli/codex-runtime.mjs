@@ -10,6 +10,12 @@ const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(v
 const roles = ["leader", "implementer", "reviewer"];
 const unavailable = () => { throw new Error("Codex invocation unavailable"); };
 const settings = Object.freeze({ model_auto_compact_token_limit: 400000, model_post_turn_compact_threshold_percent: 0 });
+const admissions = new WeakMap();
+// Only exact runner-held reservations carry authority; serialized proofs cannot enroll themselves.
+export function codexAdmissionOf(handle, input) {
+  const proof = admissions.get(handle)?.(input);
+  return proof ?? unavailable();
+}
 
 // commonDirOf reads unbounded metadata; this boundary permits two regular files, 4096 bytes each.
 function metadata(file) {
@@ -56,8 +62,8 @@ function checkPin(executable, pin) {
 }
 
 /** Runner-private, in-memory authority. Never give this factory's result, reservations or hook
- * capabilities to a worker. No CLI, disk credentials, config reload, budget decisions or closure
- * writes. A trusted hook bridge must retain the opaque capability outside the native process.
+ * capabilities to a worker. Context delegates to the locked budget consumer without config reload.
+ * A trusted hook bridge must retain the opaque capability outside the native process.
  * Proof means explicit CLI forwarding, NOT resolved active config (managed layers can win).
  * Source: Codex 0.172.0 / 3d86e43b075adeba2193ec5c22ac92f55afd82e6:
  * cli/src/main.rs:1130-1150,2226-2233; utils/cli/src/config_override.rs:26-40;
@@ -65,7 +71,7 @@ function checkPin(executable, pin) {
  * core/src/config/mod.rs:640-648; exec/src/event_processor_with_jsonl_output.rs:388-391,588-600;
  * hooks/src/events/session_start.rs:20-47,119-127; exec/src/lib.rs:1787-1819.
  * Native root comes only from the selected local rollout header, never hook root/settings claims.
- * H/J must supply trusted pins, authenticate hook IPC and wire consumers; active settings stay unknown.
+ * H/J must supply trusted pins, authenticate hook IPC and wire adoption; active settings stay unknown.
  */
 export function createCodexRuntime({ worktree, executable, workflowId, config = {}, inheritedRole = "leader", capacity = 64, startupTimeoutMs = 5000, codexHome, executablePin } = {}) {
   if (!["linux", "darwin"].includes(process.platform)) throw new Error("Codex invocation: unsupported platform");
@@ -95,7 +101,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
   const retire = handle => {
     const record = records.get(handle);
     if (!record) return;
-    records.delete(handle); clearTimeout(record.timer); record.cleanup?.();
+    records.delete(handle); admissions.delete(handle); clearTimeout(record.timer); record.cleanup?.();
     record.reject(new Error("Codex invocation unavailable"));
   }; // Persistent closure belongs to codex-context.
   const envelope = (record, credential, input) => {
@@ -115,11 +121,12 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       record.transcriptPath = selected;
     }
   };
-  const observe = (record, input) => {
+  const observe = (record, input, allowUnavailable = false) => {
     select(record, input);
     if (!record.transcriptPath) return record.proof;
     const evidence = readCodexRolloutIdentity({ transcriptPath: record.transcriptPath, checkout: worktree, threadId: record.threadId }, { codexHome });
     const previous = record.proof.identityProvenance;
+    if (!evidence && allowUnavailable) return record.proof;
     if (previous && (!evidence || evidence.nativeRootSessionId !== record.proof.nativeRootSessionId ||
         evidence.fileIdentity.file !== previous.fileIdentity.file || evidence.source !== previous.source ||
         evidence.fileIdentity.timestamp !== previous.fileIdentity.timestamp || evidence.fileIdentity.ordinal !== previous.fileIdentity.ordinal)) unavailable();
@@ -172,6 +179,10 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       record.ready.catch(() => {});
       record.timer = setTimeout(() => retire(handle), startupTimeoutMs); record.timer.unref();
       records.set(handle, record);
+      admissions.set(handle, input => {
+        const current = get(handle);
+        return live(current) && matches(current, input) ? observe(current, input, true) : null;
+      });
       admitted++;
       return handle;
     },
@@ -224,6 +235,11 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       return true;
     },
     ready(handle) { return get(handle).ready; },
+    async context(handle, input) {
+      get(handle); // Reject sibling reservations even if another registry recognizes them.
+      const { decideCodexContext } = await import("./codex-context.mjs");
+      return decideCodexContext(input, { admission: handle, codexHome });
+    },
     bind,
     validate(handle, input) {
       try { const record = get(handle); return live(record) && matches(record, input) ? observe(record, input) : null; }
