@@ -18,7 +18,7 @@ import { assignTick } from "./fleet-assign.mjs";
 const idleOS = { cpus: () => [{ times: { user: 10, idle: 90 } }], freemem: () => 50, totalmem: () => 100 };
 const serveNode = options => runNode({ os: idleOS, ...options });
 const heartbeat = options => sendHeartbeat({ os: idleOS, ...options });
-const initialLoad = { cpu: null, mem: 0.5, rtt: null };
+const initialLoad = { platform: process.platform, cpu: null, mem: 0.5, rtt: null };
 
 const host = process.platform === "win32" ? "windows" : process.platform;
 const apiResponse = args => JSON.stringify(args[1] === "user" ? { login: "me" } : []);
@@ -1353,7 +1353,7 @@ test("platform child checks leave serve ticks free to heartbeat and retain the p
 test("heartbeat samples fake OS and publishes the successful prior round median, including Leader load", async t => {
   const root = fixture(t);
   let time = now, busy = 10;
-  const fakeOS = { cpus: () => [{ times: { user: busy, idle: 90 } }], freemem: () => 20, totalmem: () => 100 };
+  const fakeOS = { platform: () => "darwin", cpus: () => [{ times: { user: busy, idle: 90 } }], freemem: () => 20, totalmem: () => 100 };
   const nodes = { ...fleet, nodes: [fleet.nodes[0], ...["b", "c", "d", "e", "f"].map(id => ({ id, address: "localhost" }))] };
   const received = [];
   let index = 0;
@@ -1361,12 +1361,12 @@ test("heartbeat samples fake OS and publishes the successful prior round median,
   const deps = { root, fleet: nodes, repo: "o/r", leader: true, os: fakeOS, clock: () => time,
     fetch: async (_url, options) => { received.push(JSON.parse(options.body).body.load); time += durations[index % 5]; return { status: index++ % 5 === 2 ? 503 : 202 }; } };
   await heartbeat(deps);
-  assert.deepEqual(received, Array(5).fill({ cpu: null, mem: 0.8, rtt: null }));
-  assert.deepEqual(readState(root, "peers").a.load, { cpu: null, mem: 0.8, rtt: 25 });
+  assert.deepEqual(received, Array(5).fill({ platform: "darwin", cpu: null, mem: 0.8, rtt: null }));
+  assert.deepEqual(readState(root, "peers").a.load, { platform: "darwin", cpu: null, mem: 0.8, rtt: 25 });
   received.length = 0;
   busy = 110;
   await heartbeat(deps);
-  assert.deepEqual(received, Array(5).fill({ cpu: 1, mem: 0.8, rtt: 25 }));
+  assert.deepEqual(received, Array(5).fill({ platform: "darwin", cpu: 1, mem: 0.8, rtt: 25 }));
   await heartbeat({ ...deps, fetch: async () => { time += 50; return { status: 503 }; } });
   assert.equal(readState(root, "peers").a.load.rtt, null);
   received.length = 0;
