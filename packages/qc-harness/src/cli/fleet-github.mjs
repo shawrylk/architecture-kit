@@ -11,7 +11,8 @@ export const validWork = row => assignmentRef(row) && [null, "plan", "code", "re
 const validLoad = load => load !== null && typeof load === "object" && !Array.isArray(load) &&
   Object.entries({ cpu: 1, mem: 1, rtt: 600_000 }).every(([key, limit]) =>
     load[key] === null || (Number.isFinite(load[key]) && load[key] >= 0 && load[key] <= limit)) &&
-  Object.keys(load).every(key => ["cpu", "mem", "rtt"].includes(key));
+  (load.platform === undefined || (typeof load.platform === "string" && load.platform.length > 0)) &&
+  Object.keys(load).every(key => ["platform", "cpu", "mem", "rtt"].includes(key));
 const validHeartbeat = body => validTerm(body.term) && typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
   (body.load === undefined || validLoad(body.load)) &&
   (body.work === undefined || (Array.isArray(body.work) && body.work.every(validWork))) &&

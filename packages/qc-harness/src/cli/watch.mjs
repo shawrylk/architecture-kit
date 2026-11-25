@@ -252,7 +252,8 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
         const watched = readState(cwd, "watched");
         const leader = readState(cwd, "node").leader === true;
         const messages = leader
-          ? readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind))
+          ? [...readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind)),
+            ...readState(cwd, "inbox").filter(message => message.kind === "say")]
           : readState(cwd, "inbox");
         messages.push(...pairingMessages(cwd, leader, now()));
         const proposal = readState(cwd, "proposal");
@@ -264,7 +265,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
           for (const message of fresh) {
             if (Object.hasOwn(watched, message.id)) continue;
             Object.defineProperty(watched, message.id, { value: true, enumerable: true, configurable: true });
-            say(`EVENT fleet:${message.kind} ${message.detail ?? message.term ?? message.id}`);
+            say(`EVENT fleet:${message.kind} ${message.kind === "say" ? `${message.from} ${message.id}` : message.detail ?? message.term ?? message.id}`);
           }
           writeState(cwd, "watched", watched);
           return EXIT.PASSED;

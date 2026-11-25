@@ -135,3 +135,12 @@ test("overloaded peers and Leader get no new work or takeover and keep held work
     assert.deepEqual(assignTick({ ...input, assignments: dead }).assignments, dead);
   }
 });
+
+
+test("darwin ignores memory overload while CPU and rtt still apply", () => {
+  assert.deepEqual(overloaded({ platform: "darwin", mem: 0.95 }), []);
+  assert.deepEqual(overloaded({ platform: "linux", mem: 0.95 }), ["mem 95%"]);
+  assert.deepEqual(overloaded({ mem: 0.95 }), ["mem 95%"]);
+  assert.deepEqual(overloaded({ platform: "darwin", mem: 0.95, cpu: 0.95 }), ["cpu 95%"]);
+  assert.deepEqual(overloaded({ platform: "darwin", mem: 0.95, rtt: 6000 }), ["rtt 6000ms"]);
+});

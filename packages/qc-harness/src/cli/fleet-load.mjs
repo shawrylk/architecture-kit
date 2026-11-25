@@ -14,5 +14,5 @@ export function sampleLoad({ os: host = os, previous } = {}) {
       cpu = round(1 - idle / total);
     }
   }
-  return { cpu, mem: round(1 - host.freemem() / host.totalmem()), sample };
+  return { platform: host.platform?.() ?? os.platform(), cpu, mem: round(1 - host.freemem() / host.totalmem()), sample };
 }

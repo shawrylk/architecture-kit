@@ -4,7 +4,7 @@ import { ownerOf } from "./fleet.mjs";
 export function overloaded(load) {
   const reasons = [];
   if (load?.cpu != null && load.cpu >= 0.9) reasons.push(`cpu ${Math.round(load.cpu * 100)}%`);
-  if (load?.mem != null && load.mem >= 0.9) reasons.push(`mem ${Math.round(load.mem * 100)}%`);
+  if (load?.platform !== "darwin" && load?.mem != null && load.mem >= 0.9) reasons.push(`mem ${Math.round(load.mem * 100)}%`);
   if (load?.rtt != null && load.rtt >= 2000) reasons.push(`rtt ${load.rtt}ms`);
   return reasons;
 }
