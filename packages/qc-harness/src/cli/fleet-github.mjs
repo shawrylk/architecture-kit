@@ -15,11 +15,13 @@ const validLoad = load => load !== null && typeof load === "object" && !Array.is
   (load.platform === undefined || (typeof load.platform === "string" && load.platform.length > 0)) &&
   Object.keys(load).every(key => ["platform", "cpu", "mem", "rtt"].includes(key));
 const validHeartbeat = body => validTerm(body.term) && typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
+  (body.session === undefined || ["live", "none"].includes(body.session)) &&
+  (body.sessionHeartbeat === undefined || body.sessionHeartbeat === null || (Number.isFinite(body.sessionHeartbeat) && body.sessionHeartbeat >= 0)) &&
   (body.load === undefined || validLoad(body.load)) &&
   (body.work === undefined || (Array.isArray(body.work) && body.work.every(validWork))) &&
   (body.assigned === undefined || (Array.isArray(body.assigned) && body.assigned.every(assignmentRef)));
 
-const WORK_KINDS = new Set(["assign", "plan", "approve", "question", "answer", "pushed", "verdict", "platform-check", "platform-result"]);
+const WORK_KINDS = new Set(["assign", "plan", "approve", "question", "answer", "pushed", "verdict", "platform-check", "platform-result", "receipt"]);
 const isWork = message => WORK_KINDS.has(message?.kind) && Number.isSafeInteger(message.body?.issue) && message.body.issue > 0;
 
 /** HTTP and GitHub share verification and synchronous replay/queue persistence. */
@@ -52,6 +54,8 @@ export function receiveMessage({ root, fleet, message, clock = Date.now }) {
       Date.parse(message.time) <= Date.parse(previous?.messageTime))) {
       peers[message.from].time = time;
     } else Object.defineProperty(peers, message.from, { value: { time, messageTime: message.time, kit: message.body.kit, term: message.body.term, leader: accepted,
+      ...(message.body.session === undefined ? {} : { session: message.body.session }),
+      ...(message.body.sessionHeartbeat === undefined ? {} : { sessionHeartbeat: message.body.sessionHeartbeat }),
       ...(message.body.load === undefined ? {} : { load: message.body.load }),
       ...(message.body.os === undefined ? {} : { os: message.body.os }),
       ...(message.body.work === undefined ? {} : { work: message.body.work }),

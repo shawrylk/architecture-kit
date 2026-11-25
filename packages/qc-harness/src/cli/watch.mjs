@@ -252,7 +252,21 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
     if (parsed.fleet) {
       try {
         const watched = readState(cwd, "watched");
-        const leader = readState(cwd, "node").leader === true;
+        const record = readState(cwd, "node"), at = now();
+        if (!Number.isFinite(record.sessionHeartbeat) || at < record.sessionHeartbeat || at - record.sessionHeartbeat >= 30_000) {
+          writeState(cwd, "node", { ...record, sessionHeartbeat: at });
+        }
+        const sent = readState(cwd, "sent");
+        let escalated = false;
+        for (const [id, entry] of Object.entries(sent)) {
+          if (["sent", "delivered"].includes(entry.state) && !entry.escalated && at - Date.parse(entry.time) >= 300_000) {
+            say(`EVENT fleet:unread ${entry.node} ${id}`);
+            entry.escalated = true;
+            escalated = true;
+          }
+        }
+        if (escalated) writeState(cwd, "sent", sent);
+        const leader = record.leader === true;
         const messages = leader
           ? [...readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind)),
             ...readState(cwd, "inbox").filter(message => message.kind === "say")]
@@ -268,7 +282,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
             if (Object.hasOwn(watched, message.id)) continue;
             Object.defineProperty(watched, message.id, { value: true, enumerable: true, configurable: true });
             say(`EVENT fleet:${message.kind} ${message.kind === "say" ? `${message.from} ${message.id}` : message.detail ?? message.term ?? message.id}`);
-            const original = message.from && message.repo ? message : findTalk(cwd, message.id);
+            const original = findTalk(cwd, message.id) ?? message;
             if (original?.from && original.repo && TALK_KINDS.includes(original.kind)) {
               let text;
               try { text = readFileSync(fleetPath(env), "utf8"); }
@@ -279,6 +293,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
           writeState(cwd, "watched", watched);
           return EXIT.PASSED;
         }
+        if (escalated) return EXIT.PASSED;
       } catch (error) {
         warn(`watch: ${error.message}`);
         return EXIT.BAD_INPUT;

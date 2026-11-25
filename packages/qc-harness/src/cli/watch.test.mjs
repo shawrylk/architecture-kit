@@ -688,3 +688,40 @@ test("fleet read receipt is queued after print and only once", async t => {
   assert.equal(await runWatch(["--fleet", "--max", "1"], deps), 4);
   assert.equal(readState(root, "outbox").length, 1);
 });
+
+test("fleet watcher renews its session every 30 seconds while preserving concurrent node updates", async t => {
+  const { readState, writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-lease-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const time = fakeClock(), samples = [];
+  writeState(root, "node", { leader: false, pid: 123 });
+  assert.equal(await runWatch(["--fleet", "--max", "1"], { cwd: root, now: time.now, say: () => {}, sleep: async ms => {
+    samples.push(readState(root, "node").sessionHeartbeat);
+    await time.sleep(ms);
+    writeState(root, "node", { ...readState(root, "node"), leader: true });
+  } }), 4);
+  assert.deepEqual(samples, [...Array(6).fill(0), ...Array(6).fill(30_000)]);
+  assert.deepEqual(readState(root, "node"), { leader: true, pid: 123, sessionHeartbeat: 60_000 });
+});
+
+test("unread escalation starts at five minutes and stays once-only across watcher restarts", async t => {
+  const { readState, writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-unread-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const time = fakeClock(), lines = [];
+  writeState(root, "sent", Object.fromEntries(["sent", "delivered", "read", "done"].map(state => [state, { node: "b", state, time: new Date(0).toISOString() }])));
+  const deps = { cwd: root, ...time, say: line => lines.push(line) };
+  time.clock.now = 239_999;
+  assert.equal(await runWatch(["--fleet", "--max", "1"], deps), 4);
+  assert.deepEqual(lines, ["EVENT timeout"]);
+  time.clock.now = 300_000;
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.deepEqual(lines, ["EVENT fleet:unread b sent", "EVENT fleet:unread b delivered"]);
+  assert.equal(readState(root, "sent").sent.escalated, true);
+  lines.length = 0;
+  assert.equal(await runWatch(["--fleet", "--max", "1"], deps), 4);
+  assert.deepEqual(lines, ["EVENT timeout"]);
+});

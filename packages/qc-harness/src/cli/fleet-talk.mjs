@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createMessage } from "./fleet-message.mjs";
 import { flushOutbox, sendMessage } from "./fleet-node.mjs";
-import { livePeer, readState, writeState } from "./fleet-state.mjs";
+import { livePeer, readState, sessionOf, writeState } from "./fleet-state.mjs";
 import { roleComment } from "./role-line.mjs";
 
 export const TALK_VERBS = ["plan", "ask", "say", "approve", "answer", "show", "ack"];
@@ -9,14 +9,20 @@ export const TALK_KINDS = ["plan", "question", "say", "approve", "answer"];
 const validText = text => typeof text === "string" && text.length <= 20000;
 
 export function findTalk(root, id) {
-  return [...readState(root, "queue"), ...Object.values(readState(root, "plans")), ...Object.values(readState(root, "answers")), ...Object.values(readState(root, "said"))]
+  return [...Object.values(readState(root, "received")), ...readState(root, "queue"), ...Object.values(readState(root, "plans")), ...Object.values(readState(root, "answers")), ...Object.values(readState(root, "said"))]
     .find(message => message.id === id && TALK_KINDS.includes(message.kind));
+}
+
+function retainTalk(root, message) {
+  const received = readState(root, "received");
+  Object.defineProperty(received, message.id, { value: message, enumerable: true });
+  writeState(root, "received", received);
 }
 
 /** Receipts use the normal signed transport and retry queue, but never receive receipts. */
 export function queueReceipt(root, fleet, original, state, note = "") {
   if (!TALK_KINDS.includes(original.kind)) return;
-  const message = createMessage({ from: fleet.self, repo: original.repo, kind: "receipt", body: { message: original.id, state, note } }, fleet.secret);
+  const message = createMessage({ from: fleet.self, repo: original.repo, kind: "receipt", body: { message: original.id, state, note, ...(Number.isSafeInteger(original.body?.issue) && original.body.issue > 0 ? { issue: original.body.issue } : {}) } }, fleet.secret);
   const { sig: _sig, time: _time, ...fields } = message;
   writeState(root, "outbox", [...readState(root, "outbox"), { node: original.from, message: fields, attempts: 0, nextAttempt: 0 }]);
 }
@@ -105,6 +111,7 @@ export function receiveTalk(root, fleet, leader, now) {
       if (peers[message.from]?.leader !== false && now - Date.parse(message.time) < 600_000) kept.push(message);
       continue;
     }
+    retainTalk(root, message);
     if (request) kept.push(message);
     else if (message.kind === "approve") { plans[key] = message; savedPlan = true; }
     else {
@@ -130,7 +137,7 @@ export function receiveTalk(root, fleet, leader, now) {
   if (changed) writeState(root, "queue", kept);
 }
 
-export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }) {
+export async function runTalk(options, { root, fleet, repo, gh, say, warn = console.error, node = {} }) {
   const { verb, target } = options;
   if (verb === "ack") {
     const message = findTalk(root, target), note = options["--note"] ?? "";
@@ -143,7 +150,7 @@ export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }
     return 0;
   }
   if (verb === "show") {
-    const message = [...readState(root, "queue"), ...Object.values(readState(root, "plans")), ...Object.values(readState(root, "answers")), ...Object.values(readState(root, "said"))].find(message => message.id === target);
+    const message = findTalk(root, target);
     if (!message) throw new Error(`message not found: ${target}`);
     const issue = message.kind === "say" ? "" : ` issue=#${message.body.issue} epoch=${message.body.epoch}`;
     say(`${message.kind} from=${message.from}${issue}\n${message.body.text ?? message.body.note ?? ""}`);
@@ -168,6 +175,7 @@ export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }
     recipient = fleet.nodes.find(peer => peer.id !== fleet.self && peer.active !== false && peer.address && livePeer(peers[peer.id], now) &&
       (target === "leader" ? peers[peer.id].leader === true : peer.id === target));
     if (!recipient) throw new Error(`no live recipient heartbeat: ${target}`);
+    if (sessionOf(peers[recipient.id], now) === "none") warn(`no session listens on ${recipient.id}`);
     kind = "say";
     body = { text };
   } else if (request) {
@@ -203,7 +211,10 @@ export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }
     recordSent(root, recipient.id, message);
     await sendMessage({ ...node, root, fleet, node: recipient, message });
   }
-  if (queued) writeState(root, "queue", readState(root, "queue").filter(message => message.id !== target));
+  if (queued) {
+    retainTalk(root, queued);
+    writeState(root, "queue", readState(root, "queue").filter(message => message.id !== target));
+  }
   say(`${kind} ${message.id}`);
   return 0;
 }

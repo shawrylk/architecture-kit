@@ -5,7 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { runFleet } from "./fleet.mjs";
 import { readState, writeState } from "./fleet-state.mjs";
-import { receiveTalk } from "./fleet-talk.mjs";
+import { readGithub } from "./fleet-github.mjs";
+import { queueReceipt, receiveTalk } from "./fleet-talk.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { flushOutbox, receiveMessage } from "./fleet-node.mjs";
 import { runWatch } from "./watch.mjs";
@@ -382,4 +383,71 @@ test("ack sends done with an optional bounded note for a stored message", async 
   assert.equal(await f.run(["ack", message.id, "--note", "x".repeat(20001)]), 1);
   assert.equal(await f.run(["ack", message.id, "--file", f.file]), 1);
   assert.equal(f.comments.length, 0);
+});
+
+test("ack and show retain completed requests and superseded replies by message ID", async t => {
+  const leader = fixture(t, true);
+  writeState(leader.root, "queue", [leader.queued("plan")]);
+  assert.equal(await leader.run(["approve", "request"]), 0);
+  assert.equal(await leader.run(["ack", "request"]), 0, leader.errors.join("\n"));
+  assert.equal(leader.sent.at(-1).body.state, "done");
+  const follower = fixture(t);
+  for (const id of ["first", "second"]) {
+    writeState(follower.root, "queue", [{ ...follower.queued("approve", id), body: { issue: 7, epoch: 3, plan: "request", approved: true, note: id } }]);
+    receiveTalk(follower.root, follower.fleet, false, Date.now());
+  }
+  for (const id of ["first", "second"]) {
+    assert.equal(await follower.run(["show", id]), 0, follower.errors.join("\n"));
+    assert.match(follower.lines.at(-1), new RegExp(id));
+    assert.equal(await follower.run(["ack", id]), 0);
+    assert.equal(follower.sent.at(-1).body.message, id);
+    assert.equal(follower.sent.at(-1).body.state, "done");
+  }
+});
+
+
+test("issue-routed receipts fall back to GitHub and advance every talk state without loops", async t => {
+  for (const kind of ["plan", "question", "approve", "answer"]) {
+    const sender = fixture(t), receiver = fixture(t, true, "b");
+    const original = createMessage({ from: "a", repo: "o/r", kind, body: { issue: 7 } }, sender.fleet.secret);
+    writeState(sender.root, "sent", { [original.id]: { node: "b", repo: "o/r", state: "sent", time: original.time } });
+    writeState(receiver.root, "peers", {});
+    for (const state of ["delivered", "read", "done"]) {
+      if (state === "read") {
+        writeState(receiver.root, "node", { leader: false });
+        writeState(receiver.root, "received", { [original.id]: original });
+        writeState(receiver.root, "inbox", [{ id: original.id, kind, from: "a", repo: "o/r", issue: 7 }]);
+        assert.equal(await runWatch(["--fleet"], { cwd: receiver.root, env: { QC_FLEET_FILE: path.join(receiver.root, "fleet.json") }, say: () => {} }), 0);
+      } else if (state === "done") {
+        assert.equal(await receiver.run(["ack", original.id], { node: { fetch: async () => { throw new Error("offline"); } } }), 0);
+      } else queueReceipt(receiver.root, receiver.fleet, original, state);
+      const comments = [];
+      await flushOutbox({ root: receiver.root, fleet: receiver.fleet, fetch: async () => { throw new Error("offline"); },
+        gh: args => { comments.push({ body: args.at(-1), user: { login: "me" }, issue_url: "https://api.github.com/repos/o/r/issues/7", updated_at: new Date().toISOString() }); return ""; } });
+      assert.equal(comments.length, 1, `${kind} ${state} must use the issue route`);
+      readGithub({ root: sender.root, fleet: sender.fleet, repo: "o/r", gh: args => JSON.stringify(args[1] === "user" ? { login: "me" } : comments) });
+      receiveTalk(sender.root, sender.fleet, false, Date.now());
+      assert.equal(readState(sender.root, "sent")[original.id].state, state);
+      assert.deepEqual(readState(sender.root, "outbox"), []);
+      assert.deepEqual(readState(receiver.root, "outbox"), []);
+    }
+  }
+});
+
+test("say warns when no session listens; status exposes session and open-message state and age", async t => {
+  const f = fixture(t, true), time = Date.now();
+  writeState(f.root, "peers", { b: { time, leader: false, session: "none" } });
+  assert.equal(await f.run(["say", "b", "--file", f.file]), 0);
+  assert.match(f.errors.at(-1), /no session listens.*b/);
+  writeState(f.root, "peers", { b: { time, leader: false, session: "live", sessionHeartbeat: time } });
+  f.errors.length = 0;
+  assert.equal(await f.run(["say", "b", "--file", f.file]), 0);
+  assert.deepEqual(f.errors, []);
+  const id = f.sent.at(-1).id, sentAt = Date.parse(f.sent.at(-1).time);
+  assert.equal(await f.run(["status"], { gh: () => "[]", git: () => "", node: { clock: () => sentAt + 1000 } }), 0, f.errors.join("\n"));
+  assert.match(f.lines.join("\n"), /b .*session=live/);
+  assert.ok(f.lines.some(line => line.includes(id) && /state=sent age=1s/.test(line)));
+  f.lines.length = 0;
+  assert.equal(await f.run(["status"], { gh: () => "[]", git: () => "", node: { clock: () => time + 90_000 } }), 0);
+  assert.match(f.lines.join("\n"), /b .*session=none/);
 });

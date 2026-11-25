@@ -128,13 +128,13 @@ test("heartbeat targets only other active addressed nodes and records receipt ti
   assert.equal(received[0].url, "http://127.0.0.1:8081/message");
   assert.equal(received[0].message.kind, "heartbeat");
   assert.equal(received[0].message.body.os, process.platform === "win32" ? "windows" : process.platform);
-  assert.deepEqual(received[0].message.body, { load: initialLoad, kit: "commit", os: process.platform === "win32" ? "windows" : process.platform, term: 1, leader: true, work: [], assigned: [] });
+  assert.deepEqual(received[0].message.body, { session: "none", sessionHeartbeat: null, load: initialLoad, kit: "commit", os: process.platform === "win32" ? "windows" : process.platform, term: 1, leader: true, work: [], assigned: [] });
   const server = await createNodeServer({ root, fleet, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
   const beat = message({ kind: "heartbeat", body: { kit: null, term: 1, leader: false } });
   assert.equal((await post(beat)).status, 202);
-  assert.deepEqual(readState(root, "peers"), { a: { load: { ...initialLoad, rtt: 0 }, time: now, os: host, kit: "commit", term: 1, leader: true, work: [], assigned: [] }, b: { time: now, messageTime: beat.time, kit: null, term: 1, leader: false } });
+  assert.deepEqual(readState(root, "peers"), { a: { session: "none", sessionHeartbeat: null, load: { ...initialLoad, rtt: 0 }, time: now, os: host, kit: "commit", term: 1, leader: true, work: [], assigned: [] }, b: { time: now, messageTime: beat.time, kit: null, term: 1, leader: false } });
   assert.equal((await post(message({ kind: "heartbeat", body: { leader: "yes" } }))).status, 400);
   assert.deepEqual(readState(root, "queue"), []);
 });
@@ -411,7 +411,7 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   time += 1000;
   await timers[0].fn();
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0].body, { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [], assigned: [] });
+  assert.deepEqual(sent[0].body, { session: "none", sessionHeartbeat: null, load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [], assigned: [] });
   assert.equal(readState(root, "node").leader, true);
   const closed = new Promise(resolve => server.once("close", resolve));
   signals.get("SIGTERM")();
@@ -827,13 +827,13 @@ test("heartbeats carry own work, per-recipient Leader assignments, and replace p
   const fetcher = async (_url, options) => { received.push(JSON.parse(options.body)); return { status: 202 }; };
   await heartbeat({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => now, fetch: fetcher });
   assert.deepEqual(received.map(row => row.body), [
-    { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 2, epoch: 1 }] },
-    { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 3, epoch: 1 }] },
+    { session: "none", sessionHeartbeat: null, load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 2, epoch: 1 }] },
+    { session: "none", sessionHeartbeat: null, load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 3, epoch: 1 }] },
   ]);
   received.length = 0;
   writeState(root, "assignments", { "o/r#1": held(1, "a", 2) });
   await heartbeat({ root, fleet: nodes, repo: "o/r", clock: () => now, fetch: fetcher });
-  assert.deepEqual(received[0].body, { load: { ...initialLoad, rtt: 0 }, os: host, kit: null, term: 1, leader: false, work: [{ repo: "o/r", issue: 1, epoch: 2, step: null, branch: null, head: null }] });
+  assert.deepEqual(received[0].body, { session: "none", sessionHeartbeat: null, load: { ...initialLoad, rtt: 0 }, os: host, kit: null, term: 1, leader: false, work: [{ repo: "o/r", issue: 1, epoch: 2, step: null, branch: null, head: null }] });
   const server = await createNodeServer({ root, fleet: nodes, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   let sentTime = now;
@@ -1145,7 +1145,7 @@ test("promotion during the heartbeat send to A gives C the rebuilt assignment at
   } });
   assert.equal(sent.length, 2);
   assert.equal(sent[1].url, "http://127.0.0.1:18082/message");
-  assert.deepEqual(sent[1].body, { load: initialLoad, os: host, kit: null, leader: true, term: 2, work: [],
+  assert.deepEqual(sent[1].body, { session: "none", sessionHeartbeat: null, load: initialLoad, os: host, kit: null, leader: true, term: 2, work: [],
     assigned: [{ repo: "o/r", issue: 7, epoch: 3 }] });
 });
 
@@ -1518,4 +1518,58 @@ test("serve rereads the fleet file and leaves join mode on a tick without restar
   assert.equal(JSON.parse(readFileSync(file, "utf8")).secret, secret);
   assert.ok(githubReads > 0);
   assert.equal((await fetch(`${base}/message`, { method: "POST", body: "{}" })).status, 400);
+});
+
+test("offline receipt retries preserve peer ordering without blocking another recipient", async t => {
+  const root = fixture(t), calls = [];
+  const peers = { ...fleet, nodes: [...fleet.nodes, { id: "c", address: "healthy", port: 8083 }] };
+  writeState(root, "outbox", [
+    { node: "b", message: message({ kind: "receipt", body: { message: "original", state: "delivered" } }), attempts: 0, nextAttempt: 0 },
+    { node: "b", message: message({ kind: "say", body: { text: "later" } }), attempts: 0, nextAttempt: 0 },
+    { node: "c", message: message({ kind: "say", body: { text: "healthy" } }), attempts: 0, nextAttempt: 0 },
+  ]);
+  const opts = { root, fleet: peers, clock: () => now, fetch: async (url, options) => {
+    calls.push(JSON.parse(options.body).kind + " " + url);
+    if (url.includes(":8081/")) throw new Error("offline");
+    return { status: 202 };
+  } };
+  await flushOutbox(opts);
+  await flushOutbox(opts);
+  assert.deepEqual(calls, ["receipt http://127.0.0.1:8081/message", "say http://healthy:8083/message"]);
+  assert.deepEqual(readState(root, "outbox").map(entry => entry.node), ["b", "b"]);
+});
+
+test("signed heartbeats advertise and persist the watcher lease with an exclusive 90-second boundary", async t => {
+  const root = fixture(t), remote = fixture(t);
+  const { receiveMessage } = await import("./fleet-node.mjs");
+  writeState(root, "node", { leader: true, term: 1, sessionHeartbeat: now });
+  for (const age of [-1, 0, 89_999, 90_000]) {
+    let beat;
+    await heartbeat({ root, fleet, repo: "o/r", clock: () => now + age, fetch: async (_, options) => {
+      beat = JSON.parse(options.body);
+      return { status: 202 };
+    } });
+    const expected = age >= 0 && age < 90_000 ? "live" : "none";
+    assert.equal(beat.body.session, expected);
+    assert.equal(receiveMessage({ root: remote, fleet: { ...fleet, self: "b" }, message: beat, clock: () => now + age }).ok, true);
+    assert.equal(readState(remote, "peers").a.session, expected);
+  }
+  const invalid = message({ kind: "heartbeat", body: { term: 1, kit: null, leader: false, session: "forever" } });
+  assert.equal(receiveMessage({ root: remote, fleet, message: invalid, clock: () => now }).reason, "bad-heartbeat");
+});
+
+
+test("node startup preserves an active watcher lease through process and server restarts", async t => {
+  const root = fixture(t), p = processDeps(root);
+  writeState(root, "node", { sessionHeartbeat: now });
+  await startNode(p.deps);
+  assert.equal(readState(root, "node").sessionHeartbeat, now);
+  for (let restart = 0; restart < 2; restart++) {
+    const server = await serveNode({ root, fleet, repo: "o/r", clock: () => now, listen: { port: 0 },
+      timer() {}, clearTimer() {}, onSignal() {}, offSignal() {} });
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    assert.equal(readState(root, "node").sessionHeartbeat, now);
+    await new Promise(resolve => server.close(resolve));
+    writeState(root, "node", { sessionHeartbeat: now });
+  }
 });

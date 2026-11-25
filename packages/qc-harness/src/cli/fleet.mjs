@@ -11,7 +11,7 @@ import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
 import { sendPushed, validPlatformBranch } from "./fleet-platform.mjs";
 import { TALK_VERBS, parseTalkArgs, runTalk } from "./fleet-talk.mjs";
-import { highestTerm, latestLeader, readState, writeState } from "./fleet-state.mjs";
+import { highestTerm, latestLeader, livePeer, readState, sessionOf, writeState } from "./fleet-state.mjs";
 import { confirmLeader, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 import { createKey, validateKey, pairingDecision, readPairing } from "./fleet-pair.mjs";
 import { effectiveFleet, readDiscovered } from "./fleet-discover.mjs";
@@ -284,7 +284,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
     if (TALK_VERBS.includes(options.verb)) {
-      return runTalk(options, { root: cwd, fleet, repo, gh, say, node }).catch(error => { warn(error.message); return 1; });
+      return runTalk(options, { root: cwd, fleet, repo, gh, say, warn, node }).catch(error => { warn(error.message); return 1; });
     }
     const checkout = checkoutRootOf(cwd);
     if (["progress", "owns", "pushed"].includes(options.verb)) {
@@ -330,9 +330,13 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
       for (const row of options["--all"] ? mine : mine.slice(0, 5)) say(String(row.number));
       return 0;
     }
+    const now = node.clock?.() ?? Date.now(), peers = readState(cwd, "peers");
     for (const node of fleet.nodes.slice(0, 14)) {
       const rows = owned.filter(row => row.owner === node.id);
-      say(`${node.id} weight=${node.weight} maxSize=${node.maxSize} active=${node.active} free=${rows.length} ${rows.slice(0, 10).map(row => row.number).join(",")}`.trimEnd());
+      say(`${node.id} weight=${node.weight} maxSize=${node.maxSize} active=${node.active} session=${node.id === fleet.self ? sessionOf(readState(cwd, "node"), now) : livePeer(peers[node.id], now) ? sessionOf(peers[node.id], now) : "none"} free=${rows.length} ${rows.slice(0, 10).map(row => row.number).join(",")}`.trimEnd());
+    }
+    for (const [id, entry] of Object.entries(readState(cwd, "sent"))) {
+      if (entry.repo === repo && entry.state !== "done") say(`message ${id} to=${entry.node} state=${entry.state} age=${Math.max(0, Math.floor((now - Date.parse(entry.time)) / 1000))}s`);
     }
     const omitted = fleet.nodes.length > 14 ? `; ${fleet.nodes.length - 14} more nodes` : "";
     say(`taken=${taken} unassigned=${owned.filter(row => row.owner === null).length}${omitted}`);

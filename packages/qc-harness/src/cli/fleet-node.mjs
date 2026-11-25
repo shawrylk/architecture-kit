@@ -17,7 +17,7 @@ import { effectiveFleet, readDiscovered, startDiscovery } from "./fleet-discover
 import { runGh } from "./gh-run.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { githubFallback, postGithubMessage, readGithub, receiveMessage, validBranch, validHead, validWork } from "./fleet-github.mjs";
-import { highestTerm, leaderCandidate, leaderDead, livePeer, validTerm, latestLeader, readState, stateDir, writeState } from "./fleet-state.mjs";
+import { highestTerm, leaderCandidate, leaderDead, livePeer, validTerm, latestLeader, readState, sessionOf, stateDir, writeState } from "./fleet-state.mjs";
 
 export { receiveMessage } from "./fleet-github.mjs";
 
@@ -132,7 +132,7 @@ export async function sendMessage({ root = process.cwd(), fleet, node, message, 
   return false;
 }
 
-/** Transient HTTP failures hold later HTTP sends; eligible GitHub work can still pass. */
+/** Preserve HTTP retry order per recipient; unrelated peers and GitHub work can pass. */
 export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFetch, clock = Date.now, signal, gh, leader = false,
   allow = (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) }) {
   if (signal?.aborted) return;
@@ -150,7 +150,7 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
     return null;
   };
   const pending = readState(root, "outbox");
-  let blocked = false;
+  const blocked = new Set();
   for (const entry of pending) {
     if (signal?.aborted) return;
     let role = permittedRole(entry);
@@ -159,7 +159,7 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
     if (fallback(entry)) {
       result = postGithubMessage({ root, fleet, entry, leader: role.leader, clock, gh, signal }) ? { delivered: true } : { githubRetry: true };
     } else {
-      if (blocked || entry.nextAttempt > clock()) { blocked = true; continue; }
+      if (blocked.has(entry.node) || entry.nextAttempt > clock()) { blocked.add(entry.node); continue; }
       const node = fleet.nodes.find(node => node.id === entry.node);
       try {
         if (!node?.address || node.active === false) throw new Error("peer unavailable");
@@ -174,7 +174,7 @@ export async function flushOutbox({ root = process.cwd(), fleet, fetch = nodeFet
     const index = current.findIndex(item => item.node === entry.node && item.message.id === entry.message.id);
     if (index < 0) continue;
     if (result.retry) {
-      blocked = true;
+      blocked.add(entry.node);
       const attempts = entry.attempts + 1;
       const retried = { ...entry, message: unsignedFields(entry.message), attempts, nextAttempt: clock() + Math.min(60_000, 1000 * 2 ** Math.min(attempts - 1, 6)) };
       current[index] = retried;
@@ -208,7 +208,8 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
       return { repo: row.repo, issue: row.issue, epoch: row.epoch, step: current.step ?? null,
         branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
     });
-    return { kit, os: hostOS(), load, ...role, work, ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
+    const sessionHeartbeat = readState(root, "node").sessionHeartbeat ?? null;
+    return { kit, os: hostOS(), load, ...role, session: sessionOf({ sessionHeartbeat }, clock()), sessionHeartbeat, work, ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
       .map(({ repo, issue, epoch }) => ({ repo, issue, epoch })) } : {}) };
   };
   const local = bodyFor(fleet.self);
@@ -285,7 +286,7 @@ export async function startNode({ root = process.cwd(), fleet, leader = false, s
   } finally { closeSync(log); }
   try {
     if (!Number.isSafeInteger(child.pid) || child.pid <= 0) throw new Error("fleet node spawn failed");
-    writeState(root, "node", { pid: child.pid, leader, instance });
+    writeState(root, "node", { ...record, ...readState(root, "node"), pid: child.pid, leader, instance });
     const deadline = clock() + 5000;
     while (clock() < deadline) {
       if (spawnError) throw spawnError;
@@ -559,7 +560,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   try {
     const previous = readState(root, "node"), election = readState(root, "election");
     leader = leader || previous.leader === true;
-    writeState(root, "node", { pid, leader, instance, term: previous.term ?? highestTerm(root) });
+    writeState(root, "node", { ...previous, pid, leader, instance, term: previous.term ?? highestTerm(root) });
     writeState(root, "election", { ...election, started: election.started ?? clock(), highest: highestTerm(root) });
   }
   catch (error) { discoverySocket?.close(); server.close(); throw error; }

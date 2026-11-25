@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node
 import path from "node:path";
 import { commonDirOf } from "./ledger.mjs";
 
-const FILES = ["election", "proposal", "work", "assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node", "plans", "answers", "said", "inbox", "watched", "github", "sent"];
+const FILES = ["election", "proposal", "work", "assignments", "questions", "seen", "queue", "outbox", "dead", "peers", "node", "plans", "answers", "said", "inbox", "watched", "github", "sent", "received"];
 
 /** State is private to git's shared directory, outside every worktree's tracked files. */
 export function stateDir(root = process.cwd()) {
@@ -58,6 +58,7 @@ export function latestLeader(peers, minimum = 1) {
 
 export const validTerm = term => Number.isSafeInteger(term) && term > 0;
 export const livePeer = (peer, now) => Number.isFinite(peer?.time) && now - peer.time >= 0 && now - peer.time < 90_000;
+export const sessionOf = (record, now) => livePeer({ time: record?.sessionHeartbeat }, now) ? "live" : "none";
 export function highestTerm(root, node = readState(root, "node")) {
   return Math.max(1, readState(root, "election").highest ?? 1, node.term ?? 1,
     ...Object.values(readState(root, "peers")).map(peer => peer.term ?? 1));
