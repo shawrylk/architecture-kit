@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { decideGate } from "./gate.mjs";
+import { decideGate, sharedWorkflowIdentity } from "./gate.mjs";
 import { decidePr } from "./pr-guard.mjs";
 import { decide as decideMerge } from "./merge-guard.mjs";
 import { appendRecord } from "./ledger.mjs";
@@ -26,6 +26,15 @@ function workspace(t) {
 const input = (cwd, command, role = "leader") => ({ cwd, command, session: "codex-session", role });
 const call = ({ cwd, command, session, role }) => ({ cwd, session_id: session, tool_name: "Bash", hook_event_name: "PreToolUse", tool_input: { command }, ...(role === "leader" ? {} : { agent_id: session }) });
 const reason = (result) => result?.hookSpecificOutput?.permissionDecisionReason ?? null;
+
+test("shared workflow identity preserves the manual session mapping for every role", () => {
+  for (const role of ["leader", "worker", "implementer", "reviewer"]) {
+    assert.deepEqual(sharedWorkflowIdentity("workflow-thread", role), {
+      session_id: "workflow-thread", agent_type: role,
+      ...(role === "leader" ? {} : { agent_id: "workflow-thread" }),
+    });
+  }
+});
 
 test("PR decisions preserve draft, worker, duplicate issue and exact-head readiness refusals", async (t) => {
   const { cwd, sha } = workspace(t);

@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,132 @@ import { decideCodexHook, normalizeCodexHook, runCodexHook } from "./codex-hook.
 import { decide as commandGuard } from "./bash-command-guard.mjs";
 import { decidePr } from "./pr-guard.mjs";
 import { decide as mergeGuard } from "./merge-guard.mjs";
+import { createCodexRuntime } from "./codex-runtime.mjs";
+import { decideGate } from "./gate.mjs";
+import { decideCodexEdit } from "./codex-edit-hook.mjs";
+
+async function admitted(t, cwd, session = "external-thread") {
+  const executable = path.join(cwd, "native-fixture");
+  writeFileSync(executable, `#!/bin/sh\nread -r thread\nprintf '{"type":"thread.started","thread_id":"%s"}\\n' "$thread"\ncat >/dev/null\n`, { mode: 0o700 });
+  const runtime = createCodexRuntime({ worktree: cwd, executable, workflowId: "workflow", codexHome: cwd });
+  const admission = runtime.reserve({ role: "implementer", workflowParentId: "parent" });
+  mkdirSync(path.join(cwd, "sessions"), { recursive: true });
+  const transcript = path.join(cwd, "sessions", `${session}.jsonl`);
+  writeFileSync(transcript, JSON.stringify({ type: "session_meta", ordinal: 0, timestamp: new Date().toISOString(),
+    payload: { id: session, session_id: "distinct-native-root", cwd, cli_version: "0.172.0", source: "exec" } }) + "\n");
+  const child = runtime.launch(admission);
+  t.after(() => { child.stdin.end(); child.kill(); });
+  await once(child, "spawn");
+  child.stdin.write(session + "\n");
+  runtime.startup(admission, admission.hookCredential, { cwd, session_id: session, transcript_path: transcript, hook_event_name: "SessionStart", source: "startup" });
+  await runtime.ready(admission);
+  return { runtime, admission, child, transcript, event: command => wire(cwd, command, { session_id: session, transcript_path: transcript }) };
+}
+
+test("admitted top-level workers match manual worker command and PR decisions without native identity rewrites", { skip: process.platform === "win32" }, async t => {
+  const cwd = workspace(t), f = await admitted(t, cwd);
+  const deps = { gh: () => assert.fail("unexpected GitHub call"), commentCheck: async () => null };
+  for (const command of ["echo ok", "git -c core.hooksPath=/dev/null status", "gh pr create --draft", "gh pr ready 7", "gh pr merge 7 --auto"]) {
+    const input = f.event(command), original = structuredClone(input);
+    const manual = await decideGate({ cwd, session: input.session_id, role: "implementer", command }, deps);
+    const result = await decideCodexHook(input, { admission: f.admission }, deps);
+    assert.equal(result?.hookSpecificOutput?.permissionDecision ?? "allow", manual.decision);
+    assert.equal(result?.hookSpecificOutput?.permissionDecisionReason ?? null, manual.reason);
+    if (command.startsWith("gh pr")) assert.equal(manual.decision, "deny");
+    assert.deepEqual(input, original);
+    assert.equal(input.agent_id, undefined); assert.equal(input.agent_type, undefined);
+  }
+});
+
+test("external admission rejects forgery, sibling identity, checkout/session/provenance conflicts and retired incarnations", { skip: process.platform === "win32" }, async t => {
+  const cwd = workspace(t), f = await admitted(t, cwd), sibling = await admitted(t, cwd, "sibling-thread");
+  const input = f.event("gh pr create --draft"), proof = f.runtime.validate(f.admission, input);
+  assert.equal(proof.nativeRootSessionId, "distinct-native-root");
+  assert.notEqual(proof.incarnation, sibling.runtime.validate(sibling.admission, sibling.event("echo ok")).incarnation);
+  for (const admission of [null, {}, JSON.parse(JSON.stringify(proof)), sibling.admission]) {
+    await assert.rejects(decideCodexHook(input, { admission }), /unavailable/);
+  }
+  const other = workspace(t), original = structuredClone(input);
+  for (const extra of [{ cwd: other }, { session_id: "wrong-thread" }, { role: "leader" },
+    { agent_id: "forged", agent_type: "default" }, { agent_id: input.session_id }, { agent_type: "leader" },
+    { transcript_path: path.join(cwd, "sessions", "other.jsonl") }]) {
+    await assert.rejects(decideCodexHook({ ...input, ...extra }, { admission: f.admission }), /unavailable/);
+  }
+  await assert.rejects(decideCodexHook(input, { admission: f.admission, role: "leader" }), /conflict/);
+  const forged = { ...input, admission: proof, proof: { ...proof, role: "leader" }, nativeRootSessionId: "forged" };
+  assert.equal((await decideCodexHook(forged, { admission: f.admission })).hookSpecificOutput.permissionDecision, "deny");
+  assert.deepEqual(input, original);
+  assert.equal(await runCodexHook(["--role", "implementer"], { stdin: [JSON.stringify(forged)], error: () => {} }), 2);
+  await assert.rejects(decideCodexHook({ ...input, tool_name: "apply_patch", tool_input: { command: "*** Begin Patch\n*** Add File: a\n+x\n*** End Patch" } },
+    { admission: f.admission }, { editGuards: [() => { throw new Error("inspection failed"); }] }), /inspection failed/);
+  const header = JSON.parse(readFileSync(f.transcript, "utf8")); header.payload.session_id = "conflicting-root";
+  writeFileSync(f.transcript, JSON.stringify(header) + "\n");
+  await assert.rejects(decideCodexHook(input, { admission: f.admission }), /unavailable/);
+  f.runtime.terminal(f.admission);
+  const replacement = await admitted(t, cwd);
+  await assert.rejects(decideCodexHook(replacement.event("echo ok"), { admission: f.admission }), /unavailable/);
+  sibling.child.stdin.end(); await once(sibling.child, "exit");
+  await assert.rejects(decideCodexHook(sibling.event("echo ok"), { admission: sibling.admission }), /unavailable/);
+});
+
+test("external patch fanout uses workflow identity for every path and leaves native context state intact", { skip: process.platform === "win32" }, async t => {
+  const cwd = workspace(t), f = await admitted(t, cwd), options = { admission: f.admission };
+  mkdirSync(path.join(cwd, ".claude"));
+  const config = value => writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify(value));
+  const patch = (...lines) => ({ ...f.event(["*** Begin Patch", ...lines, "*** End Patch"].join("\n")), tool_name: "apply_patch" });
+  const shared = input => ({ cwd, session_id: input.session_id, agent_id: input.session_id, agent_type: "implementer",
+    hook_event_name: "PreToolUse", tool_name: "apply_patch", tool_input: input.tool_input });
+  const check = async (input, expected) => {
+    const original = structuredClone(input), result = await decideCodexHook(input, options);
+    assert.deepEqual(result, await decideCodexEdit(shared(input)));
+    if (expected === null) assert.equal(result, null);
+    else assert.match(result.hookSpecificOutput.permissionDecisionReason ?? result.hookSpecificOutput.additionalContext, expected);
+    assert.deepEqual(input, original);
+  };
+  const contextInput = f.event("echo ok");
+  await f.runtime.context(f.admission, contextInput);
+  const directory = path.join(cwd, "qc-role-budgets"), files = readdirSync(directory);
+  const before = files.map(file => readFileSync(path.join(directory, file), "utf8"));
+  await check(patch("*** Add File: okay.ts", "+ok"), null);
+  writeFileSync(path.join(cwd, ".claude/work-order.local.json"), JSON.stringify({ paths: ["okay.ts"] }));
+  await check(patch("*** Add File: okay.ts", "+ok"), null);
+  await check(patch("*** Add File: okay.ts", "+ok", "*** Delete File: denied.ts"), /outside this work order/);
+  rmSync(path.join(cwd, ".claude/work-order.local.json"));
+  await check(patch("*** Add File: okay.ts", "+ok", "*** Add File: routes.generated.ts", "+x"), /Generated-file guard/);
+  config({ swarm: { dispatch: {}, direct: false } });
+  await check(patch("*** Add File: okay.ts", "+ok", "*** Add File: other.ts", "+x"), null);
+  await check(patch("*** Add File: okay.ts", "+ok", "*** Delete File: architecture-kit/gate-slots/slot.json"), /Slot guard/);
+  mkdirSync(path.join(cwd, "components"));
+  writeFileSync(path.join(cwd, "components/Button.tsx"), "export function Button() { return <button />; }\n");
+  config({ ui: { componentRoots: ["components"] } });
+  await check(patch("*** Add File: components/NewButton.tsx", "+export function Button() {}"), /Existing components.*Button/);
+  const seen = [], input = patch("*** Add File: a", "+x", "*** Add File: b", "+y");
+  await decideCodexHook(input, options, { editGuards: Array.from({ length: 5 }, (_, i) => call => {
+    assert.equal(call.agent_id, input.session_id); assert.equal(call.agent_type, "implementer");
+    assert.equal(call.session_id, input.session_id); seen.push([i, path.basename(call.tool_input.file_path)]);
+  }) });
+  assert.deepEqual(seen, ["a", "b"].flatMap(file => Array.from({ length: 5 }, (_, i) => [i, file])));
+  assert.deepEqual(readdirSync(directory), files);
+  assert.deepEqual(files.map(file => readFileSync(path.join(directory, file), "utf8")), before);
+  assert.equal(contextInput.agent_id, undefined); assert.equal(contextInput.agent_type, undefined);
+  assert.equal(f.runtime.validate(f.admission, contextInput).nativeRootSessionId, "distinct-native-root");
+});
+
+test("admitted opaque Bash posts cannot acknowledge comments or create pending merge success", { skip: process.platform === "win32" }, async t => {
+  const cwd = workspace(t), f = await admitted(t, cwd);
+  for (const tool_response of ["merged", "exit_code: 0", "merge failed"]) {
+    const input = { ...f.event("gh pr merge 7 --auto"), hook_event_name: "PostToolUse", tool_response }, original = structuredClone(input);
+    const deps = { commentCheck: () => assert.fail("opaque output cannot acknowledge comments"),
+      gh: () => JSON.stringify({ state: "OPEN", number: 7, url: "https://github.com/o/r/pull/7" }) };
+    const expected = { ...claude(input, "implementer"), agent_id: input.session_id, hook_event_name: "PostToolUseFailure" };
+    const result = await decideCodexHook(input, { admission: f.admission }, deps);
+    const sharedResult = await mergeGuard(expected, deps);
+    assert.equal(result.systemMessage, sharedResult?.systemMessage);
+    assert.match(result.hookSpecificOutput.additionalContext, /exit status.*unavailable/);
+    assert.equal(existsSync(path.join(cwd, ".git", "qc", "ledger.jsonl")), false);
+    assert.deepEqual(input, original);
+  }
+});
 
 function workspace(t) {
   const cwd = mkdtempSync(path.join(tmpdir(), "qc-codex-hook-"));

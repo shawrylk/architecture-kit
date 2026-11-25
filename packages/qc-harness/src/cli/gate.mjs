@@ -10,14 +10,18 @@ const VERBS = { "pr-create": "create", "pr-ready": "ready", merge: "merge" };
 const USAGE = "usage: qc gate <pr-create|pr-ready|merge|command> [--cwd <dir>] --session <id> --role <leader|worker|implementer|reviewer> -- <gh arguments... | single shell command>";
 const quote = (word) => `'${word.replaceAll("'", "'\\''")}'`;
 
+/** Shared-policy workflow identity, never evidence of a native subagent. Callers validate authority. */
+export function sharedWorkflowIdentity(session, role) {
+  return { session_id: session, agent_type: role, ...(role === "leader" ? {} : { agent_id: session }) };
+}
+
 /** Evaluate the same pre-action decisions as Claude, without running the supplied command. */
 export async function decideGate({ cwd, session, role, command }, dependencies = {}) {
   if (![cwd, session, command].every((value) => typeof value === "string" && value.trim()) || !ROLES.has(role) || !statSync(cwd).isDirectory()) {
     throw new Error(USAGE);
   }
   const call = {
-    cwd: path.resolve(cwd), session_id: session, agent_type: role,
-    ...(role === "leader" ? {} : { agent_id: session }),
+    cwd: path.resolve(cwd), ...sharedWorkflowIdentity(session, role),
     hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command },
   };
   const notes = [];
