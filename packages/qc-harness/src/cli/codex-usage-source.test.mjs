@@ -10,6 +10,10 @@ const now = Date.parse("2026-11-26T10:00:00Z");
 const line = (type, payload, ordinal = 1, time = now) => JSON.stringify({ timestamp: new Date(time).toISOString(), ordinal, type, payload }) + "\n";
 const tokens = { input_tokens: 390000, cached_input_tokens: 300000, output_tokens: 10000, reasoning_output_tokens: 9000, total_tokens: 400000 };
 const record = () => ({ thread_id: "thread", session_id: "thread", turn_id: "turn", root_turn_id: "turn", response_id: "response", usage: { ...tokens }, turn_token_usage: { ...tokens, total_tokens: 9000000 }, thread_token_usage: { ...tokens, total_tokens: 90000000 } });
+const snapshot = (usage, ordinal = 2, time = now) => line("event_msg", { type: "token_count", info: {
+  last_token_usage: usage.usage, total_token_usage: usage.thread_token_usage,
+}, rate_limits: null }, ordinal, time);
+const verified = (usage, ordinal = 1, time = now) => line("token_usage_record", usage, ordinal, time) + snapshot(usage, ordinal + 1, time);
 function fixture(t, worker = false) {
   const home = mkdtempSync(path.join(os.tmpdir(), "qc-native-usage-"));
   t.after(() => rmSync(home, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
@@ -19,7 +23,7 @@ function fixture(t, worker = false) {
   const usage = { ...record(), session_id: meta.session_id };
   const call = { hook_event_name: "PreToolUse", cwd: home, session_id: "thread", turn_id: "turn", tool_use_id: "call", transcript_path: file, ...(worker ? { agent_id: "thread", agent_type: "profile" } : {}) };
   const options = { role: worker ? "implementer" : "leader", codexHome: home, now };
-  const save = (rows = line("token_usage_record", usage)) => writeFileSync(file, line("session_meta", meta, 0, now - 1000000) + rows);
+  const save = (rows = verified(usage)) => writeFileSync(file, line("session_meta", meta, 0, now - 1000000) + rows);
   save(); return { home, file, meta, usage, call, options, save, read: (extra = {}) => readCodexUsage(call, { ...options, ...extra }) };
 }
 
@@ -39,6 +43,43 @@ test("external exec roots cannot supply implementer or reviewer identity", (t) =
   }
 });
 
+test("incomplete-response spending cannot establish the context baseline", (t) => {
+  const f = fixture(t);
+  const baseline = { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0, total_tokens: 1010 };
+  // The native producer persists spending, then emits the unchanged stored context.
+  f.save(line("token_usage_record", f.usage) + line("event_msg", {
+    type: "token_count", info: { last_token_usage: baseline, total_token_usage: f.usage.thread_token_usage }, rate_limits: null,
+  }, 2));
+  const result = f.read();
+  assert.equal(result, null, "snapshot conflicts with current response spending");
+  f.save(line("token_usage_record", f.usage));
+  assert.equal(f.read(), null, "undifferentiated spending alone is unknown");
+});
+
+test("context snapshots require fresh adjacent current-turn identity evidence", (t) => {
+  const f = fixture(t);
+  for (const rows of [
+    snapshot(f.usage, 1),
+    line("token_usage_record", { ...f.usage, turn_id: "old" }) + snapshot(f.usage),
+    line("token_usage_record", f.usage, 1, now - 120001) + snapshot(f.usage),
+    line("token_usage_record", f.usage) + line("turn_context", { turn_id: "other" }, 2) + snapshot(f.usage, 3),
+    verified(f.usage) + line("token_usage_record", { ...f.usage, response_id: "incomplete" }, 3),
+    verified(f.usage) + line("token_usage_record", { ...f.usage, turn_id: "old" }, 3) + snapshot(f.usage, 4),
+  ]) {
+    f.save(rows); assert.equal(f.read(), null);
+  }
+  for (const field of Object.keys(tokens)) {
+    const changed = { ...tokens, [field]: tokens[field] + 1 };
+    f.save(line("token_usage_record", f.usage) + snapshot({ ...f.usage, usage: changed }));
+    assert.equal(f.read(), null, field);
+  }
+  f.save(verified(f.usage) + snapshot(f.usage, 3, now + 120001));
+  assert.equal(f.read({ now: now + 120001 }), null, "repeated snapshot cannot refresh an old response");
+  const small = { input_tokens: 1000, cached_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0, total_tokens: 1010 };
+  f.save(verified({ ...f.usage, usage: small }));
+  assert.equal(normalizeUsage(f.read().usage).tokens, 1010);
+});
+
 test("malformed or unsupported native envelopes invalidate prior verified usage", (t) => {
   const f = fixture(t);
   for (const [type, payload] of [
@@ -50,7 +91,7 @@ test("malformed or unsupported native envelopes invalidate prior verified usage"
     ["response_item", { type: "message", role: "assistant", content: null }], ["turn_context", null],
     ["token_usage_record", null], ["compacted", null],
   ]) {
-    f.save(line("token_usage_record", f.usage) + line(type, payload, 2));
+    f.save(verified(f.usage) + line(type, payload, 3));
     assert.equal(f.read(), null, `${type}: ${JSON.stringify(payload)}`);
   }
 });
@@ -59,7 +100,7 @@ test("incomplete token usage records cannot preserve a prior verified sample", (
   const f = fixture(t);
   for (const field of ["usage", "turn_token_usage", "thread_token_usage"]) {
     for (const value of [undefined, null, {}, { ...tokens, total_tokens: -1 }]) {
-      f.save(line("token_usage_record", f.usage) + line("token_usage_record", { ...f.usage, [field]: value }, 2));
+      f.save(verified(f.usage) + line("token_usage_record", { ...f.usage, [field]: value }, 3));
       assert.equal(f.read(), null, `${field}: ${JSON.stringify(value)}`);
     }
   }
@@ -69,14 +110,14 @@ test("later persisted response without usage invalidates context until a new ver
   for (const worker of [false, true]) {
     const f = fixture(t, worker), first = f.read();
     const count = { type: "token_count", info: { last_token_usage: tokens, total_token_usage: f.usage.thread_token_usage }, rate_limits: null };
-    appendFileSync(f.file, line("event_msg", count, 2));
+    appendFileSync(f.file, line("event_msg", count, 3));
     assert.ok(f.read({ previous: first.cursor }));
-    appendFileSync(f.file, line("response_item", { type: "message", role: "assistant", content: [] }, 3));
-    appendFileSync(f.file, line("event_msg", count, 4));
+    appendFileSync(f.file, line("response_item", { type: "message", role: "assistant", content: [] }, 4));
+    appendFileSync(f.file, line("event_msg", count, 5));
     assert.equal(f.read({ previous: first.cursor }), null);
-    appendFileSync(f.file, line("token_usage_record", { ...f.usage, response_id: "later" }, 5));
+    appendFileSync(f.file, verified({ ...f.usage, response_id: "later" }, 6));
     assert.equal(normalizeUsage(f.read().usage).tokens, 400000);
-    appendFileSync(f.file, line("event_msg", { type: "token_count", info: null, rate_limits: null }, 6));
+    appendFileSync(f.file, line("event_msg", { type: "token_count", info: null, rate_limits: null }, 8));
     assert.equal(f.read(), null);
   }
 });
@@ -84,15 +125,15 @@ test("later persisted response without usage invalidates context until a new ver
 test("native file supplies verified usage including cache subsets once, never lifetime totals", (t) => {
   const f = fixture(t), result = f.read();
   assert.deepEqual(normalizeUsage(result.usage), { sessionId: "thread", turnId: "turn", tokens: 400000 });
-  assert.equal(result.provenance, "codex-0.172.0/token_usage_record");
+  assert.equal(result.provenance, "codex-0.172.0/token_count+token_usage_record");
   assert.doesNotMatch(JSON.stringify(result), /rollout\.jsonl/);
   assert.equal(result.usage.params.tokenUsage.total.totalTokens, 90000000);
   assert.deepEqual(f.read({ previous: result.cursor }), result);
-  appendFileSync(f.file, line("token_usage_record", { ...f.usage, response_id: "next" }, 2, now + 1));
+  appendFileSync(f.file, verified({ ...f.usage, response_id: "next" }, 3, now + 1));
   assert.ok(f.read({ now: now + 1, previous: result.cursor }));
-  f.save(line("token_usage_record", { ...f.usage, turn_id: "previous" }) + line("token_usage_record", f.usage, 2));
+  f.save(line("token_usage_record", { ...f.usage, turn_id: "previous" }) + verified(f.usage, 2));
   assert.ok(f.read());
-  f.save(line("token_usage_record", f.usage, 1, now - 120001) + line("token_usage_record", f.usage, 2));
+  f.save(line("token_usage_record", f.usage, 1, now - 120001) + verified(f.usage, 2));
   assert.ok(f.read());
   assert.equal(f.read({ previous: { file: result.cursor.file, bytes: 0 } }), null);
 });
@@ -110,16 +151,16 @@ test("worker thread and root session remain separate; wrong role and repository 
 test("mismatched, stale, malformed and unsupported provenance is unknown", (t) => {
   const f = fixture(t);
   for (const [key, value] of [["thread_id", "other"], ["turn_id", "old"], ["session_id", "root"], ["response_id", null], ["root_turn_id", "old"]]) {
-    f.save(line("token_usage_record", { ...f.usage, [key]: value })); assert.equal(f.read(), null, key);
+    f.save(verified({ ...f.usage, [key]: value })); assert.equal(f.read(), null, key);
   }
   for (const time of [now - 120001, now + 1]) {
-    f.save(line("token_usage_record", f.usage, 1, time)); assert.equal(f.read(), null);
+    f.save(verified(f.usage, 1, time)); assert.equal(f.read(), null);
   }
   for (const change of [{ cli_version: "0.171.0" }, { id: "other" }, { source: "unknown" }, { forked_from_id: "parent" }]) {
     const before = { ...f.meta }; Object.assign(f.meta, change); f.save(); assert.equal(f.read(), null); Object.keys(f.meta).forEach(k => delete f.meta[k]); Object.assign(f.meta, before);
   }
   for (const usage of [null, { ...tokens, cached_input_tokens: 400001 }, { ...tokens, total_tokens: -1 }, { ...tokens, cache_write_input_tokens: null }]) {
-    f.save(line("token_usage_record", { ...f.usage, usage })); assert.equal(f.read(), null);
+    f.save(verified({ ...f.usage, usage })); assert.equal(f.read(), null);
   }
   for (const raw of ["private malformed\n", line("token_usage_record", f.usage).trimEnd(), line("event_msg", { type: "token_count", info: { last_token_usage: tokens } })]) {
     f.save(raw); assert.equal(f.read(), null);
@@ -128,20 +169,20 @@ test("mismatched, stale, malformed and unsupported provenance is unknown", (t) =
 
 test("lifecycle invalidation and sample ordering prevent reuse across compaction and turns", (t) => {
   const f = fixture(t), first = f.read();
-  for (const [type, payload] of [["compacted", {}], ["event_msg", { type: "context_compacted" }], ["event_msg", { type: "task_complete", turn_id: "turn" }], ["event_msg", { type: "turn_aborted", turn_id: "turn" }], ["event_msg", { type: "task_started", turn_id: "next" }], ["turn_context", { turn_id: "next" }]]) {
-    f.save(line("token_usage_record", f.usage) + line(type, payload, 2)); assert.equal(f.read(), null, type);
+  for (const [type, payload] of [["compacted", { message: "compacted" }], ["event_msg", { type: "context_compacted" }], ["event_msg", { type: "task_complete", turn_id: "turn" }], ["event_msg", { type: "turn_aborted", turn_id: "turn" }], ["event_msg", { type: "task_started", turn_id: "next" }], ["turn_context", { turn_id: "next" }]]) {
+    f.save(verified(f.usage) + line(type, payload, 3)); assert.equal(f.read(), null, type);
   }
-  f.save(line("token_usage_record", f.usage, 2) + line("token_usage_record", f.usage, 1)); assert.equal(f.read(), null);
-  f.save(line("token_usage_record", f.usage, 1, now) + line("token_usage_record", f.usage, 2, now - 1)); assert.equal(f.read(), null);
-  f.save(); appendFileSync(f.file, line("token_usage_record", { ...f.usage, response_id: "next" }, 2)); const newer = f.read();
+  f.save(verified(f.usage, 2) + verified(f.usage, 1)); assert.equal(f.read(), null);
+  f.save(verified(f.usage, 1, now) + verified(f.usage, 3, now - 1)); assert.equal(f.read(), null);
+  f.save(); appendFileSync(f.file, verified({ ...f.usage, response_id: "next" }, 3)); const newer = f.read();
   f.save(); assert.equal(f.read({ previous: newer.cursor }), null);
   assert.equal(f.read({ previous: { ...first.cursor, file: "another" } }), null);
-  f.save(line("token_usage_record", f.usage, 1).replace('"ordinal":1,', "")); assert.equal(f.read(), null);
+  f.save(verified(f.usage, 1).replace('"ordinal":1,', "")); assert.equal(f.read(), null);
 });
 
 test("retained metadata outside the tail must have valid ordered row metadata", async (t) => {
   const f = fixture(t);
-  const tail = line("response_item", { type: "reasoning", private: "x".repeat(600000) }) + line("token_usage_record", f.usage, 2, now - 1);
+  const tail = line("response_item", { type: "reasoning", private: "x".repeat(600000) }) + verified(f.usage, 2, now - 1);
   const header = JSON.parse(line("session_meta", f.meta, 0, now - 1000000));
   for (const field of ["ordinal", "timestamp"]) {
     await t.test(`missing ${field}`, () => {
@@ -160,13 +201,13 @@ test("retained metadata outside the tail must have valid ordered row metadata", 
 
 test("bounded head/tail reads support large rollouts and reject oversized metadata and scans", (t) => {
   const f = fixture(t);
-  f.save(line("response_item", { private: "x".repeat(600000) }) + line("token_usage_record", f.usage, 2));
+  f.save(line("response_item", { private: "x".repeat(600000) }) + verified(f.usage, 2));
   assert.ok(f.read());
   f.meta.private = "x".repeat(70000); f.save(); assert.equal(f.read(), null); delete f.meta.private;
-  const rows = Array.from({ length: 1023 }, (_, i) => line("event_msg", { type: "agent_message" }, i + 1)).join("");
+  const rows = Array.from({ length: 1022 }, (_, i) => line("event_msg", { type: "agent_message" }, i + 1)).join("");
   const padding = line("response_item", { type: "reasoning", private: "x".repeat(600000) });
-  f.save(padding + rows + line("token_usage_record", f.usage, 1024)); assert.ok(f.read());
-  f.save(padding + rows + line("event_msg", { type: "agent_message" }, 1024) + line("token_usage_record", f.usage, 1025)); assert.equal(f.read(), null);
+  f.save(padding + rows + verified(f.usage, 1023)); assert.ok(f.read());
+  f.save(padding + rows + line("event_msg", { type: "agent_message" }, 1023) + verified(f.usage, 1024)); assert.equal(f.read(), null);
   f.save(); const original = readFileSync(f.file); const outside = path.join(f.home, "outside.jsonl"); writeFileSync(outside, original);
   assert.equal(readCodexUsage({ ...f.call, transcript_path: outside }, f.options), null);
   const folder = path.join(f.home, "sessions", "folder.jsonl"); mkdirSync(folder);

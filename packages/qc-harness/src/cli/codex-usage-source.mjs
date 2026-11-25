@@ -1,4 +1,4 @@
-// Source proof: openai/codex rust-v0.172.0 history/src/rollout_payload.rs and core/src/session/mod.rs:5892-5913.
+// Source proof: openai/codex 3d86e43b (0.172.0), core/src/session/mod.rs:5822-5967,6072-6079; app-server-protocol/src/protocol/v2/thread.rs:2220.
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import os from "node:os";
@@ -79,29 +79,37 @@ export function readCodexUsage(input, { role, codexHome = process.env.CODEX_HOME
     if (start && !skip) return null;
     const lines = decoder.decode(tail.subarray(skip)).trimEnd().split("\n");
     if (lines.length > MAX_LINES) return null;
-    let sample = null, timestamp = start ? Date.parse(first.timestamp) : 0, ordinal = start ? first.ordinal : -1;
+    let sample = null, candidate = null, timestamp = start ? Date.parse(first.timestamp) : 0, ordinal = start ? first.ordinal : -1;
     for (const raw of lines) {
       const row = JSON.parse(raw), time = Date.parse(row.timestamp), payload = row.payload;
       if (!rowMetadata(row, now, timestamp, ordinal) || row.type === "session_meta" && row.ordinal !== first.ordinal) return null;
       timestamp = time;
       ordinal = row.ordinal;
-      // Only a well-shaped token_count may follow a sample without replacing it; it never supplies usage or refreshes its age.
-      if (row.type !== "token_usage_record" && row.type !== "session_meta" &&
-          !(row.type === "event_msg" && payload.type === "token_count" && payload.info != null)) sample = null;
+      // Durable token_count drops Event.id. Bind its stored context to the adjacent,
+      // fresh response identity; spending-only records cannot establish context alone.
+      if (row.type === "event_msg" && payload.type === "token_count") {
+        const last = wire(payload.info?.last_token_usage), response = wire(candidate?.usage);
+        if (!candidate || !last || Object.keys(fields).concat("cacheWriteInputTokens").some(key => last[key] !== response[key])) {
+          sample = candidate = null;
+          continue;
+        }
+        sample = { method: "thread/tokenUsage/updated", params: { threadId: candidate.thread_id, turnId: candidate.turn_id,
+          tokenUsage: { last, total: wire(payload.info.total_token_usage) } } };
+        if (!normalizeUsage(sample)) return null;
+        continue;
+      }
+      sample = candidate = null;
       if (row.type !== "token_usage_record") continue;
       if (payload?.thread_id !== call.session_id || payload.turn_id !== call.turn_id) { sample = null; continue; }
       if (payload.session_id !== meta.session_id || !id(payload.response_id) || !id(payload.root_turn_id) ||
           role === "leader" && payload.root_turn_id !== call.turn_id) return null;
       if (now - time > 120000) { sample = null; continue; }
-      const usage = { method: "thread/tokenUsage/updated", params: { threadId: payload.thread_id, turnId: payload.turn_id,
-        tokenUsage: { last: wire(payload.usage), total: wire(payload.thread_token_usage) } } };
-      if (!normalizeUsage(usage)) return null;
-      sample = usage;
+      candidate = payload;
     }
     const after = fstatSync(fd);
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
         previous && (timestamp < previous.timestamp || ordinal < previous.ordinal)) return null;
-    return sample ? { usage: sample, provenance: "codex-0.172.0/token_usage_record", cursor: { file: key, bytes: before.size, timestamp, ordinal } } : null;
+    return sample ? { usage: sample, provenance: "codex-0.172.0/token_count+token_usage_record", cursor: { file: key, bytes: before.size, timestamp, ordinal } } : null;
   } catch {
     return null;
   } finally {
