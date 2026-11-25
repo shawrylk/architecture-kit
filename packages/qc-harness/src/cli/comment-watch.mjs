@@ -266,6 +266,7 @@ function apiRequest(command) {
   let hostname = command.env?.GH_HOST ?? "github.com";
   let write = false;
   let endpoint;
+  let endpointHost;
   const values = new Set(["--method", "--field", "--raw-field", "--input", "--header", "--hostname", "--jq", "--template", "--cache", "--preview"]);
   for (let i = 0; i < apiWords.length; i++) {
     const word = apiWords[i];
@@ -286,10 +287,13 @@ function apiRequest(command) {
       }
       continue;
     }
-    if (/^(?:https:\/\/api.github.com\/)?\/?repos\//.test(word)) endpoint ??= word.replace(/^https:\/\/api.github.com\//, "").replace(/^\//, "").split("?")[0].replace(/^repos\/([^/]+\/[^/]+)/, match => match.toLowerCase());
+    if (!endpoint && /^(?:https:\/\/api.github.com\/)?\/?repos\//.test(word)) {
+      endpointHost = word.startsWith("https://api.github.com/") ? "github.com" : undefined;
+      endpoint = word.replace(/^https:\/\/api.github.com\//, "").replace(/^\//, "").split("?")[0].replace(/^repos\/([^/]+\/[^/]+)/, match => match.toLowerCase());
+    }
   }
   // Watch identities and comment requests currently cover GitHub.com only.
-  if (hostname?.toLowerCase() !== "github.com") return null;
+  if ((endpointHost ?? hostname)?.toLowerCase() !== "github.com") return null;
   return { endpoint, method: method ?? (write ? "POST" : "GET") };
 }
 

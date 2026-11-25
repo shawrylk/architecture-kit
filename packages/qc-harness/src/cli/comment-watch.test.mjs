@@ -75,6 +75,37 @@ for (const [tool_name, prefix] of [
   assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
 });
 
+for (const [tool_name, prefix] of [
+  ["Bash", "GH_HOST=ghe.example.com "],
+  ["Bash", "export GH_HOST=ghe.example.com; "],
+  ["PowerShell", '$env:GH_HOST = "ghe.example.com"; '],
+]) test(`${tool_name} absolute API detection uses the URL host (${prefix.trim()})`, () => {
+  const endpoint = "https://api.github.com/repos/owner/repo/issues/4/comments";
+  const detect = (args) => watchedItems({ tool_name, tool_input: { command: `${prefix}gh api ${args}` } }, "owner/repo");
+  for (const args of [endpoint, `--hostname ghe.example.com ${endpoint}`, `${endpoint} --hostname ghe.example.com`]) {
+    assert.deepEqual(detect(args), [{ repo: "owner/repo", number: 4, kind: "issue" }]);
+  }
+  assert.deepEqual(detect("--hostname github.com https://ghe.example.com/api/v3/repos/owner/repo/issues/4/comments"), []);
+});
+
+for (const [tool_name, prefix] of [
+  ["Bash", "GH_HOST=ghe.example.com "],
+  ["PowerShell", '$env:GH_HOST = "ghe.example.com"; '],
+]) test(`${tool_name} absolute GitHub.com reads reactivate and acknowledge a watch under GH_HOST`, (t) => {
+  const f = fixture(t);
+  f.rows[0].body = "Pending feedback ".repeat(100);
+  f.update({ metadata: { 4: { state: "CLOSED" } }, body: "Fixes #4" });
+  f.run("PostToolUse", "gh issue view 4");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
+  writeFileSync(f.calls, "");
+  assert.equal(f.run("UserPromptSubmit"), null);
+  assert.equal(readFileSync(f.calls, "utf8"), "");
+  f.run("PostToolUse", `${prefix}gh api https://api.github.com/repos/shawrylk/example/issues/4/comments --paginate`, "comment-watch.mjs", "session-a", "", tool_name);
+  assert.equal(f.run("UserPromptSubmit"), null);
+  assert.match(readFileSync(f.calls, "utf8"), /item_4:/);
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+});
+
 test("PowerShell detects explicit repositories, body files, and commit references", (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-comment-detection-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
