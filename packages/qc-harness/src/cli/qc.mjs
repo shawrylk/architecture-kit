@@ -59,6 +59,8 @@ const USAGE = `qc — architecture gates
   qc codex status         print whether Codex is free or limited, with the expiry time and its source
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
+  qc gate <pr-create|pr-ready|merge|command> [--cwd <dir>] --session <id> --role <role> -- <args...>
+                           evaluate shared workflow decisions without running the action; command takes one shell string
   qc fleet init --self <id> --nodes <id:weight:size,...> [--force]
   qc fleet next [--repo <o/r>] [--all]
   qc fleet status [--repo <o/r>]
@@ -101,6 +103,11 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "gate") {
+    const { runGate } = await import("./gate.mjs");
+    process.exitCode = await runGate(rest);
+    return;
+  }
   if (command === "platform-risk") {
     const { runPlatformRisk } = await import("./platform-risk.mjs");
     process.exitCode = runPlatformRisk(process.cwd(), rest);
