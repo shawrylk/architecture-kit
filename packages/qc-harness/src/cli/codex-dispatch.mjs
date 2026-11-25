@@ -1,6 +1,7 @@
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dispatchDefaults, reviewDefaults } from "../config.mjs";
 import { branchAt } from "./git-read.mjs";
@@ -50,7 +51,16 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
   const dead = () => !child || spawnFailed || child.exitCode !== null && child.exitCode !== undefined || child?.signalCode != null;
   const stopCall = event => ({ ...call, hook_event_name: event, agent_transcript_path: projection && path.join(projection, "brief.jsonl"),
     tool_name: "SubagentHandback", tool_input: { message: report }, last_assistant_message: report });
-  const validateReport = () => { check(reportDecision(stopCall("PreToolUse"), tmp)); check(planDecision(stopCall("PreToolUse"), tmp)); };
+  const policyUnchanged = () => {
+    try {
+      if (isDeepStrictEqual(workflowAt(input.worktree), workflow)) return;
+    } catch { /* Unavailable policy fails closed without exposing config contents. */ }
+    fail("Workflow policy changed during worker lifecycle");
+  };
+  const validateReport = () => {
+    policyUnchanged();
+    check(reportDecision(stopCall("PreToolUse"), tmp)); check(planDecision(stopCall("PreToolUse"), tmp));
+  };
   const admitted = native => {
     if (state !== "running") fail();
     const proof = runtime.validate(handle, native);
@@ -105,6 +115,7 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
       if (state !== "new") fail();
       state = "starting";
       try {
+        policyUnchanged();
         if (branchAt(input.worktree) !== input.branch) fail("Worker branch mismatch");
         const checkpoint = checkpointRefusal({ cwd: call.cwd, session_id: call.session_id });
         if (checkpoint) fail(checkpoint);

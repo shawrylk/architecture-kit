@@ -145,6 +145,54 @@ test("review verdicts and planner reports use the shared validation", async t =>
   }
 });
 
+test("admitted lifecycle policy cannot be disabled before handback or finish", async t => {
+  for (const role of ["implementer", "reviewer", "branch-reviewer", "planner"]) {
+    for (const stage of ["handback", "finish"]) {
+      const f = fixture(t, role), b = f.bridge();
+      await b.start(() => f.child);
+      if (stage === "finish") {
+        const file = path.join(f.root, "plan.md");
+        writeFileSync(file, "# Plan\n### Task 1: One\n- Create: `a.mjs`\n**Estimate:** 20 tool calls\n- [ ] **Step 1: Write the failing test**\n- [ ] **Step 2: Commit**\n");
+        const message = role === "planner" ? `PLAN: ${file}` : role === "implementer" ? report :
+          `VERDICT: APPROVED ${f.head}\nRED-CHECKED: observed failure`;
+        b.handback(native, message);
+      }
+      writeFileSync(path.join(f.root, "qc.config.json"), "{}");
+      if (stage === "handback") {
+        assert.throws(() => b.handback(native, "done"), /policy.*changed/i);
+        await b.cancel();
+      } else {
+        f.exit();
+        const result = await b.finish();
+        assert.equal(result.accepted, false);
+        assert.match(result.notes.join("\n"), /policy.*changed/i);
+      }
+      assert.equal(f.slots(), 0);
+      assert.equal(f.records().filter(r => ["stop", "verdict"].includes(r.type)).length, 0);
+    }
+  }
+});
+
+test("unreadable or invalid lifecycle policy fails closed without reflecting config contents", async t => {
+  for (const mutation of ["missing", "directory", "invalid"]) {
+    const f = fixture(t), b = f.bridge();
+    await b.start(() => f.child);
+    b.handback(native, report);
+    const config = path.join(f.root, "qc.config.json");
+    rmSync(config);
+    if (mutation === "directory") mkdirSync(config);
+    if (mutation === "invalid") writeFileSync(config, JSON.stringify({ swarm: { dispatch: {}, review: { maxTaskCalls: "private-config-value" } } }));
+    assert.throws(() => b.handback(native, report), /^Error: Workflow policy changed during worker lifecycle$/);
+    // A rejected replacement must also clear the earlier valid handback.
+    rmSync(config, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    writeFileSync(config, JSON.stringify({ swarm: { dispatch: { implementerSlots: 1 } } }));
+    f.exit();
+    assert.equal((await b.finish()).accepted, false);
+    assert.equal(f.slots(), 0);
+    assert.equal(f.records().filter(r => r.type === "stop").length, 0);
+  }
+});
+
 test("disabled shared guards retain opt-in behavior and native cost stays unknown", async t => {
   const f = fixture(t);
   writeFileSync(path.join(f.root, "qc.config.json"), "{}");
