@@ -101,7 +101,7 @@ test("missing identity, command, result, and unsupported wire shapes never dispa
   const variants = [null, [], {}, ...["cwd", "session_id", "turn_id", "tool_use_id"].map(key => ({ ...event, [key]: " " })),
     { ...event, cwd: "relative" }, { ...event, cwd: path.join(event.cwd, "missing") },
     { ...event, agent_id: "child", agent_type: "default" }, { ...event, agent_type: "worker" },
-    ...["exec_command", "shell", "shell_command", "PowerShell", "apply_patch"].map(tool_name => ({ ...event, tool_name })),
+    ...["exec_command", "shell", "shell_command", "PowerShell"].map(tool_name => ({ ...event, tool_name })),
     ...["Stop", "PostToolUseFailure", "PermissionRequest"].map(hook_event_name => ({ ...event, hook_event_name })),
     ...[{}, { command: ["echo", "ok"] }, { cmd: "echo ok" }, { command: " " }].map(tool_input => ({ ...event, tool_input })),
     { ...event, hook_event_name: "PostToolUse" }, { ...event, hook_event_name: "PostToolUse", tool_response: { exit_code: 1 } }];
@@ -132,6 +132,14 @@ test("CLI blocks evaluation/read errors and emits only native decision or contex
 });
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
+test("pinned apply_patch command and string result retain event and explicit worker identity", (t) => {
+  const event = wire(workspace(t), "*** Begin Patch\n*** End Patch", { tool_name: "apply_patch",
+    agent_id: "native-child", agent_type: "default", hook_event_name: "PostToolUse", tool_response: "Success." });
+  const call = normalizeCodexHook(event, { role: "implementer" });
+  assert.equal(call.hook_event_name, "PostToolUse"); assert.equal(call.tool_name, "apply_patch");
+  assert.equal(call.agent_id, "native-child"); assert.equal(call.agent_type, "implementer");
+  assert.deepEqual(call.tool_input, event.tool_input); assert.equal(call.tool_response, "Success.");
+});
 test("Codex hook CLI fails closed on malformed JSON and unsupported events", () => {
   for (const input of ["{", "null", "[]", JSON.stringify({ hook_event_name: "Stop" })]) {
     const result = spawnSync(process.execPath, [qc, "codex-hook", "--role", "leader"], { input, encoding: "utf8" });

@@ -4,6 +4,7 @@ import path from "node:path";
 import { decide as commandGuard } from "./bash-command-guard.mjs";
 import { decidePr } from "./pr-guard.mjs";
 import { decide as mergeGuard } from "./merge-guard.mjs";
+import { decideCodexEdit } from "./codex-edit-hook.mjs";
 
 const ROLES = new Set(["leader", "worker", "implementer", "reviewer"]);
 const text = (value) => typeof value === "string" && value.trim().length > 0;
@@ -25,14 +26,14 @@ export function normalizeCodexHook(input, { role } = {}) {
   if (role === "leader" ? input.agent_id !== undefined || input.agent_type !== undefined : !text(input.agent_id) || !text(input.agent_type)) {
     fail("role conflicts with native subagent identity");
   }
-  if (input.tool_name !== "Bash" || !object(input.tool_input) || !text(input.tool_input.command)) fail("unsupported tool or command representation; expected Bash tool_input.command string");
+  if (!["Bash", "apply_patch"].includes(input.tool_name) || !object(input.tool_input) || !text(input.tool_input.command)) fail("unsupported tool or command representation; expected tool_input.command string");
   const post = input.hook_event_name === "PostToolUse";
-  if (post && typeof input.tool_response !== "string") fail("expected the pinned Bash output string");
+  if (post && typeof input.tool_response !== "string") fail("expected the pinned tool output string");
   return {
     cwd: input.cwd, session_id: input.session_id, agent_type: role,
     ...(role === "leader" ? {} : { agent_id: input.agent_id }),
-    hook_event_name: post ? "PostToolUseFailure" : "PreToolUse",
-    tool_name: "Bash", tool_input: input.tool_input,
+    hook_event_name: post ? (input.tool_name === "Bash" ? "PostToolUseFailure" : "PostToolUse") : "PreToolUse",
+    tool_name: input.tool_name, tool_input: input.tool_input,
     ...(post ? { tool_response: input.tool_response } : {}),
   };
 }
@@ -40,6 +41,7 @@ export function normalizeCodexHook(input, { role } = {}) {
 /** Reuse Claude decisions; an opaque post result cannot acknowledge comments or establish a pending merge. */
 export async function decideCodexHook(input, options, dependencies = {}) {
   const call = normalizeCodexHook(input, options);
+  if (call.tool_name === "apply_patch") return decideCodexEdit(call, dependencies);
   if (call.hook_event_name === "PostToolUseFailure") {
     const result = await mergeGuard(call, dependencies);
     return { ...result, hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: GAP } };
