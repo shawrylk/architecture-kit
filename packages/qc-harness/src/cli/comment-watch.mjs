@@ -415,8 +415,9 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           const changed = info.updatedAt !== item.updatedAt;
           const fresh = changed ? await unseen(item, gh, state)
             : [...item.pending.values()].filter(pending => pending.row && !item.seen.has(pending.stamp)).map(({ row, stamp }) => ({ row, stamp }));
-          lines.push(...fresh.filter(({ stamp }) => !item.shown.has(stamp) && (event !== "Poll" || !item.polled.has(stamp))).map(({ row }) => describe(item, row)));
-          recordPreview(state, item, fresh, event === "UserPromptSubmit", event === "Poll");
+          const previews = event === "Poll" ? fresh.filter(({ stamp }) => !item.polled.has(stamp)) : fresh;
+          lines.push(...previews.filter(({ stamp }) => !item.shown.has(stamp)).map(({ row }) => describe(item, row)));
+          recordPreview(state, item, previews, event === "UserPromptSubmit", event === "Poll");
           if (changed) state.append({ repo: item.repo, number: item.number, kind: item.kind, updatedAt: info.updatedAt });
           if (["CLOSED", "MERGED"].includes(info.state)) state.append({ retired: itemKey(item) });
         } catch (error) {

@@ -220,6 +220,22 @@ test("CLI polling matches Stop previews and shares Claude's session ledger witho
   assert.equal(f.poll(), null);
 });
 
+test("unchanged CLI polls leave the shared session ledger unchanged", (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 4");
+  assert.match(f.poll().systemMessage, /Comment 1/);
+  const ledgerPath = path.join(f.cwd, ".git", "qc", `comment-watch-${createHash("sha256").update("session-a").digest("hex")}.jsonl`);
+  const ledger = readFileSync(ledgerPath);
+  for (let repeat = 0; repeat < 3; repeat++) {
+    assert.equal(f.poll(), null);
+    assert.deepEqual(readFileSync(ledgerPath), ledger);
+  }
+  f.rows[0].body = "Edited feedback";
+  f.update();
+  assert.match(f.poll().systemMessage, /Edited feedback/);
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Edited feedback/);
+});
+
 test("CLI polls retry failed reads, redact errors, and fetch edits without posting", (t) => {
   const f = fixture(t);
   f.run("PostToolUse", "gh issue view 4");
