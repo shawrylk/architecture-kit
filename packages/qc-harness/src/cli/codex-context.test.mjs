@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { normalizeCodexContext } from "./codex-context.mjs";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -62,6 +62,48 @@ test("native worker budgets persist across CLI processes, deduplicate calls and 
   assert.equal(f.run({ tool_use_id: "missing" }).hookSpecificOutput.permissionDecision, "deny");
   assert.deepEqual(f.run({ tool_use_id: "handoff", tool_input: { command: "git status" } }), {});
   assert.equal(f.states()[0].policy.budgetClosed, true);
+});
+
+test("canonical native patch preserves the handoff exception at the persistent threshold", (t) => {
+  const f = runtime(t);
+  f.save(150000);
+  const command = `*** Begin Patch\n*** Add File: ${path.join(f.home, "handoffs", "next.md")}\n+resume\n*** End Patch`;
+  assert.deepEqual(f.run({ tool_name: "apply_patch", tool_input: { command } }), {});
+  assert.equal(f.states()[0].policy.budgetClosed, true);
+});
+
+test("closed native worker admits only whole handoff patches across processes without usage", (t) => {
+  const f = runtime(t), note = path.join(f.home, "handoffs", "next.md"), source = path.join(f.home, "src", "code.mjs");
+  mkdirSync(path.dirname(note)); mkdirSync(path.dirname(source));
+  writeFileSync(note, "old\n"); writeFileSync(source, "old\n");
+  symlinkSync(path.dirname(source), path.join(f.home, "handoffs", "alias"), process.platform === "win32" ? "junction" : "dir");
+  const patch = (...lines) => ["*** Begin Patch", ...lines, "*** End Patch"].join("\n");
+  f.save(150000);
+  assert.equal(f.run().hookSpecificOutput.permissionDecision, "deny");
+  const root = f.states()[0].root;
+  rmSync(f.file);
+  let index = 0;
+  const run = (command, extra = {}) => f.run({ tool_use_id: `patch_${index++}`, tool_name: "apply_patch", tool_input: { command }, ...extra });
+  for (const command of [patch("*** Add File: handoffs/fresh.md", "+resume"),
+    patch("*** Update File: handoffs/next.md", "@@", "-old", "+resume")]) assert.deepEqual(run(command), {});
+  for (const command of [
+    patch("*** Update File: src/code.mjs", "@@", "-old", "+new"),
+    patch("*** Add File: handoffs/a.md", "+a", "*** Delete File: src/code.mjs"),
+    patch("*** Update File: src/code.mjs", "*** Move to: handoffs/moved.md", "@@", "-old", "+new"),
+    patch("*** Update File: handoffs/next.md", "*** Move to: src/moved.mjs", "@@", "-old", "+new"),
+    patch("*** Add File: handoffs/../src/new.mjs", "+x"),
+    patch("*** Add File: handoffs/alias/new/deep.mjs", "+x"),
+    patch("*** Add File: handoffs/a.md", "+a", "*** Surprise"), [], { patch: "x" },
+  ]) assert.equal(run(command).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(run(undefined, { tool_input: { patch: "x" } }).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(run(undefined, { tool_name: "NotebookEdit", tool_input: { file_path: note } }).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(run("echo x > src/code.mjs", { tool_name: "Bash" }).hookSpecificOutput.permissionDecision, "deny");
+  for (const command of ["git status", "cat handoffs/next.md", "git commit -m handoff", "git push"]) {
+    assert.deepEqual(run(command, { tool_name: "Bash" }), {});
+  }
+  assert.equal(f.states()[0].policy.budgetClosed, true);
+  assert.equal(f.states()[0].root, root);
+  assert.equal(readFileSync(source, "utf8"), "old\n");
 });
 
 test("worker policy survives config edits before closure and while handing off without usage", (t) => {

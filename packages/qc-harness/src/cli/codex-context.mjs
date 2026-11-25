@@ -7,6 +7,7 @@ import { load } from "../config.mjs";
 import { writeState } from "./budget-counter.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
+import { codexBudgetCall } from "./codex-budget-call.mjs";
 import { decideCodexBudget } from "./context-watch.mjs";
 
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -81,7 +82,7 @@ export async function decideCodexContext(input, { role, codexHome = process.env.
     const sample = readCodexUsage(call, { role, codexHome, now, previous: state.cursor });
     if (sample && state.root !== undefined && state.root !== hash(sample.rootSessionId)) throw new Error();
     if (sample) { state.cursor = sample.cursor; state.root = hash(sample.rootSessionId); }
-    const verdict = role === "leader" ? null : decideCodexBudget(call, {
+    const verdict = role === "leader" ? null : decideCodexBudget(codexBudgetCall(call), {
       usage: sample?.usage, config: { budgets: { [role]: state.budget } }, count: state.count, state: state.policy,
     });
     let result = verdict;
