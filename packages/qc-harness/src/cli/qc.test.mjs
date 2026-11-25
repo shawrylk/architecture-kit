@@ -8,6 +8,20 @@ import { fileURLToPath } from "node:url";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test("codex-hook CLI advertises its pinned boundary and emits native denial before action", () => {
+  const help = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
+  assert.match(help.stdout, /qc codex-hook --role <role>/);
+  assert.match(help.stdout, /0\.172\.0.*Bash.*PreToolUse.*PostToolUse/);
+  const input = JSON.stringify({ session_id: "stable", turn_id: "turn", tool_use_id: "call", cwd: process.cwd(),
+    hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "git -c core.hooksPath=/dev/null status" } });
+  const result = spawnSync(process.execPath, [qc, "codex-hook", "--role", "leader"], { input, encoding: "utf8" });
+  assert.equal(result.status, 0);
+  assert.equal(JSON.parse(result.stdout).hookSpecificOutput.permissionDecision, "deny");
+  const invalid = spawnSync(process.execPath, [qc, "codex-hook", "--role", "leader", "--extra"], { input, encoding: "utf8" });
+  assert.equal(invalid.status, 2);
+  assert.match(invalid.stderr, /usage: qc codex-hook/);
+});
+
 test("comment-watch help requires explicit poll, checkout, and session inputs", (t) => {
   const root = fixture(t, "{}");
   const run = (args) => spawnSync(process.execPath, [qc, ...args], { cwd: root, encoding: "utf8" });

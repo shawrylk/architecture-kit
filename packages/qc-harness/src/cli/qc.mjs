@@ -59,6 +59,8 @@ const USAGE = `qc — architecture gates
   qc codex status         print whether Codex is free or limited, with the expiry time and its source
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
+  qc codex-hook --role <role>
+                           Codex 0.172.0 Bash PreToolUse/PostToolUse JSON on stdin; post exit status unavailable; no registration
   qc gate <pr-create|pr-ready|merge|command> [--cwd <dir>] --session <id> --role <role> -- <args...>
                            evaluate shared workflow decisions without running the action; command takes one shell string
   qc comment-watch --poll --cwd <dir> --session <id>
@@ -105,6 +107,11 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "codex-hook") {
+    const { runCodexHook } = await import("./codex-hook.mjs");
+    process.exitCode = await runCodexHook(rest);
+    return;
+  }
   if (command === "comment-watch") {
     const { runCommentWatch } = await import("./comment-watch.mjs");
     process.exitCode = await runCommentWatch(rest);
