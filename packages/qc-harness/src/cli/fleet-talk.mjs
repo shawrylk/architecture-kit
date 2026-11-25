@@ -4,8 +4,28 @@ import { flushOutbox, sendMessage } from "./fleet-node.mjs";
 import { livePeer, readState, writeState } from "./fleet-state.mjs";
 import { roleComment } from "./role-line.mjs";
 
-export const TALK_VERBS = ["plan", "ask", "say", "approve", "answer", "show"];
+export const TALK_VERBS = ["plan", "ask", "say", "approve", "answer", "show", "ack"];
+export const TALK_KINDS = ["plan", "question", "say", "approve", "answer"];
 const validText = text => typeof text === "string" && text.length <= 20000;
+
+export function findTalk(root, id) {
+  return [...readState(root, "queue"), ...Object.values(readState(root, "plans")), ...Object.values(readState(root, "answers")), ...Object.values(readState(root, "said"))]
+    .find(message => message.id === id && TALK_KINDS.includes(message.kind));
+}
+
+/** Receipts use the normal signed transport and retry queue, but never receive receipts. */
+export function queueReceipt(root, fleet, original, state, note = "") {
+  if (!TALK_KINDS.includes(original.kind)) return;
+  const message = createMessage({ from: fleet.self, repo: original.repo, kind: "receipt", body: { message: original.id, state, note } }, fleet.secret);
+  const { sig: _sig, time: _time, ...fields } = message;
+  writeState(root, "outbox", [...readState(root, "outbox"), { node: original.from, message: fields, attempts: 0, nextAttempt: 0 }]);
+}
+
+function recordSent(root, node, message) {
+  const sent = readState(root, "sent");
+  Object.defineProperty(sent, message.id, { value: { node, repo: message.repo, time: message.time, state: "sent" }, enumerable: true });
+  writeState(root, "sent", sent);
+}
 
 function requestError(message, assignments, fleet) {
   const { issue, epoch, text } = message.body ?? {};
@@ -24,11 +44,11 @@ export function parseTalkArgs(verb, rest) {
   const options = { verb, target };
   for (let i = 0; i < flags.length; i++) {
     const flag = flags[i];
-    if (!(flag === "--file" && verb !== "show") && !(flag === "--changes" && verb === "approve")) throw new Error(`unknown argument ${flag}`);
+    if (!(flag === "--file" && !["show", "ack"].includes(verb)) && !(flag === "--changes" && verb === "approve") && !(flag === "--note" && verb === "ack")) throw new Error(`unknown argument ${flag}`);
     if (Object.hasOwn(options, flag)) throw new Error(`duplicate argument ${flag}`);
     if (flag === "--changes") options[flag] = true;
     else {
-      if (!flags[i + 1] || flags[i + 1].startsWith("--")) throw new Error("--file needs a value");
+      if (!flags[i + 1] || flags[i + 1].startsWith("--")) throw new Error(`${flag} needs a value`);
       options[flag] = flags[++i];
     }
   }
@@ -50,6 +70,17 @@ export function receiveTalk(root, fleet, leader, now) {
   const inbox = readState(root, "inbox");
   let changed = false, savedPlan = false, savedAnswer = false, savedSay = false;
   for (const message of queue) {
+    if (message.kind === "receipt") {
+      changed = true;
+      const { message: id, state, note = "" } = message.body ?? {}, sent = readState(root, "sent");
+      const entry = typeof id === "string" && Object.hasOwn(sent, id) ? sent[id] : null;
+      const states = ["sent", "delivered", "read", "done"];
+      if (entry?.node === message.from && entry.repo === message.repo && ["delivered", "read", "done"].includes(state) && validText(note) && states.indexOf(state) > states.indexOf(entry.state)) {
+        sent[id] = { ...entry, state, note };
+        writeState(root, "sent", sent);
+      }
+      continue;
+    }
     if (message.kind === "say") {
       changed = true;
       if (!validText(message.body?.text)) continue;
@@ -80,7 +111,7 @@ export function receiveTalk(root, fleet, leader, now) {
       Object.defineProperty(answers, body.question, { value: message, enumerable: true, writable: true, configurable: true });
       savedAnswer = true;
     }
-    if (reply) inbox.push({ id: message.id, kind: message.kind, repo: message.repo, issue, time: message.time });
+    if (reply) inbox.push({ id: message.id, kind: message.kind, from: message.from, repo: message.repo, issue, time: message.time });
   }
   if (savedPlan) writeState(root, "plans", plans);
   if (savedAnswer) writeState(root, "answers", answers);
@@ -101,6 +132,16 @@ export function receiveTalk(root, fleet, leader, now) {
 
 export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }) {
   const { verb, target } = options;
+  if (verb === "ack") {
+    const message = findTalk(root, target), note = options["--note"] ?? "";
+    if (!message || message.repo !== repo) throw new Error(`message not found: ${target}`);
+    if (!validText(note)) throw new Error("text must be at most 20000 characters");
+    if (!fleet.nodes.some(peer => peer.id === message.from && peer.address)) throw new Error("recipient needs a fleet address");
+    queueReceipt(root, fleet, message, "done", note);
+    await flushOutbox({ ...node, root, fleet });
+    say(`done ${target}`);
+    return 0;
+  }
   if (verb === "show") {
     const message = [...readState(root, "queue"), ...Object.values(readState(root, "plans")), ...Object.values(readState(root, "answers")), ...Object.values(readState(root, "said"))].find(message => message.id === target);
     if (!message) throw new Error(`message not found: ${target}`);
@@ -149,6 +190,7 @@ export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }
   if (!recipient?.address) throw new Error("recipient needs a fleet address");
   const message = createMessage({ from: fleet.self, repo, kind, body }, fleet.secret);
   if (request || direct) {
+    recordSent(root, recipient.id, message);
     const { sig: _sig, time: _time, ...fields } = message;
     writeState(root, "outbox", [...readState(root, "outbox"), { node: recipient.id, message: fields, attempts: 0, nextAttempt: (node.clock ?? Date.now)() }]);
     await flushOutbox({ ...node, root, fleet });
@@ -157,7 +199,10 @@ export async function runTalk(options, { root, fleet, repo, gh, say, node = {} }
     const result = gh(["issue", "comment", String(body.issue), "--repo", repo, "--body", roleComment({ ...comment, node: fleet.self, ref: `#${body.issue}` }, { secret: fleet.secret })], { cwd: root });
     if (result == null) throw new Error("gh issue comment failed");
   }
-  if (!request && !direct) await sendMessage({ ...node, root, fleet, node: recipient, message });
+  if (!request && !direct) {
+    recordSent(root, recipient.id, message);
+    await sendMessage({ ...node, root, fleet, node: recipient, message });
+  }
   if (queued) writeState(root, "queue", readState(root, "queue").filter(message => message.id !== target));
   say(`${kind} ${message.id}`);
   return 0;

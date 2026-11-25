@@ -1,4 +1,5 @@
 import { createMessage, verifyMessage } from "./fleet-message.mjs";
+import { queueReceipt } from "./fleet-talk.mjs";
 import { parseMarker, roleComment } from "./role-line.mjs";
 import { parsePages, runGh } from "./gh-run.mjs";
 import { highestTerm, validTerm, pruneSeen, readState, writeState } from "./fleet-state.mjs";
@@ -32,6 +33,7 @@ export function receiveMessage({ root, fleet, message, clock = Date.now }) {
   }
   // No await between verification and persistence: requests cannot race the saved IDs.
   if (message.kind !== "heartbeat") writeState(root, "queue", [...readState(root, "queue"), message]);
+  queueReceipt(root, fleet, message, "delivered");
   writeState(root, "seen", seen);
   if (message.kind === "heartbeat") {
     const election = readState(root, "election"), node = readState(root, "node");

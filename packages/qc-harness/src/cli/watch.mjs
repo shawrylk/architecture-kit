@@ -2,6 +2,8 @@
 // The wait is a shell command, so it costs no model tokens, and its exit is the event.
 
 import { readState, stateDir, writeState } from "./fleet-state.mjs";
+import { fleetPath, validateFleet } from "./fleet.mjs";
+import { findTalk, queueReceipt, TALK_KINDS } from "./fleet-talk.mjs";
 import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import path from "node:path";
 import { parseApiList, runGhResult } from "./gh-run.mjs";
@@ -201,7 +203,7 @@ const realSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * @param deps `gh` returns stdout, null, or throws; `say`, `warn`, `now` and `sleep` replace the output and the clock, for a test.
  * @returns the exit code: 0 an item finished well, 4 the bound passed, 5 a check or run failed, 6 a job stayed queued.
  */
-export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep, requiredChecks, cwd = process.cwd() } = {}) {
+export async function runWatch(argv, { gh = readGh, say = console.log, warn = console.error, now = Date.now, sleep = realSleep, requiredChecks, cwd = process.cwd(), env = process.env } = {}) {
   const started = now();
   let parsed;
   try {
@@ -266,6 +268,13 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
             if (Object.hasOwn(watched, message.id)) continue;
             Object.defineProperty(watched, message.id, { value: true, enumerable: true, configurable: true });
             say(`EVENT fleet:${message.kind} ${message.kind === "say" ? `${message.from} ${message.id}` : message.detail ?? message.term ?? message.id}`);
+            const original = message.from && message.repo ? message : findTalk(cwd, message.id);
+            if (original?.from && original.repo && TALK_KINDS.includes(original.kind)) {
+              let text;
+              try { text = readFileSync(fleetPath(env), "utf8"); }
+              catch (error) { if (error.code !== "ENOENT") throw error; }
+              if (text) queueReceipt(cwd, validateFleet(JSON.parse(text)), original, "read");
+            }
           }
           writeState(cwd, "watched", watched);
           return EXIT.PASSED;

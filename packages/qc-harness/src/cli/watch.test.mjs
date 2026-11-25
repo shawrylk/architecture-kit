@@ -500,7 +500,7 @@ test("regression: follower watch keeps two approvals and answers accepted betwee
     ].map(message => ({ ...message, repo: "o/r", from: "b", time }));
     writeState(root, "queue", messages);
     receiveTalk(root, fleet, false, Date.parse(time));
-    events.push(...messages.map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
+    events.push(...messages.map(({ id, kind, from, repo, body: { issue }, time }) => ({ id, kind, from, repo, issue, time })));
   }
   const lines = [];
   const deps = { cwd: root, say: line => lines.push(line) };
@@ -663,4 +663,28 @@ test("the fleet command documents startup, monitoring, pairing decisions, and se
   assert.match(command, /Never print the secret/);
   const readme = readFileSync(new URL("../../../../README.md", import.meta.url), "utf8");
   assert.match(readme, /`\/fleet start` runs the fleet from Claude/);
+});
+
+test("fleet read receipt is queued after print and only once", async t => {
+  const { readState, writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-read-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const file = path.join(root, "fleet.json");
+  writeFileSync(file, JSON.stringify({ self: "a", secret: "ab".repeat(32), nodes: [
+    { id: "a", weight: 1, address: "localhost" }, { id: "b", weight: 1, address: "localhost" },
+  ] }));
+  writeState(root, "inbox", [{ id: "task", kind: "say", from: "b", repo: "o/r" }]);
+  let printed = false;
+  let clock = 0;
+  const deps = { cwd: root, env: { QC_FLEET_FILE: file }, now: () => clock, sleep: async () => { clock += 60_000; },
+    say: line => { if (line.startsWith("EVENT fleet:")) { assert.deepEqual(readState(root, "outbox"), []); printed = true; } } };
+  assert.equal(await runWatch(["--fleet"], deps), 0);
+  assert.equal(printed, true);
+  const [entry] = readState(root, "outbox");
+  assert.equal(entry.node, "b");
+  assert.equal(entry.message.kind, "receipt");
+  assert.deepEqual(entry.message.body, { message: "task", state: "read", note: "" });
+  assert.equal(await runWatch(["--fleet", "--max", "1"], deps), 4);
+  assert.equal(readState(root, "outbox").length, 1);
 });

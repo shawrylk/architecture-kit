@@ -227,7 +227,7 @@ test("say works peer to Leader and Leader to peer, persists text, and watch/show
   for (const [sender, receiver, target] of [[peer, leader, "leader"], [leader, peer, "a"]]) {
     writeFileSync(sender.file, "Hello from " + sender.fleet.self);
     assert.equal(await sender.run(["say", target, "--file", sender.file], { node: deliverTo(receiver) }), 0, sender.errors.join("\n"));
-    const [message] = readState(receiver.root, "queue");
+    const message = readState(receiver.root, "queue").find(message => message.kind === "say");
     assert.equal(message.kind, "say");
     assert.deepEqual(message.body, { text: "Hello from " + sender.fleet.self });
     receiveTalk(receiver.root, receiver.fleet, receiver === leader, Date.now());
@@ -324,4 +324,62 @@ test("all talk messages enforce the 20000-character text limit on send and recei
       assert.equal(saved.length, length === 20000 ? 1 : 0, `${kind} text length ${length}`);
     }
   }
+});
+
+test("receipt moves sent to delivered; read and done update state without regression", async t => {
+  const sender = fixture(t), receiver = fixture(t, true, "b");
+  assert.equal(await sender.run(["say", "b", "--file", sender.file], { node: deliverTo(receiver) }), 0);
+  const [message] = readState(receiver.root, "queue");
+  assert.equal(readState(sender.root, "sent")[message.id].state, "sent");
+  assert.equal(readState(sender.root, "sent")[message.id].node, "b");
+  await flushOutbox({ root: receiver.root, fleet: receiver.fleet, ...deliverTo(sender) });
+  receiveTalk(sender.root, sender.fleet, false, Date.now());
+  assert.equal(readState(sender.root, "sent")[message.id].state, "delivered");
+  for (const state of ["read", "done", "delivered"]) {
+    const receipt = createMessage({ from: "b", repo: "o/r", kind: "receipt", body: { message: message.id, state, note: "handled" } }, sender.fleet.secret);
+    assert.equal(receiveMessage({ root: sender.root, fleet: sender.fleet, message: receipt }).ok, true);
+    receiveTalk(sender.root, sender.fleet, false, Date.now());
+    assert.equal(readState(sender.root, "sent")[message.id].state, state === "delivered" ? "done" : state);
+  }
+  assert.equal(readState(sender.root, "sent")[message.id].note, "handled");
+});
+
+test("a receipt is never receipted and unsigned receipts are dropped", t => {
+  const f = fixture(t);
+  const receipt = createMessage({ from: "b", repo: "o/r", kind: "receipt", body: { message: "original", state: "read" } }, f.fleet.secret);
+  const { sig: _sig, ...unsigned } = receipt;
+  assert.equal(receiveMessage({ root: f.root, fleet: f.fleet, message: unsigned }).reason, "bad-signature");
+  assert.deepEqual(readState(f.root, "queue"), []);
+  assert.equal(receiveMessage({ root: f.root, fleet: f.fleet, message: receipt }).ok, true);
+  receiveTalk(f.root, f.fleet, false, Date.now());
+  assert.deepEqual(readState(f.root, "queue"), []);
+  assert.deepEqual(readState(f.root, "outbox"), []);
+});
+
+test("receipts bind to the recipient and repository and validate state and note", async t => {
+  const f = fixture(t);
+  await f.run(["say", "b", "--file", f.file]);
+  const id = f.sent[0].id;
+  for (const fields of [{ from: "a" }, { repo: "x/y" }, { body: { state: "sent" } }, { body: { state: "done", note: "x".repeat(20001) } }]) {
+    const message = createMessage({ from: "b", repo: "o/r", kind: "receipt", ...fields,
+      body: { message: id, state: "done", ...fields.body } }, f.fleet.secret);
+    receiveMessage({ root: f.root, fleet: f.fleet, message });
+    receiveTalk(f.root, f.fleet, false, Date.now());
+    assert.equal(readState(f.root, "sent")[id].state, "sent");
+  }
+});
+
+test("ack sends done with an optional bounded note for a stored message", async t => {
+  const f = fixture(t);
+  const message = createMessage({ from: "b", repo: "o/r", kind: "say", body: { text: "task" } }, f.fleet.secret);
+  receiveMessage({ root: f.root, fleet: f.fleet, message });
+  receiveTalk(f.root, f.fleet, false, Date.now());
+  assert.equal(await f.run(["ack", message.id, "--note", "finished"]), 0, f.errors.join("\n"));
+  assert.deepEqual(f.sent.at(-1).body, { message: message.id, state: "done", note: "finished" });
+  assert.equal(f.sent.at(-1).kind, "receipt");
+  assert.equal(await f.run(["ack", message.id]), 0);
+  assert.equal(await f.run(["ack", "missing"]), 1);
+  assert.equal(await f.run(["ack", message.id, "--note", "x".repeat(20001)]), 1);
+  assert.equal(await f.run(["ack", message.id, "--file", f.file]), 1);
+  assert.equal(f.comments.length, 0);
 });

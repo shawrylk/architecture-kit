@@ -257,9 +257,12 @@ test("node:http client sends to the server and queues network failure", async t 
   const first = message();
   assert.equal(await sendMessage({ root, fleet, node, message: first, clock: () => now }), true);
   assert.deepEqual(readState(root, "queue"), [first]);
+  const [receipt] = readState(root, "outbox");
+  assert.equal(receipt.node, first.from);
+  assert.deepEqual(receipt.message.body, { message: first.id, state: "delivered", note: "" });
   await new Promise(resolve => server.close(resolve));
   assert.equal(await sendMessage({ root, fleet, node, message: message(), clock: () => now }), false);
-  assert.equal(readState(root, "outbox").length, 1);
+  assert.equal(readState(root, "outbox").length, 2);
 });
 
 function processDeps(root) {
@@ -999,7 +1002,7 @@ test("follower records replies only from claimed Leaders at the held epoch, with
   await tick();
   assert.deepEqual(readState(root, "plans"), { "o/r#7": approve });
   assert.deepEqual(readState(root, "answers"), { q1: answer });
-  assert.deepEqual(readState(root, "inbox"), [approve, answer].map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
+  assert.deepEqual(readState(root, "inbox"), [approve, answer].map(({ id, kind, from, repo, body: { issue }, time }) => ({ id, kind, from, repo, issue, time })));
   assert.deepEqual(readState(root, "queue"), []);
   const rejected = [
     message({ ...approve, id: "not-leader", from: "inactive" }),
@@ -1013,7 +1016,7 @@ test("follower records replies only from claimed Leaders at the held epoch, with
   assert.deepEqual(readState(root, "queue"), []);
   assert.deepEqual(readState(root, "plans"), { "o/r#7": approve });
   assert.deepEqual(readState(root, "answers"), { q1: answer });
-  assert.deepEqual(readState(root, "inbox"), [approve, answer].map(({ id, kind, repo, body: { issue }, time }) => ({ id, kind, repo, issue, time })));
+  assert.deepEqual(readState(root, "inbox"), [approve, answer].map(({ id, kind, from, repo, body: { issue }, time }) => ({ id, kind, from, repo, issue, time })));
 });
 
 function electionFleet(self, count = 3) {
