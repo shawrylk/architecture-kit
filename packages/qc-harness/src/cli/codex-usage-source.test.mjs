@@ -23,9 +23,62 @@ function fixture(t, worker = false) {
   save(); return { home, file, meta, usage, call, options, save, read: (extra = {}) => readCodexUsage(call, { ...options, ...extra }) };
 }
 
-test("unavailable native usage stays unknown without transcript fallback", () => {
+test("unavailable native usage stays unknown without transcript fallback", (t) => {
+  const f = fixture(t);
+  rmSync(f.file);
+  writeFileSync(path.join(f.home, "claude-transcript.jsonl"), line("token_usage_record", f.usage));
+  assert.equal(f.read(), null);
   assert.equal(readCodexUsage({}), null);
-  assert.equal(readCodexUsage({ transcript_path: "/missing/private-transcript" }), null);
+});
+
+test("external exec roots cannot supply implementer or reviewer identity", (t) => {
+  const f = fixture(t);
+  for (const role of ["implementer", "reviewer"]) {
+    assert.equal(f.read({ role }), null, role);
+    assert.equal(readCodexUsage({ ...f.call, agent_id: "thread", agent_type: "profile" }, { ...f.options, role }), null, role);
+  }
+});
+
+test("malformed or unsupported native envelopes invalidate prior verified usage", (t) => {
+  const f = fixture(t);
+  for (const [type, payload] of [
+    ["event_msg", null], ["event_msg", {}], ["event_msg", { type: "unknown_native_event" }],
+    ["event_msg", { type: "token_count", info: { last_token_usage: tokens } }],
+    ["event_msg", { type: "token_count", info: { last_token_usage: tokens, total_token_usage: tokens, model_context_window: -1 } }],
+    ["event_msg", { type: "task_started" }],
+    ["unknown_native_record", {}], ["response_item", null], ["response_item", { type: "unknown_native_item" }],
+    ["response_item", { type: "message", role: "assistant", content: null }], ["turn_context", null],
+    ["token_usage_record", null], ["compacted", null],
+  ]) {
+    f.save(line("token_usage_record", f.usage) + line(type, payload, 2));
+    assert.equal(f.read(), null, `${type}: ${JSON.stringify(payload)}`);
+  }
+});
+
+test("incomplete token usage records cannot preserve a prior verified sample", (t) => {
+  const f = fixture(t);
+  for (const field of ["usage", "turn_token_usage", "thread_token_usage"]) {
+    for (const value of [undefined, null, {}, { ...tokens, total_tokens: -1 }]) {
+      f.save(line("token_usage_record", f.usage) + line("token_usage_record", { ...f.usage, [field]: value }, 2));
+      assert.equal(f.read(), null, `${field}: ${JSON.stringify(value)}`);
+    }
+  }
+});
+
+test("later persisted response without usage invalidates context until a new verified record", (t) => {
+  for (const worker of [false, true]) {
+    const f = fixture(t, worker), first = f.read();
+    const count = { type: "token_count", info: { last_token_usage: tokens, total_token_usage: f.usage.thread_token_usage }, rate_limits: null };
+    appendFileSync(f.file, line("event_msg", count, 2));
+    assert.ok(f.read({ previous: first.cursor }));
+    appendFileSync(f.file, line("response_item", { type: "message", role: "assistant", content: [] }, 3));
+    appendFileSync(f.file, line("event_msg", count, 4));
+    assert.equal(f.read({ previous: first.cursor }), null);
+    appendFileSync(f.file, line("token_usage_record", { ...f.usage, response_id: "later" }, 5));
+    assert.equal(normalizeUsage(f.read().usage).tokens, 400000);
+    appendFileSync(f.file, line("event_msg", { type: "token_count", info: null, rate_limits: null }, 6));
+    assert.equal(f.read(), null);
+  }
 });
 
 test("native file supplies verified usage including cache subsets once, never lifetime totals", (t) => {
@@ -80,7 +133,7 @@ test("lifecycle invalidation and sample ordering prevent reuse across compaction
   }
   f.save(line("token_usage_record", f.usage, 2) + line("token_usage_record", f.usage, 1)); assert.equal(f.read(), null);
   f.save(line("token_usage_record", f.usage, 1, now) + line("token_usage_record", f.usage, 2, now - 1)); assert.equal(f.read(), null);
-  f.save(); appendFileSync(f.file, line("response_item", { type: "private" }, 2)); const newer = f.read();
+  f.save(); appendFileSync(f.file, line("token_usage_record", { ...f.usage, response_id: "next" }, 2)); const newer = f.read();
   f.save(); assert.equal(f.read({ previous: newer.cursor }), null);
   assert.equal(f.read({ previous: { ...first.cursor, file: "another" } }), null);
   f.save(line("token_usage_record", f.usage, 1).replace('"ordinal":1,', "")); assert.equal(f.read(), null);

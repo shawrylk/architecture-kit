@@ -11,6 +11,33 @@ const whole = value => Number.isSafeInteger(value) && value >= 0;
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const fields = { inputTokens: "input_tokens", cachedInputTokens: "cached_input_tokens", outputTokens: "output_tokens", reasoningOutputTokens: "reasoning_output_tokens", totalTokens: "total_tokens" };
 const wire = value => value && Object.fromEntries(Object.entries(fields).map(([to, from]) => [to, value[from]]).concat([["cacheWriteInputTokens", value.cache_write_input_tokens === undefined ? 0 : value.cache_write_input_tokens]]));
+const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+const nativeTokens = value => object(value) && Object.values(fields).every(key => whole(value[key])) &&
+  (value.cache_write_input_tokens === undefined || whole(value.cache_write_input_tokens)) &&
+  value.cached_input_tokens <= value.input_tokens && value.reasoning_output_tokens <= value.output_tokens;
+// Durable discriminators: rust-v0.172.0 rollout/src/policy.rs:82-165; other native variants remain unsupported.
+const responses = new Set("additional_tools message agent_message reasoning local_shell_call function_call tool_search_call function_call_output tool_search_output custom_tool_call custom_tool_call_output web_search_call image_generation_call configuration_update compaction context_compaction".split(" "));
+const events = new Set("item_completed token_count thread_goal_updated thread_rolled_back turn_aborted task_started turn_started task_complete turn_complete thread_settings_applied user_message agent_message agent_reasoning agent_reasoning_raw_content entered_review_mode exited_review_mode patch_apply_end context_compacted mcp_tool_call_end web_search_end image_generation_end sub_agent_activity".split(" "));
+function envelope(row) {
+  if (!object(row) || !object(row.payload)) return false;
+  const p = row.payload;
+  switch (row.type) {
+    case "session_meta": return id(p.id) && id(p.session_id) && typeof p.cwd === "string" && p.cli_version === "0.172.0";
+    case "token_usage_record": return [p.thread_id, p.session_id, p.turn_id, p.root_turn_id, p.response_id].every(id) &&
+      [p.usage, p.turn_token_usage, p.thread_token_usage].every(nativeTokens);
+    case "response_item": return responses.has(p.type) && (p.type !== "message" || typeof p.role === "string" && Array.isArray(p.content));
+    case "turn_context": return p.turn_id == null || id(p.turn_id);
+    case "compacted": return typeof p.message === "string";
+    case "event_msg":
+      if (!events.has(p.type)) return false;
+      if (["task_started", "turn_started", "task_complete", "turn_complete"].includes(p.type)) return id(p.turn_id);
+      if (p.type !== "token_count") return true;
+      return (p.rate_limits == null || object(p.rate_limits)) && (p.info == null || object(p.info) &&
+        nativeTokens(p.info.last_token_usage) && nativeTokens(p.info.total_token_usage) &&
+        (p.info.model_context_window == null || whole(p.info.model_context_window)));
+    default: return false;
+  }
+}
 const read = (fd, start, length) => {
   const buffer = Buffer.alloc(length);
   if (readSync(fd, buffer, 0, length, start) !== length) throw new Error("incomplete source");
@@ -50,12 +77,13 @@ export function readCodexUsage(input, { role, codexHome = process.env.CODEX_HOME
     let sample = null, timestamp = 0, ordinal = -1;
     for (const raw of lines) {
       const row = JSON.parse(raw), time = Date.parse(row.timestamp), payload = row.payload;
-      if (typeof row.timestamp !== "string" || !Number.isFinite(time) || time < timestamp || time > now || !whole(row.ordinal) || row.ordinal <= ordinal) return null;
+      if (!envelope(row) || row.type === "session_meta" && row.ordinal !== first.ordinal ||
+          typeof row.timestamp !== "string" || !Number.isFinite(time) || time < timestamp || time > now || !whole(row.ordinal) || row.ordinal <= ordinal) return null;
       timestamp = time;
       ordinal = row.ordinal;
-      if (row.type === "compacted" || row.type === "turn_context" && payload?.turn_id !== call.turn_id ||
-          row.type === "event_msg" && (["context_compacted", "thread_rolled_back", "task_complete", "turn_complete", "turn_aborted"].includes(payload?.type) ||
-            ["task_started", "turn_started"].includes(payload?.type) && payload.turn_id !== call.turn_id)) sample = null;
+      // Only a well-shaped token_count may follow a sample without replacing it; it never supplies usage or refreshes its age.
+      if (row.type !== "token_usage_record" && row.type !== "session_meta" &&
+          !(row.type === "event_msg" && payload.type === "token_count" && payload.info != null)) sample = null;
       if (row.type !== "token_usage_record") continue;
       if (payload?.thread_id !== call.session_id || payload.turn_id !== call.turn_id) { sample = null; continue; }
       if (payload.session_id !== meta.session_id || !id(payload.response_id) || !id(payload.root_turn_id) ||
