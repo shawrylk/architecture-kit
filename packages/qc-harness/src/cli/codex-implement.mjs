@@ -2,7 +2,7 @@
 // after each stop until the progress file says it is done. It never calls Claude; exit 2 hands the brief back.
 
 import { execFileSync } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { scoutReportProblem } from "./codex-role-profile.mjs";
 import { createCodexDispatch } from "./codex-dispatch.mjs";
@@ -11,7 +11,7 @@ import { pinCodexNativeExecutable } from "./codex-native-executable.mjs";
 import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 import { appendRun, runLogFileOf } from "./run-log.mjs";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, lstatSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, lstatSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
@@ -494,17 +494,6 @@ function scoutActualPath(file) {
   }
 }
 
-// Owned scouts may inspect existing dirt, but neither its bytes nor staging may change.
-function ownedScoutDirt(worktree) {
-  const git = (...args) => execFileSync("git", args, { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-  const untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0").filter(Boolean).map(file => {
-    const absolute = path.join(worktree, file);
-    const bytes = lstatSync(absolute).isSymbolicLink() ? readlinkSync(absolute) : readFileSync(absolute);
-    return [file, lstatSync(absolute).mode, createHash("sha256").update(bytes).digest("hex")];
-  });
-  return JSON.stringify([scoutDirt(worktree), git("diff", "--no-ext-diff", "--no-textconv", "--binary"), git("diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary"), untracked]);
-}
-
 /** Branch: a scout is complete only with a fresh report and all six labels. */
 function completeScout(settings, started, originalStamp, message, say, announce = true) {
   try {
@@ -741,10 +730,9 @@ async function runJob(argv, {
         boundary = before;
         if (settings.role === "scout") {
           boundary.reflog = scoutReflog(settings.worktree);
-          if (settings.ownedNative) boundary.dirt = ownedScoutDirt(settings.worktree);
         }
       }
-      if (settings.role === "scout" && !settings.ownedNative && scoutDirt(settings.worktree)) return refuse("other", "guard refused: scout requires a clean worktree (tracked, staged and untracked)", 4);
+      if (settings.role === "scout" && scoutDirt(settings.worktree)) return refuse("other", "guard refused: scout requires a clean worktree (tracked, staged and untracked)", 4);
     } catch (error) {
       return refuse("other", `guard refused: cannot capture the commit boundary: ${error.message}`, settings.report ? 3 : 4);
     }
@@ -766,7 +754,7 @@ async function runJob(argv, {
     try {
       if (settings.role === "scout") {
         const after = guardRefs(settings.worktree);
-        if (after.head !== boundary.head || after.branch !== boundary.branch || scoutReflog(settings.worktree) !== boundary.reflog || (settings.ownedNative ? ownedScoutDirt(settings.worktree) !== boundary.dirt : scoutDirt(settings.worktree))) {
+        if (after.head !== boundary.head || after.branch !== boundary.branch || scoutReflog(settings.worktree) !== boundary.reflog || scoutDirt(settings.worktree)) {
           return refuse("other", "guard refused: scout changed commits or tracked, staged, or untracked worktree files", 4);
         }
       }

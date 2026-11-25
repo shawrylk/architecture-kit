@@ -73,9 +73,9 @@ test("owned native launch is per invocation and unsupported continuations fail b
   }), 4);
 });
 
-for (const mode of ["scout-worktree-link", "scout-budget", "scout-location-link", "scout-ok", "scout-dirty", "scout-dirty-change", "scout-untracked", "scout-tracked", "scout-staged", "scout-commit", "scout-reset", "scout-missing", "scout-stale", "scout-old", "scout-malformed", "scout-profile", "scout-identity", "scout-recovery", "scout-admission", "scout-marker", "scout-no-report", "scout-brief-report", "scout-location", "scout-progress-location", "scout-log-location", "scout-handback", "scout-nonzero", "scout-drift", "scout-label-Gap", "scout-label-Plan", "scout-label-Check", "scout-label-Risks", "scout-label-Questions", "scout-label-Breaking", "hook-first", "stdout-first", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify", "review-ok", "review-changes", "review-missing", "review-stale", "review-malformed", "review-handback", "review-nonzero", "review-proof", "review-profile", "review-identity", "review-recovery", "review-admission", "review-marker", "review-no-report", "review-old", "review-brief-report", "review-drift", "review-guard"]) {
+for (const mode of ["scout-worktree-link", "scout-budget", "scout-location-link", "scout-ok", "scout-dirty-tracked", "scout-dirty-staged", "scout-dirty-untracked", "scout-untracked", "scout-tracked", "scout-staged", "scout-commit", "scout-reset", "scout-missing", "scout-stale", "scout-old", "scout-malformed", "scout-profile", "scout-identity", "scout-recovery", "scout-admission", "scout-marker", "scout-no-report", "scout-brief-report", "scout-location", "scout-progress-location", "scout-log-location", "scout-handback", "scout-nonzero", "scout-drift", "scout-label-Gap", "scout-label-Plan", "scout-label-Check", "scout-label-Risks", "scout-label-Questions", "scout-label-Breaking", "hook-first", "stdout-first", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify", "review-ok", "review-changes", "review-missing", "review-stale", "review-malformed", "review-handback", "review-nonzero", "review-proof", "review-profile", "review-identity", "review-recovery", "review-admission", "review-marker", "review-no-report", "review-old", "review-brief-report", "review-drift", "review-guard"]) {
   test(`actual owned runner ${mode}`, { skip: !["linux", "darwin"].includes(process.platform) }, async t => {
-    const review = mode.startsWith("review-"), scout = mode.startsWith("scout-");
+    const review = mode.startsWith("review-"), scout = mode.startsWith("scout-"), initialDirt = mode.startsWith("scout-dirty-");
     const f = setup(t), executable = path.join(f.dir, "native"), script = path.join(f.dir, "native.mjs"), parent = path.basename(f.dir);
     const source = path.join(f.dir, "native.c");
     writeFileSync(source, `#include <stdio.h>
@@ -105,11 +105,10 @@ int main(int argc, char **argv) {
       if (mode === "scout-brief-report") appendFileSync(f.brief, `\nReport: ${roleReport}\n`);
       else if (mode !== "scout-no-report") f.argv.push("--report", mode === "scout-location" ? path.join(f.worktree, "report.md") : roleReport);
       if (mode === "scout-stale") writeFileSync(roleReport, SCOUT_REPORT);
-      if (mode.startsWith("scout-dirty")) {
-        writeFileSync(path.join(f.worktree, "initial.txt"), "baseline");
-        appendFileSync(path.join(f.worktree, "qc.config.json"), " ");
-        assert.equal(spawnSync("git", ["add", "qc.config.json"], { cwd: f.worktree, env: f.gitEnv }).status, 0);
-        appendFileSync(path.join(f.worktree, "qc.config.json"), " ");
+      if (initialDirt) {
+        if (mode === "scout-dirty-untracked") writeFileSync(path.join(f.worktree, "initial.txt"), Buffer.from([0, 255, 13, 10]));
+        else appendFileSync(path.join(f.worktree, "qc.config.json"), " \r\n");
+        if (mode === "scout-dirty-staged") assert.equal(spawnSync("git", ["add", "qc.config.json"], { cwd: f.worktree, env: f.gitEnv }).status, 0);
       }
       if (["scout-location-link", "scout-worktree-link"].includes(mode)) {
         const alias = path.join(f.dir, "alias"); symlinkSync(f.worktree, alias);
@@ -202,7 +201,7 @@ const scoutReport = 'Gap: gap\\nPlan: plan\\nCheck: checked\\nRisks: none\\nQues
 if (${scout} && !['scout-missing', 'scout-stale'].includes(mode)) writeFileSync(${JSON.stringify(roleReport)},
   mode === 'scout-malformed' ? 'bad report' : mode.startsWith('scout-label-') ? scoutReport.split('\\n').filter(line => !line.startsWith(mode.slice(12)+':')).join('\\n') : scoutReport);
 if (mode === 'scout-old') utimesSync(${JSON.stringify(roleReport)}, 1, 1);
-if (['scout-untracked', 'scout-dirty-change'].includes(mode)) writeFileSync(mode === 'scout-untracked' ? 'new.txt' : 'initial.txt', 'changed');
+if (mode === 'scout-untracked') writeFileSync('new.txt', 'changed');
 if (['scout-tracked', 'scout-staged'].includes(mode)) {
   writeFileSync('qc.config.json', ${JSON.stringify(readFileSync(path.join(f.worktree, "qc.config.json"), "utf8"))}+' ');
   if (mode === 'scout-staged') spawnSync('git', ['add', 'qc.config.json']);
@@ -225,17 +224,26 @@ process.exit(['nonzero', 'review-nonzero', 'scout-nonzero'].includes(mode) ? 6 :
       const timer = setInterval(() => { if (existsSync(path.join(f.dir, "ready"))) controller.abort(); }, 20);
       t.after(() => clearInterval(timer));
     }
+    const snapshot = () => readdirSync(f.worktree, { recursive: true }).sort().map(file => [file, readFileSync(path.join(f.worktree, file))]);
+    const indexPath = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "index"], { cwd: f.worktree, env: f.gitEnv, encoding: "utf8" }).stdout.trim();
+    const initialFiles = initialDirt ? snapshot() : null, initialIndex = initialDirt ? readFileSync(indexPath) : null;
     const messages = [];
     const code = await runCodexImplement([...f.argv, "--owned-native", "--parent-session", parent, ...(mode === "timeout" ? ["--max-hours", "0.0005"] : [])], {
       run: () => assert.fail("owned runner used legacy callback"), codexCommand: [executable], env: { ...f.gitEnv, CODEX_HOME: path.join(f.dir, "home") }, signal: controller.signal, say: line => messages.push(line), out: quiet,
     });
-    const scoutCode = ["scout-budget", "scout-ok", "scout-dirty", "scout-recovery", "scout-brief-report"].includes(mode) ? 0 :
-      ["scout-dirty-change", "scout-untracked", "scout-tracked", "scout-staged", "scout-commit", "scout-reset", "scout-drift"].includes(mode) ? 4 :
+    if (initialDirt) {
+      assert.equal(existsSync(path.join(f.dir, "probe")), false, "dirty scout must refuse before the version probe");
+      assert.equal(existsSync(path.join(f.dir, "started")), false, "dirty scout must refuse before native child launch");
+      assert.deepEqual(snapshot(), initialFiles, "startup refusal must preserve every worktree byte");
+      assert.deepEqual(readFileSync(indexPath), initialIndex, "startup refusal must preserve exact index bytes");
+    }
+    const scoutCode = ["scout-budget", "scout-ok", "scout-recovery", "scout-brief-report"].includes(mode) ? 0 :
+      initialDirt || ["scout-untracked", "scout-tracked", "scout-staged", "scout-commit", "scout-reset", "scout-drift"].includes(mode) ? 4 :
       ["scout-missing", "scout-stale", "scout-old", "scout-malformed", "scout-marker"].includes(mode) || mode.startsWith("scout-label-") ? 3 : 1;
     assert.equal(code, scout ? scoutCode : ["scout-ok", "hook-first", "stdout-first", "review-ok", "review-changes", "review-proof", "review-recovery", "review-brief-report"].includes(mode) ? 0 : ["guard", "review-guard"].includes(mode) ? 4 : mode === "verify" ? 7 : ["review-missing", "review-stale", "review-malformed", "review-marker", "review-no-report", "review-old"].includes(mode) ? 3 : 1,
       messages.join("\n") + JSON.stringify({ probe: existsSync(path.join(f.dir, "probe")), started: existsSync(path.join(f.dir, "started")) }) +
       (existsSync(`${f.progress}.log`) ? readFileSync(`${f.progress}.log`, "utf8") : ""));
-    assert.equal(existsSync(path.join(f.dir, "started")), !["no-checkpoint", "pin", "review-admission", "review-no-report", "scout-admission", "scout-no-report", "scout-worktree-link", "scout-location-link", "scout-location", "scout-progress-location", "scout-log-location"].includes(mode), messages.join("\n"));
+    assert.equal(existsSync(path.join(f.dir, "started")), !initialDirt && !["no-checkpoint", "pin", "review-admission", "review-no-report", "scout-admission", "scout-no-report", "scout-worktree-link", "scout-location-link", "scout-location", "scout-progress-location", "scout-log-location"].includes(mode), messages.join("\n"));
     if (mode === "cancel") assert.equal(controller.signal.aborted, true);
     if (existsSync(path.join(f.dir, "started"))) {
       const { pid, port } = JSON.parse(readFileSync(path.join(f.dir, "started"), "utf8"));
@@ -257,7 +265,6 @@ process.exit(['nonzero', 'review-nonzero', 'scout-nonzero'].includes(mode) ? 6 :
     if (scout) {
       assert.equal(readLedger(ledgerFileOf(f.worktree)).filter(r => r.type === "verdict").length, 0);
       if (code === 0) assert.equal(stops[0].role, "scout");
-      if (mode === "scout-dirty") assert.equal(readFileSync(path.join(f.worktree, "initial.txt"), "utf8"), "baseline");
     }
     if (review) {
       assert.equal(readLedger(ledgerFileOf(f.worktree)).filter(r => r.type === "verdict").length, code === 0 ? 2 : 0);
