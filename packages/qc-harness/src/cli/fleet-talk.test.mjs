@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { Worker } from "node:worker_threads";
 import { runFleet } from "./fleet.mjs";
 import { readState, writeState } from "./fleet-state.mjs";
 import { readGithub } from "./fleet-github.mjs";
@@ -343,6 +344,82 @@ test("receipt moves sent to delivered; read and done update state without regres
     assert.equal(readState(sender.root, "sent")[message.id].state, state === "delivered" ? "done" : state);
   }
   assert.equal(readState(sender.root, "sent")[message.id].note, "handled");
+});
+
+test("escalation preserves a receipt and a new send during event emission", async t => {
+  const f = fixture(t);
+  writeState(f.root, "sent", { original: { node: "b", repo: "o/r", state: "delivered", time: new Date(0).toISOString() } });
+  let sending;
+  const lines = [];
+  assert.equal(await runWatch(["--fleet"], { cwd: f.root, now: () => 300_000, say: line => {
+    lines.push(line);
+    const receipt = createMessage({ from: "b", repo: "o/r", kind: "receipt", body: { message: "original", state: "done", note: "finished" } }, f.fleet.secret);
+    assert.equal(receiveMessage({ root: f.root, fleet: f.fleet, message: receipt }).ok, true);
+    receiveTalk(f.root, f.fleet, false, Date.now());
+    sending = f.run(["say", "b", "--file", f.file]);
+  } }), 0);
+  assert.equal(await sending, 0, f.errors.join("\n"));
+  assert.deepEqual(lines, ["EVENT fleet:unread b original"]);
+  const sent = readState(f.root, "sent");
+  assert.equal(sent.original.state, "done");
+  assert.equal(sent.original.note, "finished");
+  assert.equal(sent.original.escalated, true);
+  assert.equal(sent[f.sent[0].id].state, "sent");
+  assert.equal(Object.keys(sent).length, 2);
+});
+
+test("overlapping senders and receipts preserve every sent record and state", { timeout: 15_000 }, async t => {
+  const f = fixture(t), count = 6;
+  const entries = Object.fromEntries(Array.from({ length: count }, (_, i) => [`old-${i}`, {
+    node: "b", repo: "o/r", state: "delivered", time: new Date(0).toISOString(),
+  }]));
+  writeState(f.root, "sent", entries);
+  writeState(f.root, "queue", Object.keys(entries).map(id => createMessage({ from: "b", repo: "o/r", kind: "receipt",
+    body: { message: id, state: "done", note: "finished" } }, f.fleet.secret)));
+  const start = new SharedArrayBuffer(4), workers = [];
+  t.after(async () => { await Promise.all(workers.map(worker => worker.terminate())); });
+  const ready = [], finished = [];
+  for (const role of ["sender", "sender", "receipts"]) {
+    const worker = new Worker(`
+      const { workerData: d, parentPort } = require("node:worker_threads");
+      (async () => {
+        const fs = require("node:fs"), { syncBuiltinESMExports } = require("node:module");
+        const read = fs.readFileSync;
+        fs.readFileSync = (...args) => {
+          const data = read(...args);
+          // Widen the snapshot window so unlocked read/replace writers overlap.
+          if (require("node:path").basename(String(args[0])) === "sent.json")
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+          return data;
+        };
+        syncBuiltinESMExports();
+        const { runTalk, receiveTalk } = await import(d.module);
+        const start = new Int32Array(d.start);
+        parentPort.postMessage("ready");
+        Atomics.wait(start, 0, 0);
+        if (d.role === "receipts") receiveTalk(d.root, d.fleet, false, Date.now());
+        else for (let i = 0; i < d.count; i++) await runTalk({ verb: "say", target: "b", "--file": d.file }, {
+          root: d.root, fleet: d.fleet, repo: "o/r", say() {}, warn() {},
+          node: { fetch: async () => ({ status: 202 }) },
+        });
+      })().catch(error => { throw error; });
+    `, { eval: true, workerData: { root: f.root, fleet: f.fleet, file: f.file, count, role, start,
+      module: new URL("./fleet-talk.mjs", import.meta.url).href } });
+    workers.push(worker);
+    ready.push(new Promise((resolve, reject) => { worker.once("message", resolve); worker.once("error", reject); }));
+    finished.push(new Promise((resolve, reject) => {
+      worker.once("error", reject);
+      worker.once("exit", code => code === 0 ? resolve() : reject(new Error(`writer exited ${code}`)));
+    }));
+  }
+  await Promise.all(ready);
+  Atomics.store(new Int32Array(start), 0, 1);
+  Atomics.notify(new Int32Array(start), 0);
+  await Promise.all(finished);
+  const sent = readState(f.root, "sent");
+  assert.equal(Object.keys(sent).length, count * 3);
+  for (const id of Object.keys(entries)) assert.deepEqual(sent[id], { ...entries[id], state: "done", note: "finished" });
+  assert.equal(Object.values(sent).filter(entry => entry.state === "sent").length, count * 2);
 });
 
 test("a receipt is never receipted and unsigned receipts are dropped", t => {

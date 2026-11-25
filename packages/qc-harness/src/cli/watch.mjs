@@ -3,7 +3,7 @@
 
 import { readState, stateDir, writeState } from "./fleet-state.mjs";
 import { fleetPath, validateFleet } from "./fleet.mjs";
-import { findTalk, queueReceipt, TALK_KINDS } from "./fleet-talk.mjs";
+import { claimUnread, findTalk, queueReceipt, TALK_KINDS } from "./fleet-talk.mjs";
 import { closeSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import path from "node:path";
 import { parseApiList, runGhResult } from "./gh-run.mjs";
@@ -256,16 +256,8 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
         if (!Number.isFinite(record.sessionHeartbeat) || at < record.sessionHeartbeat || at - record.sessionHeartbeat >= 30_000) {
           writeState(cwd, "node", { ...record, sessionHeartbeat: at });
         }
-        const sent = readState(cwd, "sent");
-        let escalated = false;
-        for (const [id, entry] of Object.entries(sent)) {
-          if (["sent", "delivered"].includes(entry.state) && !entry.escalated && at - Date.parse(entry.time) >= 300_000) {
-            say(`EVENT fleet:unread ${entry.node} ${id}`);
-            entry.escalated = true;
-            escalated = true;
-          }
-        }
-        if (escalated) writeState(cwd, "sent", sent);
+        const escalations = claimUnread(cwd, at);
+        for (const { id, node } of escalations) say(`EVENT fleet:unread ${node} ${id}`);
         const leader = record.leader === true;
         const messages = leader
           ? [...readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind)),
@@ -293,7 +285,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
           writeState(cwd, "watched", watched);
           return EXIT.PASSED;
         }
-        if (escalated) return EXIT.PASSED;
+        if (escalations.length) return EXIT.PASSED;
       } catch (error) {
         warn(`watch: ${error.message}`);
         return EXIT.BAD_INPUT;

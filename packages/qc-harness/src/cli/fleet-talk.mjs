@@ -1,7 +1,8 @@
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import path from "node:path";
 import { createMessage } from "./fleet-message.mjs";
 import { flushOutbox, sendMessage } from "./fleet-node.mjs";
-import { livePeer, readState, sessionOf, writeState } from "./fleet-state.mjs";
+import { livePeer, readState, sessionOf, stateDir, writeState } from "./fleet-state.mjs";
 import { roleComment } from "./role-line.mjs";
 
 export const TALK_VERBS = ["plan", "ask", "say", "approve", "answer", "show", "ack"];
@@ -27,10 +28,48 @@ export function queueReceipt(root, fleet, original, state, note = "") {
   writeState(root, "outbox", [...readState(root, "outbox"), { node: original.from, message: fields, attempts: 0, nextAttempt: 0 }]);
 }
 
+/** Serialize sent read/modify/replace across processes; a truthy result commits. */
+function updateSent(root, mutate) {
+  const directory = stateDir(root), lock = path.join(directory, "sent.lock");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 5000, waiting = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try { mkdirSync(lock, { mode: 0o700 }); break; }
+    catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) throw new Error("timed out waiting for fleet sent lock");
+      Atomics.wait(waiting, 0, 0, 10);
+    }
+  }
+  try {
+    const sent = readState(root, "sent"), result = mutate(sent);
+    if (result) writeState(root, "sent", sent);
+    return result;
+  } finally {
+    rmSync(lock, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+}
+
 function recordSent(root, node, message) {
-  const sent = readState(root, "sent");
-  Object.defineProperty(sent, message.id, { value: { node, repo: message.repo, time: message.time, state: "sent" }, enumerable: true });
-  writeState(root, "sent", sent);
+  updateSent(root, sent => {
+    Object.defineProperty(sent, message.id, { value: { node, repo: message.repo, time: message.time, state: "sent" }, enumerable: true });
+    return true;
+  });
+}
+
+/** Persist escalation claims before returning events to print, outside the lock. */
+export function claimUnread(root, now) {
+  const claimed = [];
+  updateSent(root, sent => {
+    for (const [id, entry] of Object.entries(sent)) {
+      if (["sent", "delivered"].includes(entry.state) && !entry.escalated && now - Date.parse(entry.time) >= 300_000) {
+        entry.escalated = true;
+        claimed.push({ id, node: entry.node });
+      }
+    }
+    return claimed.length > 0;
+  });
+  return claimed;
 }
 
 function requestError(message, assignments, fleet) {
@@ -78,13 +117,16 @@ export function receiveTalk(root, fleet, leader, now) {
   for (const message of queue) {
     if (message.kind === "receipt") {
       changed = true;
-      const { message: id, state, note = "" } = message.body ?? {}, sent = readState(root, "sent");
-      const entry = typeof id === "string" && Object.hasOwn(sent, id) ? sent[id] : null;
-      const states = ["sent", "delivered", "read", "done"];
-      if (entry?.node === message.from && entry.repo === message.repo && ["delivered", "read", "done"].includes(state) && validText(note) && states.indexOf(state) > states.indexOf(entry.state)) {
-        sent[id] = { ...entry, state, note };
-        writeState(root, "sent", sent);
-      }
+      const { message: id, state, note = "" } = message.body ?? {};
+      updateSent(root, sent => {
+        const entry = typeof id === "string" && Object.hasOwn(sent, id) ? sent[id] : null;
+        const states = ["sent", "delivered", "read", "done"];
+        if (entry?.node === message.from && entry.repo === message.repo && ["delivered", "read", "done"].includes(state) && validText(note) && states.indexOf(state) > states.indexOf(entry.state)) {
+          sent[id] = { ...entry, state, note };
+          return true;
+        }
+        return false;
+      });
       continue;
     }
     if (message.kind === "say") {

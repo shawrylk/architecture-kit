@@ -725,3 +725,21 @@ test("unread escalation starts at five minutes and stays once-only across watche
   assert.equal(await runWatch(["--fleet", "--max", "1"], deps), 4);
   assert.deepEqual(lines, ["EVENT timeout"]);
 });
+
+test("overlapping watchers claim unread escalation before emitting it", async t => {
+  const { readState, writeState } = await import("./fleet-state.mjs");
+  const root = mkdtempSync(path.join(os.tmpdir(), "qc-watch-overlap-"));
+  mkdirSync(path.join(root, ".git"));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  writeState(root, "sent", { original: { node: "b", state: "delivered", time: new Date(0).toISOString() } });
+  const time = fakeClock(), lines = [];
+  time.clock.now = 300_000;
+  let overlapping;
+  assert.equal(await runWatch(["--fleet"], { cwd: root, ...time, say: line => {
+    lines.push(line);
+    overlapping = runWatch(["--fleet", "--max", "1"], { cwd: root, ...time, say: next => lines.push(next) });
+  } }), 0);
+  assert.equal(await overlapping, 4);
+  assert.deepEqual(lines, ["EVENT fleet:unread b original", "EVENT timeout"]);
+  assert.equal(readState(root, "sent").original.escalated, true);
+});
