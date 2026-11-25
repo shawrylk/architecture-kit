@@ -59,6 +59,33 @@ test("startup fixture collects fragmented output through its completion delimite
     '{"type":"thread.started","thread_id":"native-thread"}\nexec\nmodel_auto_compact_token_limit=400000\n');
 });
 const supported = ["linux", "darwin"].includes(process.platform);
+for (const role of ["implementer", "reviewer"]) {
+  test(`controlled ${role} process inherits the worker boundary and cannot dispatch any child role`, { skip: !supported }, async t => {
+    const f = fixture(t, { capacity: 2 }), r = f.reserve(role);
+    writeFileSync(path.join(f.dir, "native"), `#!/bin/sh
+read -r thread
+printf '{"type":"thread.started","thread_id":"%s"}\\n' "$thread"
+printf '%s\\n' "$QC_CODEX_WORKER" "$QC_ROLE" "$@"
+printf 'QC_FIXTURE_DONE\\n'
+cat >/dev/null
+`, { mode: 0o700 });
+    const child = await start(t, f, r);
+    const lines = (await child.output).trim().split("\n").slice(1);
+    assert.deepEqual(lines.slice(0, 2), ["1", role]);
+    for (const feature of ["features.multi_agent=false", "features.multi_agent_v2=false"]) {
+      assert.equal(lines[lines.indexOf(feature) - 1], "-c");
+    }
+    f.runtime.bind(r, r.hookCredential, f.hook);
+    for (const childRole of ["leader", "implementer", "reviewer"]) {
+      assert.throws(() => f.reserve(childRole, { parent: r }), /unavailable/);
+      const restricted = fixture(t, { inheritedRole: role });
+      assert.throws(() => restricted.reserve(childRole), /unavailable/);
+    }
+    assert.equal(f.runtime.validate(r, f.hook).role, role);
+    f.reserve("reviewer"); // Denials must not consume the root runner's remaining slot.
+  });
+}
+
 test("controlled argv proves explicit 400000 and disabled percentage only after authenticated SessionStart", { skip: !supported }, async t => {
   const f = fixture(t), r = f.reserve(), child = await start(t, f, r);
   assert.equal(f.runtime.validate(r, f.hook), null);

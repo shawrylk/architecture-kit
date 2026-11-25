@@ -22,6 +22,7 @@ import { addedTestCases, checkLockedTests, lockTests, readLockedTests, runTestCo
 import { runMutation } from "./mutate.mjs";
 import { redactOutput } from "./output-redaction.mjs";
 import { reviewContext, validatePaths, verificationPolicy, verifyBrief } from "./codex-verify.mjs";
+import { CODEX_WORKER_FEATURES, codexWorkerEnvironment, codexWorkerRestricted } from "./codex-runtime.mjs";
 
 export const DONE_MARKER = "ALL TASKS DONE";
 const DEFAULT_MAX_RUNS = 1;
@@ -135,9 +136,6 @@ function continuationNote(progress) {
     `Never quote it anywhere else. Never wait for anyone to supply it.\n\n${LEAN_RULES}`
   );
 }
-
-/** The Codex features that start helper agents. Each run turns them off. */
-const HELPER_AGENT_FEATURES = ["features.multi_agent=false", "features.multi_agent_v2=false"];
 
 /** @returns the names of the plugins that a Codex `config.toml` turns on, from its `[plugins."name"]` tables. */
 export function enabledPlugins(toml) {
@@ -320,6 +318,14 @@ const refusalError = (id, message) => Object.assign(new Error(message), { refusa
  * @returns the exit code: 0 done, 1 bad input or no codex, 2 a limit, 3 out of runs, 4 guard refused, 5 paused.
  */
 export async function runCodexImplement(argv, { out = writeLine, warn = console.error, ...options } = {}) {
+  // Inherited runner identity is independent of the requested child's --role. This cooperative
+  // boundary must run before parsing, preflight or run-log writes, including already-done jobs.
+  const inherited = options.env ?? process.env;
+  if (codexWorkerRestricted(inherited)) {
+    (options.say ?? console.error)("qc codex-implement: nested Codex runner refused; workers must work inline");
+    await out("exit 4");
+    return 4;
+  }
   const clock = options.now ?? Date.now;
   const started = clock();
   const metrics = { inputTokens: 0, outputTokens: 0, verify: null, live: null, refusal: null };
@@ -599,7 +605,7 @@ async function runJob(argv, {
       metrics.refusal = error.refusal ?? "other";
       return finish(say, `cannot prepare the brief: ${error.message}`, 1);
     }
-    const helperOff = HELPER_AGENT_FEATURES.flatMap((feature) => ["-c", feature]);
+    const helperOff = CODEX_WORKER_FEATURES.flatMap((feature) => ["-c", feature]);
     const limits = codexLimits === null ? [] : ["-c", `model_auto_compact_token_limit=${codexLimits.compactAt}`, "-c", `tool_output_token_limit=${codexLimits.toolOutputTokens}`];
     const model = settings.review ? codex.reviewModel : codex.model;
     const modelArgs = model === null ? [] : ["-c", `model=${JSON.stringify(model)}`];
@@ -625,7 +631,9 @@ async function runJob(argv, {
     let result;
     let runError;
     try {
-      result = await execute({ command: codexCommand[0], args, input: prompt, env: { ...childEnv, QC_ROLE: settings.role === "implement" ? "implementer" : settings.role, QC_PROTECTED_ALLOW: allow.join(",") }, log: settings.log, cwd: settings.worktree });
+      result = await execute({ command: codexCommand[0], args, input: prompt,
+        env: codexWorkerEnvironment({ ...childEnv, QC_PROTECTED_ALLOW: allow.join(",") }, settings.role === "implement" ? "implementer" : settings.role),
+        log: settings.log, cwd: settings.worktree });
     } catch (error) {
       runError = error;
     }

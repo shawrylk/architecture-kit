@@ -11,6 +11,11 @@ const roles = ["leader", "implementer", "reviewer"];
 const unavailable = () => { throw new Error("Codex invocation unavailable"); };
 const settings = Object.freeze({ model_auto_compact_token_limit: 400000, model_post_turn_compact_threshold_percent: 0 });
 const admissions = new WeakMap();
+// Runner-owned cooperative worker boundary; these values are not native-event attestation.
+export const CODEX_WORKER_FEATURES = Object.freeze(["features.multi_agent=false", "features.multi_agent_v2=false"]);
+export const codexWorkerRestricted = env => Boolean(env.QC_CODEX_WORKER) ||
+  ["worker", "implement", "implementer", "reviewer", "branch-reviewer", "planner", "scout", "tests", "review"].includes(env.QC_ROLE);
+export const codexWorkerEnvironment = (env, role) => ({ ...env, QC_CODEX_WORKER: "1", QC_ROLE: role });
 // Only exact runner-held reservations carry authority; serialized proofs cannot enroll themselves.
 export function codexAdmissionOf(handle, input) {
   const proof = admissions.get(handle)?.(input);
@@ -169,9 +174,9 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       if (!options || Object.keys(options).length > 3 || Object.keys(options).some(key => !["role", "workflowParentId", "parent"].includes(key))) unavailable();
       const { role, workflowParentId, parent } = options;
       if (!roles.includes(role) || !id(workflowParentId) || admitted >= 256 || records.size >= capacity ||
-          inheritedRole !== "leader" && role !== inheritedRole) unavailable();
+          inheritedRole !== "leader") unavailable();
       const ancestor = parent === undefined ? null : get(parent);
-      if (ancestor && (!live(ancestor) || !ancestor.proof || ancestor.role !== "leader" && role !== ancestor.role)) unavailable();
+      if (ancestor && (!live(ancestor) || !ancestor.proof || ancestor.role !== "leader")) unavailable();
       const credential = Object.freeze(Object.create(null));
       const handle = Object.freeze(Object.defineProperty({}, "hookCredential", { value: credential }));
       const record = { role, workflowParentId, ancestor: ancestor?.proof ?? null, credential, incarnation: randomUUID() };
@@ -191,10 +196,12 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       if (record.child) unavailable();
       // Generated command has no caller-supplied flags; conflicting flags are rejected at reserve.
       const args = ["exec", "-C", worktree, "--json", ...Object.entries(record.role === "leader" ? settings : {})
-        .flatMap(([key, value]) => ["-c", `${key}=${value}`]), "-"];
+        .flatMap(([key, value]) => ["-c", `${key}=${value}`]),
+      ...(record.role === "leader" ? [] : CODEX_WORKER_FEATURES.flatMap(feature => ["-c", feature])), "-"];
       try {
         if (executablePin && checkPin(executable, executablePin) !== executableIdentity) unavailable();
-        const child = spawnCommand(executablePin?.realpath ?? executable, args, { cwd: worktree, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawnCommand(executablePin?.realpath ?? executable, args, { cwd: worktree,
+          env: record.role === "leader" ? process.env : codexWorkerEnvironment(process.env, record.role), stdio: ["pipe", "pipe", "pipe"] });
         record.child = child;
         let pending = "";
         const capture = chunk => {
