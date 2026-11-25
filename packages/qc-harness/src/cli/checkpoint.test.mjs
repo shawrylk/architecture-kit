@@ -19,17 +19,27 @@ test("native startup/resume/compact restore existing notes without refreshing di
   for (const source of ["startup", "resume", "compact"]) {
     assert.ok(decideCodexCheckpoint({ ...call, source }).hookSpecificOutput.additionalContext.includes(text.trim()));
   }
-  const compact = { ...call, hook_event_name: "PostCompact", turn_id: "turn", trigger: "auto" };
-  assert.ok(decideCodexCheckpoint(compact).systemMessage.includes(text.trim()));
   assert.match(checkpointRefusal(call), /older/);
   assert.equal(readFileSync(file, "utf8"), text);
   assert.equal(statSync(file).mtimeMs, modified);
   assert.doesNotMatch(decide(call).hookSpecificOutput.additionalContext, /Keep my tasks/);
   for (const bad of [null, {}, { ...call, session_id: 123 }, { ...call, session_id: "../bad" }, { ...call, source: "unknown" },
-    { ...call, cwd: file }, { ...call, cwd: "relative" }, { ...call, agent_id: "worker" },
-    { ...compact, trigger: "unknown" }, { ...compact, turn_id: null }]) {
+    { ...call, cwd: file }, { ...call, cwd: "relative" }, { ...call, agent_id: "worker" }]) {
     assert.throws(() => decideCodexCheckpoint(bad), /Codex checkpoint/);
   }
+});
+
+test("PostCompact refuses restoration without reading or disclosing checkpoint notes", (t) => {
+  const { root, file } = workspace(t);
+  writeFileSync(path.join(root, "qc.config.json"), "{}");
+  writeFileSync(file, text);
+  const modified = statSync(file).mtimeMs;
+  for (const trigger of ["auto", "manual"]) {
+    assert.throws(() => decideCodexCheckpoint({ cwd: root, session_id: "session-1",
+      hook_event_name: "PostCompact", turn_id: "turn", trigger }), /Codex checkpoint: PostCompact restoration unsupported/);
+  }
+  assert.equal(readFileSync(file, "utf8"), text);
+  assert.equal(statSync(file).mtimeMs, modified);
 });
 
 const text = "## Goal\nKeep my tasks\n## Rules\nKeep constraints\n## Tasks\n- Open: build\n## Next\nBuild it\n";

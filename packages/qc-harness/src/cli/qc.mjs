@@ -63,7 +63,7 @@ const USAGE = `qc — architecture gates
                            Codex 0.172.0 Bash PreToolUse/PostToolUse JSON on stdin; post exit status unavailable; no registration
   qc codex-stop-hook --role leader
                            Codex 0.172.0 root Stop JSON on stdin; shared Stop/issue/worktree gates; worker/SubagentStop unsupported; no registration
-  qc codex-checkpoint      Codex 0.172.0 root SessionStart startup/resume/compact or PostCompact JSON on stdin; no registration
+  qc codex-checkpoint      Codex 0.172.0 root SessionStart startup/resume/compact JSON on stdin; PostCompact restoration unsupported; no registration
   qc gate <pr-create|pr-ready|merge|command> [--cwd <dir>] --session <id> --role <role> -- <args...>
                            evaluate shared workflow decisions without running the action; command takes one shell string
   qc comment-watch --poll --cwd <dir> --session <id>

@@ -131,20 +131,18 @@ export function decide(call) {
   }
 }
 
-/** Wire: rust-v0.172.0 hooks/src/schema.rs; root recovery only, with no watch or checkpoint writes. */
+/** Wire: rust-v0.172.0 hooks/src/schema.rs; root SessionStart recovery only, with no watch or checkpoint writes. */
 export function decideCodexCheckpoint(input) {
   const fail = () => { throw new Error("Codex checkpoint: unsupported lifecycle, identity or working directory"); };
   if (!input || typeof input.session_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.session_id) ||
     input.agent_id !== undefined || input.agent_type !== undefined || typeof input.cwd !== "string" || !path.isAbsolute(input.cwd)) fail();
-  const compact = input.hook_event_name === "PostCompact";
-  if (compact ? !["auto", "manual"].includes(input.trigger) || typeof input.turn_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.turn_id) :
-    input.hook_event_name !== "SessionStart" || !["startup", "resume", "compact"].includes(input.source)) fail();
+  if (input.hook_event_name === "PostCompact") throw new Error("Codex checkpoint: PostCompact restoration unsupported");
+  if (input.hook_event_name !== "SessionStart" || !["startup", "resume", "compact"].includes(input.source)) fail();
   let cwd;
   try { cwd = realpathSync(input.cwd); if (!statSync(cwd).isDirectory()) fail(); } catch { fail(); }
   cwd = checkoutRootOf(cwd);
   if (!cwd) fail();
-  const result = decide({ cwd, session_id: input.session_id, hook_event_name: "SessionStart", source: "resume" });
-  return compact && result ? { systemMessage: result.hookSpecificOutput.additionalContext } : result;
+  return decide({ cwd, session_id: input.session_id, hook_event_name: "SessionStart", source: "resume" });
 }
 
 export async function runCodexCheckpoint(args, { stdin = process.stdin, write = console.log, error = console.error } = {}) {
