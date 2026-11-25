@@ -82,7 +82,7 @@ export function watchedItems(call, origin, parse = PARSERS[call.tool_name]) {
   };
   const command = call.tool_input?.command ?? "";
   for (const { words, env } of ghCalls(command, parse)) {
-    const parsed = ghCommand(words);
+    const parsed = { ...ghCommand(words), env };
     const { group, verb, args, repo } = parsed;
     if (group === "api") {
       const match = /^repos\/([^/]+\/[^/]+)\/(issues|pulls)\/(\d+)(?:\/|$)/.exec(apiRequest(parsed)?.endpoint ?? "");
@@ -263,7 +263,7 @@ function apiRequest(command) {
   // API flags may precede the endpoint; keep their names with their values.
   const apiWords = command.rest;
   let method;
-  let hostname = "github.com";
+  let hostname = command.env?.GH_HOST ?? "github.com";
   let write = false;
   let endpoint;
   const values = new Set(["--method", "--field", "--raw-field", "--input", "--header", "--hostname", "--jq", "--template", "--cache", "--preview"]);
@@ -325,7 +325,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
       const prs = [...state.items.values(), ...watched].filter(item => item.kind === "pr");
       for (const item of watched) watch(state, { ...item, prs: prs.filter(pr => pr.repo === item.repo).map(itemKey) });
       for (const { words, env } of ghCalls(call.tool_input?.command ?? "", parse)) {
-        const command = ghCommand(words);
+        const command = { ...ghCommand(words), env };
         const request = apiRequest(command);
         if (request?.method === "POST" && /^repos\/[^/]+\/[^/]+\/(?:issues(?:\/\d+\/comments)?|pulls(?:\/\d+\/(?:comments|reviews))?)$/.test(request.endpoint ?? "")) {
           state.append({ own: createdKeys(call.tool_response, request.endpoint) });
@@ -374,9 +374,9 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
       }
       const items = [...state.items.values()].filter(item => !item.retired);
       const start = Math.max(0, items.findIndex(item => itemKey(item) === state.next));
+      const ordered = [...items.slice(start), ...items.slice(0, start)];
       const repos = new Map();
-      for (let i = 0; i < items.length; i++) {
-        const item = items[(start + i) % items.length];
+      for (const item of ordered) {
         const repo = item.repo.toLowerCase();
         if (!repos.has(repo)) repos.set(repo, []);
         repos.get(repo).push(item);
@@ -385,42 +385,39 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
       let checked = 0;
       const reasons = new Set();
       let stopped = false;
-      const ordered = [...repos.values()].flat();
+      const metadataByRepo = new Map();
       const stopAfter = (item) => {
         stopped = true;
         state.append({ next: itemKey(ordered[(ordered.indexOf(item) + 1) % ordered.length]) });
       };
-      for (const batch of repos.values()) {
-        let metadata;
+      for (const item of ordered) {
+        const repo = item.repo.toLowerCase();
+        if (!metadataByRepo.has(repo)) {
+          try {
+            metadataByRepo.set(repo, { data: await itemMetadata(item.repo, repos.get(repo), gh) });
+          } catch (error) {
+            metadataByRepo.set(repo, { error });
+          }
+        }
         try {
-          metadata = await itemMetadata(batch[0].repo, batch, gh);
+          const { data: metadata, error } = metadataByRepo.get(repo);
+          if (error) throw error;
+          const info = metadata[`item_${item.number}`];
+          if (!info || !["OPEN", "CLOSED", "MERGED"].includes(info.state) || typeof info.updatedAt !== "string" || !info.updatedAt) throw new Error("response");
+          if (info.__typename === "PullRequest") item.kind = "pr";
+          const changed = info.updatedAt !== item.updatedAt;
+          const fresh = changed ? await unseen(item, gh, state)
+            : [...item.pending.values()].filter(pending => pending.row && !item.seen.has(pending.stamp)).map(({ row, stamp }) => ({ row, stamp }));
+          lines.push(...fresh.filter(({ stamp }) => !item.shown.has(stamp)).map(({ row }) => describe(item, row)));
+          recordPreview(state, item, fresh, event === "UserPromptSubmit");
+          if (changed) state.append({ repo: item.repo, number: item.number, kind: item.kind, updatedAt: info.updatedAt });
+          if (["CLOSED", "MERGED"].includes(info.state)) state.append({ retired: itemKey(item) });
         } catch (error) {
           reasons.add(failureReason(error));
-          if (rateLimited(error) || error.message === "deadline") { stopAfter(batch.at(-1)); break; }
-          failed += batch.length;
-          checked += batch.length;
-          continue;
+          if (rateLimited(error) || error.message === "deadline") { stopAfter(item); break; }
+          failed++;
         }
-        for (const item of batch) {
-          try {
-            const info = metadata[`item_${item.number}`];
-            if (!info || !["OPEN", "CLOSED", "MERGED"].includes(info.state) || typeof info.updatedAt !== "string" || !info.updatedAt) throw new Error("response");
-            if (info.__typename === "PullRequest") item.kind = "pr";
-            const changed = info.updatedAt !== item.updatedAt;
-            const fresh = changed ? await unseen(item, gh, state)
-              : [...item.pending.values()].filter(pending => pending.row && !item.seen.has(pending.stamp)).map(({ row, stamp }) => ({ row, stamp }));
-            lines.push(...fresh.filter(({ stamp }) => !item.shown.has(stamp)).map(({ row }) => describe(item, row)));
-            recordPreview(state, item, fresh, event === "UserPromptSubmit");
-            if (changed) state.append({ repo: item.repo, number: item.number, kind: item.kind, updatedAt: info.updatedAt });
-            if (["CLOSED", "MERGED"].includes(info.state)) state.append({ retired: itemKey(item) });
-          } catch (error) {
-            reasons.add(failureReason(error));
-            if (rateLimited(error) || error.message === "deadline") { stopAfter(item); break; }
-            failed++;
-          }
-          checked++;
-        }
-        if (stopped) break;
+        checked++;
       }
       if (stopped) failed += items.length - checked;
       if (failed) lines.push(`Comment watch: ${failed} items could not be checked (${[...reasons].join(", ")}); retry on the next prompt.`);

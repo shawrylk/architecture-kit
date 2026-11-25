@@ -43,6 +43,38 @@ test("an enterprise API read cannot acknowledge pending GitHub.com feedback", (t
   assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
 });
 
+for (const [tool_name, prefix] of [
+  ["Bash", "GH_HOST=ghe.example.com "],
+  ["Bash", "export GH_HOST=ghe.example.com; "],
+  ["PowerShell", '$env:GH_HOST = "ghe.example.com"; '],
+]) test(`${tool_name} API detection honors the command host (${prefix.trim()})`, () => {
+  const endpoint = "repos/owner/repo/issues/4";
+  const detect = (args) => watchedItems({ tool_name, tool_input: { command: `${prefix}gh api ${args}` } }, "owner/repo");
+  assert.deepEqual(detect(endpoint), []);
+  for (const flags of ["--hostname github.com", "--hostname=github.com"]) {
+    assert.deepEqual(detect(`${flags} ${endpoint}`), [{ repo: "owner/repo", number: 4, kind: "issue" }]);
+    assert.deepEqual(detect(`${endpoint} ${flags}`), [{ repo: "owner/repo", number: 4, kind: "issue" }]);
+  }
+});
+
+for (const [tool_name, prefix] of [
+  ["Bash", "GH_HOST=ghe.example.com "],
+  ["PowerShell", '$env:GH_HOST = "ghe.example.com"; '],
+]) test(`${tool_name} enterprise API reads neither reactivate nor acknowledge a GitHub.com watch`, (t) => {
+  const f = fixture(t);
+  f.rows[0].body = "Pending feedback ".repeat(100);
+  f.update({ metadata: { 4: { state: "CLOSED" } }, body: "Fixes #4" });
+  f.run("PostToolUse", "gh issue view 4");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
+  f.run("PostToolUse", `${prefix}gh api repos/shawrylk/example/issues/4/comments`, "comment-watch.mjs", "session-a", "", tool_name);
+  writeFileSync(f.calls, "");
+  assert.equal(f.run("UserPromptSubmit"), null);
+  assert.equal(readFileSync(f.calls, "utf8"), "");
+  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  f.run("PostToolUse", `${prefix}gh api --hostname github.com repos/shawrylk/example/issues/4/comments`, "comment-watch.mjs", "session-a", "", tool_name);
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+});
+
 test("PowerShell detects explicit repositories, body files, and commit references", (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-comment-detection-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
@@ -563,6 +595,41 @@ test("consecutive polls continue past an item whose comments exhaust the deadlin
   assert.match(second, /1 items could not be checked \(deadline\)/);
   assert.match(requests[1].at(-1), /issues\/5\/comments/);
   assert.match(requests[2].at(-1), /issues\/4\/comments/);
+});
+
+test("poll rotation reaches another repository after two items exhaust the deadline", async (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 4; gh issue view 5; gh issue view 8 -R owner/other");
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const requests = [];
+  const poll = () => commentWatch({ cwd: f.cwd, session_id: "session-a", hook_event_name: "UserPromptSubmit" }, {
+    gh: async (args, options) => {
+      requests.push(args);
+      if (args[1] === "graphql") return JSON.stringify({ data: { repository: Object.fromEntries(
+        [...args.at(-1).matchAll(/item_(\d+):/g)].map(([, number]) => [
+          `item_${number}`, { state: "OPEN", updatedAt: "2026-01-01T00:00:00Z" },
+        ]),
+      ) } });
+      if (/issues\/[45]\/comments/.test(args.at(-1))) {
+        now += options.timeoutMs;
+        throw new Error("deadline");
+      }
+      return JSON.stringify([{ id: 8, body: "Other repository feedback", updated_at: "2026-01-01T00:00:00Z" }]);
+    },
+  });
+  for (let i = 0; i < 2; i++) {
+    assert.match(JSON.stringify(await poll()), /3 items could not be checked \(deadline\)/);
+  }
+  requests.length = 0;
+  const third = JSON.stringify(await poll());
+  assert.match(third, /Other repository feedback/);
+  assert.match(third, /2 items could not be checked \(deadline\)/);
+  assert.match(requests[1].at(-1), /repos\/owner\/other\/issues\/8\/comments/);
+  const metadata = requests.filter(args => args[1] === "graphql");
+  assert.equal(metadata.length, 2);
+  assert.equal(metadata.filter(args => args.includes("name=example")).length, 1);
+  assert.match(metadata.find(args => args.includes("name=example")).at(-1), /item_4:.*item_5:/);
 });
 
 test("all poll requests share the 3.5 second deadline", async (t) => {
