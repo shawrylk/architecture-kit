@@ -301,7 +301,6 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       check();
       const action = await decideCodexHook(input, { admission: handle });
       check();
-      if (action?.hookSpecificOutput?.permissionDecision === "deny") return action;
       const notes = [context, action].map(result => result?.hookSpecificOutput?.additionalContext).filter(Boolean);
       return notes.length ? { hookSpecificOutput: { ...action?.hookSpecificOutput,
         hookEventName: input.hook_event_name, additionalContext: notes.join(" ") } } : action;

@@ -43,6 +43,24 @@ test("invocation channels reject missing and sibling credentials, unsupported an
   await assert.rejects(send(startup), /unavailable/);
 });
 
+test("valid startup envelopes retain the 8 KiB bound inside the larger transport limit", async t => {
+  let calls = 0;
+  const bridge = await createCodexBridge({ runtime: { startup() { calls++; } }, reservation: {} });
+  t.after(() => bridge.close());
+  const sized = bytes => {
+    const input = { ...startup, model: "m".repeat(4096), permission_mode: "" };
+    const frame = () => JSON.stringify({ token: bridge.env.QC_CODEX_REPORT_TOKEN, input });
+    input.permission_mode = "p".repeat(bytes - Buffer.byteLength(frame()));
+    assert.ok(input.permission_mode.length <= 4096); // Every startup field is independently valid.
+    assert.equal(Buffer.byteLength(frame()), bytes);
+    return input;
+  };
+  assert.equal(await reportCodexHook(sized(8192), { env: bridge.env }), null);
+  assert.equal(calls, 1);
+  await assert.rejects(reportCodexHook(sized(8193), { env: bridge.env }), /unavailable/);
+  assert.equal(calls, 1); // Rejected before runtime admission despite fitting the 64 KiB frame.
+});
+
 test("blocking runtime errors stay secret-free and never become acknowledgments", async t => {
   const bridge = await createCodexBridge({ runtime: { startup() { throw Error("private credential"); } }, reservation: {} });
   t.after(() => bridge.close());

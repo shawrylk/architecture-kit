@@ -680,7 +680,13 @@ test("routed context precedes real action, preserves errors, budget closure and 
   f.save(15000);
   const denied = await subprocessReport({ ...f.call, tool_input: { command: "git -c core.hooksPath=/dev/null status" } }, bridge.env);
   assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /hooksPath/i);
+  assert.match(denied.hookSpecificOutput.additionalContext, /budgets\.implementer\.remindAt/);
   assert.equal(f.states()[0].count, 1); // F4 ran even though F4b denied.
+  const repeated = await send({ tool_use_id: "repeat-denied", tool_input: { command: "git -c core.hooksPath=/dev/null status" } });
+  assert.equal(repeated.hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(repeated.hookSpecificOutput.permissionDecisionReason, denied.hookSpecificOutput.permissionDecisionReason);
+  assert.doesNotMatch(repeated.hookSpecificOutput.additionalContext ?? "", /budgets\.implementer\.remindAt/);
   f.save(20000);
   const closed = await send({ tool_use_id: "closed", tool_name: "unsupported" });
   assert.equal(closed.hookSpecificOutput.permissionDecision, "deny"); // F4 denial precedes unsupported F4b input.
