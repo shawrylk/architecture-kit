@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,6 +28,21 @@ function fixture(t, worker = false) {
   const save = (rows = verified(usage)) => writeFileSync(file, line("session_meta", meta, 0, now - 1000000) + rows);
   save(); return { home, file, meta, usage, call, options, save, read: (extra = {}) => readCodexUsage(call, { ...options, ...extra }) };
 }
+
+test("usage shares one descriptor and bounded head/tail reads, rejecting mid-read mutation", (t) => {
+  const f = fixture(t), reads = [], original = fs.readSync;
+  f.save(line("response_item", { type: "reasoning", private: "x".repeat(600000) }) + verified(f.usage, 2));
+  const size = fs.statSync(f.file).size;
+  let mutate = false;
+  t.mock.method(fs, "readSync", (fd, buffer, offset, length, start) => {
+    reads.push([fd, start, length]); const count = original(fd, buffer, offset, length, start);
+    if (mutate && start) appendFileSync(f.file, "\n"); return count;
+  });
+  syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  assert.ok(f.read()); assert.equal(reads.length, 2); assert.equal(reads[0][0], reads[1][0]);
+  assert.deepEqual(reads.map(row => row.slice(1)), [[0, 65536], [size - 262144, 262144]]);
+  mutate = true; assert.equal(f.read(), null);
+});
 
 test("unavailable native usage stays unknown without transcript fallback", (t) => {
   const f = fixture(t);
