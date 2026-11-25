@@ -1,4 +1,5 @@
 // Wire: openai/codex rust-v0.172.0 hooks/src/{schema.rs,events/stop.rs}; core/src/session/turn.rs.
+import { codexHookChannel, readCodexNativeInput } from "./codex-hook-channel.mjs";
 import { realpathSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
@@ -64,8 +65,8 @@ export async function runCodexStopHookCli(args, { stdin = process.stdin, write =
     error("Codex Stop: usage: qc codex-stop-hook --role leader (worker/SubagentStop unsupported)"); return 2;
   }
   try {
-    let raw = "";
-    for await (const chunk of stdin) raw += chunk;
+    codexHookChannel(dependencies.env ?? process.env);
+    const raw = await readCodexNativeInput(stdin);
     const result = await runCodexStopHook(raw, { ...dependencies, role: args[1] });
     if (result.stdout) write(result.stdout);
     if (result.stderr) error(result.stderr);

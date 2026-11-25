@@ -1,4 +1,6 @@
 // Wire boundary pinned to openai/codex rust-v0.172.0 hooks/src/schema.rs and core/src/tools/context.rs.
+import { codexHookChannel, readCodexNativeInput } from "./codex-hook-channel.mjs";
+import { reportCodexHook } from "./codex-bridge.mjs";
 import { statSync } from "node:fs";
 import path from "node:path";
 import { decide as commandGuard } from "./bash-command-guard.mjs";
@@ -69,14 +71,15 @@ export async function decideCodexHook(input, options, dependencies = {}) {
 }
 
 /** Explicit JSON denials exit zero; invalid input/evaluation errors use Codex's blocking exit two. */
-export async function runCodexHook(args, { stdin = process.stdin, write = console.log, error = console.error, ...dependencies } = {}) {
+export async function runCodexHook(args, { stdin = process.stdin, write = console.log, error = console.error, env = process.env, ...dependencies } = {}) {
   try {
-    if (args.length !== 2 || args[0] !== "--role" || !ROLES.has(args[1])) fail("usage: qc codex-hook --role <role>");
-    let data = "";
-    for await (const chunk of stdin) data += chunk;
+    const configured = codexHookChannel(env, true);
+    // Optional legacy role flags carry no authority on an owned channel.
+    if (!(configured && args.length === 0) && (args.length !== 2 || args[0] !== "--role" || !ROLES.has(args[1]))) fail("usage: qc codex-hook [--role <role>]");
+    const data = await readCodexNativeInput(stdin);
     let input;
     try { input = JSON.parse(data); } catch { fail("malformed JSON"); }
-    const output = await decideCodexHook(input, { role: args[1] }, dependencies);
+    const output = configured ? await reportCodexHook(input, { env }) : await decideCodexHook(input, { role: args[1] }, dependencies);
     if (output) write(JSON.stringify(output));
     return 0;
   } catch (cause) {

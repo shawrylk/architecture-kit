@@ -60,12 +60,13 @@ const USAGE = `qc — architecture gates
   qc gate-slot [--slots <n>] -- <command...>
                            run a heavy local command in one of the machine's gate slots; --status lists them
   qc codex-hook --role <role>
-                           Codex 0.172.0 Bash PreToolUse/PostToolUse JSON on stdin; post exit status unavailable; no registration
+                           Codex 0.172.0 Bash/apply_patch PreToolUse/PostToolUse legacy JSON; post exit status unavailable
+                           owned channel: use codex-hook without flags for native SessionStart/PreToolUse/PostToolUse/Stop; parent owns role; null output is silent
   qc codex-context --role <leader|implementer|reviewer>
-                           bounded native worker budgets; active leader settings and external worker registration unsupported; no registration
+                           legacy native budgets only; configured events require codex-hook (avoids duplicate routing); active leader settings unknown
   qc codex-stop-hook --role leader
-                           Codex 0.172.0 root Stop JSON on stdin; shared Stop/issue/worktree gates; worker/SubagentStop unsupported; no registration
-  qc codex-checkpoint      Codex 0.172.0 root SessionStart startup/resume/compact JSON on stdin; PostCompact restoration unsupported; no registration
+                           Codex 0.172.0 root Stop JSON on stdin; shared Stop/issue/worktree gates; configured events require codex-hook; worker/SubagentStop unsupported; no registration
+  qc codex-checkpoint      Codex 0.172.0 root SessionStart startup/resume/compact JSON on stdin; configured events require codex-hook; PostCompact restoration unsupported
   qc gate <pr-create|pr-ready|merge|command> [--cwd <dir>] --session <id> --role <role> -- <args...>
                            evaluate shared workflow decisions without running the action; command takes one shell string
   qc comment-watch --poll --cwd <dir> --session <id>

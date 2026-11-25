@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { codexHookChannel, readCodexNativeInput } from "./codex-hook-channel.mjs";
 import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -159,14 +160,14 @@ export function decideCodexCheckpoint(input) {
   return decide({ cwd, session_id: input.session_id, hook_event_name: "SessionStart", source: "resume" });
 }
 
-export async function runCodexCheckpoint(args, { stdin = process.stdin, write = console.log, error = console.error } = {}) {
+export async function runCodexCheckpoint(args, { stdin = process.stdin, write = console.log, error = console.error, env = process.env } = {}) {
   if (args.length) { error("usage: qc codex-checkpoint (root lifecycle JSON on stdin)"); return 2; }
   try {
-    let raw = "";
-    for await (const chunk of stdin) { raw += chunk; if (raw.length > 65536) throw new Error("input exceeds 64 KiB"); }
+    codexHookChannel(env);
+    const raw = await readCodexNativeInput(stdin);
     write(JSON.stringify(decideCodexCheckpoint(JSON.parse(raw)) ?? {}));
     return 0;
-  } catch { error("Codex checkpoint: malformed or unsupported lifecycle input"); return 2; }
+  } catch { error("Codex checkpoint: malformed or unsupported lifecycle input; configured events require qc codex-hook"); return 2; }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

@@ -1,3 +1,4 @@
+import { codexHookChannel, readCodexNativeInput } from "./codex-hook-channel.mjs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, rmdirSync, statSync } from "node:fs";
@@ -110,18 +111,15 @@ export async function decideCodexContext(input, { role, admission, codexHome = p
   } finally { rmdirSync(lock); }
 }
 
-export async function runCodexContext(args, { stdin = process.stdin, write = console.log, error = console.error } = {}) {
+export async function runCodexContext(args, { stdin = process.stdin, write = console.log, error = console.error, env = process.env } = {}) {
   try {
+    codexHookChannel(env);
     if (args.length !== 2 || args[0] !== "--role" || !["leader", "implementer", "reviewer"].includes(args[1])) throw new Error();
-    let data = "";
-    for await (const chunk of stdin) {
-      data += chunk;
-      if (Buffer.byteLength(data) > 65536) throw new Error();
-    }
+    const data = await readCodexNativeInput(stdin);
     write(JSON.stringify(await decideCodexContext(JSON.parse(data), { role: args[1] }) ?? {}));
     return 0;
   } catch {
-    error("Codex context: unsupported input or unavailable state");
+    error("Codex context: unsupported input or unavailable state; configured events require qc codex-hook");
     return 2;
   }
 }
