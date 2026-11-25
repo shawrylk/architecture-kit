@@ -19,15 +19,42 @@ export const codexWorkerRestricted = env => Boolean(env.QC_CODEX_WORKER) ||
 export const codexWorkerEnvironment = (env, role) => ({ ...env, QC_CODEX_WORKER: "1", QC_ROLE: role });
 // Parent-only producer consumed by the runner; a serialized clone carries no launch authority.
 const invocations = new WeakSet();
+function validateInvocationOverrides(args, role) {
+  const required = new Map([...CODEX_WORKER_FEATURES, ...(role === "leader" ?
+    Object.entries(settings).map(([key, value]) => `${key}=${value}`) : [])].map(value => value.split("=")));
+  const found = new Set();
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--") break;
+    if (arg === "--enable" || arg.startsWith("--enable=")) {
+      const enabled = arg === "--enable" ? args[++index] : arg.slice("--enable=".length);
+      if (!enabled || enabled.split(",").some(value => ["multi_agent", "multi_agent_v2"].includes(value.trim()))) unavailable();
+      continue;
+    }
+    let raw;
+    if (arg === "-c" || arg === "--config") raw = args[++index];
+    else if (arg.startsWith("--config=")) raw = arg.slice("--config=".length);
+    else if (arg.startsWith("-c")) raw = arg.slice(arg.startsWith("-c=") ? 3 : 2);
+    else continue;
+    const separator = raw?.indexOf("=") ?? -1;
+    if (separator < 1) unavailable();
+    // Native 0.172.0 splits at the first '=' and trims both halves; accept only
+    // canonical protected scalars, refusing table/descendant replacements.
+    const key = raw.slice(0, separator).trim(), value = raw.slice(separator + 1).trim();
+    if (!key || key === "features" || [...required.keys()].some(parent => key.startsWith(`${parent}.`))) unavailable();
+    if (required.has(key)) {
+      if (required.get(key) !== value) unavailable();
+      found.add(key);
+    }
+  }
+  if ([...required.keys()].some(key => !found.has(key))) unavailable();
+}
 export function createCodexInvocation({ args, env, role }) {
   if (!Array.isArray(args) || !args.every(value => typeof value === "string") || !env ||
       !["leader", "implementer", "reviewer", "scout", "tests"].includes(role)) unavailable();
   if (role === "leader" ? codexWorkerRestricted(env) : env.QC_CODEX_WORKER !== "1" ||
       ({ implement: "implementer", review: "reviewer" }[env.QC_ROLE] ?? env.QC_ROLE) !== role) unavailable();
-  const required = [...CODEX_WORKER_FEATURES, ...(role === "leader" ? Object.entries(settings).map(([key, value]) => `${key}=${value}`) : [])];
-  if (required.some(feature => !args.some((value, index) => value === feature && args[index - 1] === "-c")) ||
-      args.some(value => (/^(?:(?:-c|--config=)?features\.multi_agent(?:_v2)?\s*=|(?:--enable=)?multi_agent(?:_v2)?(?:,|$))/.test(value) ||
-        role === "leader" && /^(?:-c|--config=)?model_(?:auto_compact_token_limit|post_turn_compact_threshold_percent)\s*=/.test(value)) && !required.includes(value))) unavailable();
+  validateInvocationOverrides(args, role);
   if (Object.values(env).some(value => typeof value !== "string")) unavailable();
   const invocation = Object.freeze({ args: Object.freeze([...args]), env: Object.freeze({ ...env }), role });
   invocations.add(invocation); return invocation;

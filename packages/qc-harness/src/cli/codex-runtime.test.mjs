@@ -8,9 +8,48 @@ import { once, EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { createCodexRuntime } from "./codex-runtime.mjs";
+import { createCodexRuntime, createCodexInvocation } from "./codex-runtime.mjs";
 import { decideCodexContext } from "./codex-context.mjs";
 import { readCodexUsage } from "./codex-usage-source.mjs";
+
+const workerOverrides = ["features.multi_agent=false", "features.multi_agent_v2=false"];
+const leaderOverrides = [...workerOverrides, "model_auto_compact_token_limit=400000", "model_post_turn_compact_threshold_percent=0"];
+const invocationChoices = role => ({ role, env: role === "leader" ? {} : { QC_ROLE: role, QC_CODEX_WORKER: "1" },
+  args: ["exec", ...((role === "leader" ? leaderOverrides : workerOverrides).flatMap(value => ["-c", value])), "--json", "-"] });
+
+for (const role of ["leader", "implementer", "reviewer", "scout", "tests"]) {
+  test(`${role} invocation rejects normalized helper overrides and feature-table replacement`, () => {
+    const choices = invocationChoices(role);
+    for (const value of [" features.multi_agent=true", "\tfeatures.multi_agent_v2 = true ",
+      "features = { multi_agent = true }", " features={multi_agent_v2=true}", "features={}",
+      "features.multi_agent.child=true"]) {
+      for (const suffix of [["-c", value], ["--config", value], [`--config=${value}`], [`-c${value}`], [`-c=${value}`]])
+        assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, ...suffix] }), /unavailable/, JSON.stringify(suffix));
+    }
+    for (const suffix of [["--enable", "multi_agent"], ["--enable=other,multi_agent_v2"]])
+      assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, ...suffix] }), /unavailable/);
+  });
+}
+test("leader invocation rejects padded compaction overrides before minting authority", () => {
+  const choices = invocationChoices("leader");
+  for (const value of [" model_auto_compact_token_limit=1", "\tmodel_post_turn_compact_threshold_percent = 99 ",
+    "model_auto_compact_token_limit.child=1"]) {
+    for (const suffix of [["-c", value], ["--config", value], [`--config=${value}`], [`-c${value}`], [`-c=${value}`]])
+      assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, ...suffix] }), /unavailable/, JSON.stringify(suffix));
+  }
+});
+test("invocation accepts normalized required scalars and unrelated overrides", () => {
+  for (const role of ["leader", "implementer"]) {
+    const choices = invocationChoices(role);
+    const args = choices.args.map(value => value.includes("=") ? ` \t${value.replace("=", " = ")} ` : value);
+    args.push("--config=model=\"runner-model\"", "-c", "model_reasoning_effort=high");
+    assert.deepEqual(createCodexInvocation({ ...choices, args }).args, args);
+  }
+});
+test("positional text after the option terminator cannot satisfy required overrides", () => {
+  const choices = invocationChoices("leader");
+  assert.throws(() => createCodexInvocation({ ...choices, args: ["exec", "--", ...choices.args.slice(1)] }), /unavailable/);
+});
 
 function fixture(t, options = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-runtime-"));

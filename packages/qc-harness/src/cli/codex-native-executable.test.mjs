@@ -71,8 +71,7 @@ test("owned runtime requires the producer pin and copies runner invocation choic
   const invocation = createCodexInvocation(choices);
   const options = { worktree: f.dir, executable: f.executable, workflowId: "owned", invocation };
   assert.throws(() => createCodexRuntime(options), /unavailable/);
-  for (const extra of [{ args: ["--profile", "promote"] }, { config: {} }, { role: "leader" }, { env: { ...env, QC_CODEX_WORKER: "1", QC_ROLE: "leader" } }])
-    assert.throws(() => createCodexRuntime({ ...options, executablePin: pin, invocation: { ...invocation, ...extra } }), /unavailable/);
+  assert.throws(() => createCodexRuntime({ ...options, executablePin: pin, invocation: { ...invocation } }), /unavailable/);
   assert.throws(() => createCodexRuntime({ ...options, executablePin: { ...pin } }), /unavailable/);
   assert.throws(() => createCodexInvocation({ ...choices, env: { ...env, QC_CODEX_WORKER: "0" } }), /unavailable/);
   assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, "-c", "features.multi_agent=true"] }), /unavailable/);
@@ -104,6 +103,26 @@ test("owned runtime requires the producer pin and copies runner invocation choic
   for (const feature of ["features.multi_agent=false", "features.multi_agent_v2=false"]) assert.ok(output.includes(feature));
   const closed = once(child, "close"); runtime.terminal(r); await closed;
   assert.equal(child.stdout.listenerCount("data"), 1); assert.equal(child.listenerCount("exit"), 0);
+});
+
+test("owned leader launches with normalized helper and 400000/zero requests", { skip: !supported }, async t => {
+  const { createCodexRuntime, createCodexInvocation } = await import("./codex-runtime.mjs");
+  const f = fixture(t); if (!f) return; mkdirSync(path.join(f.dir, ".git"));
+  const env = { ...process.env, QC_ROLE: "leader", QC_CODEX_WORKER: "" };
+  const pin = pinCodexNativeExecutable({ command: f.executable, cwd: f.dir, env });
+  const overrides = [" features.multi_agent = false ", "\tfeatures.multi_agent_v2=false",
+    " model_auto_compact_token_limit = 400000 ", " model_post_turn_compact_threshold_percent=0"];
+  const invocation = createCodexInvocation({ role: "leader", env,
+    args: ["exec", "--json", ...overrides.flatMap(value => ["--config", value]), "-"] });
+  const runtime = createCodexRuntime({ worktree: f.dir, executable: f.executable, workflowId: "leader", executablePin: pin, invocation });
+  const r = runtime.reserve({ role: "leader", workflowParentId: "parent" }), ready = runtime.ready(r);
+  runtime.startup(r, r.hookCredential, { hook_event_name: "SessionStart", source: "startup", cwd: f.dir, session_id: "native-thread" });
+  const child = runtime.launch(r, "leader-prompt\n"); t.after(() => child.kill());
+  let output = ""; child.stdout.on("data", chunk => { output += chunk; });
+  assert.equal((await ready).role, "leader");
+  while (!output.includes("QC_FIXTURE_DONE")) await once(child.stdout, "data");
+  for (const override of overrides) assert.ok(output.includes(override));
+  const closed = once(child, "close"); runtime.terminal(r); await closed;
 });
 
 for (const mode of ["stdout-first", "timeout", "cancel", "error", "malformed", "drift", "precreate-drift"]) test(`owned child lifecycle: ${mode}`, { skip: !supported }, async t => {
