@@ -315,7 +315,7 @@ function spawnRun({ invocation: { args, env }, input, log, cwd, launch }, codexC
   });
 }
 
-// Single owned implement/review/scout invocation. Native argv uses budgets.codex;
+// Single owned implement/review/scout/tests invocation. Native argv uses budgets.codex;
 // the fixed dispatch role selects the separate implementer/reviewer workflow budget.
 async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
   if (codexCommand.length !== 1 || !model) throw Error("Owned runner requires one native executable and an explicit model");
@@ -335,7 +335,7 @@ async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
     return owned[name](...args);
   }]));
   const dispatch = createCodexDispatch({ parentSessionId: settings.parentSession, workerSessionId: randomUUID(),
-    role: settings.role === "scout" ? "scout" : settings.review ? "reviewer" : "implementer", worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime });
+    role: ["scout", "tests"].includes(settings.role) ? settings.role : settings.review ? "reviewer" : "implementer", worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime });
   let bridge, starting, child, retired = false, cancelled = false, cleanupNeeded = false;
   const close = async () => {
     try { await dispatch.error(); retired = true; await bridge?.close(); }
@@ -558,8 +558,8 @@ async function runJob(argv, {
     return finish(say, message, code);
   };
   const started = Date.now();
-  if (settings.ownedNative && (!["implement", "review", "scout"].includes(settings.role) || settings.maxRuns !== 1 || settings.resume || settings.waitReset))
-    return refuse("other", "H3b tests role-lifecycle and retry/resume continuation required for this owned runner mode");
+  if (settings.ownedNative && (settings.maxRuns !== 1 || settings.resume || settings.waitReset))
+    return refuse("other", "H3b retry/resume continuation required for this owned runner mode");
   if (settings.ownedNative && !/^[A-Za-z0-9_-]{1,128}$/.test(settings.parentSession ?? ""))
     return refuse("other", "Owned runner requires --parent-session for checkpoint admission");
   if (settings.ownedNative && isDone(settings.progress)) return refuse("other", "Owned runner cannot accept a prewritten completion marker");
@@ -591,6 +591,10 @@ async function runJob(argv, {
   let testHead;
   let testBase;
   let locked;
+  let finalTestsLock;
+  let finalTestCases;
+  let testsAllow;
+  const ownedTests = settings.ownedNative && settings.role === "tests";
   try {
     codex = codexSettingsOf(settings.worktree);
     if (settings.review) metrics.effort = codex.reviewEffort;
@@ -605,6 +609,7 @@ async function runJob(argv, {
         const git = (...args) => execFileSync("git", args, { cwd: settings.worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
         testHead = git("rev-parse", "--revs-only", "HEAD");
         if (testHead) testBase = git("merge-base", "HEAD", guardConfig.check.base);
+        if (ownedTests && (!testHead || !testBase)) throw Error("Owned tests requires a current guard baseline and merge base");
       }
     }
     if (settings.maxRuns > codex.maxRuns) throw new Error(`--max-runs exceeds codex.maxRuns limit of ${codex.maxRuns}; got ${settings.maxRuns}`);
@@ -612,6 +617,11 @@ async function runJob(argv, {
     return finish(say, error.message, 1);
   }
   const execute = run ?? ((call) => spawnRun(call, codexCommand));
+  const testsLockProblem = expected => {
+    const { problems } = checkLockedTests(settings.worktree, expected);
+    if (problems.length) throw Error(problems.join("; "));
+    if (JSON.stringify(readLockedTests(settings.worktree)) !== JSON.stringify(expected)) throw Error("locked test map changed");
+  };
   /** Applies frozen policy before accepting either a new or a prewritten marker. */
   const verifyTests = async ({ policyOnly = false } = {}) => {
     if (settings.role !== "tests" && (settings.role !== "implement" || locked === null)) return null;
@@ -622,6 +632,7 @@ async function runJob(argv, {
         const current = readLockedTests(settings.worktree);
         if (JSON.stringify(current) !== JSON.stringify(locked)) return refuse("other", `guard refused: locked test map changed: ${Object.keys(locked).join(", ")}`, 4);
       }
+      if (ownedTests) testsLockProblem(locked);
       const cases = addedTestCases(settings.worktree, settings.role === "tests" ? testBase : testHead);
       const cap = settings.role === "tests" ? "maxNewCases" : "maxExtraCases";
       if (cases.length > tests[cap]) return refuse("other", `guard refused: tests.${cap} limit ${tests[cap]}; got ${cases.length}`, 4);
@@ -629,7 +640,11 @@ async function runJob(argv, {
       if (settings.role === "tests") {
         const { problems } = await verifyBaseTests(settings.worktree, testBase, cases, tests.command);
         if (problems.length) return refuse("other", `guard refused: ${problems.join("; ")}`, 4);
-        if (isDone(settings.progress)) lockTests(settings.worktree, [...Object.keys(locked ?? {}), ...cases.map((entry) => entry.path)]);
+        if (ownedTests) testsLockProblem(locked);
+        if (isDone(settings.progress)) {
+          finalTestsLock = lockTests(settings.worktree, [...Object.keys(locked ?? {}), ...cases.map((entry) => entry.path)]);
+          finalTestCases = cases;
+        }
         return null;
       }
     } catch (error) { return refuse("other", `guard refused: cannot verify locked tests: ${error.message}`, 4); }
@@ -658,6 +673,17 @@ async function runJob(argv, {
       if (!passed) return finish(say, "verify failed", 7);
     } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
     if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
+    if (ownedTests) {
+      try {
+        if (!finalTestsLock) throw Error("final tests lock missing");
+        testsLockProblem(finalTestsLock);
+        if (JSON.stringify(addedTestCases(settings.worktree, testBase)) !== JSON.stringify(finalTestCases)) throw Error("test cases changed during verification");
+        if (currentBranch(settings.worktree) !== boundary.branch) throw Error("tests branch changed during verification");
+        const findings = checkRunCommits(settings.worktree, boundary, { protectedPaths, role: "implementer", allow: testsAllow, base: guardBase, branch: boundary.branch });
+        const { problems } = checkDiffShape({ worktree: settings.worktree, base: boundary.head, baseRef: guardBase, ...contract, maxDiffLines: codex.maxDiffLines });
+        if (findings.length || problems.length) throw Error("tests history or diff changed during verification");
+      } catch (error) { return refuse("other", `guard refused: ${error.message}`, 4); }
+    }
     if (metrics.ownedLifecycle && (settings.review || settings.role === "scout")) {
       const valid = completeReview(settings, started, originalStamp, message, say, false);
       if (valid !== 0) return valid;
@@ -722,6 +748,7 @@ async function runJob(argv, {
       ? [...globalArgs, ...overrides, "exec", "resume", settings.resume, "--json", "-"]
       : ["exec", ...globalArgs, ...overrides, "--json", "-"];
     const allow = protectedAllow(readFileSync(settings.brief, "utf8"));
+    if (ownedTests) testsAllow = allow;
     const childEnv = Object.fromEntries(Object.entries(codexEnvironment(env, codex.envAllow)).filter(([name]) => name.toUpperCase() !== "QC_PROTECTED_ALLOW"));
     let before;
     try {

@@ -21,9 +21,8 @@ import { appendRecord, readLedger } from "./ledger.mjs";
 const fail = reason => { throw new Error(reason || "Codex worker lifecycle unavailable"); };
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const workers = new WeakMap();
-const roles = ["implementer", "reviewer", "branch-reviewer", "planner", "scout"];
 export function normalizeCodexWorker(input) {
-  if (!input || !roles.includes(input.role) || ![input.parentSessionId, input.workerSessionId].every(id) ||
+  if (!input || input.role === "leader" || !codexRoleProfile(input.role) || ![input.parentSessionId, input.workerSessionId].every(id) ||
       !["worktree", "branch", "brief", "model"].every(key => typeof input[key] === "string" && input[key].length > 0 &&
         input[key].length <= 4096 && !/[\r\n]/.test(input[key])) || !path.isAbsolute(input.worktree) || !path.isAbsolute(input.brief) ||
       typeof input.report !== "string" || Buffer.byteLength(input.report) > 262144) fail();
@@ -43,7 +42,7 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
   input = Object.freeze({ ...input });
   const profile = codexRoleProfile(input.role);
   const identity = normalizeCodexWorker(input), workflow = workflowAt(input.worktree), review = workflow?.review ?? reviewDefaults;
-  const type = (input.role === "implementer" ? workflow?.review.implementerTypes ?? dispatchDefaults.implementerTypes :
+  const type = (profile.route === "implementer" ? workflow?.review.implementerTypes ?? dispatchDefaults.implementerTypes :
     profile.route === "planner" ? review.plannerTypes : review.reviewerTypes[input.role === "reviewer" ? "task" : "branch"])[0];
   if (!type) fail();
   const call = { ...identity, agent_type: type }, dir = slotDirOf(call.session_id, tmp);
@@ -66,6 +65,7 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
       if (problem) fail(problem);
       return;
     }
+    if (input.role === "tests") return; // Acceptance belongs to the original tests runner, never RED/GREEN or verdict claims.
     check(reportDecision(stopCall("PreToolUse"), tmp)); check(planDecision(stopCall("PreToolUse"), tmp));
   };
   const admitted = native => {
@@ -100,10 +100,10 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
       try {
         if (accepted && !outcome) {
           validateReport();
-          if (input.role === "scout") {
-            if (!workflow) fail("Scout workflow unavailable");
+          if (["scout", "tests"].includes(input.role)) {
+            if (!workflow) fail("Worker workflow unavailable");
             appendRecord(workflow.ledger, { type: "stop", session: call.session_id, agentType: type,
-              agentId: call.agent_id, role: "scout" });
+              agentId: call.agent_id, role: input.role });
           } else {
             check(reportDecision(stopCall("SubagentStop"), tmp));
             check(planDecision(stopCall("SubagentStop"), tmp));
@@ -147,7 +147,7 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
         const used = workers.get(runtime) ?? new Set(), key = `${call.session_id}:${call.agent_id}`;
         if (used.has(key) || used.size >= 256) fail("Worker identity already admitted or capacity exhausted");
         used.add(key); workers.set(runtime, used);
-        if (settings && input.role === "implementer") {
+        if (settings && profile.route === "implementer") {
           if (claimSlot(dir, settings, Date.now(), holder)) fail("Worker slot occupied");
           claimed = true;
         }

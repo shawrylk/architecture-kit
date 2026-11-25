@@ -5,8 +5,16 @@ import { codexRoleProfile, scoutReportProblem } from "./codex-role-profile.mjs";
 test("closed scout profile maps only its canonical runtime/budget to reviewer", () => {
   assert.deepEqual(codexRoleProfile("scout"), { runtime: "reviewer", route: "planner" });
   assert.ok(Object.isFrozen(codexRoleProfile("scout")));
-  for (const claim of ["tests", "admin", {}, { role: "reviewer" }]) assert.throws(() => codexRoleProfile(claim));
+  for (const claim of ["admin", {}, { role: "reviewer" }]) assert.throws(() => codexRoleProfile(claim));
   assert.equal(codexRoleProfile("planner").runtime, "reviewer");
+});
+
+test("closed tests profile preserves tests identity with implementer policy", () => {
+  assert.deepEqual(codexRoleProfile("tests"), { runtime: "implementer", route: "implementer" });
+  assert.ok(Object.isFrozen(codexRoleProfile("tests")));
+  for (const claim of ["test", { role: "tests" }, { runtime: "implementer", route: "implementer" }]) {
+    assert.throws(() => codexRoleProfile(claim));
+  }
 });
 
 test("scout handback keeps its own six labels without a verdict or RED/GREEN", () => {

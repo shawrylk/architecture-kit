@@ -31,7 +31,7 @@ for (const role of ["leader", "implementer", "reviewer", "scout", "tests"]) {
       assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, ...suffix] }), /unavailable/);
   });
 }
-test("scout invocation admits only the reviewer canonical reservation", { skip: !["linux", "darwin"].includes(process.platform) }, t => {
+for (const [nativeRole, canonical] of [["scout", "reviewer"], ["tests", "implementer"]]) test(`${nativeRole} invocation admits only its canonical reservation`, { skip: !["linux", "darwin"].includes(process.platform) }, t => {
   const inherited = { QC_ROLE: process.env.QC_ROLE, QC_CODEX_WORKER: process.env.QC_CODEX_WORKER };
   delete process.env.QC_ROLE; delete process.env.QC_CODEX_WORKER;
   t.after(() => { for (const [key, value] of Object.entries(inherited)) {
@@ -43,10 +43,10 @@ test("scout invocation admits only the reviewer canonical reservation", { skip: 
   if (built.error?.code === "ENOENT") { t.skip("native fixture requires cc"); return; }
   assert.equal(built.status, 0, built.stderr);
   const executablePin = pinCodexNativeExecutable({ command: executable, cwd: f.dir });
-  const runtime = createCodexRuntime({ worktree: f.dir, executable, executablePin, workflowId: "scout",
-    invocation: createCodexInvocation(invocationChoices("scout")) });
-  for (const role of ["leader", "implementer", "scout"]) assert.throws(() => runtime.reserve({ role, workflowParentId: "parent" }), /unavailable/);
-  runtime.terminal(runtime.reserve({ role: "reviewer", workflowParentId: "parent" }));
+  const runtime = createCodexRuntime({ worktree: f.dir, executable, executablePin, workflowId: nativeRole,
+    invocation: createCodexInvocation(invocationChoices(nativeRole)) });
+  for (const role of ["leader", "implementer", "reviewer", "scout", "tests"].filter(role => role !== canonical)) assert.throws(() => runtime.reserve({ role, workflowParentId: "parent" }), /unavailable/);
+  runtime.terminal(runtime.reserve({ role: canonical, workflowParentId: "parent" }));
 });
 
 test("leader invocation rejects padded compaction overrides before minting authority", () => {

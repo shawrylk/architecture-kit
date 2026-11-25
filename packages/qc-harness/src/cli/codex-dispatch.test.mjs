@@ -43,7 +43,7 @@ function fixture(t, role = "implementer", dispatch = {}) {
   const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null, signalCode: null });
   const exit = (code = 0) => { child.exitCode = code; child.emit("exit", code, null); };
   child.kill = () => { exit(1); return true; };
-  const proof = { pid: child.pid, worktree: root, workflowParentId: "parent", role: role === "implementer" ? role : "reviewer", nativeThreadId: "native" };
+  const proof = { pid: child.pid, worktree: root, workflowParentId: "parent", role: ["implementer", "tests"].includes(role) ? "implementer" : "reviewer", nativeThreadId: "native" };
   const handle = {}, seen = [];
   const runtime = { reserve: options => { seen.push(options); return handle; }, ready: async () => proof,
     validate: (h, native) => h === handle && native.session_id === "native" ? proof : null,
@@ -55,6 +55,27 @@ function fixture(t, role = "implementer", dispatch = {}) {
 }
 const native = { session_id: "native" };
 const report = "RED: node --test fails\nGREEN: node --test passes";
+
+test("tests uses configured implementer admission/slot without implementer report semantics", async t => {
+  const f = fixture(t, "tests", { implementerTypes: ["acceptance-writer"] }), b = f.bridge();
+  await b.start(() => { assert.equal(f.slots(), 1); return f.child; });
+  assert.deepEqual(f.seen[0], { role: "implementer", workflowParentId: "parent" });
+  assert.equal(f.records().find(r => r.type === "dispatch").agentType, "acceptance-writer");
+  assert.throws(() => b.handback(native, " "));
+  f.proof.role = "reviewer";
+  assert.throws(() => b.handback(native, "Tests prepared."));
+  f.proof.role = "implementer";
+  b.handback(native, "Tests prepared; pending implementation.");
+  assert.equal(f.records().filter(r => r.type === "stop").length, 0);
+  await assert.rejects(b.finish(), /exit/);
+  assert.equal(f.records().filter(r => r.type === "stop").length, 0);
+  f.exit();
+  assert.equal((await b.finish()).accepted, true);
+  assert.equal((await b.finish()).accepted, true);
+  assert.equal(f.records().filter(r => r.type === "stop" && r.role === "tests").length, 1);
+  assert.equal(f.records().filter(r => r.type === "verdict").length, 0);
+  assert.equal(f.slots(), 0); assert.equal(f.seen.at(-1), "retired");
+});
 
 test("runner may establish its private bridge asynchronously before launching", async t => {
   const f = fixture(t), b = f.bridge();
