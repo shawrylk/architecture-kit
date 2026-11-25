@@ -64,6 +64,54 @@ test("native worker budgets persist across CLI processes, deduplicate calls and 
   assert.equal(f.states()[0].policy.budgetClosed, true);
 });
 
+test("worker policy survives config edits before closure and while handing off without usage", (t) => {
+  for (const role of ["implementer", "reviewer"]) {
+    const f = runtime(t, role), config = path.join(f.home, "qc.config.json");
+    const budget = { remindAt: 10000, handoffAt: 20000 };
+    writeFileSync(config, JSON.stringify({ budgets: { [role]: budget } }));
+    f.save(15000);
+    assert.match(f.run().hookSpecificOutput.additionalContext, new RegExp(`budgets.${role}.remindAt`));
+    writeFileSync(config, JSON.stringify({ budgets: { [role]: null } }));
+    f.save(20000);
+    assert.equal(f.run({ tool_use_id: "close" }).hookSpecificOutput.permissionDecision, "deny");
+    rmSync(f.file);
+    for (const [index, contents] of [JSON.stringify({ budgets: { [role]: null } }),
+      JSON.stringify({ budgets: { [role]: { remindAt: 500000, handoffAt: 900000 } } }), "{", null].entries()) {
+      if (contents === null) rmSync(config); else writeFileSync(config, contents);
+      const output = f.run({ tool_use_id: `missing${index}` }).hookSpecificOutput;
+      assert.equal(output.permissionDecision, "deny");
+      assert.match(output.permissionDecisionReason, /handoffAt \(20000\)/);
+      assert.deepEqual(f.run({ tool_use_id: `handoff${index}`, tool_input: { command: "git status" } }), {});
+      assert.equal(f.states()[0].policy.budgetClosed, true);
+      assert.deepEqual(f.states()[0].budget, budget);
+    }
+  }
+});
+
+test("an initially disabled worker policy is retained across processes", (t) => {
+  const f = runtime(t), config = path.join(f.home, "qc.config.json");
+  writeFileSync(config, JSON.stringify({ budgets: { implementer: null } }));
+  f.save(200000); assert.deepEqual(f.run(), {});
+  rmSync(config);
+  assert.deepEqual(f.run({ tool_use_id: "next" }), {});
+  assert.equal(f.states()[0].budget, null);
+});
+
+test("missing legacy or invalid policy snapshots fail closed without rewriting state", (t) => {
+  const f = runtime(t); f.save(150000); f.run(); const state = f.states()[0];
+  const { budget, ...legacy } = state;
+  for (const contents of [legacy, ...[null, {}, [], { remindAt: 20, handoffAt: 10 },
+    { remindAt: 10, handoffAt: 20, extra: true }, { remindAt: 1, handoffAt: 1e100 }].map(budget => ({ ...state, budget }))]) {
+    const encoded = JSON.stringify(contents); writeFileSync(state.file, encoded);
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "codex-context", "--role", "implementer"], {
+      input: JSON.stringify(f.call), encoding: "utf8", env: { ...process.env, CODEX_HOME: f.home },
+    });
+    assert.equal(result.status, 2); assert.equal(result.stdout, "");
+    assert.match(result.stderr, /unsupported input or unavailable state/);
+    assert.equal(readFileSync(state.file, "utf8"), encoded);
+  }
+});
+
 test("runtime isolates workflow roles, repositories and threads; stale or wrong-turn usage stays unknown", (t) => {
   const f = runtime(t);
   f.run(); f.run({}, "reviewer"); assert.equal(f.states().length, 2);

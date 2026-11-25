@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { load } from "../config.mjs";
 import { writeState } from "./budget-counter.mjs";
 import { checkoutRootOf } from "./checkout-root.mjs";
+import { budgetsOf } from "./context-budgets.mjs";
 import { decideCodexBudget } from "./context-watch.mjs";
 
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -25,6 +26,8 @@ const hash = value => createHash("sha256").update(value).digest("hex");
 const digest = value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 const whole = value => Number.isSafeInteger(value) && value >= 0;
 const object = value => value && typeof value === "object" && !Array.isArray(value);
+const budgetSnapshot = value => value === null || object(value) && Object.keys(value).length === 2 &&
+  whole(value.remindAt) && value.remindAt > 0 && whole(value.handoffAt) && value.handoffAt > value.remindAt;
 function stored(file) {
   let fd;
   try {
@@ -38,6 +41,7 @@ function stored(file) {
         !data.calls.every(digest) || !object(data.policy) || Object.keys(data.policy).some(key => !["budgetClosed", "budgetReminded", "budgetFiredAt"].includes(key)) ||
         ["budgetClosed", "budgetReminded"].some(key => data.policy[key] !== undefined && typeof data.policy[key] !== "boolean") ||
         data.policy.budgetFiredAt !== undefined && (!whole(data.policy.budgetFiredAt) || data.policy.budgetFiredAt > data.count) ||
+        data.budget !== undefined && !budgetSnapshot(data.budget) || data.policy.budgetClosed && data.budget === null ||
         data.root !== undefined && !digest(data.root) || data.noted !== undefined && typeof data.noted !== "boolean" ||
         data.cursor !== undefined && (!object(data.cursor) || !digest(data.cursor.file) || !whole(data.cursor.bytes) || !whole(data.cursor.timestamp) || !whole(data.cursor.ordinal))) throw new Error();
     return data;
@@ -63,6 +67,12 @@ export async function decideCodexContext(input, { role, codexHome = process.env.
   if (!locked) throw new Error("unavailable state");
   try {
     const state = stored(file), key = hash(JSON.stringify([call.turn_id, call.tool_use_id]));
+    if (role !== "leader" && state.budget === undefined) {
+      // A pre-snapshot worker's initial policy is unknown; never reload a weaker one.
+      if (state.count > 0 || state.policy.budgetClosed) throw new Error("unavailable initial policy");
+      state.budget = budgetsOf(load(repository))[role];
+      if (!budgetSnapshot(state.budget)) throw new Error("unavailable initial policy");
+    }
     if (!state.calls.includes(key)) {
       if (state.count === Number.MAX_SAFE_INTEGER) throw new Error();
       state.count++; state.calls = [...state.calls.slice(-63), key];
@@ -72,7 +82,7 @@ export async function decideCodexContext(input, { role, codexHome = process.env.
     if (sample && state.root !== undefined && state.root !== hash(sample.rootSessionId)) throw new Error();
     if (sample) { state.cursor = sample.cursor; state.root = hash(sample.rootSessionId); }
     const verdict = role === "leader" ? null : decideCodexBudget(call, {
-      usage: sample?.usage, config: load(repository), count: state.count, state: state.policy,
+      usage: sample?.usage, config: { budgets: { [role]: state.budget } }, count: state.count, state: state.policy,
     });
     let result = verdict;
     if (!result && !state.policy.budgetClosed && !state.noted && (role === "leader" || !sample)) {
