@@ -19,6 +19,8 @@ export const codexWorkerRestricted = env => Boolean(env.QC_CODEX_WORKER) ||
 export const codexWorkerEnvironment = (env, role) => ({ ...env, QC_CODEX_WORKER: "1", QC_ROLE: role });
 // Parent-only producer consumed by the runner; a serialized clone carries no launch authority.
 const invocations = new WeakSet();
+// Rust str::trim uses Unicode White_Space: includes U+0085, excludes U+FEFF.
+const rustTrim = value => value.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, "");
 function validateInvocationOverrides(args, role) {
   const required = new Map([...CODEX_WORKER_FEATURES, ...(role === "leader" ?
     Object.entries(settings).map(([key, value]) => `${key}=${value}`) : [])].map(value => value.split("=")));
@@ -28,7 +30,7 @@ function validateInvocationOverrides(args, role) {
     if (arg === "--") break;
     if (arg === "--enable" || arg.startsWith("--enable=")) {
       const enabled = arg === "--enable" ? args[++index] : arg.slice("--enable=".length);
-      if (!enabled || enabled.split(",").some(value => ["multi_agent", "multi_agent_v2"].includes(value.trim()))) unavailable();
+      if (!enabled || enabled.split(",").some(value => ["multi_agent", "multi_agent_v2"].includes(rustTrim(value)))) unavailable();
       continue;
     }
     let raw;
@@ -38,9 +40,9 @@ function validateInvocationOverrides(args, role) {
     else continue;
     const separator = raw?.indexOf("=") ?? -1;
     if (separator < 1) unavailable();
-    // Native 0.172.0 splits at the first '=' and trims both halves; accept only
+    // Native 0.172.0 splits at the first '=' and Rust-trims both halves; accept only
     // canonical protected scalars, refusing table/descendant replacements.
-    const key = raw.slice(0, separator).trim(), value = raw.slice(separator + 1).trim();
+    const key = rustTrim(raw.slice(0, separator)), value = rustTrim(raw.slice(separator + 1));
     if (!key || key === "features" || [...required.keys()].some(parent => key.startsWith(`${parent}.`))) unavailable();
     if (required.has(key)) {
       if (required.get(key) !== value) unavailable();

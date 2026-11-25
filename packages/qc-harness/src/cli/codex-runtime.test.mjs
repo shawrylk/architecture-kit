@@ -51,6 +51,58 @@ test("positional text after the option terminator cannot satisfy required overri
   assert.throws(() => createCodexInvocation({ ...choices, args: ["exec", "--", ...choices.args.slice(1)] }), /unavailable/);
 });
 
+// Rust Unicode White_Space, including NEL and excluding BOM (unlike JS trim).
+const nativeWhitespace = [..."\u0009\u000a\u000b\u000c\u000d\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000"];
+for (const role of ["leader", "implementer", "reviewer", "scout", "tests"]) {
+  test(`${role} invocation rejects Unicode-normalized protected replacements`, () => {
+    const choices = invocationChoices(role);
+    const protectedOverrides = role === "leader" ? leaderOverrides : workerOverrides;
+    const conflicts = protectedOverrides.map(raw => `${raw.split("=")[0]}=${raw.endsWith("false") ? "true" : "1"}`);
+    conflicts.push("features={}", ...protectedOverrides.map(raw => `${raw.split("=")[0]}.child=true`));
+    for (const ws of nativeWhitespace) for (const raw of conflicts) {
+      const [key, value] = raw.split("=");
+      for (const override of [`${ws}${key}=${value}`, `${key}${ws}=${value}`])
+        assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, "-c", override] }),
+          /unavailable/, JSON.stringify(override));
+    }
+  });
+  test(`${role} invocation refuses Unicode-padded helper enable requests`, () => {
+    const choices = invocationChoices(role);
+    for (const ws of nativeWhitespace) for (const feature of ["multi_agent", "multi_agent_v2"]) {
+      for (const enabled of [`${ws}${feature}`, `${feature}${ws}`]) {
+        for (const suffix of [["--enable", enabled], [`--enable=other,${enabled}`]])
+          assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, ...suffix] }), /unavailable/);
+      }
+    }
+  });
+  test(`${role} invocation accepts genuine Unicode-normalized required scalars`, () => {
+    const choices = invocationChoices(role);
+    for (const ws of nativeWhitespace) {
+      const args = choices.args.map(raw => {
+        if (!raw.includes("=")) return raw;
+        const [key, value] = raw.split("=");
+        return `${ws}${key}${ws}=${ws}${value}${ws}`;
+      });
+      assert.deepEqual(createCodexInvocation({ ...choices, args }).args, args, JSON.stringify(ws));
+    }
+  });
+  test(`${role} invocation recognizes only genuine native required keys and scalar values`, () => {
+    const choices = invocationChoices(role);
+    // Changing even one required key/value to contain a literal BOM cannot satisfy it.
+    for (const raw of role === "leader" ? leaderOverrides : workerOverrides) {
+      const [key, value] = raw.split("=");
+      for (const override of [`\ufeff${key}=${value}`, `${key}\ufeff=${value}`,
+        `${key}=\ufeff${value}`, `${key}=${value}\ufeff`]) {
+        assert.throws(() => createCodexInvocation({ ...choices,
+          args: choices.args.map(arg => arg === raw ? override : arg) }), /unavailable/, JSON.stringify(override));
+      }
+    }
+    const args = [...choices.args, "-c", "\ufefffeatures.multi_agent=true", "-c", "features.multi_agent\ufeff=true",
+      "-c", "model=\ufeffliteral\ufeff", "-c", "model=\"contains=equals\""];
+    assert.deepEqual(createCodexInvocation({ ...choices, args }).args, args);
+  });
+}
+
 function fixture(t, options = {}) {
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-runtime-"));
   t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));

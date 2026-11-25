@@ -105,13 +105,15 @@ test("owned runtime requires the producer pin and copies runner invocation choic
   assert.equal(child.stdout.listenerCount("data"), 1); assert.equal(child.listenerCount("exit"), 0);
 });
 
-test("owned leader launches with normalized helper and 400000/zero requests", { skip: !supported }, async t => {
+for (const padding of ["ASCII", "Unicode"]) test(`owned leader launches with ${padding}-normalized helper and 400000/zero requests`, { skip: !supported }, async t => {
   const { createCodexRuntime, createCodexInvocation } = await import("./codex-runtime.mjs");
   const f = fixture(t); if (!f) return; mkdirSync(path.join(f.dir, ".git"));
   const env = { ...process.env, QC_ROLE: "leader", QC_CODEX_WORKER: "" };
   const pin = pinCodexNativeExecutable({ command: f.executable, cwd: f.dir, env });
-  const overrides = [" features.multi_agent = false ", "\tfeatures.multi_agent_v2=false",
-    " model_auto_compact_token_limit = 400000 ", " model_post_turn_compact_threshold_percent=0"];
+  const overrides = padding === "ASCII" ? [" features.multi_agent = false ", "\tfeatures.multi_agent_v2=false",
+    " model_auto_compact_token_limit = 400000 ", " model_post_turn_compact_threshold_percent=0"] :
+    ["\u0085features.multi_agent\u0085=\u0085false\u0085", "\u3000features.multi_agent_v2=\u2003false\u00a0",
+    "\u2028model_auto_compact_token_limit\u205f=\u0085400000\u0085", "\u1680model_post_turn_compact_threshold_percent=\u202f0\u3000"];
   const invocation = createCodexInvocation({ role: "leader", env,
     args: ["exec", "--json", ...overrides.flatMap(value => ["--config", value]), "-"] });
   const runtime = createCodexRuntime({ worktree: f.dir, executable: f.executable, workflowId: "leader", executablePin: pin, invocation });
