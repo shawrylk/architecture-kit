@@ -185,8 +185,61 @@ function fixture(t) {
     assert.equal(result.status, 0, result.stderr);
     return result.stdout.trim() ? JSON.parse(result.stdout) : null;
   };
-  return { cwd, rows, update, run, calls };
+  const poll = (session = "session-a") => {
+    const cli = fileURLToPath(new URL("./qc.mjs", import.meta.url));
+    const result = spawnSync(process.execPath, ["--import", pathToFileURL(mock).href, cli,
+      "comment-watch", "--poll", "--cwd", cwd, "--session", session], {
+      cwd: path.parse(cwd).root, encoding: "utf8", env: { ...env, DATA: data, CALLS: calls },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  return { cwd, rows, update, run, poll, calls };
 }
+
+test("CLI polling matches Stop previews and shares Claude's session ledger without acknowledging", (t) => {
+  const f = fixture(t);
+  for (const session of ["session-a", "claude"]) f.run("PostToolUse", "gh pr view 7", "comment-watch.mjs", session);
+  assert.equal(f.poll("unwatched"), null);
+  const preview = f.poll();
+  assert.deepEqual(preview, f.run("Stop", "", "comment-watch.mjs", "claude"));
+  for (const id of [1, 2, 3, 4, 5]) assert.match(preview.systemMessage, new RegExp(`Comment ${id}`));
+  const records = () => readFileSync(path.join(f.cwd, ".git", "qc", `comment-watch-${createHash("sha256").update("session-a").digest("hex")}.jsonl`), "utf8").split("\n").filter(Boolean).map(JSON.parse);
+  assert.ok(records().some(record => record.pending?.length));
+  assert.ok(!records().some(record => record.seen?.length));
+  writeFileSync(f.calls, "");
+  assert.equal(f.poll(), null);
+  const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.args[0] === "api" && call.args[1] === "graphql"));
+  const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
+  assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Comment 1/);
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment 1/);
+  assert.notEqual(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal(f.poll(), null);
+});
+
+test("CLI polls retry failed reads, redact errors, and fetch edits without posting", (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 4");
+  f.update({ fail: true });
+  assert.match(f.poll().systemMessage, /could not be checked \(gh\)/);
+  assert.doesNotMatch(JSON.stringify(f.poll()), /TOKEN_MUST_STAY_SECRET/);
+  f.update();
+  assert.match(f.poll().systemMessage, /Comment 1/);
+  f.rows[0].body = "Edited feedback";
+  f.update();
+  assert.match(f.poll().systemMessage, /Edited feedback/);
+  assert.equal(f.poll(), null);
+  const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse);
+  assert.ok(calls.every(({ args }) => args[0] === "api" &&
+    (args[1] === "graphql" || args.includes("--paginate"))));
+  writeFileSync(path.join(f.cwd, "qc.config.json"), JSON.stringify({ commentWatch: false }));
+  writeFileSync(f.calls, "");
+  assert.equal(f.poll(), null);
+  assert.equal(readFileSync(f.calls, "utf8"), "");
+});
 
 for (const exists of [false, true]) {
   test(`a mapped config folder that ${exists ? "exists sets GH_CONFIG_DIR" : "does not exist leaves GH_CONFIG_DIR unset"}`, (t) => {

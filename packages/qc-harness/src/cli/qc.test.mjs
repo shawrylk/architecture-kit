@@ -8,6 +8,26 @@ import { fileURLToPath } from "node:url";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test("comment-watch help requires explicit poll, checkout, and session inputs", (t) => {
+  const root = fixture(t, "{}");
+  const run = (args) => spawnSync(process.execPath, [qc, ...args], { cwd: root, encoding: "utf8" });
+  const help = run(["help"]);
+  assert.match(help.stdout, /qc comment-watch --poll --cwd <dir> --session <id>/);
+  assert.match(help.stdout, /same session ledger.*without acknowledging/);
+  for (const args of [[], ["--poll"], ["--cwd", root, "--session", "a"],
+    ["--poll", "--cwd", root], ["--poll", "--session", "a"],
+    ["--poll", "--cwd", root, "--session", " "],
+    ["--poll", "--cwd", root, "--session", "a", "--poll"],
+    ["--poll", "--cwd", root, "--session", "a", "--unknown"],
+    ["--poll", "--cwd", path.join(root, "missing"), "--session", "a"],
+    ["--poll", "--cwd", path.join(root, "qc.config.json"), "--session", "a"]]) {
+    const result = run(["comment-watch", ...args]);
+    assert.equal(result.status, 1, JSON.stringify(args));
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /usage: qc comment-watch/);
+  }
+});
+
 test("help describes full checks, previews, and readiness", () => {
   const run = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
   assert.equal(run.status, 0);

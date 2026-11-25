@@ -61,6 +61,8 @@ const USAGE = `qc — architecture gates
                            run a heavy local command in one of the machine's gate slots; --status lists them
   qc gate <pr-create|pr-ready|merge|command> [--cwd <dir>] --session <id> --role <role> -- <args...>
                            evaluate shared workflow decisions without running the action; command takes one shell string
+  qc comment-watch --poll --cwd <dir> --session <id>
+                           poll GitHub comments in the same session ledger without acknowledging them; JSON systemMessage or null; reuse the stable session id
   qc fleet init --self <id> --nodes <id:weight:size,...> [--force]
   qc fleet next [--repo <o/r>] [--all]
   qc fleet status [--repo <o/r>]
@@ -103,6 +105,11 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "comment-watch") {
+    const { runCommentWatch } = await import("./comment-watch.mjs");
+    process.exitCode = await runCommentWatch(rest);
+    return;
+  }
   if (command === "gate") {
     const { runGate } = await import("./gate.mjs");
     process.exitCode = await runGate(rest);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Trigger: surface GitHub comments and keep their acknowledgments in a session ledger.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -135,7 +135,7 @@ function ledger(root, session) {
         if (record.next) { next = record.next; continue; }
         if (typeof record.retired === "string") { const item = items.get(record.retired); if (item) item.retired = true; continue; }
         const key = itemKey(record);
-        const item = items.get(key) ?? { repo: record.repo, number: record.number, seen: new Set(), shown: new Set(), pending: new Map(), prs: new Set() };
+        const item = items.get(key) ?? { repo: record.repo, number: record.number, seen: new Set(), shown: new Set(), polled: new Set(), pending: new Map(), prs: new Set() };
         if (record.kind) item.kind = record.kind;
         if (record.retired === false) item.retired = false;
         if (record.updatedAt !== undefined) item.updatedAt = record.updatedAt;
@@ -143,6 +143,7 @@ function ledger(root, session) {
         for (const pending of record.pending ?? []) item.pending.set(pending.stamp, pending);
         for (const stamp of record.seen ?? []) item.seen.add(stamp);
         for (const stamp of record.shown ?? []) item.shown.add(stamp);
+        for (const stamp of record.polled ?? []) item.polled.add(stamp);
         items.set(key, item);
       } catch { /* A torn record leaves earlier acknowledgments intact. */ }
     }
@@ -232,12 +233,14 @@ const describe = (item, row) => `@${row.user?.login ?? "unknown"} on ${itemKey(i
 const context = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 
 // Ledger: retain truncated previews so a full read can acknowledge them from any hook.
-function recordPreview(state, item, fresh, acknowledge = false) {
+function recordPreview(state, item, fresh, acknowledge = false, poll = false) {
   const seen = acknowledge ? fresh.filter(({ row }) => !truncated(row)).map(({ stamp }) => stamp) : [];
   const shown = fresh.filter(({ row }) => truncated(row)).map(({ stamp }) => stamp);
   const pending = fresh.filter(({ row }) => truncated(row) || !acknowledge)
     .map(({ row, stamp }) => ({ stamp, id: row.id, endpoint: row.endpoint, url: row.url, ...(!truncated(row) ? { row } : {}) }));
-  if (seen.length || pending.length) state.append({ repo: item.repo, number: item.number, seen, shown, pending });
+  // Poll stamps keep repeats quiet while Claude still presents and acknowledges full comments.
+  if (seen.length || pending.length) state.append({ repo: item.repo, number: item.number, seen, shown, pending,
+    ...(poll ? { polled: fresh.map(({ stamp }) => stamp) } : {}) });
 }
 
 // Ledger: acknowledge only pending comments covered by a successful full read.
@@ -368,7 +371,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
       }
       return null;
     }
-    if (event === "UserPromptSubmit" || event === "Stop") {
+    if (["UserPromptSubmit", "Stop", "Poll"].includes(event)) {
       const lines = [];
       if (event === "UserPromptSubmit") for (const item of state.items.values()) {
         if (!item.retired) continue;
@@ -412,8 +415,8 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           const changed = info.updatedAt !== item.updatedAt;
           const fresh = changed ? await unseen(item, gh, state)
             : [...item.pending.values()].filter(pending => pending.row && !item.seen.has(pending.stamp)).map(({ row, stamp }) => ({ row, stamp }));
-          lines.push(...fresh.filter(({ stamp }) => !item.shown.has(stamp)).map(({ row }) => describe(item, row)));
-          recordPreview(state, item, fresh, event === "UserPromptSubmit");
+          lines.push(...fresh.filter(({ stamp }) => !item.shown.has(stamp) && (event !== "Poll" || !item.polled.has(stamp))).map(({ row }) => describe(item, row)));
+          recordPreview(state, item, fresh, event === "UserPromptSubmit", event === "Poll");
           if (changed) state.append({ repo: item.repo, number: item.number, kind: item.kind, updatedAt: info.updatedAt });
           if (["CLOSED", "MERGED"].includes(info.state)) state.append({ retired: itemKey(item) });
         } catch (error) {
@@ -425,7 +428,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
       }
       if (stopped) failed += items.length - checked;
       if (failed) lines.push(`Comment watch: ${failed} items could not be checked (${[...reasons].join(", ")}); retry on the next prompt.`);
-      return lines.length ? (event === "Stop" ? { systemMessage: lines.join("\n") } : context(event, lines.join("\n"))) : null;
+      return lines.length ? (event === "UserPromptSubmit" ? context(event, lines.join("\n")) : { systemMessage: lines.join("\n") }) : null;
     }
     if (event === "PreToolUse") {
       const parse = PARSERS[call.tool_name];
@@ -476,6 +479,32 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
     const note = "Comment watch: GitHub comments could not be checked; retry on the next prompt.";
     if (event === "PreToolUse") return { hookSpecificOutput: { hookEventName: event, permissionDecision: "deny", permissionDecisionReason: "Merge guard: GitHub comments could not be checked. Retry before merging." } };
     return ["UserPromptSubmit", "PreToolUse"].includes(event) ? context(event, note) : { systemMessage: note };
+  }
+}
+
+// Adapter: manual polls share the ledger without acknowledging pending feedback.
+export async function runCommentWatch(args) {
+  const usage = "usage: qc comment-watch --poll --cwd <dir> --session <id>";
+  try {
+    const options = {};
+    for (let at = 0; at < args.length;) {
+      const key = args[at++];
+      if (!["--poll", "--cwd", "--session"].includes(key) || Object.hasOwn(options, key)) throw new Error(usage);
+      if (key === "--poll") options[key] = true;
+      else {
+        const value = args[at++];
+        if (!value?.trim() || value.startsWith("--")) throw new Error(usage);
+        options[key] = value;
+      }
+    }
+    if (!options["--poll"] || !options["--cwd"] || !options["--session"] ||
+      !existsSync(options["--cwd"]) || !statSync(options["--cwd"]).isDirectory()) throw new Error(usage);
+    const result = await commentWatch({ cwd: path.resolve(options["--cwd"]), session_id: options["--session"], hook_event_name: "Poll" });
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return 0;
+  } catch (error) {
+    console.error(error.message);
+    return 1;
   }
 }
 
