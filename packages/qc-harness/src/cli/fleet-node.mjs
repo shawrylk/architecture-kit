@@ -196,8 +196,8 @@ const loadRounds = new Map();
 
 export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null, leader = false, os: host = os, clock = Date.now, fetch = nodeFetch, signal }) {
   const previous = loadRounds.get(root);
-  const { cpu, mem, sample } = sampleLoad({ os: host, previous: previous?.sample });
-  const load = { cpu, mem, rtt: previous?.rtt ?? null };
+  const { platform, cpu, mem, sample } = sampleLoad({ os: host, previous: previous?.sample });
+  const load = { platform, cpu, mem, rtt: previous?.rtt ?? null };
   const durations = [];
   // No snapshot survives a network await: confirmation may rebuild assignments during a send.
   const bodyFor = id => {
@@ -234,7 +234,7 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
   const latest = bodyFor(fleet.self);
   if (latest.leader) {
     const peers = readState(root, "peers");
-    peers[fleet.self] = { time: clock(), ...latest, load: { cpu, mem, rtt } };
+    peers[fleet.self] = { time: clock(), ...latest, load: { platform, cpu, mem, rtt } };
     writeState(root, "peers", peers);
   }
 }
