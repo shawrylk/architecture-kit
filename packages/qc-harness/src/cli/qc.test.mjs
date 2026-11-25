@@ -8,6 +8,21 @@ import { fileURLToPath } from "node:url";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test("codex-stop-hook CLI routes only explicit leader Stop JSON", (t) => {
+  const help = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
+  assert.match(help.stdout, /qc codex-stop-hook --role leader/);
+  assert.match(help.stdout, /SubagentStop unsupported.*no registration/);
+  for (const [args, input] of [[[], "{}"], [["--role", "leader"], "{"], [["--role", "worker"], "{}"]]) {
+    const result = spawnSync(process.execPath, [qc, "codex-stop-hook", ...args], { input, encoding: "utf8" });
+    assert.equal(result.status, 2); assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Codex Stop/);
+  }
+  const cwd = fixture(t, "{}"); rmSync(path.join(cwd, "qc.config.json"));
+  const input = JSON.stringify({ hook_event_name: "Stop", cwd, session_id: "stable", turn_id: "turn", stop_hook_active: false });
+  const result = spawnSync(process.execPath, [qc, "codex-stop-hook", "--role", "leader"], { input, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr); assert.deepEqual(JSON.parse(result.stdout), {});
+});
+
 test("codex-hook CLI advertises its pinned boundary and emits native denial before action", () => {
   const help = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
   assert.match(help.stdout, /qc codex-hook --role <role>/);
