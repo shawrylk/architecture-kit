@@ -263,6 +263,7 @@ function apiRequest(command) {
   // API flags may precede the endpoint; keep their names with their values.
   const apiWords = command.rest;
   let method;
+  let hostname = "github.com";
   let write = false;
   let endpoint;
   const values = new Set(["--method", "--field", "--raw-field", "--input", "--header", "--hostname", "--jq", "--template", "--cache", "--preview"]);
@@ -272,6 +273,7 @@ function apiRequest(command) {
     if (long && values.has(long[1])) {
       const value = long[2] ?? apiWords[++i];
       if (long[1] === "--method") method = value;
+      if (long[1] === "--hostname") hostname = value;
       if (["--field", "--raw-field", "--input"].includes(long[1])) write = true;
       continue;
     }
@@ -286,6 +288,8 @@ function apiRequest(command) {
     }
     if (/^(?:https:\/\/api.github.com\/)?\/?repos\//.test(word)) endpoint ??= word.replace(/^https:\/\/api.github.com\//, "").replace(/^\//, "").split("?")[0].replace(/^repos\/([^/]+\/[^/]+)/, match => match.toLowerCase());
   }
+  // Watch identities and comment requests currently cover GitHub.com only.
+  if (hostname?.toLowerCase() !== "github.com") return null;
   return { endpoint, method: method ?? (write ? "POST" : "GET") };
 }
 
@@ -381,13 +385,18 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
       let checked = 0;
       const reasons = new Set();
       let stopped = false;
+      const ordered = [...repos.values()].flat();
+      const stopAfter = (item) => {
+        stopped = true;
+        state.append({ next: itemKey(ordered[(ordered.indexOf(item) + 1) % ordered.length]) });
+      };
       for (const batch of repos.values()) {
         let metadata;
         try {
           metadata = await itemMetadata(batch[0].repo, batch, gh);
         } catch (error) {
           reasons.add(failureReason(error));
-          if (rateLimited(error) || error.message === "deadline") { stopped = true; break; }
+          if (rateLimited(error) || error.message === "deadline") { stopAfter(batch.at(-1)); break; }
           failed += batch.length;
           checked += batch.length;
           continue;
@@ -406,7 +415,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
             if (["CLOSED", "MERGED"].includes(info.state)) state.append({ retired: itemKey(item) });
           } catch (error) {
             reasons.add(failureReason(error));
-            if (rateLimited(error) || error.message === "deadline") { stopped = true; break; }
+            if (rateLimited(error) || error.message === "deadline") { stopAfter(item); break; }
             failed++;
           }
           checked++;

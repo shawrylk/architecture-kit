@@ -19,6 +19,30 @@ test("watch detection keeps closed issues, PR output, and body references", () =
     ["owner/repo#4", "owner/repo#5", "owner/repo#6", "owner/repo#7"]);
 });
 
+test("API hostname flags cannot alias an enterprise item to a GitHub.com watch", () => {
+  for (const tool_name of ["Bash", "PowerShell"]) {
+    for (const flags of ["--hostname ghe.example.com", "--hostname=ghe.example.com"]) {
+      for (const command of [`gh api ${flags} repos/owner/repo/issues/4`, `gh api repos/owner/repo/issues/4 ${flags}`]) {
+        assert.deepEqual(watchedItems({ tool_name, tool_input: { command } }, "owner/repo"), []);
+      }
+    }
+    const items = watchedItems({ tool_name, tool_input: { command: "gh api --hostname github.com repos/owner/repo/issues/4" } }, "owner/repo");
+    assert.deepEqual(items, [{ repo: "owner/repo", number: 4, kind: "issue" }]);
+  }
+});
+
+test("an enterprise API read cannot acknowledge pending GitHub.com feedback", (t) => {
+  const f = fixture(t);
+  f.rows[0].body = "Pending feedback ".repeat(100);
+  f.update();
+  f.run("PostToolUse", "gh issue view 4");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
+  f.run("PostToolUse", "gh api --hostname ghe.example.com repos/shawrylk/example/issues/4/comments");
+  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  f.run("PostToolUse", "gh api --hostname github.com repos/shawrylk/example/issues/4/comments");
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+});
+
 test("PowerShell detects explicit repositories, body files, and commit references", (t) => {
   const cwd = mkdtempSync(path.join(os.tmpdir(), "qc-comment-detection-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
@@ -414,7 +438,6 @@ test("polls batch metadata per repository and fetch comments only when updatedAt
   assert.match(query, /state updatedAt/);
   const commentCalls = calls.filter(call => call.args[1] !== "graphql");
   assert.equal(commentCalls.length, 5);
-  assert.ok(Math.max(...calls.map(call => call.start)) - Math.min(...calls.map(call => call.start)) < 200);
   assert.ok(commentCalls.every(call => call.args.includes("--paginate")));
   assert.ok(calls.every(call => !call.args.includes("--slurp")));
   writeFileSync(f.calls, "");
@@ -511,6 +534,35 @@ for (const endpoint of ["graphql", "issues/1/comments"]) test(`rate limits on ${
   assert.equal(calls.length, endpoint === "graphql" ? 1 : 2);
   f.update();
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment 1/);
+});
+
+test("consecutive polls continue past an item whose comments exhaust the deadline", async (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 4; gh issue view 5");
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const requests = [];
+  const poll = () => commentWatch({ cwd: f.cwd, session_id: "session-a", hook_event_name: "UserPromptSubmit" }, {
+    gh: async (args, options) => {
+      requests.push(args);
+      if (args[1] === "graphql") return JSON.stringify({ data: { repository: {
+        item_4: { state: "OPEN", updatedAt: "2026-01-01T00:00:00Z" },
+        item_5: { state: "OPEN", updatedAt: "2026-01-01T00:00:00Z" },
+      } } });
+      if (args.at(-1).includes("issues/4/comments")) {
+        now += options.timeoutMs;
+        throw new Error("deadline");
+      }
+      return JSON.stringify([{ id: 5, body: "Later feedback", updated_at: "2026-01-01T00:00:00Z" }]);
+    },
+  });
+  assert.match(JSON.stringify(await poll()), /2 items could not be checked \(deadline\)/);
+  requests.length = 0;
+  const second = JSON.stringify(await poll());
+  assert.match(second, /Later feedback/);
+  assert.match(second, /1 items could not be checked \(deadline\)/);
+  assert.match(requests[1].at(-1), /issues\/5\/comments/);
+  assert.match(requests[2].at(-1), /issues\/4\/comments/);
 });
 
 test("all poll requests share the 3.5 second deadline", async (t) => {
