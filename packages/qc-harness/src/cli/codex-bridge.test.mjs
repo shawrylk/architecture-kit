@@ -60,7 +60,7 @@ test("raw transport bounds bytes, UTF-8, malformed frames, idle sockets and conc
     socket.on("error", () => {}); await once(socket, "connect"); return socket;
   };
   const frame = JSON.stringify({ token: bridge.env.QC_CODEX_REPORT_TOKEN, input: startup });
-  for (const body of ["{", frame + frame, Buffer.from([0xff]), "x".repeat(8193),
+  for (const body of ["{", frame + frame, Buffer.from([0xff]), "x".repeat(65537),
     JSON.stringify({ token: bridge.env.QC_CODEX_REPORT_TOKEN, input: { ...startup, model: {} } }),
     JSON.stringify({ token: bridge.env.QC_CODEX_REPORT_TOKEN, input: startup, role: "leader" })]) {
     const socket = await connect(), closed = once(socket, "close");
@@ -97,7 +97,7 @@ test("client deadlines, cancellation, response bounds and late replies fail clos
     sockets.add(socket); socket.on("error", () => {}); socket.once("close", () => sockets.delete(socket));
     socket.on("data", () => {});
     socket.once("end", () => {
-      if (mode === "large") socket.end("x".repeat(8193));
+      if (mode === "large") socket.end("x".repeat(65537));
       if (mode === "bad") socket.end('{"ok":true,"role":"leader"}');
     });
   });
@@ -114,4 +114,37 @@ test("client deadlines, cancellation, response bounds and late replies fail clos
   await assert.rejects(reportCodexHook(startup, { env, signal: controller.signal }), /unavailable/);
   for (const timeoutMs of [0, 30001, NaN]) await assert.rejects(reportCodexHook(startup, { env, timeoutMs }), /unavailable/);
   for (const maxConnections of [0, 17, NaN]) await assert.rejects(createCodexBridge({ runtime: {}, reservation: {}, maxConnections }), /unavailable/);
+});
+
+test("async routing is exclusive; cancellation rejects and the deadline retires before late allow", { timeout: 3000 }, async t => {
+  let release, entered, observed, completed;
+  const done = new Promise(resolve => { completed = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const controller = new AbortController();
+  const runtime = { startup() {}, ready: () => null, async hook(handle, input, active) {
+    entered(); await new Promise(resolve => { release = resolve; });
+    observed = active(); completed(); return { hookSpecificOutput: { permissionDecision: "allow" } };
+  } };
+  const bridge = await createCodexBridge({ runtime, reservation: {}, timeoutMs: 100 }); t.after(() => bridge.close());
+  const input = { ...startup, hook_event_name: "PreToolUse" };
+  const pending = reportCodexHook(input, { env: bridge.env, signal: controller.signal });
+  const rejected = assert.rejects(pending, /unavailable/); await started;
+  await assert.rejects(reportCodexHook(input, { env: bridge.env }), /unavailable/);
+  controller.abort(); await rejected;
+  // The absolute routing deadline retires an abandoned decision and its endpoint.
+  await bridge.closed;
+  release(); await done;
+  assert.equal(observed, false);
+  assert.throws(() => bridge.ready(), /unavailable/);
+  await assert.rejects(reportCodexHook(startup, { env: bridge.env }), /unavailable/);
+});
+
+test("absolute decision deadline refuses completion even when synchronous work delays timers", async t => {
+  const runtime = { hook() {
+    const until = performance.now() + 30;
+    while (performance.now() < until) { /* Exercise a delayed timer, not a cooperative async wait. */ }
+    return null;
+  } };
+  const bridge = await createCodexBridge({ runtime, reservation: {}, timeoutMs: 10 }); t.after(() => bridge.close());
+  await assert.rejects(reportCodexHook({ ...startup, hook_event_name: "PreToolUse" }, { env: bridge.env }), /unavailable/);
 });

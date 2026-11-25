@@ -291,6 +291,21 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       const { decideCodexContext } = await import("./codex-context.mjs");
       return decideCodexContext(input, { admission: handle, codexHome });
     },
+    async hook(handle, input, active = () => true) {
+      const check = () => { if (!active()) unavailable(); codexAdmissionOf(handle, input); };
+      get(handle); check();
+      const context = input.hook_event_name === "PreToolUse" ? await this.context(handle, input) : null;
+      check();
+      if (context?.hookSpecificOutput?.permissionDecision === "deny") return context;
+      const { decideCodexHook } = await import("./codex-hook.mjs");
+      check();
+      const action = await decideCodexHook(input, { admission: handle });
+      check();
+      if (action?.hookSpecificOutput?.permissionDecision === "deny") return action;
+      const notes = [context, action].map(result => result?.hookSpecificOutput?.additionalContext).filter(Boolean);
+      return notes.length ? { hookSpecificOutput: { ...action?.hookSpecificOutput,
+        hookEventName: input.hook_event_name, additionalContext: notes.join(" ") } } : action;
+    },
     bind,
     validate(handle, input) {
       try { const record = get(handle); return live(record) && matches(record, input) ? observe(record, input) : null; }

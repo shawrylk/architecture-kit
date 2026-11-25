@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { once, EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createCodexRuntime, createCodexInvocation } from "./codex-runtime.mjs";
 import { decideCodexContext } from "./codex-context.mjs";
@@ -641,4 +641,146 @@ test("bridge late startup cannot revive an expired reservation", { skip: !suppor
   assert.equal(await reportCodexHook({ ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" }, { env: bridge.env }), null);
   await rejected;
   await assert.rejects(reportCodexHook({ ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" }, { env: bridge.env }), /unavailable/);
+});
+
+test("admitted bridge returns real native action denial after context", { skip: !supported }, async t => {
+  const { createCodexBridge, reportCodexHook } = await import("./codex-bridge.mjs");
+  const f = fixture(t), r = f.reserve("implementer"); await start(t, f, r);
+  const bridge = await createCodexBridge({ runtime: f.runtime, reservation: r });
+  t.after(() => bridge.close());
+  const send = input => reportCodexHook(input, { env: bridge.env });
+  await send({ ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" });
+  await bridge.ready();
+  const call = { ...f.hook, hook_event_name: "PreToolUse", turn_id: "turn", tool_use_id: "tool",
+    tool_name: "Bash", tool_input: { command: "git -c core.hooksPath=/dev/null status" } };
+  writeFileSync(path.join(f.dir, "qc.config.json"), "{}");
+  const result = await send(call);
+  assert.equal(result.hookSpecificOutput.permissionDecision, "deny");
+  await assert.rejects(send({ ...call, session_id: "sibling" }), /unavailable/);
+});
+
+async function subprocessReport(input, env) {
+  const code = `import { reportCodexHook } from ${JSON.stringify(new URL("./codex-bridge.mjs", import.meta.url).href)};
+    console.log(JSON.stringify(await reportCodexHook(${JSON.stringify(input)})));`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { env: { ...process.env, ...env } });
+  let output = "", errors = "";
+  child.stdout.on("data", data => { output += data; }); child.stderr.on("data", data => { errors += data; });
+  assert.equal((await once(child, "close"))[0], 0, errors);
+  return JSON.parse(output);
+}
+
+test("routed context precedes real action, preserves errors, budget closure and opaque posts", { skip: !supported }, async t => {
+  const { createCodexBridge, reportCodexHook } = await import("./codex-bridge.mjs");
+  const f = await external(t, "implementer", { budgets: { implementer: { remindAt: 10000, handoffAt: 20000 } } });
+  writeFileSync(path.join(f.dir, "qc.config.json"), "{}");
+  const bridge = await createCodexBridge({ runtime: f.runtime, reservation: f.r }); t.after(() => bridge.close());
+  const send = extra => reportCodexHook({ ...f.call, ...extra }, { env: bridge.env }).catch(error => {
+    error.message += ` (${JSON.stringify(extra)})`; throw error;
+  });
+  f.save(15000);
+  const denied = await subprocessReport({ ...f.call, tool_input: { command: "git -c core.hooksPath=/dev/null status" } }, bridge.env);
+  assert.equal(denied.hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(f.states()[0].count, 1); // F4 ran even though F4b denied.
+  f.save(20000);
+  const closed = await send({ tool_use_id: "closed", tool_name: "unsupported" });
+  assert.equal(closed.hookSpecificOutput.permissionDecision, "deny"); // F4 denial precedes unsupported F4b input.
+  f.save(15000, { turn_id: "stale" });
+  assert.equal((await send({ tool_use_id: "stale" })).hookSpecificOutput.permissionDecision, "deny");
+  rmSync(f.file);
+  assert.equal((await send({ tool_use_id: "missing" })).hookSpecificOutput.permissionDecision, "deny");
+  const before = f.states();
+  const post = await send({ hook_event_name: "PostToolUse", tool_response: "exit_code=0; comment acknowledged; merged", tool_input: { command: "echo ok" } });
+  assert.match(post.hookSpecificOutput.additionalContext, /exit status is unavailable/);
+  assert.deepEqual(f.states(), before); // Post strings never become usage samples.
+  await assert.rejects(send({ hook_event_name: "PostToolUse", tool_response: {} }), /unavailable/);
+  writeFileSync(path.join(f.dir, "qc-role-budgets", readdirSync(path.join(f.dir, "qc-role-budgets")).find(n => n.endsWith(".json"))), "{");
+  await assert.rejects(send({ tool_use_id: "bad-state" }), /unavailable/); // F4 error cannot fall through to action.
+  f.runtime.terminal(f.r);
+  await assert.rejects(send({}), /unavailable/);
+});
+
+test("routed missing usage, action errors, large real patches and finite frame rejection", { skip: !supported }, async t => {
+  const { createCodexBridge, reportCodexHook } = await import("./codex-bridge.mjs");
+  const f = await external(t, "implementer", {}, true);
+  const bridge = await createCodexBridge({ runtime: f.runtime, reservation: f.r }); t.after(() => bridge.close());
+  const send = extra => reportCodexHook({ ...f.call, ...extra }, { env: bridge.env });
+  assert.match((await send({})).hookSpecificOutput.additionalContext, /usage unavailable/);
+  await assert.rejects(send({ tool_name: "unsupported" }), /unavailable/); // Real F4b error.
+  const command = `*** Begin Patch\n*** Add File: handoffs/large.md\n+${"a".repeat(16000)}\n*** End Patch`;
+  assert.ok(Buffer.byteLength(command) > 8192);
+  assert.equal(await send({ tool_name: "apply_patch", tool_input: { command } }), null);
+  assert.equal(await send({ hook_event_name: "PostToolUse", tool_name: "apply_patch", tool_input: { command }, tool_response: "Success" }), null);
+  await assert.rejects(send({ tool_name: "apply_patch", tool_input: { command: command.repeat(5) } }), /unavailable/);
+  for (const extra of [{ cwd: os.tmpdir() }, { session_id: "sibling" }, { role: "leader" },
+    { hook_event_name: "SessionStart", source: "resume" }, { hook_event_name: "PreCompact" }])
+    await assert.rejects(send(extra), /unavailable/);
+  assert.equal(f.runtime.validate(f.r, f.call).role, "implementer");
+});
+
+test("fixed native Stop handback uses G report policy and owned exit, never root Stop", { skip: !supported }, async t => {
+  const { createCodexBridge, reportCodexHook } = await import("./codex-bridge.mjs");
+  const { createCodexDispatch } = await import("./codex-dispatch.mjs");
+  const { checkpointPathOf } = await import("./checkpoint.mjs");
+  const f = fixture(t);
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: f.dir, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr); return result.stdout.trim();
+  };
+  git("init", "-q", "-b", "main");
+  git("-c", "user.name=qc", "-c", "user.email=qc@example.com", "-c", "commit.gpgsign=false", "commit", "-qm", "init", "--allow-empty");
+  const work = path.join(f.dir, "work"); git("worktree", "add", "-qb", "feat/handback", work);
+  f.runtime = createCodexRuntime({ worktree: work, executable: path.join(f.dir, "native"), workflowId: "workflow", codexHome: f.dir });
+  f.dir = work; f.hook = { ...f.hook, cwd: work };
+  writeFileSync(path.join(f.dir, "qc.config.json"), JSON.stringify({ swarm: { dispatch: { implementerSlots: 1 } } }));
+  const checkpoint = checkpointPathOf(f.dir, "parent"), brief = path.join(f.dir, "brief.md");
+  mkdirSync(path.dirname(checkpoint), { recursive: true });
+  writeFileSync(checkpoint, "## Goal\n## Rules\n## Tasks\n## Next\n");
+  writeFileSync(brief, "# Brief\n## Product decisions\nNone.\n");
+  const dispatch = createCodexDispatch({ parentSessionId: "parent", workerSessionId: "worker", role: "implementer",
+    worktree: f.dir, branch: "feat/handback", brief, model: "gpt-6.1-sol", report: "" },
+  { runtime: f.runtime, tmp: f.dir, reads: { ci: () => null, base: () => true } });
+  let bridge, child, startup, reservation;
+  await dispatch.start(handle => {
+    reservation = handle;
+    child = f.runtime.launch(handle); t.after(() => { child.stdin.end(); child.kill(); });
+    startup = (async () => {
+      bridge = await createCodexBridge({ runtime: f.runtime, reservation: handle, onStop: dispatch.handback });
+      t.after(() => bridge.close());
+      await subprocessReport({ ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" }, bridge.env);
+      child.stdin.write("native-thread\n");
+    })(); startup.catch(() => {});
+    return child;
+  });
+  await startup;
+  const stop = { ...f.hook, hook_event_name: "Stop", turn_id: "turn", stop_hook_active: false, last_assistant_message: "done" };
+  const send = extra => reportCodexHook({ ...stop, ...extra }, { env: bridge.env });
+  await assert.rejects(send({ session_id: "sibling" }), /unavailable/);
+  await assert.rejects(send({}), /unavailable/); // Actual G RED/GREEN format gate.
+  assert.equal(child.exitCode, null);
+  assert.equal(await send({ last_assistant_message: "RED: node --test fails\nGREEN: node --test passes" }), null);
+  for (const extra of [{ cwd: os.tmpdir() }, { session_id: "sibling" }, { role: "leader" }, { turn_id: "" }])
+    await assert.rejects(send({ last_assistant_message: "RED: failed\nGREEN: passed", ...extra }), /unavailable/);
+  const noHandback = await createCodexBridge({ runtime: f.runtime, reservation });
+  t.after(() => noHandback.close());
+  await assert.rejects(reportCodexHook(stop, { env: noHandback.env }), /unavailable/);
+  assert.equal(child.exitCode, null); // Handback acceptance does not manufacture the owned exit.
+  child.stdin.end(); await once(child, "close");
+  assert.equal((await dispatch.finish()).accepted, true);
+  await assert.rejects(send({}), /unavailable/);
+});
+
+test("retirement during real F4 evaluation cannot return a late native allow", { skip: !supported }, async t => {
+  const { createCodexBridge, reportCodexHook } = await import("./codex-bridge.mjs");
+  const f = await external(t);
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const runtime = { ...f.runtime, async context(handle, input) {
+    const result = await f.runtime.context(handle, input);
+    entered(); await new Promise(resolve => { release = resolve; }); return result;
+  } };
+  const bridge = await createCodexBridge({ runtime, reservation: f.r }); t.after(() => bridge.close());
+  const pending = reportCodexHook(f.call, { env: bridge.env });
+  const rejected = assert.rejects(pending, /unavailable/);
+  await started; f.runtime.terminal(f.r); release(); await rejected;
+  assert.equal(f.states()[0].count, 1);
 });
