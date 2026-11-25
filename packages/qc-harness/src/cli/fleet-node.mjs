@@ -267,8 +267,11 @@ export async function startNode({ root = process.cwd(), fleet, leader = false, s
   const self = localNode(fleet);
   const record = readState(root, "node");
   if (Number.isSafeInteger(record.pid) && record.pid > 0) {
-    if (!await healthy(self, record.instance, fetch, 1000)) throw new Error("fleet node is stale: instance health does not match");
-    if (isLive(record.pid, kill)) return { running: true, already: true };
+    if (isLive(record.pid, kill)) {
+      if (!await healthy(self, record.instance, fetch, 1000)) throw new Error("fleet node is stale: instance health does not match");
+      return { running: true, already: true };
+    }
+    removeNode(root);
   }
   const instance = randomUUID();
   mkdirSync(stateDir(root), { recursive: true, mode: 0o700 });
@@ -304,8 +307,8 @@ export async function stopNode({ root = process.cwd(), fleet, fetch = nodeFetch,
   const deadline = clock() + 5000;
   const record = readState(root, "node");
   if (!Number.isSafeInteger(record.pid) || record.pid <= 0) { removeNode(root); return { stopped: true, already: true }; }
-  if (!await healthy(localNode(fleet), record.instance, fetch, 1000)) throw new Error("fleet node is stale: instance health does not match");
   if (!isLive(record.pid, kill)) { removeNode(root); return { stopped: true, already: true }; }
+  if (!await healthy(localNode(fleet), record.instance, fetch, 1000)) throw new Error("fleet node is stale: instance health does not match");
   try { kill(record.pid, "SIGTERM"); }
   catch (error) { if (error.code !== "ESRCH") throw error; }
   while (isLive(record.pid, kill)) {
@@ -454,11 +457,15 @@ async function electionTick({ root, fleet, repo, clock, fetch, signal }) {
     }
   }
   writeState(root, "queue", kept);
-  if (dead && candidate === fleet.self && live.length && (!election.candidateTerm || election.candidateTerm < election.highest)) {
+  const proposal = readState(root, "proposal");
+  const retry = (proposal.id !== fleet.self || proposal.term !== election.candidateTerm) &&
+    (election.candidateAt === undefined || now - election.candidateAt >= 30_000);
+  if (dead && candidate === fleet.self && live.length && (!election.candidateTerm || election.candidateTerm < election.highest || retry)) {
     const term = election.highest + 1;
     if (!validTerm(term)) throw new Error("fleet term exhausted");
     election.highest = term;
     election.candidateTerm = term;
+    election.candidateAt = now;
     election.votedTerm = term;
     writeState(root, "election", election);
     for (const node of live) replies.push([node, "propose-leader", term]);

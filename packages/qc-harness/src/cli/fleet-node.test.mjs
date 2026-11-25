@@ -341,6 +341,48 @@ test("start names missing secret/address, times out and cleans up; stale records
   assert.deepEqual(await startNode(p.deps), { running: true, already: false });
 });
 
+test("a dead pid record lets start and stop go on without matching health", async t => {
+  for (const action of ["start", "stop"]) await t.test(action, async t => {
+    const root = fixture(t), p = processDeps(root);
+    writeState(root, "node", { pid: 12345, leader: true, instance: "dead-instance" });
+    const deps = { ...p.deps,
+      spawn: (...args) => {
+        assert.deepEqual(readState(root, "node"), {}, "remove the dead record before spawning");
+        return p.deps.spawn(...args);
+      },
+      fetch: (...args) => {
+        assert.equal(p.spawned.length, 1, "only the new child needs a health check");
+        return p.deps.fetch(...args);
+      },
+    };
+    if (action === "start") {
+      assert.deepEqual(await startNode(deps), { running: true, already: false });
+      assert.equal(p.spawned.length, 1);
+      assert.equal(readState(root, "node").instance, p.spawned[0].options.env.QC_FLEET_INSTANCE);
+    } else {
+      assert.deepEqual(await stopNode(deps), { stopped: true, already: true });
+      assert.deepEqual(readState(root, "node"), {});
+      assert.equal(p.spawned.length, 0);
+    }
+    assert.ok(p.signals.every(signal => signal === 0), "never signal the dead process");
+  });
+});
+
+test("a live pid with a different health instance still throws the stale error", async t => {
+  for (const action of [startNode, stopNode]) await t.test(action.name, async t => {
+    const root = fixture(t), p = processDeps(root);
+    const record = { pid: 12345, leader: true, instance: "recorded-instance" };
+    writeState(root, "node", record);
+    p.setLive(true);
+    await assert.rejects(action({ ...p.deps,
+      fetch: async () => ({ status: 200, json: async () => ({ ok: true, instance: "different-instance" }) }),
+    }), /fleet node is stale: instance health does not match/);
+    assert.deepEqual(readState(root, "node"), record);
+    assert.equal(p.spawned.length, 0);
+    assert.ok(p.signals.every(signal => signal === 0), "never signal the unrelated live process");
+  });
+});
+
 test("status counts only known other senders in the inclusive 90-second window", async t => {
   const root = fixture(t), p = processDeps(root);
   writeState(root, "peers", { a: { time: now, leader: true }, b: { time: now - 90000, leader: true },
@@ -484,7 +526,7 @@ test("regression: lifecycle requires the saved instance before readiness or sign
     assert.equal(await nodeStatus(p.deps), "node=stale leader=unknown peers=0/3");
     await assert.rejects(stopNode(p.deps), /stale/);
     await assert.rejects(startNode(p.deps), /stale/);
-    assert.deepEqual(p.signals, []);
+    assert.deepEqual(p.signals.filter(signal => signal !== 0), []);
     assert.equal(p.spawned.length, 0);
     assert.equal(readState(root, "node").instance, "saved-instance");
   });
@@ -1011,6 +1053,32 @@ test("three nodes propose in leaders order at 90 seconds, save after one live ac
   writeState(later.root, "peers", { a: { leader: true, term: 1, time: now }, b: { leader: false, term: 1, time: now + 90_000 } });
   later.time(now + 90_000); await later.tick();
   assert.equal(later.sent.filter(m => m.kind === "propose-leader").length, 0);
+});
+
+test("a lost accept retries a Leader proposal at a higher term after 30 seconds and not before", async t => {
+  const f = await electionNode(t);
+  writeState(f.root, "peers", { a: { leader: true, term: 1, time: now }, c: { leader: false, term: 1, time: now + 90_000 } });
+  const proposals = () => f.sent.filter(m => m.kind === "propose-leader").map(m => m.body.term);
+  f.time(now + 90_000); await f.tick();
+  assert.deepEqual(proposals(), [2]);
+  f.time(now + 119_999); await f.tick();
+  assert.deepEqual(proposals(), [2]);
+  f.time(now + 120_000); await f.tick();
+  assert.deepEqual(proposals(), [2, 3]);
+  assert.equal(readState(f.root, "election").votedTerm, 3);
+  await f.tick();
+  assert.deepEqual(proposals(), [2, 3], "a retry never reuses a term");
+  writeState(f.root, "queue", [message({ from: "c", kind: "leader", body: { term: 2, accept: true } })]);
+  await f.tick();
+  assert.deepEqual(readState(f.root, "proposal"), {}, "an old accept cannot confirm the retry");
+  f.time(now + 150_000);
+  writeState(f.root, "queue", [message({ from: "c", kind: "leader", body: { term: 3, accept: true } })]);
+  await f.tick();
+  assert.deepEqual(readState(f.root, "proposal"), { id: "b", term: 3 });
+  f.time(now + 180_000); await f.tick();
+  assert.deepEqual(proposals(), [2, 3], "an accepted proposal waits for confirmation without retrying");
+  const { confirmLeader } = await import("./fleet-node.mjs");
+  assert.equal(confirmLeader({ root: f.root, fleet: f.config, clock: () => now + 180_000 }), 3);
 });
 
 test("votes require a dead Leader and go once per term, including after a restart", async t => {
