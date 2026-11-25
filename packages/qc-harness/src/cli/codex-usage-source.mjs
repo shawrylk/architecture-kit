@@ -38,6 +38,11 @@ function envelope(row) {
     default: return false;
   }
 }
+function rowMetadata(row, now, timestamp = 0, ordinal = -1) {
+  const time = Date.parse(row.timestamp);
+  return envelope(row) && typeof row.timestamp === "string" && Number.isFinite(time) &&
+    time >= timestamp && time <= now && whole(row.ordinal) && row.ordinal > ordinal;
+}
 const read = (fd, start, length) => {
   const buffer = Buffer.alloc(length);
   if (readSync(fd, buffer, 0, length, start) !== length) throw new Error("incomplete source");
@@ -63,7 +68,7 @@ export function readCodexUsage(input, { role, codexHome = process.env.CODEX_HOME
     if (newline < 0) return null;
     const decoder = new TextDecoder("utf-8", { fatal: true });
     const first = JSON.parse(decoder.decode(head.subarray(0, newline))), meta = first.payload;
-    if (first.type !== "session_meta" || meta?.cli_version !== "0.172.0" || meta.id !== call.session_id || !id(meta.session_id) ||
+    if (!rowMetadata(first, now) || first.type !== "session_meta" || meta.id !== call.session_id ||
         meta.forked_from_id != null || meta.history_base != null || realpathSync(meta.cwd) !== realpathSync(call.cwd)) return null;
     const spawn = meta.source?.subagent?.thread_spawn;
     if (role === "leader" ? !["cli", "exec", "vscode"].includes(meta.source) || meta.session_id !== meta.id :
@@ -74,11 +79,10 @@ export function readCodexUsage(input, { role, codexHome = process.env.CODEX_HOME
     if (start && !skip) return null;
     const lines = decoder.decode(tail.subarray(skip)).trimEnd().split("\n");
     if (lines.length > MAX_LINES) return null;
-    let sample = null, timestamp = 0, ordinal = -1;
+    let sample = null, timestamp = start ? Date.parse(first.timestamp) : 0, ordinal = start ? first.ordinal : -1;
     for (const raw of lines) {
       const row = JSON.parse(raw), time = Date.parse(row.timestamp), payload = row.payload;
-      if (!envelope(row) || row.type === "session_meta" && row.ordinal !== first.ordinal ||
-          typeof row.timestamp !== "string" || !Number.isFinite(time) || time < timestamp || time > now || !whole(row.ordinal) || row.ordinal <= ordinal) return null;
+      if (!rowMetadata(row, now, timestamp, ordinal) || row.type === "session_meta" && row.ordinal !== first.ordinal) return null;
       timestamp = time;
       ordinal = row.ordinal;
       // Only a well-shaped token_count may follow a sample without replacing it; it never supplies usage or refreshes its age.

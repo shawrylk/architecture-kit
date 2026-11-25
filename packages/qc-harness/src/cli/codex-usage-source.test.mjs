@@ -139,12 +139,34 @@ test("lifecycle invalidation and sample ordering prevent reuse across compaction
   f.save(line("token_usage_record", f.usage, 1).replace('"ordinal":1,', "")); assert.equal(f.read(), null);
 });
 
+test("retained metadata outside the tail must have valid ordered row metadata", async (t) => {
+  const f = fixture(t);
+  const tail = line("response_item", { type: "reasoning", private: "x".repeat(600000) }) + line("token_usage_record", f.usage, 2, now - 1);
+  const header = JSON.parse(line("session_meta", f.meta, 0, now - 1000000));
+  for (const field of ["ordinal", "timestamp"]) {
+    await t.test(`missing ${field}`, () => {
+      const row = { ...header }; delete row[field];
+      writeFileSync(f.file, JSON.stringify(row) + "\n" + tail);
+      assert.equal(f.read(), null);
+    });
+  }
+  for (const change of [{ ordinal: -1 }, { ordinal: 3 }, { timestamp: "invalid" }, { timestamp: new Date(now).toISOString() }, { timestamp: new Date(now + 1).toISOString() }]) {
+    await t.test(JSON.stringify(change), () => {
+      writeFileSync(f.file, JSON.stringify({ ...header, ...change }) + "\n" + tail);
+      assert.equal(f.read(), null);
+    });
+  }
+});
+
 test("bounded head/tail reads support large rollouts and reject oversized metadata and scans", (t) => {
   const f = fixture(t);
   f.save(line("response_item", { private: "x".repeat(600000) }) + line("token_usage_record", f.usage, 2));
   assert.ok(f.read());
   f.meta.private = "x".repeat(70000); f.save(); assert.equal(f.read(), null); delete f.meta.private;
-  f.save(Array.from({ length: 1025 }, (_, i) => line("event_msg", {}, i + 1)).join("") + line("token_usage_record", f.usage, 1026)); assert.equal(f.read(), null);
+  const rows = Array.from({ length: 1023 }, (_, i) => line("event_msg", { type: "agent_message" }, i + 1)).join("");
+  const padding = line("response_item", { type: "reasoning", private: "x".repeat(600000) });
+  f.save(padding + rows + line("token_usage_record", f.usage, 1024)); assert.ok(f.read());
+  f.save(padding + rows + line("event_msg", { type: "agent_message" }, 1024) + line("token_usage_record", f.usage, 1025)); assert.equal(f.read(), null);
   f.save(); const original = readFileSync(f.file); const outside = path.join(f.home, "outside.jsonl"); writeFileSync(outside, original);
   assert.equal(readCodexUsage({ ...f.call, transcript_path: outside }, f.options), null);
   const folder = path.join(f.home, "sessions", "folder.jsonl"); mkdirSync(folder);
