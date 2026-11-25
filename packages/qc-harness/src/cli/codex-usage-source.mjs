@@ -109,7 +109,7 @@ export function readCodexUsage(input, { role, codexHome = process.env.CODEX_HOME
     const after = fstatSync(fd);
     if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs ||
         previous && (timestamp < previous.timestamp || ordinal < previous.ordinal)) return null;
-    return sample ? { usage: sample, provenance: "codex-0.172.0/token_count+token_usage_record", cursor: { file: key, bytes: before.size, timestamp, ordinal } } : null;
+    return sample ? { usage: sample, rootSessionId: meta.session_id, provenance: "codex-0.172.0/token_count+token_usage_record", cursor: { file: key, bytes: before.size, timestamp, ordinal } } : null;
   } catch {
     return null;
   } finally {

@@ -53,6 +53,14 @@ test("Codex implementer and reviewer warning/closed handoff rules stay separate"
   }
 });
 
+test("Codex current-turn mismatch cannot close a worker budget", () => {
+  const state = {};
+  assert.equal(decideCodexBudget({ role: "implementer", session_id: "native", turn_id: "different" }, {
+    usage: nativeUsage(200000), config: {}, count: 1, state,
+  }), null);
+  assert.deepEqual(state, {});
+});
+
 function fixture(t, sessionId = "s") {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "context-watch-test-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));

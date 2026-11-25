@@ -8,6 +8,19 @@ import { fileURLToPath } from "node:url";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test("codex-context CLI requires explicit native identity and reports unsupported workers without private data", () => {
+  const run = (input, args = ["--role", "leader"]) => spawnSync(process.execPath, [qc, "codex-context", ...args], { input, encoding: "utf8" });
+  const help = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
+  assert.match(help.stdout, /qc codex-context --role <leader\|implementer\|reviewer>/);
+  for (const [input, args] of [["{", undefined], ["x".repeat(65537), undefined], ["{}", []], ["{}", ["--role", "unknown"]]]) {
+    const result = run(input, args); assert.equal(result.status, 2); assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Codex context: unsupported input or unavailable state/);
+    assert.doesNotMatch(result.stderr, /xxxxx|SyntaxError/);
+  }
+  const result = run(JSON.stringify({ hook_event_name: "PreToolUse", cwd: process.cwd(), session_id: "private-session", turn_id: "turn", tool_use_id: "call" }), ["--role", "implementer"]);
+  assert.equal(result.status, 2); assert.doesNotMatch(result.stderr, /private-session/);
+});
+
 test("codex-checkpoint CLI routes lifecycle JSON and refuses malformed/oversized input", () => {
   const run = (input, args = []) => spawnSync(process.execPath, [qc, "codex-checkpoint", ...args], { input, encoding: "utf8" });
   const help = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });

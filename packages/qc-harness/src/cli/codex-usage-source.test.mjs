@@ -102,6 +102,8 @@ test("incomplete token usage records cannot preserve a prior verified sample", (
     for (const value of [undefined, null, {}, { ...tokens, total_tokens: -1 }]) {
       f.save(verified(f.usage) + line("token_usage_record", { ...f.usage, [field]: value }, 3));
       assert.equal(f.read(), null, `${field}: ${JSON.stringify(value)}`);
+      f.save(verified(f.usage) + line("token_usage_record", { ...f.usage, [field]: value }, 3) + snapshot(f.usage, 4));
+      assert.equal(f.read(), null, `${field}: incomplete candidate cannot gain validity from a following snapshot`);
     }
   }
 });
@@ -109,6 +111,7 @@ test("incomplete token usage records cannot preserve a prior verified sample", (
 test("later persisted response without usage invalidates context until a new verified record", (t) => {
   for (const worker of [false, true]) {
     const f = fixture(t, worker), first = f.read();
+    assert.equal(first.rootSessionId, worker ? "root" : "thread");
     const count = { type: "token_count", info: { last_token_usage: tokens, total_token_usage: f.usage.thread_token_usage }, rate_limits: null };
     appendFileSync(f.file, line("event_msg", count, 3));
     assert.ok(f.read({ previous: first.cursor }));

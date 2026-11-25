@@ -61,6 +61,8 @@ const USAGE = `qc — architecture gates
                            run a heavy local command in one of the machine's gate slots; --status lists them
   qc codex-hook --role <role>
                            Codex 0.172.0 Bash PreToolUse/PostToolUse JSON on stdin; post exit status unavailable; no registration
+  qc codex-context --role <leader|implementer|reviewer>
+                           bounded native worker budgets; active leader settings and external worker registration unsupported; no registration
   qc codex-stop-hook --role leader
                            Codex 0.172.0 root Stop JSON on stdin; shared Stop/issue/worktree gates; worker/SubagentStop unsupported; no registration
   qc codex-checkpoint      Codex 0.172.0 root SessionStart startup/resume/compact JSON on stdin; PostCompact restoration unsupported; no registration
@@ -110,6 +112,11 @@ Every gate reads qc.config.json. A key it does not set keeps the reference defau
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
+  if (command === "codex-context") {
+    const { runCodexContext } = await import("./codex-context.mjs");
+    process.exitCode = await runCodexContext(rest);
+    return;
+  }
   if (command === "codex-checkpoint") {
     const { runCodexCheckpoint } = await import("./checkpoint.mjs");
     process.exitCode = await runCodexCheckpoint(rest);

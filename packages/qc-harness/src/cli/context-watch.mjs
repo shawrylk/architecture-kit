@@ -19,7 +19,7 @@ import { orchestratorVerdict, roleBudgetVerdict } from "./role-budget.mjs";
 /** The caller supplies resolved native settings, verified events and its bounded per-role counter/state. */
 export function decideCodexBudget(call, { usage, config, nativeConfig = {}, count, state = {} }) {
   const normalized = normalizeUsage(usage);
-  const tokens = normalized?.sessionId === call.session_id ? normalized.tokens : undefined;
+  const tokens = normalized?.sessionId === call.session_id && (call.turn_id === undefined || normalized.turnId === call.turn_id) ? normalized.tokens : undefined;
   const budgets = budgetsOf(config);
   if (["implementer", "reviewer"].includes(call.role)) {
     return roleBudgetVerdict({ role: call.role, tokens, budget: budgets[call.role], call, state });
