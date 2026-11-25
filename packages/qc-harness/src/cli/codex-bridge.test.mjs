@@ -134,7 +134,7 @@ test("client deadlines, cancellation, response bounds and late replies fail clos
   for (const maxConnections of [0, 17, NaN]) await assert.rejects(createCodexBridge({ runtime: {}, reservation: {}, maxConnections }), /unavailable/);
 });
 
-test("async routing is exclusive; cancellation rejects and the deadline retires before late allow", { timeout: 3000 }, async t => {
+for (const event of ["PreToolUse", "compact", "resume"]) test(`async routing cancellation/deadline: ${event}`, { timeout: 3000 }, async t => {
   let release, entered, observed, completed;
   const done = new Promise(resolve => { completed = resolve; });
   const started = new Promise(resolve => { entered = resolve; });
@@ -143,8 +143,9 @@ test("async routing is exclusive; cancellation rejects and the deadline retires 
     entered(); await new Promise(resolve => { release = resolve; });
     observed = active(); completed(); return { hookSpecificOutput: { permissionDecision: "allow" } };
   } };
+  runtime.recover = runtime.hook;
   const bridge = await createCodexBridge({ runtime, reservation: {}, timeoutMs: 100 }); t.after(() => bridge.close());
-  const input = { ...startup, hook_event_name: "PreToolUse" };
+  const input = event === "PreToolUse" ? { ...startup, hook_event_name: event } : { ...startup, source: event };
   const pending = reportCodexHook(input, { env: bridge.env, signal: controller.signal });
   const rejected = assert.rejects(pending, /unavailable/); await started;
   await assert.rejects(reportCodexHook(input, { env: bridge.env }), /unavailable/);
@@ -157,12 +158,23 @@ test("async routing is exclusive; cancellation rejects and the deadline retires 
   await assert.rejects(reportCodexHook(startup, { env: bridge.env }), /unavailable/);
 });
 
-test("absolute decision deadline refuses completion even when synchronous work delays timers", async t => {
+for (const event of ["PreToolUse", "compact", "resume"]) test(`absolute deadline after synchronous work: ${event}`, async t => {
   const runtime = { hook() {
     const until = performance.now() + 30;
     while (performance.now() < until) { /* Exercise a delayed timer, not a cooperative async wait. */ }
     return null;
   } };
+  runtime.recover = runtime.hook;
   const bridge = await createCodexBridge({ runtime, reservation: {}, timeoutMs: 10 }); t.after(() => bridge.close());
-  await assert.rejects(reportCodexHook({ ...startup, hook_event_name: "PreToolUse" }, { env: bridge.env }), /unavailable/);
+  const input = event === "PreToolUse" ? { ...startup, hook_event_name: event } : { ...startup, source: event };
+  await assert.rejects(reportCodexHook(input, { env: bridge.env }), /unavailable/);
+});
+
+test("recovery handler errors and oversized serialized replies remain blocking", async t => {
+  for (const recover of [() => { throw Error("private checkpoint"); },
+    () => ({ hookSpecificOutput: { additionalContext: "\u0000".repeat(12000) } })]) {
+    const bridge = await createCodexBridge({ runtime: { recover }, reservation: {} }); t.after(() => bridge.close());
+    await assert.rejects(reportCodexHook({ ...startup, source: "compact" }, { env: bridge.env }),
+      error => /unavailable/.test(error.message) && !/private/.test(error.message));
+  }
 });

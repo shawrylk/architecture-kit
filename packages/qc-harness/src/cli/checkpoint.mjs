@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_FILE, load } from "../config.mjs";
@@ -39,15 +39,29 @@ export function checkpointProblem(text) {
   return lines.length > 60 ? "exceeds 60 non-blank lines" : null;
 }
 
-export function readCheckpoint(file, { maxAgeMinutes = 30, now = Date.now() } = {}) {
+export function readCheckpoint(file, { maxAgeMinutes = 30, now = Date.now(), maxBytes } = {}) {
+  let fd;
   try {
-    const text = readFileSync(file, "utf8");
+    let text, stat;
+    if (maxBytes === undefined) text = readFileSync(file, "utf8");
+    else {
+      if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > 65536 || realpathSync(file) !== path.resolve(file)) throw Error();
+      fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > maxBytes) throw Error();
+      const buffer = Buffer.alloc(maxBytes + 1), length = readSync(fd, buffer, 0, buffer.length, 0), after = fstatSync(fd);
+      if (length !== stat.size || length > maxBytes || after.size !== stat.size ||
+          after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) throw Error();
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(buffer.subarray(0, length));
+    }
     const problem = checkpointProblem(text);
     if (problem) return { text, problem };
-    const stale = maxAgeMinutes > 0 && now - statSync(file).mtimeMs > maxAgeMinutes * 60_000;
+    const stale = maxAgeMinutes > 0 && now - (stat ?? statSync(file)).mtimeMs > maxAgeMinutes * 60_000;
     return { text, problem: stale ? `older than ${maxAgeMinutes} minutes` : null };
   } catch (error) {
     return { text: null, problem: error.code === "ENOENT" ? "missing file" : `cannot read file (${error.code ?? "error"})` };
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 

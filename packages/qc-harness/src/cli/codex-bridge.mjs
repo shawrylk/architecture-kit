@@ -1,14 +1,11 @@
 import net from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { codexSessionStartInput } from "./codex-recovery.mjs";
 
 // Match the existing context producer frame bound; startup retains its smaller envelope limit.
 const LIMIT = 65536, STARTUP_LIMIT = 8192;
 const unavailable = () => new Error("Codex report channel unavailable");
 const deadline = ms => Number.isInteger(ms) && ms > 0 && ms <= 30000;
-const fields = ["hook_event_name", "source", "cwd", "session_id", "transcript_path", "model", "permission_mode"];
-const startup = input => input && !Array.isArray(input) && Object.keys(input).length === fields.length &&
-  fields.every(key => key === "transcript_path" && input[key] === null || typeof input[key] === "string" && input[key].length <= 4096) &&
-  input.hook_event_name === "SessionStart" && input.source === "startup";
 
 // Cooperative invocation bearer channel, not native-event attestation. Opaque authority never leaves this closure.
 export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000, maxConnections = 4, signal, onStop } = {}) {
@@ -48,8 +45,9 @@ export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000
         busy = owned = routing = true;
         const input = request.input;
         let output = null;
-        if (startup(input) && size <= STARTUP_LIMIT) {
-          runtime.startup(reservation, reservation.hookCredential, input);
+        if (codexSessionStartInput(input) && size <= STARTUP_LIMIT) {
+          if (input.source === "startup") runtime.startup(reservation, reservation.hookCredential, input);
+          else output = await wait(runtime.recover(reservation, input, active));
           // Never await ready here: native startup can depend on this acknowledgment.
         } else if (["PreToolUse", "PostToolUse"].includes(input.hook_event_name)) {
           output = await wait(runtime.hook(reservation, input, active));
@@ -60,7 +58,7 @@ export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000
           // Fixed runner callback (G handback), never root Stop policy or a payload-selected handler.
           await wait(onStop(input, input.last_assistant_message));
           if (!runtime.validate(reservation, input)) throw unavailable();
-        } else throw unavailable(); // Compact/resume restoration remains an explicit continuation.
+        } else throw unavailable();
         if (!active()) throw unavailable();
         const reply = JSON.stringify({ ok: true, output });
         if (Buffer.byteLength(reply) > LIMIT) throw unavailable();

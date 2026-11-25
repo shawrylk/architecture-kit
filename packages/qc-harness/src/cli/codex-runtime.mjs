@@ -6,6 +6,7 @@ import { budgetsOf } from "./context-budgets.mjs";
 import { spawnCommand } from "./spawn-command.mjs";
 import { readCodexRolloutIdentity } from "./codex-rollout-identity.mjs";
 import { codexExecutableSnapshot, codexNativePinIdentity } from "./codex-native-executable.mjs";
+import { codexSessionStartInput, createCodexRecovery } from "./codex-recovery.mjs";
 
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const roles = ["leader", "implementer", "reviewer"];
@@ -137,6 +138,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
   const budgets = budgetsOf(config), policies = Object.fromEntries(roles.map(role => [role,
     (role === "leader" ? budgets.orchestrator : budgets[role]) === null ? null :
       Object.freeze({ ...(role === "leader" ? budgets.orchestrator : budgets[role]) })]));
+  const recoverySettings = Object.freeze({ maxAgeMinutes: config.checkpoint?.maxAgeMinutes ?? 30 });
   const records = new Map(), sessions = new Set();
   let admitted = 0;
   const get = handle => records.get(handle) ?? unavailable();
@@ -203,6 +205,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
         incarnation: record.incarnation, pid: record.child.pid, executable, executablePin: executablePin ?? null,
         settings: record.role === "leader" ? settings : null, settingsProvenance: "controlled-cli-forwarding",
         budget: policies[record.role] });
+      record.restore = createCodexRecovery(proof, recoverySettings);
       sessions.add(input.session_id); record.proof = proof;
       observe(record, input); clearTimeout(record.timer); record.pending = null; record.resolve(record.proof);
       return record.proof;
@@ -286,6 +289,15 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       return true;
     },
     ready(handle) { return get(handle).ready; },
+    async recover(handle, input, active = () => true) {
+      const record = get(handle);
+      const check = () => {
+        if (get(handle) !== record || !active() || !live(record) || !record.proof || !codexSessionStartInput(input) || input.source === "startup" ||
+            Buffer.byteLength(JSON.stringify(input)) > 8192 || !matches(record, input) ||
+            input.transcript_path !== (record.transcriptPath ?? null)) unavailable();
+      };
+      check(); const output = await record.restore(); check(); return output;
+    },
     async context(handle, input) {
       get(handle); // Reject sibling reservations even if another registry recognizes them.
       const { decideCodexContext } = await import("./codex-context.mjs");

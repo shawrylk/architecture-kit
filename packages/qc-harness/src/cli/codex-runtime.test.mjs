@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, symlinkSync, readFileSync, renameSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, symlinkSync, readFileSync, renameSync, readdirSync, utimesSync } from "node:fs";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -611,7 +611,7 @@ test("external source retains snapshot, freshness, cursor, file and root provena
 
 for (const early of [true, false]) test(`bridge startup correlation hook first=${early} accepts native null transcript`, { skip: !supported }, async t => {
   const { createCodexBridge, reportCodexHook } = await import("./codex-bridge.mjs");
-  const f = fixture(t), r = f.reserve("implementer");
+  const f = fixture(t, { capacity: 1 }), r = f.reserve("implementer");
   const bridge = await createCodexBridge({ runtime: f.runtime, reservation: r }), ready = bridge.ready();
   t.after(() => bridge.close());
   const input = { ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" };
@@ -625,11 +625,55 @@ for (const early of [true, false]) test(`bridge startup correlation hook first=$
   assert.equal(proof.role, "implementer");
   assert.equal(await report(), null);
   assert.strictEqual(await f.runtime.ready(r), proof);
-  for (const bad of [{ cwd: path.dirname(f.dir) }, { session_id: "sibling" }, { source: "compact" }, { source: "resume" }])
+  const { checkpointPathOf } = await import("./checkpoint.mjs");
+  const checkpoint = checkpointPathOf(f.dir, proof.nativeThreadId);
+  mkdirSync(path.dirname(checkpoint), { recursive: true });
+  for (const [index, source] of ["compact", "resume", "compact"].entries()) {
+    const text = `## Goal\nexact restored marker ${source} ${index}\n## Rules\n## Tasks\n## Next\n`;
+    writeFileSync(checkpoint, text);
+    const restored = await subprocessReport({ ...input, source }, bridge.env);
+    assert.deepEqual(restored, { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } });
+    assert.strictEqual(await f.runtime.ready(r), proof);
+  }
+  for (const bad of [{ cwd: path.dirname(f.dir) }, { session_id: "sibling" }])
     await assert.rejects(reportCodexHook({ ...input, ...bad }, { env: bridge.env }), /unavailable/);
   assert.strictEqual(await f.runtime.ready(r), proof);
+  const pendingRecovery = f.runtime.recover(r, { ...input, source: "resume" });
   f.runtime.terminal(r);
+  await assert.rejects(pendingRecovery, /unavailable/);
   await assert.rejects(report(), /unavailable/);
+  assert.equal(await subprocessReport({ ...input, source: "resume" }, bridge.env, true), "unavailable");
+});
+
+test("subprocess recovery rejects unready, sibling, malformed and unsafe checkpoints", { skip: !supported }, async t => {
+  const { createCodexBridge } = await import("./codex-bridge.mjs");
+  const { checkpointPathOf } = await import("./checkpoint.mjs");
+  const f = fixture(t), r = f.reserve("reviewer");
+  const bridge = await createCodexBridge({ runtime: f.runtime, reservation: r }); t.after(() => bridge.close());
+  const input = { ...f.hook, source: "resume", transcript_path: null, model: "fixture", permission_mode: "default" };
+  const deny = async extra => assert.equal(await subprocessReport({ ...input, ...extra }, bridge.env, true), "unavailable");
+  await deny({});
+  await start(t, f, r);
+  f.runtime.startup(r, r.hookCredential, { ...input, source: "startup" });
+  const proof = await bridge.ready(), file = checkpointPathOf(f.dir, proof.nativeThreadId);
+  await assert.rejects(f.runtime.recover({ ...r }, input), /unavailable/);
+  mkdirSync(path.dirname(file), { recursive: true });
+  const text = "## Goal\nverified checkpoint\n## Rules\n## Tasks\n## Next\n";
+  await deny({}); // Missing file cannot acknowledge recovery.
+  writeFileSync(file, text);
+  for (const extra of [{ cwd: path.dirname(f.dir) }, { session_id: "sibling" }, { role: "leader" }, { proof },
+    { checkpoint_path: file }, { transcript_path: path.join(f.dir, "foreign") }, { source: "fork" },
+    { permission_mode: null }, { source: "compact", agent_id: "other" }, { hook_event_name: "PostCompact" }]) await deny(extra);
+  for (const content of ["missing headings", text + "task\n".repeat(61), text + "x".repeat(8192)]) {
+    writeFileSync(file, content); await deny({});
+  }
+  writeFileSync(file, text); const old = new Date(Date.now() - 31 * 60000); utimesSync(file, old, old); await deny({});
+  rmSync(file); mkdirSync(file); await deny({}); rmSync(file, { recursive: true });
+  const foreign = path.join(f.dir, "foreign.md"); writeFileSync(foreign, text);
+  symlinkSync(foreign, file); await deny({}); rmSync(file);
+  const directory = path.dirname(file), moved = `${directory}-moved`;
+  renameSync(directory, moved); symlinkSync(moved, directory, "dir"); await deny({});
+  assert.strictEqual(await bridge.ready(), proof);
 });
 
 test("bridge late startup cannot revive an expired reservation", { skip: !supported }, async t => {
@@ -659,13 +703,14 @@ test("admitted bridge returns real native action denial after context", { skip: 
   await assert.rejects(send({ ...call, session_id: "sibling" }), /unavailable/);
 });
 
-async function subprocessReport(input, env) {
+async function subprocessReport(input, env, rejected = false) {
   const code = `import { reportCodexHook } from ${JSON.stringify(new URL("./codex-bridge.mjs", import.meta.url).href)};
-    console.log(JSON.stringify(await reportCodexHook(${JSON.stringify(input)})));`;
+    try { console.log(JSON.stringify(await reportCodexHook(${JSON.stringify(input)}))); }
+    catch { console.log('"unavailable"'); process.exitCode = 2; }`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", code], { env: { ...process.env, ...env } });
   let output = "", errors = "";
   child.stdout.on("data", data => { output += data; }); child.stderr.on("data", data => { errors += data; });
-  assert.equal((await once(child, "close"))[0], 0, errors);
+  assert.equal((await once(child, "close"))[0], rejected ? 2 : 0, errors);
   return JSON.parse(output);
 }
 
@@ -690,6 +735,20 @@ test("routed context precedes real action, preserves errors, budget closure and 
   f.save(20000);
   const closed = await send({ tool_use_id: "closed", tool_name: "unsupported" });
   assert.equal(closed.hookSpecificOutput.permissionDecision, "deny"); // F4 denial precedes unsupported F4b input.
+  const proof = await bridge.ready(), beforeRecovery = f.states();
+  const { checkpointPathOf } = await import("./checkpoint.mjs");
+  const checkpoint = checkpointPathOf(f.dir, proof.nativeThreadId);
+  mkdirSync(path.dirname(checkpoint), { recursive: true });
+  writeFileSync(checkpoint, "## Goal\nsticky recovery\n## Rules\n## Tasks\n## Next\n");
+  const recovery = { ...f.hook, source: "compact", transcript_path: f.file, model: "fixture", permission_mode: "default" };
+  for (const source of ["compact", "resume"]) {
+    await subprocessReport({ ...recovery, source }, bridge.env);
+    assert.strictEqual(await bridge.ready(), proof);
+    assert.deepEqual(f.states(), beforeRecovery);
+  }
+  f.save(1000);
+  assert.equal((await send({ tool_use_id: "after-recovery" })).hookSpecificOutput.permissionDecision, "deny");
+  assert.doesNotMatch((await send({ tool_use_id: "after-resume" })).hookSpecificOutput.additionalContext ?? "", /remindAt/);
   f.save(15000, { turn_id: "stale" });
   assert.equal((await send({ tool_use_id: "stale" })).hookSpecificOutput.permissionDecision, "deny");
   rmSync(f.file);

@@ -90,6 +90,18 @@ test("reader reports missing files, invalid shape, and age from modification tim
   assert.match(readCheckpoint(path.dirname(file)).problem, /read/);
 });
 
+test("opt-in bounded reader rejects excess bytes and invalid UTF-8", t => {
+  const { file } = workspace(t), maxBytes = Buffer.byteLength(text);
+  writeFileSync(file, text);
+  assert.deepEqual(readCheckpoint(file, { maxBytes }), { text, problem: null });
+  writeFileSync(file, text + "x");
+  assert.ok(readCheckpoint(file, { maxBytes }).problem);
+  writeFileSync(file, Buffer.from([0xff]));
+  assert.ok(readCheckpoint(file, { maxBytes }).problem);
+  writeFileSync(file, "\ufeff" + text);
+  assert.equal(readCheckpoint(file, { maxBytes: maxBytes + 3 }).text, "\ufeff" + text);
+});
+
 test("SessionStart names the absolute checkpoint path even with dispatch off", (t) => {
   const { root, file } = workspace(t);
   writeFileSync(path.join(root, "qc.config.json"), "{}");
