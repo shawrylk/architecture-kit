@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +8,7 @@ import { Worker } from "node:worker_threads";
 import { runFleet } from "./fleet.mjs";
 import { readState, writeState } from "./fleet-state.mjs";
 import { readGithub } from "./fleet-github.mjs";
-import { queueReceipt, receiveTalk } from "./fleet-talk.mjs";
+import { claimUnread, queueReceipt, receiveTalk } from "./fleet-talk.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { flushOutbox, receiveMessage } from "./fleet-node.mjs";
 import { runWatch } from "./watch.mjs";
@@ -368,6 +369,94 @@ test("escalation preserves a receipt and a new send during event emission", asyn
   assert.equal(Object.keys(sent).length, 2);
 });
 
+async function killSentHolder(t, root, stage = "published") {
+  const child = spawn(process.execPath, ["--input-type=module", "-e", `
+    import fs from "node:fs";
+    import path from "node:path";
+    import { syncBuiltinESMExports } from "node:module";
+    const pause = () => {
+      process.send("holding");
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+    };
+    for (const method of ["mkdirSync", "renameSync"]) {
+      const original = fs[method];
+      fs[method] = (...args) => {
+        const result = original(...args);
+        const name = path.basename(String(args[method === "renameSync" ? 1 : 0]));
+        if (name === "sent.lock" || (process.env.LOCK_STAGE === "prepared" && name.startsWith("sent.lock-"))) pause();
+        return result;
+      };
+    }
+    syncBuiltinESMExports();
+    const { claimUnread } = await import(process.env.TALK_MODULE);
+    claimUnread(process.env.FLEET_ROOT, 300_000);
+  `], { env: { ...process.env, FLEET_ROOT: root, LOCK_STAGE: stage,
+    TALK_MODULE: new URL("./fleet-talk.mjs", import.meta.url).href }, stdio: ["ignore", "ignore", "pipe", "ipc"] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+  let errors = "";
+  child.stderr.on("data", chunk => { errors += chunk; });
+  await new Promise((resolve, reject) => {
+    child.once("message", resolve);
+    child.once("error", reject);
+    child.once("exit", code => reject(new Error(`lock holder exited ${code}: ${errors}`)));
+  });
+  const exited = new Promise(resolve => child.once("exit", resolve));
+  child.kill("SIGKILL");
+  await exited;
+}
+
+test("sent writes recover after a holder is killed during lock setup or after publication", { timeout: 15_000 }, async t => {
+  for (const stage of ["prepared", "published"]) {
+    const f = fixture(t);
+    const original = { node: "b", repo: "o/r", state: "sent", time: new Date(0).toISOString() };
+    writeState(f.root, "sent", { original });
+    await killSentHolder(t, f.root, stage);
+    assert.equal(await f.run(["say", "b", "--file", f.file]), 0, f.errors.join("\n"));
+    assert.deepEqual(readState(f.root, "sent").original, original);
+    writeState(f.root, "queue", [createMessage({ from: "b", repo: "o/r", kind: "receipt",
+      body: { message: "original", state: "delivered" } }, f.fleet.secret)]);
+    receiveTalk(f.root, f.fleet, false, Date.now());
+    assert.deepEqual(claimUnread(f.root, 300_000), [{ id: "original", node: "b" }]);
+    assert.deepEqual(claimUnread(f.root, 300_000), []);
+    assert.equal(readState(f.root, "sent").original.state, "delivered");
+  }
+});
+
+test("a new writer during lock release cannot break the releasing writer", { timeout: 10_000 }, async t => {
+  const f = fixture(t), resume = new SharedArrayBuffer(4);
+  writeState(f.root, "sent", { original: { node: "b", state: "sent", time: new Date(0).toISOString() } });
+  const worker = new Worker(`
+    const { workerData: d, parentPort } = require("node:worker_threads");
+    const fs = require("node:fs"), path = require("node:path");
+    for (const method of ["rmdirSync", "renameSync"]) {
+      const original = fs[method];
+      fs[method] = (...args) => {
+        const result = original(...args);
+        const releasing = method === "renameSync" ? path.basename(args[0]) === "sent.lock"
+          : path.basename(path.dirname(args[0])) === "sent.lock";
+        if (releasing) {
+          parentPort.postMessage("released");
+          Atomics.wait(new Int32Array(d.resume), 0, 0);
+        }
+        return result;
+      };
+    }
+    require("node:module").syncBuiltinESMExports();
+    import(d.module).then(({ claimUnread }) => claimUnread(d.root, 300_000));
+  `, { eval: true, workerData: { root: f.root, resume, module: new URL("./fleet-talk.mjs", import.meta.url).href } });
+  t.after(() => worker.terminate());
+  const finished = new Promise((resolve, reject) => {
+    worker.once("error", reject);
+    worker.once("exit", code => code === 0 ? resolve() : reject(new Error(`writer exited ${code}`)));
+  });
+  await new Promise((resolve, reject) => { worker.once("message", resolve); worker.once("error", reject); });
+  assert.deepEqual(claimUnread(f.root, 300_000), []);
+  Atomics.store(new Int32Array(resume), 0, 1);
+  Atomics.notify(new Int32Array(resume), 0);
+  await finished;
+  assert.equal(readState(f.root, "sent").original.escalated, true);
+});
+
 test("overlapping senders and receipts preserve every sent record and state", { timeout: 15_000 }, async t => {
   const f = fixture(t), count = 6;
   const entries = Object.fromEntries(Array.from({ length: count }, (_, i) => [`old-${i}`, {
@@ -376,6 +465,7 @@ test("overlapping senders and receipts preserve every sent record and state", { 
   writeState(f.root, "sent", entries);
   writeState(f.root, "queue", Object.keys(entries).map(id => createMessage({ from: "b", repo: "o/r", kind: "receipt",
     body: { message: id, state: "done", note: "finished" } }, f.fleet.secret)));
+  await killSentHolder(t, f.root);
   const start = new SharedArrayBuffer(4), workers = [];
   t.after(async () => { await Promise.all(workers.map(worker => worker.terminate())); });
   const ready = [], finished = [];

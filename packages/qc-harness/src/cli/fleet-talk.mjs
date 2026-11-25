@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync } from "node:fs";
 import path from "node:path";
 import { createMessage } from "./fleet-message.mjs";
 import { flushOutbox, sendMessage } from "./fleet-node.mjs";
@@ -28,25 +29,59 @@ export function queueReceipt(root, fleet, original, state, note = "") {
   writeState(root, "outbox", [...readState(root, "outbox"), { node: original.from, message: fields, attempts: 0, nextAttempt: 0 }]);
 }
 
+/** Remove only a dead owner's unique marker; a replacement owner keeps the directory nonempty. */
+function recoverSentLock(lock) {
+  try {
+    for (const owner of readdirSync(lock)) {
+      const pid = Number(owner.split("-")[0]);
+      if (!/^\d+-[0-9a-f-]{36}$/.test(owner) || !Number.isSafeInteger(pid) || pid <= 0) return;
+      try { process.kill(pid, 0); return; }
+      catch (error) { if (error.code !== "ESRCH") return; }
+      rmdirSync(path.join(lock, owner));
+    }
+    rmdirSync(lock);
+  } catch (error) {
+    if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes(error.code)) throw error;
+  }
+}
+
+/** Publish ownership atomically so a crash cannot leave an unidentified holder. */
+function lockSent(directory) {
+  const lock = path.join(directory, "sent.lock"), owner = `${process.pid}-${randomUUID()}`;
+  const candidate = path.join(directory, `sent.lock-${owner}`);
+  const cleanup = () => rmSync(candidate, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  const deadline = Date.now() + 5000, waiting = new Int32Array(new SharedArrayBuffer(4));
+  mkdirSync(candidate, { mode: 0o700 });
+  try {
+    mkdirSync(path.join(candidate, owner), { mode: 0o700 });
+    for (;;) {
+      try { renameSync(candidate, lock); return () => {
+        renameSync(lock, candidate);
+        cleanup();
+      }; }
+      catch (error) {
+        if (!["EEXIST", "ENOTEMPTY", "EPERM", "EACCES"].includes(error.code)) throw error;
+        recoverSentLock(lock);
+        if (Date.now() >= deadline) throw new Error("timed out waiting for fleet sent lock");
+        Atomics.wait(waiting, 0, 0, 10);
+      }
+    }
+  } finally {
+    cleanup();
+  }
+}
+
 /** Serialize sent read/modify/replace across processes; a truthy result commits. */
 function updateSent(root, mutate) {
-  const directory = stateDir(root), lock = path.join(directory, "sent.lock");
+  const directory = stateDir(root);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + 5000, waiting = new Int32Array(new SharedArrayBuffer(4));
-  for (;;) {
-    try { mkdirSync(lock, { mode: 0o700 }); break; }
-    catch (error) {
-      if (error.code !== "EEXIST") throw error;
-      if (Date.now() >= deadline) throw new Error("timed out waiting for fleet sent lock");
-      Atomics.wait(waiting, 0, 0, 10);
-    }
-  }
+  const unlock = lockSent(directory);
   try {
     const sent = readState(root, "sent"), result = mutate(sent);
     if (result) writeState(root, "sent", sent);
     return result;
   } finally {
-    rmSync(lock, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    unlock();
   }
 }
 
