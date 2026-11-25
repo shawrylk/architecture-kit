@@ -236,3 +236,24 @@ test("terminal cleanup retry never duplicates a validated stop", async t => {
   assert.equal(f.records().filter(r => r.type === "stop").length, 1);
   assert.equal(f.records().filter(r => r.type === "cost").length, 0);
 });
+
+test("scout uses planner admission with reviewer capability and its own handback/stop", async t => {
+  const f = fixture(t, "scout"), b = f.bridge();
+  await b.start(() => f.child);
+  assert.deepEqual(f.seen[0], { role: "reviewer", workflowParentId: "parent" });
+  assert.equal(f.records().find(r => r.type === "dispatch").agentType, "sdd-planner");
+  assert.equal(f.slots(), 0);
+  assert.throws(() => b.handback(native, report), /Gap/);
+  assert.throws(() => b.handback(native, `VERDICT: APPROVED ${f.head}`), /Gap/);
+  f.proof.role = "implementer";
+  assert.throws(() => b.handback(native, "Gap: gap"));
+  f.proof.role = "reviewer";
+  b.handback(native, "Gap: gap\nPlan: plan\nCheck: checked\nRisks: none\nQuestions: none\nBreaking: no");
+  assert.equal(f.records().filter(r => r.type === "stop").length, 0);
+  f.exit();
+  assert.equal((await b.finish()).accepted, true);
+  assert.equal((await b.finish()).accepted, true);
+  assert.equal(f.records().filter(r => r.type === "stop" && r.role === "scout").length, 1);
+  assert.equal(f.records().filter(r => r.type === "verdict").length, 0);
+  assert.equal(f.seen.at(-1), "retired");
+});

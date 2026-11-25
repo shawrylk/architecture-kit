@@ -1,3 +1,4 @@
+import { codexRoleProfile, scoutReportProblem } from "./codex-role-profile.mjs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
@@ -15,12 +16,12 @@ import { decide as reportDecision } from "./report-stop.mjs";
 import { decide as planDecision } from "./plan-stop.mjs";
 import { decide as costDecision } from "./cost-stop.mjs";
 import { workflowAt } from "./workflow-settings.mjs";
-import { readLedger } from "./ledger.mjs";
+import { appendRecord, readLedger } from "./ledger.mjs";
 
 const fail = reason => { throw new Error(reason || "Codex worker lifecycle unavailable"); };
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
 const workers = new WeakMap();
-const roles = ["implementer", "reviewer", "branch-reviewer", "planner"];
+const roles = ["implementer", "reviewer", "branch-reviewer", "planner", "scout"];
 export function normalizeCodexWorker(input) {
   if (!input || !roles.includes(input.role) || ![input.parentSessionId, input.workerSessionId].every(id) ||
       !["worktree", "branch", "brief", "model"].every(key => typeof input[key] === "string" && input[key].length > 0 &&
@@ -40,9 +41,10 @@ const check = output => {
  */
 export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads = {} } = {}) {
   input = Object.freeze({ ...input });
+  const profile = codexRoleProfile(input.role);
   const identity = normalizeCodexWorker(input), workflow = workflowAt(input.worktree), review = workflow?.review ?? reviewDefaults;
   const type = (input.role === "implementer" ? workflow?.review.implementerTypes ?? dispatchDefaults.implementerTypes :
-    input.role === "planner" ? review.plannerTypes : review.reviewerTypes[input.role === "reviewer" ? "task" : "branch"])[0];
+    profile.route === "planner" ? review.plannerTypes : review.reviewerTypes[input.role === "reviewer" ? "task" : "branch"])[0];
   if (!type) fail();
   const call = { ...identity, agent_type: type }, dir = slotDirOf(call.session_id, tmp);
   const prompt = `Brief: ${input.brief}\nWorktree: ${input.worktree}\nBranch: ${input.branch}`;
@@ -59,12 +61,17 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
   };
   const validateReport = () => {
     policyUnchanged();
+    if (input.role === "scout") {
+      const problem = scoutReportProblem(report);
+      if (problem) fail(problem);
+      return;
+    }
     check(reportDecision(stopCall("PreToolUse"), tmp)); check(planDecision(stopCall("PreToolUse"), tmp));
   };
   const admitted = native => {
     if (state !== "running") fail();
     const proof = runtime.validate(handle, native);
-    if (!proof || proof.role !== (input.role === "implementer" ? "implementer" : "reviewer") ||
+    if (!proof || proof.role !== profile.runtime ||
         proof.worktree !== input.worktree || proof.workflowParentId !== input.parentSessionId) fail();
     return proof;
   };
@@ -93,8 +100,14 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
       try {
         if (accepted && !outcome) {
           validateReport();
-          check(reportDecision(stopCall("SubagentStop"), tmp));
-          check(planDecision(stopCall("SubagentStop"), tmp));
+          if (input.role === "scout") {
+            if (!workflow) fail("Scout workflow unavailable");
+            appendRecord(workflow.ledger, { type: "stop", session: call.session_id, agentType: type,
+              agentId: call.agent_id, role: "scout" });
+          } else {
+            check(reportDecision(stopCall("SubagentStop"), tmp));
+            check(planDecision(stopCall("SubagentStop"), tmp));
+          }
         }
       } catch (error) { accepted = false; notes.push(error.message); }
       // The runner projection contains no native usage. Shared cost stays unknown, never fabricated zero.
@@ -142,7 +155,7 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
         // Trusted workflow projection for shared placement only; never pass a Codex rollout to Claude parsers.
         projection = mkdtempSync(path.join(tmp, "codex-worker-"));
         writeFileSync(path.join(projection, "brief.jsonl"), JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n");
-        handle = runtime.reserve({ role: input.role === "implementer" ? "implementer" : "reviewer", workflowParentId: input.parentSessionId });
+        handle = runtime.reserve({ role: profile.runtime, workflowParentId: input.parentSessionId });
         child = await launch(handle, prompt);
         child.once("error", () => { if (!child.pid) spawnFailed = true; });
         const proof = await runtime.ready(handle);

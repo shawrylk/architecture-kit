@@ -1,3 +1,4 @@
+import { codexRoleProfile } from "./codex-role-profile.mjs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { realpathSync, statSync, constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
@@ -216,7 +217,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       if (!options || Object.keys(options).length > 3 || Object.keys(options).some(key => !["role", "workflowParentId", "parent"].includes(key))) unavailable();
       const { role, workflowParentId, parent } = options;
       if (!roles.includes(role) || !id(workflowParentId) || admitted >= 256 || records.size >= capacity ||
-          inheritedRole !== "leader" || invocation && role !== invocation.role) unavailable();
+          inheritedRole !== "leader" || invocation && role !== codexRoleProfile(invocation.role).runtime) unavailable();
       const ancestor = parent === undefined ? null : get(parent);
       if (ancestor && (!live(ancestor) || !ancestor.proof || ancestor.role !== "leader")) unavailable();
       const credential = Object.freeze(Object.create(null));

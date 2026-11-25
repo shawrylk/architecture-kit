@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -57,7 +57,7 @@ test("owned native launch is per invocation and unsupported continuations fail b
   const f = setup(t);
   assert.equal(parseArgs(f.argv).ownedNative, false);
   assert.equal(parseArgs([...f.argv, "--owned-native"]).ownedNative, true);
-  for (const extra of [["--role", "scout"], ["--role", "tests"], ["--max-runs", "2"], ["--resume", "old"], ["--wait-reset"]]) {
+  for (const extra of [["--role", "tests"], ["--max-runs", "2"], ["--resume", "old"], ["--wait-reset"]]) {
     const messages = [];
     assert.equal(await runCodexImplement([...f.argv, "--owned-native", ...extra], {
       env: {}, say: line => messages.push(line), out: quiet,
@@ -73,9 +73,9 @@ test("owned native launch is per invocation and unsupported continuations fail b
   }), 4);
 });
 
-for (const mode of ["hook-first", "stdout-first", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify", "review-ok", "review-changes", "review-missing", "review-stale", "review-malformed", "review-handback", "review-nonzero", "review-proof", "review-profile", "review-identity", "review-recovery", "review-admission", "review-marker", "review-no-report", "review-old", "review-brief-report", "review-drift", "review-guard"]) {
+for (const mode of ["scout-worktree-link", "scout-budget", "scout-location-link", "scout-ok", "scout-dirty", "scout-dirty-change", "scout-untracked", "scout-tracked", "scout-staged", "scout-commit", "scout-reset", "scout-missing", "scout-stale", "scout-old", "scout-malformed", "scout-profile", "scout-identity", "scout-recovery", "scout-admission", "scout-marker", "scout-no-report", "scout-brief-report", "scout-location", "scout-progress-location", "scout-log-location", "scout-handback", "scout-nonzero", "scout-drift", "scout-label-Gap", "scout-label-Plan", "scout-label-Check", "scout-label-Risks", "scout-label-Questions", "scout-label-Breaking", "hook-first", "stdout-first", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify", "review-ok", "review-changes", "review-missing", "review-stale", "review-malformed", "review-handback", "review-nonzero", "review-proof", "review-profile", "review-identity", "review-recovery", "review-admission", "review-marker", "review-no-report", "review-old", "review-brief-report", "review-drift", "review-guard"]) {
   test(`actual owned runner ${mode}`, { skip: !["linux", "darwin"].includes(process.platform) }, async t => {
-    const review = mode.startsWith("review-");
+    const review = mode.startsWith("review-"), scout = mode.startsWith("scout-");
     const f = setup(t), executable = path.join(f.dir, "native"), script = path.join(f.dir, "native.mjs"), parent = path.basename(f.dir);
     const source = path.join(f.dir, "native.c");
     writeFileSync(source, `#include <stdio.h>
@@ -89,7 +89,7 @@ int main(int argc, char **argv) {
     const built = spawnSync("cc", [source, "-o", executable], { encoding: "utf8" });
     if (built.error?.code === "ENOENT") { t.skip("native fixture requires cc"); return; }
     assert.equal(built.status, 0, built.stderr);
-    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { model: review ? null : "gpt-6.1-sol", reviewModel: mode === "review-admission" ? "unadmitted-model" : "gpt-6.1-sol", reviewEffort: "high" }, budgets: { codex: { compactAt: 123456, toolOutputTokens: 3333 }, reviewer: { remindAt: 10000, handoffAt: 20000 } }, swarm: { dispatch: { implementerSlots: 1 } } }));
+    writeFileSync(path.join(f.worktree, "qc.config.json"), JSON.stringify({ codex: { model: mode === "scout-admission" ? "unadmitted-model" : review ? null : "gpt-6.1-sol", reviewModel: mode === "review-admission" ? "unadmitted-model" : "gpt-6.1-sol", reviewEffort: "high" }, budgets: { codex: { compactAt: 123456, toolOutputTokens: 3333 }, reviewer: { remindAt: 10000, handoffAt: 20000 } }, swarm: { dispatch: { implementerSlots: 1 } } }));
     for (const args of [["add", "."], ["-c", "user.name=qc", "-c", "user.email=qc@example.test", "-c", "commit.gpgsign=false", "commit", "-qm", "seed"]])
       assert.equal(spawnSync("git", args, { cwd: f.worktree, env: f.gitEnv }).status, 0);
     const linked = path.join(f.dir, "linked");
@@ -99,6 +99,26 @@ int main(int argc, char **argv) {
     mkdirSync(path.dirname(checkpoint), { recursive: true });
     if (mode !== "no-checkpoint") writeFileSync(checkpoint, "## Goal\n## Rules\n## Tasks\n## Next\n");
     const roleReport = path.join(f.dir, "review.md");
+    if (scout) {
+      f.argv.push("--role", "scout");
+      if (mode === "scout-ok") f.argv.push("--effort", "medium");
+      if (mode === "scout-brief-report") appendFileSync(f.brief, `\nReport: ${roleReport}\n`);
+      else if (mode !== "scout-no-report") f.argv.push("--report", mode === "scout-location" ? path.join(f.worktree, "report.md") : roleReport);
+      if (mode === "scout-stale") writeFileSync(roleReport, SCOUT_REPORT);
+      if (mode.startsWith("scout-dirty")) {
+        writeFileSync(path.join(f.worktree, "initial.txt"), "baseline");
+        appendFileSync(path.join(f.worktree, "qc.config.json"), " ");
+        assert.equal(spawnSync("git", ["add", "qc.config.json"], { cwd: f.worktree, env: f.gitEnv }).status, 0);
+        appendFileSync(path.join(f.worktree, "qc.config.json"), " ");
+      }
+      if (["scout-location-link", "scout-worktree-link"].includes(mode)) {
+        const alias = path.join(f.dir, "alias"); symlinkSync(f.worktree, alias);
+        f.argv[f.argv.indexOf("--report") + 1] = path.join(mode === "scout-location-link" ? alias : f.worktree, "report.md");
+        if (mode === "scout-worktree-link") { f.worktree = alias; f.argv[f.argv.indexOf("--worktree") + 1] = alias; }
+      }
+      if (mode === "scout-progress-location") f.argv[f.argv.indexOf("--progress") + 1] = path.join(f.worktree, "progress.md");
+      if (mode === "scout-log-location") f.argv.push("--log", path.join(f.worktree, "log.md"));
+    }
     if (review && mode !== "review-no-report") {
       f.argv.push("--review");
       if (mode === "review-brief-report") appendFileSync(f.brief, `\nReport: ${roleReport}\n`);
@@ -108,20 +128,31 @@ int main(int argc, char **argv) {
     if (mode === "review-no-report") f.argv.push("--review");
     const restoreText = "## Goal\nreview recovery\n## Rules\n## Tasks\n## Next\n";
     const restoreFile = checkpointPathOf(f.worktree, "thread");
-    if (mode === "review-recovery") { mkdirSync(path.dirname(restoreFile), { recursive: true }); writeFileSync(restoreFile, restoreText); }
+    if (["review-recovery", "scout-recovery", "scout-budget"].includes(mode)) { mkdirSync(path.dirname(restoreFile), { recursive: true }); writeFileSync(restoreFile, restoreText); }
     if (["verify", "review-proof"].includes(mode)) appendFileSync(f.brief, '\nVerify: `node -e "process.exit(9)"`\n');
     writeFileSync(script, `import { spawnSync } from 'node:child_process';
-import { mkdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 const mode = ${JSON.stringify(mode)}, cwd = process.cwd();
 writeFileSync(${JSON.stringify(path.join(f.dir, "started"))}, JSON.stringify({ pid: process.pid, port: process.env.QC_CODEX_REPORT_PORT }));
-if (process.env.QC_ROLE !== ${JSON.stringify(review ? 'review' : 'implementer')} || process.env.QC_CODEX_WORKER !== '1') throw Error('worker identity missing');
+if (process.env.QC_ROLE !== ${JSON.stringify(scout ? 'scout' : review ? 'review' : 'implementer')} || process.env.QC_CODEX_WORKER !== '1') throw Error('worker identity missing');
 for (const flag of ['features.multi_agent=false', 'features.multi_agent_v2=false', 'features.codex_hooks=true', 'model_auto_compact_token_limit=123456', 'tool_output_token_limit=3333'])
   if (!process.argv.includes(flag)) throw Error('missing '+flag);
+if (${scout} && (!process.argv.includes('model="gpt-6.1-sol"') || mode === 'scout-ok' && !process.argv.includes('model_reasoning_effort=medium'))) throw Error('scout model/effort missing');
 if (${review} && (!process.argv.includes('model="gpt-6.1-sol"') || !process.argv.includes('model_reasoning_effort="high"'))) throw Error('review model/effort missing');
 const hooks = process.argv.find(arg => arg.startsWith('hooks='));
 if (!hooks || (hooks.match(/codex-hook/g) || []).length !== 4) throw Error('canonical hooks missing');
 const command = JSON.parse(hooks.slice(hooks.indexOf('command=') + 8, hooks.indexOf(',timeout=')));
-const base = { session_id: 'thread', cwd, transcript_path: null };
+const usageFile = process.env.CODEX_HOME+'/sessions/usage.jsonl', timestamp = new Date().toISOString();
+const saveUsage = total => {
+  mkdirSync(process.env.CODEX_HOME+'/sessions', { recursive: true });
+  const row = (type, payload, ordinal) => JSON.stringify({ type, payload, ordinal, timestamp })+'\\n';
+  const usage = { input_tokens: total-1000, cached_input_tokens: total-1000, output_tokens: 1000, reasoning_output_tokens: 900, total_tokens: total };
+  writeFileSync(usageFile, row('session_meta', { id: 'thread', session_id: 'root', cwd, cli_version: '0.172.0', source: 'exec' }, 0)+
+    row('token_usage_record', { thread_id: 'thread', session_id: 'root', turn_id: 'turn', root_turn_id: 'turn', response_id: 'response', usage, turn_token_usage: usage, thread_token_usage: usage }, 1)+
+    row('event_msg', { type: 'token_count', info: { last_token_usage: usage, total_token_usage: usage } }, 2));
+};
+if (mode === 'scout-budget') saveUsage(15000);
+const base = { session_id: 'thread', cwd, transcript_path: mode === 'scout-budget' ? usageFile : null };
 const hook = input => {
   const r = spawnSync('sh', ['-c', command], {
     input: JSON.stringify(input), env: process.env, encoding: 'utf8', timeout: 7000 });
@@ -131,20 +162,35 @@ const hook = input => {
 if (mode === 'stdout-first') process.stdout.write('{"type":"thread.started","thread_id":"thread"}\\n');
 if (mode === 'channel') process.env.QC_CODEX_REPORT_TOKEN = '0'.repeat(64);
 if (mode === 'no-hooks') await new Promise(() => setInterval(() => {}, 1000));
-hook({ ...base, ...(mode === 'review-profile' ? { role: 'implementer' } : {}), hook_event_name: 'SessionStart', source: 'startup', model: 'fixture', permission_mode: 'default' });
+hook({ ...base, ...(['review-profile', 'scout-profile'].includes(mode) ? { role: 'implementer' } : {}), hook_event_name: 'SessionStart', source: 'startup', model: 'fixture', permission_mode: 'default' });
 if (mode !== 'stdout-first') process.stdout.write('{"type":"thread.started","thread_id":"thread"}\\n');
 await new Promise(resolve => setTimeout(resolve, 40));
-if (mode === 'review-recovery') for (const source of ['compact', 'resume', 'compact']) {
+if (['review-recovery', 'scout-recovery'].includes(mode)) for (const source of ['compact', 'resume', 'compact']) {
   const restored = hook({ ...base, hook_event_name: 'SessionStart', source, model: 'fixture', permission_mode: 'default' });
   if (restored?.hookSpecificOutput?.additionalContext !== ${JSON.stringify(restoreText)}) throw Error('recovery lost checkpoint');
 }
 if (['cancel', 'timeout'].includes(mode)) { writeFileSync(${JSON.stringify(path.join(f.dir, "ready"))}, 'ready'); await new Promise(() => setInterval(() => {}, 1000)); }
 const nested = spawnSync(${JSON.stringify(process.execPath)}, [${JSON.stringify(QC)}, 'codex-implement'], { env: { ...process.env, QC_ROLE: 'leader' }, encoding: 'utf8' });
-if (nested.status !== 4) process.exit(9);
+if (nested.status !== 4) throw Error('nested refusal missing: '+nested.status);
 const denied = hook({ ...base, hook_event_name: 'PreToolUse', turn_id: 'turn', tool_use_id: 'tool', tool_name: 'Bash', tool_input: { command: 'git -c core.hooksPath=/dev/null status' } });
-if (denied?.hookSpecificOutput?.permissionDecision !== 'deny') process.exit(10);
+if (denied?.hookSpecificOutput?.permissionDecision !== 'deny') throw Error('expected policy deny: '+JSON.stringify(denied));
+if (mode === 'scout-budget') {
+  if (!denied.hookSpecificOutput.additionalContext?.includes('budgets.reviewer.remindAt')) throw Error('scout reviewer budget reminder missing');
+  const state = () => JSON.parse(readFileSync(process.env.CODEX_HOME+'/qc-role-budgets/'+readdirSync(process.env.CODEX_HOME+'/qc-role-budgets').find(n => n.endsWith('.json')), 'utf8'));
+  const budgetCall = id => hook({ ...base, hook_event_name: 'PreToolUse', turn_id: 'turn', tool_use_id: id, tool_name: 'Bash', tool_input: { command: 'npm test' } });
+  saveUsage(20000);
+  if (budgetCall('close')?.hookSpecificOutput?.permissionDecision !== 'deny') throw Error('scout budget did not close');
+  const before = state(); saveUsage(1000);
+  for (const source of ['compact', 'resume', 'compact']) {
+    const restored = hook({ ...base, hook_event_name: 'SessionStart', source, model: 'fixture', permission_mode: 'default' });
+    if (restored?.hookSpecificOutput?.additionalContext !== ${JSON.stringify(restoreText)} || JSON.stringify(state()) !== JSON.stringify(before)) throw Error('scout recovery reset budget/capability');
+  }
+  const after = state();
+  if (!after.policy.budgetClosed || after.budget.handoffAt !== 20000 || after.budget.remindAt !== 10000 ||
+      after.admission !== before.admission || budgetCall('after')?.hookSpecificOutput?.permissionDecision !== 'deny') throw Error('scout budget/capability changed');
+}
 hook({ ...base, hook_event_name: 'PostToolUse', turn_id: 'turn', tool_use_id: 'post', tool_name: 'Bash', tool_input: { command: 'true' }, tool_response: 'ok' });
-if (['drift', 'review-drift'].includes(mode)) writeFileSync('qc.config.json', '{}');
+if (['drift', 'review-drift', 'scout-drift'].includes(mode)) writeFileSync('qc.config.json', '{}');
 if (mode === 'review-guard') {
   mkdirSync('.githooks'); writeFileSync('.githooks/bad', 'changed');
   for (const args of [['add', '.githooks/bad'], ['-c', 'user.name=qc', '-c', 'user.email=qc@example.test', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'guard fixture']])
@@ -152,13 +198,27 @@ if (mode === 'review-guard') {
 }
 if (mode === 'guard') writeFileSync('outside-brief.mjs', 'export const bad = 1;');
 const sha = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+const scoutReport = 'Gap: gap\\nPlan: plan\\nCheck: checked\\nRisks: none\\nQuestions: none\\nBreaking: no\\n';
+if (${scout} && !['scout-missing', 'scout-stale'].includes(mode)) writeFileSync(${JSON.stringify(roleReport)},
+  mode === 'scout-malformed' ? 'bad report' : mode.startsWith('scout-label-') ? scoutReport.split('\\n').filter(line => !line.startsWith(mode.slice(12)+':')).join('\\n') : scoutReport);
+if (mode === 'scout-old') utimesSync(${JSON.stringify(roleReport)}, 1, 1);
+if (['scout-untracked', 'scout-dirty-change'].includes(mode)) writeFileSync(mode === 'scout-untracked' ? 'new.txt' : 'initial.txt', 'changed');
+if (['scout-tracked', 'scout-staged'].includes(mode)) {
+  writeFileSync('qc.config.json', ${JSON.stringify(readFileSync(path.join(f.worktree, "qc.config.json"), "utf8"))}+' ');
+  if (mode === 'scout-staged') spawnSync('git', ['add', 'qc.config.json']);
+}
+if (['scout-commit', 'scout-reset'].includes(mode)) {
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+  if (spawnSync('git', ['-c', 'user.name=qc', '-c', 'user.email=qc@example.test', '-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-qm', 'scout commit']).status !== 0) throw Error('scout commit failed');
+  if (mode === 'scout-reset') spawnSync('git', ['reset', '--hard', head]);
+}
 const verdict = 'VERDICT: '+(mode === 'review-changes' ? 'CHANGES_REQUIRED' : 'APPROVED')+' '+sha+'\\nRED-CHECKED: saved failing test proof';
 if (${review} && !['review-missing', 'review-stale'].includes(mode)) writeFileSync(${JSON.stringify(roleReport)}, mode === 'review-malformed' ? 'bad report' : 'VERDICT: '+(mode === 'review-changes' ? 'CHANGES_REQUIRED' : 'APPROVED')+'\\n');
 if (mode === 'review-old') utimesSync(${JSON.stringify(roleReport)}, 1, 1);
-if (mode !== 'review-marker') writeFileSync(${JSON.stringify(f.progress)}, ${JSON.stringify(DONE_MARKER)});
-hook({ ...base, ...(['provenance', 'review-identity'].includes(mode) ? { session_id: 'sibling' } : {}), hook_event_name: 'Stop', turn_id: 'turn', stop_hook_active: false,
-  last_assistant_message: mode === 'malformed' || mode === 'review-handback' ? 'done' : ${review} ? verdict : 'RED: node --test failed\\nGREEN: node --test passed' });
-process.exit(['nonzero', 'review-nonzero'].includes(mode) ? 6 : 0);
+if (!['review-marker', 'scout-marker'].includes(mode)) writeFileSync(${JSON.stringify(f.progress)}, ${JSON.stringify(DONE_MARKER)});
+hook({ ...base, ...(['provenance', 'review-identity', 'scout-identity'].includes(mode) ? { session_id: 'sibling' } : {}), hook_event_name: 'Stop', turn_id: 'turn', stop_hook_active: false,
+  last_assistant_message: mode === 'malformed' || ['review-handback', 'scout-handback'].includes(mode) ? 'done' : ${scout} ? scoutReport : ${review} ? verdict : 'RED: node --test failed\\nGREEN: node --test passed' });
+process.exit(['nonzero', 'review-nonzero', 'scout-nonzero'].includes(mode) ? 6 : 0);
 `);
     const controller = new AbortController();
     if (mode === "cancel") {
@@ -169,10 +229,13 @@ process.exit(['nonzero', 'review-nonzero'].includes(mode) ? 6 : 0);
     const code = await runCodexImplement([...f.argv, "--owned-native", "--parent-session", parent, ...(mode === "timeout" ? ["--max-hours", "0.0005"] : [])], {
       run: () => assert.fail("owned runner used legacy callback"), codexCommand: [executable], env: { ...f.gitEnv, CODEX_HOME: path.join(f.dir, "home") }, signal: controller.signal, say: line => messages.push(line), out: quiet,
     });
-    assert.equal(code, ["hook-first", "stdout-first", "review-ok", "review-changes", "review-proof", "review-recovery", "review-brief-report"].includes(mode) ? 0 : ["guard", "review-guard"].includes(mode) ? 4 : mode === "verify" ? 7 : ["review-missing", "review-stale", "review-malformed", "review-marker", "review-no-report", "review-old"].includes(mode) ? 3 : 1,
+    const scoutCode = ["scout-budget", "scout-ok", "scout-dirty", "scout-recovery", "scout-brief-report"].includes(mode) ? 0 :
+      ["scout-dirty-change", "scout-untracked", "scout-tracked", "scout-staged", "scout-commit", "scout-reset", "scout-drift"].includes(mode) ? 4 :
+      ["scout-missing", "scout-stale", "scout-old", "scout-malformed", "scout-marker"].includes(mode) || mode.startsWith("scout-label-") ? 3 : 1;
+    assert.equal(code, scout ? scoutCode : ["scout-ok", "hook-first", "stdout-first", "review-ok", "review-changes", "review-proof", "review-recovery", "review-brief-report"].includes(mode) ? 0 : ["guard", "review-guard"].includes(mode) ? 4 : mode === "verify" ? 7 : ["review-missing", "review-stale", "review-malformed", "review-marker", "review-no-report", "review-old"].includes(mode) ? 3 : 1,
       messages.join("\n") + JSON.stringify({ probe: existsSync(path.join(f.dir, "probe")), started: existsSync(path.join(f.dir, "started")) }) +
       (existsSync(`${f.progress}.log`) ? readFileSync(`${f.progress}.log`, "utf8") : ""));
-    assert.equal(existsSync(path.join(f.dir, "started")), !["no-checkpoint", "pin", "review-admission", "review-no-report"].includes(mode), messages.join("\n"));
+    assert.equal(existsSync(path.join(f.dir, "started")), !["no-checkpoint", "pin", "review-admission", "review-no-report", "scout-admission", "scout-no-report", "scout-worktree-link", "scout-location-link", "scout-location", "scout-progress-location", "scout-log-location"].includes(mode), messages.join("\n"));
     if (mode === "cancel") assert.equal(controller.signal.aborted, true);
     if (existsSync(path.join(f.dir, "started"))) {
       const { pid, port } = JSON.parse(readFileSync(path.join(f.dir, "started"), "utf8"));
@@ -183,7 +246,7 @@ process.exit(['nonzero', 'review-nonzero'].includes(mode) ? 6 : 0);
         socket.once("connect", () => { socket.destroy(); reject(Error("owned channel still open")); }); socket.once("error", resolve);
       });
     }
-    if (["no-checkpoint", "review-admission", "review-no-report"].includes(mode)) {
+    if (["no-checkpoint", "review-admission", "review-no-report", "scout-admission", "scout-no-report", "scout-worktree-link", "scout-location-link", "scout-location", "scout-progress-location", "scout-log-location"].includes(mode)) {
       assert.equal(existsSync(path.join(f.dir, "probe")), false);
       assert.equal(existsSync(`${f.progress}.log`), false);
     }
@@ -191,6 +254,11 @@ process.exit(['nonzero', 'review-nonzero'].includes(mode) ? 6 : 0);
     assert.equal(existsSync(slotDir) ? readdirSync(slotDir).filter(n => n.endsWith(".claim")).length : 0, 0);
     const stops = readLedger(ledgerFileOf(f.worktree)).filter(r => r.type === "stop");
     assert.equal(stops.length, code === 0 ? 1 : 0);
+    if (scout) {
+      assert.equal(readLedger(ledgerFileOf(f.worktree)).filter(r => r.type === "verdict").length, 0);
+      if (code === 0) assert.equal(stops[0].role, "scout");
+      if (mode === "scout-dirty") assert.equal(readFileSync(path.join(f.worktree, "initial.txt"), "utf8"), "baseline");
+    }
     if (review) {
       assert.equal(readLedger(ledgerFileOf(f.worktree)).filter(r => r.type === "verdict").length, code === 0 ? 2 : 0);
       if (code === 0) assert.equal(stops[0].role, "task");

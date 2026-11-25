@@ -8,6 +8,7 @@ import { once, EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { pinCodexNativeExecutable } from "./codex-native-executable.mjs";
 import { createCodexRuntime, createCodexInvocation } from "./codex-runtime.mjs";
 import { decideCodexContext } from "./codex-context.mjs";
 import { readCodexUsage } from "./codex-usage-source.mjs";
@@ -30,6 +31,24 @@ for (const role of ["leader", "implementer", "reviewer", "scout", "tests"]) {
       assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, ...suffix] }), /unavailable/);
   });
 }
+test("scout invocation admits only the reviewer canonical reservation", { skip: !["linux", "darwin"].includes(process.platform) }, t => {
+  const inherited = { QC_ROLE: process.env.QC_ROLE, QC_CODEX_WORKER: process.env.QC_CODEX_WORKER };
+  delete process.env.QC_ROLE; delete process.env.QC_CODEX_WORKER;
+  t.after(() => { for (const [key, value] of Object.entries(inherited)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  } });
+  const f = fixture(t), executable = path.join(f.dir, "native"), source = path.join(f.dir, "native.c");
+  writeFileSync(source, '#include <stdio.h>\nint main(void) { puts("codex-cli 0.172.0"); return 0; }\n');
+  const built = spawnSync("cc", [source, "-o", executable], { encoding: "utf8" });
+  if (built.error?.code === "ENOENT") { t.skip("native fixture requires cc"); return; }
+  assert.equal(built.status, 0, built.stderr);
+  const executablePin = pinCodexNativeExecutable({ command: executable, cwd: f.dir });
+  const runtime = createCodexRuntime({ worktree: f.dir, executable, executablePin, workflowId: "scout",
+    invocation: createCodexInvocation(invocationChoices("scout")) });
+  for (const role of ["leader", "implementer", "scout"]) assert.throws(() => runtime.reserve({ role, workflowParentId: "parent" }), /unavailable/);
+  runtime.terminal(runtime.reserve({ role: "reviewer", workflowParentId: "parent" }));
+});
+
 test("leader invocation rejects padded compaction overrides before minting authority", () => {
   const choices = invocationChoices("leader");
   for (const value of [" model_auto_compact_token_limit=1", "\tmodel_post_turn_compact_threshold_percent = 99 ",

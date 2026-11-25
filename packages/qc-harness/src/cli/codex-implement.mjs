@@ -2,15 +2,16 @@
 // after each stop until the progress file says it is done. It never calls Claude; exit 2 hands the brief back.
 
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { scoutReportProblem } from "./codex-role-profile.mjs";
 import { createCodexDispatch } from "./codex-dispatch.mjs";
 import { createCodexBridge } from "./codex-bridge.mjs";
 import { pinCodexNativeExecutable } from "./codex-native-executable.mjs";
 import { appendRecord, ledgerFileOf } from "./ledger.mjs";
 import { appendRun, runLogFileOf } from "./run-log.mjs";
 import { spawnCommand as spawn } from "./spawn-command.mjs";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readlinkSync, lstatSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
@@ -314,7 +315,7 @@ function spawnRun({ invocation: { args, env }, input, log, cwd, launch }, codexC
   });
 }
 
-// Single owned implement/review invocation. Native argv uses budgets.codex;
+// Single owned implement/review/scout invocation. Native argv uses budgets.codex;
 // the fixed dispatch role selects the separate implementer/reviewer workflow budget.
 async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
   if (codexCommand.length !== 1 || !model) throw Error("Owned runner requires one native executable and an explicit model");
@@ -334,7 +335,7 @@ async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
     return owned[name](...args);
   }]));
   const dispatch = createCodexDispatch({ parentSessionId: settings.parentSession, workerSessionId: randomUUID(),
-    role: settings.review ? "reviewer" : "implementer", worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime });
+    role: settings.role === "scout" ? "scout" : settings.review ? "reviewer" : "implementer", worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime });
   let bridge, starting, child, retired = false, cancelled = false, cleanupNeeded = false;
   const close = async () => {
     try { await dispatch.error(); retired = true; await bridge?.close(); }
@@ -481,24 +482,45 @@ function scoutDirt(worktree) {
   return execFileSync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
+function scoutActualPath(file) {
+  try { return realpathSync(file); }
+  catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    try { lstatSync(file); throw Error("unavailable scout artifact"); }
+    catch (cause) { if (cause.code !== "ENOENT") throw cause; }
+    const parent = path.dirname(file);
+    if (parent === file) throw error;
+    return path.join(scoutActualPath(parent), path.basename(file));
+  }
+}
+
+// Owned scouts may inspect existing dirt, but neither its bytes nor staging may change.
+function ownedScoutDirt(worktree) {
+  const git = (...args) => execFileSync("git", args, { cwd: worktree, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  const untracked = git("ls-files", "--others", "--exclude-standard", "-z").split("\0").filter(Boolean).map(file => {
+    const absolute = path.join(worktree, file);
+    const bytes = lstatSync(absolute).isSymbolicLink() ? readlinkSync(absolute) : readFileSync(absolute);
+    return [file, lstatSync(absolute).mode, createHash("sha256").update(bytes).digest("hex")];
+  });
+  return JSON.stringify([scoutDirt(worktree), git("diff", "--no-ext-diff", "--no-textconv", "--binary"), git("diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary"), untracked]);
+}
+
 /** Branch: a scout is complete only with a fresh report and all six labels. */
-function completeScout(settings, started, originalStamp, message, say) {
+function completeScout(settings, started, originalStamp, message, say, announce = true) {
   try {
     const stamp = reportStamp(settings.report);
     if (stamp === null) throw new Error(`missing scout report: ${settings.report}`);
     if (stamp === originalStamp || statSync(settings.report).mtimeMs < started) throw new Error(`stale scout report: ${settings.report}`);
     const text = readFileSync(settings.report, "utf8");
-    for (const label of ["Gap", "Plan", "Check", "Risks", "Questions"]) {
-      if (!new RegExp(`^${label}:[ \t]*(?:\\S|\\r?\\n(?:[ \t]*\\r?\\n)*[ \t]*(?:[-*]|\\d+[.)]))`, "m").test(text)) throw new Error(`scout report requires ${label}:`);
-    }
-    if (!/^Breaking:[ \t]*(yes|no)[ \t]*\r?$/m.test(text)) throw new Error("scout report requires Breaking: yes|no");
-    return finish(say, message, 0);
+    const problem = scoutReportProblem(text);
+    if (problem) throw new Error(problem);
+    return announce ? finish(say, message, 0) : 0;
   } catch (error) { return finish(say, `cannot accept scout report: ${error.message}`, 3); }
 }
 
 /** Records a completed review once; every report, git or ledger error remains a failed job. */
 function completeReview(settings, started, originalStamp, message, say, recordVerdict = true) {
-  if (settings.role === "scout") return completeScout(settings, started, originalStamp, message, say);
+  if (settings.role === "scout") return completeScout(settings, started, originalStamp, message, say, recordVerdict);
   if (!settings.report) return finish(say, message, 0);
   try {
     const stamp = reportStamp(settings.report);
@@ -547,8 +569,8 @@ async function runJob(argv, {
     return finish(say, message, code);
   };
   const started = Date.now();
-  if (settings.ownedNative && (!["implement", "review"].includes(settings.role) || settings.maxRuns !== 1 || settings.resume || settings.waitReset))
-    return refuse("other", "H3b scout/tests role-lifecycle and retry/resume continuation required for this owned runner mode");
+  if (settings.ownedNative && (!["implement", "review", "scout"].includes(settings.role) || settings.maxRuns !== 1 || settings.resume || settings.waitReset))
+    return refuse("other", "H3b tests role-lifecycle and retry/resume continuation required for this owned runner mode");
   if (settings.ownedNative && !/^[A-Za-z0-9_-]{1,128}$/.test(settings.parentSession ?? ""))
     return refuse("other", "Owned runner requires --parent-session for checkpoint admission");
   if (settings.ownedNative && isDone(settings.progress)) return refuse("other", "Owned runner cannot accept a prewritten completion marker");
@@ -562,8 +584,9 @@ async function runJob(argv, {
     if (settings.role === "scout") {
       settings.report ??= briefPath(readFileSync(settings.brief, "utf8"), "Report", settings.brief);
       if (!settings.report) return finish(say, "scout requires --report or Report:", 1);
+      const scoutRoot = settings.ownedNative ? scoutActualPath(settings.worktree) : settings.worktree;
       for (const file of [settings.report, settings.progress, settings.log]) {
-        const relative = path.relative(settings.worktree, file);
+        const relative = path.relative(scoutRoot, settings.ownedNative ? scoutActualPath(file) : file);
         if (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)) return finish(say, "scout report, progress and log must be outside the worktree", 1);
       }
     }
@@ -646,7 +669,7 @@ async function runJob(argv, {
       if (!passed) return finish(say, "verify failed", 7);
     } catch (error) { return finish(say, `verify failed: ${error.message}`, 7); }
     if (!isDone(settings.progress)) return finish(say, "progress marker missing after verification", 3);
-    if (metrics.ownedLifecycle && settings.review) {
+    if (metrics.ownedLifecycle && (settings.review || settings.role === "scout")) {
       const valid = completeReview(settings, started, originalStamp, message, say, false);
       if (valid !== 0) return valid;
     }
@@ -716,9 +739,12 @@ async function runJob(argv, {
       before = guardRefs(settings.worktree);
       if (!boundary) {
         boundary = before;
-        if (settings.role === "scout") boundary.reflog = scoutReflog(settings.worktree);
+        if (settings.role === "scout") {
+          boundary.reflog = scoutReflog(settings.worktree);
+          if (settings.ownedNative) boundary.dirt = ownedScoutDirt(settings.worktree);
+        }
       }
-      if (settings.role === "scout" && scoutDirt(settings.worktree)) return refuse("other", "guard refused: scout requires a clean worktree (tracked, staged and untracked)", 4);
+      if (settings.role === "scout" && !settings.ownedNative && scoutDirt(settings.worktree)) return refuse("other", "guard refused: scout requires a clean worktree (tracked, staged and untracked)", 4);
     } catch (error) {
       return refuse("other", `guard refused: cannot capture the commit boundary: ${error.message}`, settings.report ? 3 : 4);
     }
@@ -740,7 +766,7 @@ async function runJob(argv, {
     try {
       if (settings.role === "scout") {
         const after = guardRefs(settings.worktree);
-        if (after.head !== boundary.head || after.branch !== boundary.branch || scoutReflog(settings.worktree) !== boundary.reflog || scoutDirt(settings.worktree)) {
+        if (after.head !== boundary.head || after.branch !== boundary.branch || scoutReflog(settings.worktree) !== boundary.reflog || (settings.ownedNative ? ownedScoutDirt(settings.worktree) !== boundary.dirt : scoutDirt(settings.worktree))) {
           return refuse("other", "guard refused: scout changed commits or tracked, staged, or untracked worktree files", 4);
         }
       }
