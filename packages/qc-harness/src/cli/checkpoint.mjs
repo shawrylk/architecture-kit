@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CONFIG_FILE, load } from "../config.mjs";
@@ -129,6 +129,32 @@ export function decide(call) {
   } catch (error) {
     return context(`Checkpoint${file ? ` ${file}` : ""}: cannot read (${String(error.message).replace(/[\r\n]+/g, " ")}).`);
   }
+}
+
+/** Wire: rust-v0.172.0 hooks/src/schema.rs; root recovery only, with no watch or checkpoint writes. */
+export function decideCodexCheckpoint(input) {
+  const fail = () => { throw new Error("Codex checkpoint: unsupported lifecycle, identity or working directory"); };
+  if (!input || typeof input.session_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.session_id) ||
+    input.agent_id !== undefined || input.agent_type !== undefined || typeof input.cwd !== "string" || !path.isAbsolute(input.cwd)) fail();
+  const compact = input.hook_event_name === "PostCompact";
+  if (compact ? !["auto", "manual"].includes(input.trigger) || typeof input.turn_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.turn_id) :
+    input.hook_event_name !== "SessionStart" || !["startup", "resume", "compact"].includes(input.source)) fail();
+  let cwd;
+  try { cwd = realpathSync(input.cwd); if (!statSync(cwd).isDirectory()) fail(); } catch { fail(); }
+  cwd = checkoutRootOf(cwd);
+  if (!cwd) fail();
+  const result = decide({ cwd, session_id: input.session_id, hook_event_name: "SessionStart", source: "resume" });
+  return compact && result ? { systemMessage: result.hookSpecificOutput.additionalContext } : result;
+}
+
+export async function runCodexCheckpoint(args, { stdin = process.stdin, write = console.log, error = console.error } = {}) {
+  if (args.length) { error("usage: qc codex-checkpoint (root lifecycle JSON on stdin)"); return 2; }
+  try {
+    let raw = "";
+    for await (const chunk of stdin) { raw += chunk; if (raw.length > 65536) throw new Error("input exceeds 64 KiB"); }
+    write(JSON.stringify(decideCodexCheckpoint(JSON.parse(raw)) ?? {}));
+    return 0;
+  } catch { error("Codex checkpoint: malformed or unsupported lifecycle input"); return 2; }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

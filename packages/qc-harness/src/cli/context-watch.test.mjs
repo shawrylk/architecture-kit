@@ -6,11 +6,56 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { decide, START, STEP, TELL_USER } from "./context-watch.mjs";
+import { decide, decideCodexBudget, START, STEP, TELL_USER } from "./context-watch.mjs";
+import { contextDefaults } from "../config.mjs";
+import { budgetsOf } from "./context-budgets.mjs";
+
+const nativeUsage = tokens => ({ method: "thread/tokenUsage/updated", params: { threadId: "native", turnId: "turn",
+  tokenUsage: Object.fromEntries(["last", "total"].map(key => [key, { inputTokens: tokens, cachedInputTokens: tokens,
+    outputTokens: 0, reasoningOutputTokens: 0, totalTokens: tokens }])) } });
+
+test("Codex uses explicit native compaction settings without changing Claude advice", (t) => {
+  const f = fixture(t);
+  const nativeConfig = { model_auto_compact_token_limit: 400000, model_post_turn_compact_threshold_percent: 0 };
+  const options = { config: {}, nativeConfig, count: contextDefaults.every, state: {} };
+  const call = { cwd: f.tmp, session_id: "native", role: "leader" };
+  assert.equal(decideCodexBudget(call, { ...options, usage: nativeUsage(399999) }), null);
+  const output = decideCodexBudget(call, { ...options, usage: nativeUsage(400000) });
+  assert.match(output.hookSpecificOutput.additionalContext, /automatic compaction.*400000/);
+  assert.match(output.hookSpecificOutput.additionalContext, /checkpoint/i);
+  assert.doesNotMatch(JSON.stringify(output), /\/compact|Claude/);
+  assert.deepEqual(nativeConfig, { model_auto_compact_token_limit: 400000, model_post_turn_compact_threshold_percent: 0 });
+  assert.match(f.at(400000).hookSpecificOutput.additionalContext, /ask the user to run \/compact/);
+  assert.equal(decideCodexBudget(call, { ...options, usage: null }), null);
+  assert.equal(decideCodexBudget({ ...call, session_id: "other" }, { ...options, usage: nativeUsage(400000) }), null);
+  assert.equal(decideCodexBudget(call, { ...options, nativeConfig: { model_auto_compact_token_limit: 0 }, usage: nativeUsage(400000) }), null);
+  assert.equal(decideCodexBudget(call, { ...options, nativeConfig: { model_auto_compact_token_limit: null }, usage: nativeUsage(400000) }), null);
+  const fallback = decideCodexBudget(call, { ...options, state: {}, nativeConfig: {}, usage: nativeUsage(budgetsOf({}).orchestrator.compactAt) });
+  assert.match(fallback.hookSpecificOutput.additionalContext, /automatic compaction/);
+  assert.equal(decideCodexBudget(call, { ...options, state: {}, config: { budgets: { orchestrator: null } }, usage: nativeUsage(400000) }), null);
+});
+
+test("Codex implementer and reviewer warning/closed handoff rules stay separate", () => {
+  const budgets = budgetsOf({});
+  for (const role of ["implementer", "reviewer"]) {
+    const call = { session_id: "native", role, tool_name: "Bash", tool_input: { command: "npm test" } };
+    const options = { config: {}, state: {}, count: 1 };
+    const run = tokens => decideCodexBudget(call, { ...options, usage: tokens === null ? null : nativeUsage(tokens) });
+    assert.equal(run(null), null);
+    assert.equal(run(budgets[role].remindAt - 1), null);
+    assert.match(run(budgets[role].remindAt).hookSpecificOutput.additionalContext, new RegExp(`budgets.${role}.remindAt`));
+    assert.equal(run(budgets[role].remindAt), null);
+    const denial = run(budgets[role].handoffAt).hookSpecificOutput;
+    assert.equal(denial.permissionDecision, "deny");
+    assert.match(denial.permissionDecisionReason, role === "reviewer" ? /UNREVIEWED/ : /HANDOFF/);
+    assert.equal(run(null).hookSpecificOutput.permissionDecision, "deny");
+    assert.equal(decideCodexBudget({ ...call, tool_input: { command: "git status" } }, { ...options, usage: null }), null);
+  }
+});
 
 function fixture(t, sessionId = "s") {
   const tmp = mkdtempSync(path.join(os.tmpdir(), "context-watch-test-"));
-  t.after(() => rmSync(tmp, { recursive: true, force: true }));
+  t.after(() => rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   const transcript = path.join(tmp, "transcript.jsonl");
   mkdirSync(path.join(tmp, ".git"));
   const call = { cwd: tmp, session_id: sessionId, transcript_path: transcript, hook_event_name: "PostToolUse" };

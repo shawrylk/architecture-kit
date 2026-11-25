@@ -1,15 +1,41 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { checkpointPathOf, checkpointProblem, decide, readCheckpoint } from "./checkpoint.mjs";
+import { checkpointPathOf, checkpointProblem, checkpointRefusal, decide, decideCodexCheckpoint, readCheckpoint } from "./checkpoint.mjs";
+
+test("native startup/resume/compact restore existing notes without refreshing dispatch freshness", (t) => {
+  const { root, file } = workspace(t);
+  writeFileSync(path.join(root, "qc.config.json"), "{}");
+  const nested = path.join(root, "nested"); mkdirSync(nested);
+  const call = { cwd: nested, session_id: "session-1", hook_event_name: "SessionStart", source: "startup" };
+  assert.match(decideCodexCheckpoint(call).hookSpecificOutput.additionalContext, /missing file/);
+  assert.match(checkpointRefusal(call), /missing file/);
+  writeFileSync(file, text);
+  const old = new Date(Date.now() - 60 * 60000); utimesSync(file, old, old);
+  const modified = statSync(file).mtimeMs;
+  for (const source of ["startup", "resume", "compact"]) {
+    assert.ok(decideCodexCheckpoint({ ...call, source }).hookSpecificOutput.additionalContext.includes(text.trim()));
+  }
+  const compact = { ...call, hook_event_name: "PostCompact", turn_id: "turn", trigger: "auto" };
+  assert.ok(decideCodexCheckpoint(compact).systemMessage.includes(text.trim()));
+  assert.match(checkpointRefusal(call), /older/);
+  assert.equal(readFileSync(file, "utf8"), text);
+  assert.equal(statSync(file).mtimeMs, modified);
+  assert.doesNotMatch(decide(call).hookSpecificOutput.additionalContext, /Keep my tasks/);
+  for (const bad of [null, {}, { ...call, session_id: 123 }, { ...call, session_id: "../bad" }, { ...call, source: "unknown" },
+    { ...call, cwd: file }, { ...call, cwd: "relative" }, { ...call, agent_id: "worker" },
+    { ...compact, trigger: "unknown" }, { ...compact, turn_id: null }]) {
+    assert.throws(() => decideCodexCheckpoint(bad), /Codex checkpoint/);
+  }
+});
 
 const text = "## Goal\nKeep my tasks\n## Rules\nKeep constraints\n## Tasks\n- Open: build\n## Next\nBuild it\n";
 function workspace(t) {
   const root = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-checkpoint-")));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }));
   execFileSync("git", ["init", "-q", root]);
   const file = checkpointPathOf(root, "session-1");
   mkdirSync(path.dirname(file), { recursive: true });
@@ -24,6 +50,9 @@ test("checkpoint path belongs to the common Git directory and contains the sessi
   execFileSync("git", ["-c", "user.name=qc", "-c", "user.email=qc@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "init"], { cwd: root });
   execFileSync("git", ["worktree", "add", "-qb", "linked", linked], { cwd: root });
   assert.equal(checkpointPathOf(linked, "session-1"), file);
+  writeFileSync(path.join(linked, "qc.config.json"), "{}"); writeFileSync(file, text);
+  assert.ok(decideCodexCheckpoint({ cwd: linked, session_id: "session-1", hook_event_name: "SessionStart", source: "compact" })
+    .hookSpecificOutput.additionalContext.includes(file));
   assert.notEqual(checkpointPathOf(root, "session-2"), file);
 });
 

@@ -8,6 +8,20 @@ import { fileURLToPath } from "node:url";
 
 const qc = fileURLToPath(new URL("./qc.mjs", import.meta.url));
 
+test("codex-checkpoint CLI routes lifecycle JSON and refuses malformed/oversized input", () => {
+  const run = (input, args = []) => spawnSync(process.execPath, [qc, "codex-checkpoint", ...args], { input, encoding: "utf8" });
+  const help = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
+  assert.match(help.stdout, /qc codex-checkpoint.*0\.172\.0.*PostCompact/);
+  const call = { cwd: process.cwd(), session_id: "native-test", hook_event_name: "SessionStart", source: "resume" };
+  const output = run(JSON.stringify(call));
+  assert.equal(output.status, 0, output.stderr);
+  assert.match(JSON.parse(output.stdout).hookSpecificOutput.additionalContext, /Checkpoint/);
+  for (const [raw, args] of [["{", []], ["null", []], ["x".repeat(65537), []], [JSON.stringify(call), ["--extra"]]]) {
+    const result = run(raw, args); assert.equal(result.status, 2); assert.equal(result.stdout, "");
+    assert.doesNotMatch(result.stderr, /native-test|xxxxx/);
+  }
+});
+
 test("codex-stop-hook CLI routes only explicit leader Stop JSON", (t) => {
   const help = spawnSync(process.execPath, [qc, "help"], { encoding: "utf8" });
   assert.match(help.stdout, /qc codex-stop-hook --role leader/);

@@ -13,6 +13,27 @@ import { budgetsOf } from "./context-budgets.mjs";
 import { dispatchSettings } from "./dispatch.mjs";
 import { contextOf, lastUsage } from "./transcript-usage.mjs";
 import { checkpointNameOf, checkpointSettingsAt } from "./checkpoint.mjs";
+import { normalizeUsage } from "./codex-usage.mjs";
+import { orchestratorVerdict, roleBudgetVerdict } from "./role-budget.mjs";
+
+/** The caller supplies resolved native settings, verified events and its bounded per-role counter/state. */
+export function decideCodexBudget(call, { usage, config, nativeConfig = {}, count, state = {} }) {
+  const normalized = normalizeUsage(usage);
+  const tokens = normalized?.sessionId === call.session_id ? normalized.tokens : undefined;
+  const budgets = budgetsOf(config);
+  if (["implementer", "reviewer"].includes(call.role)) {
+    return roleBudgetVerdict({ role: call.role, tokens, budget: budgets[call.role], call, state });
+  }
+  if (call.role !== "leader" || !budgets.orchestrator || !Number.isSafeInteger(count) || count < 1) return null;
+  const compactAt = Object.hasOwn(nativeConfig, "model_auto_compact_token_limit")
+    ? nativeConfig.model_auto_compact_token_limit : budgets.orchestrator.compactAt;
+  if (!Number.isSafeInteger(compactAt) || compactAt < 1) return null;
+  const verdict = orchestratorVerdict({ tokens, compactAt, count, state });
+  if (!verdict) return null;
+  return { hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext:
+    `Context budget: about ${Math.round(tokens / 1000)}K tokens. Native automatic compaction owns the threshold (${compactAt}); ` +
+    `update the checkpoint at the next clean break: ${checkpointNameOf(call.cwd, call.session_id)}. Keep the plan, open PRs, branch heads and ledger in the resume notes.` } };
+}
 
 export const START = defaults.budgets.orchestrator.compactAt;
 export const STEP = 50_000;
