@@ -139,6 +139,7 @@ function ledger(root, session) {
         if (record.kind) item.kind = record.kind;
         if (record.retired === false) item.retired = false;
         if (record.updatedAt !== undefined) item.updatedAt = record.updatedAt;
+        if (record.since !== undefined) item.since = record.since;
         for (const pr of record.prs ?? []) item.prs.add(pr);
         for (const pending of record.pending ?? []) item.pending.set(pending.stamp, pending);
         for (const stamp of record.seen ?? []) item.seen.add(stamp);
@@ -183,10 +184,20 @@ function github(root, config, deadline, run) {
   };
 }
 
+// A comment written while the previous read ran can carry an earlier server time than the cursor.
+const SINCE_MARGIN_MS = 60_000;
+// The prompt hook times out at 5 seconds; the merge-guard hook allows 15, and its policy reads take up to 6.
+const PROMPT_BUDGET_MS = 3_500;
+const MERGE_BUDGET_MS = 7_000;
+const timeOf = (row) => row.updated_at ?? row.submitted_at ?? row.created_at;
+
 async function comments(item, gh) {
   const prefix = `repos/${item.repo}`;
+  const since = Date.parse(item.since ?? "") ? `&since=${new Date(Date.parse(item.since) - SINCE_MARGIN_MS).toISOString()}` : "";
   const list = async (endpoint) => {
-    const pages = await gh(item.repo, ["api", "--paginate", `${prefix}/${endpoint}?per_page=100`]);
+    // The reviews endpoint has no since filter, so it reads in full.
+    const filter = endpoint.endsWith("/reviews") ? "" : since;
+    const pages = await gh(item.repo, ["api", "--paginate", `${prefix}/${endpoint}?per_page=100${filter}`]);
     if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error("pages");
     return pages.flat().map(row => ({ ...row, endpoint: `${prefix}/${endpoint}` }));
   };
@@ -221,9 +232,23 @@ async function unseen(item, gh, state) {
     state.append({ reviewDone: marker.key });
     state.reviews.delete(marker.key);
   }
-  return rows.filter((row) => !state.own.has(row.html_url) && !state.own.has(row.url) && !state.own.has(`${row.endpoint}:${row.id}`) && (row.body?.trim() || row.state))
-    .map((row) => ({ row, stamp: hash(JSON.stringify([row.html_url, row.id, row.updated_at ?? row.submitted_at ?? row.created_at, row.body, row.state])) }))
+  const fresh = rows.filter((row) => !state.own.has(row.html_url) && !state.own.has(row.url) && !state.own.has(`${row.endpoint}:${row.id}`) && (row.body?.trim() || row.state))
+    .map((row) => ({ row, stamp: hash(JSON.stringify([row.html_url, row.id, timeOf(row), row.body, row.state])) }))
     .filter(({ stamp }) => !item.seen?.has(stamp));
+  advanceCursor(item, rows, fresh, state);
+  return fresh;
+}
+
+// Ledger: the next read starts at the earliest unseen comment, so a filtered read still returns every unseen one.
+function advanceCursor(item, rows, fresh, state) {
+  const times = (list) => list.filter(row => !row.endpoint.endsWith("/reviews")).map(row => Date.parse(timeOf(row))).filter(Number.isFinite);
+  const unseenTimes = times(fresh.map(({ row }) => row));
+  const cursor = unseenTimes.length ? Math.min(...unseenTimes) : Math.max(...times(rows));
+  if (!Number.isFinite(cursor)) return;
+  const since = new Date(cursor).toISOString();
+  if (since === item.since) return;
+  item.since = since;
+  state.append({ repo: item.repo, number: item.number, since });
 }
 
 const bodyOf = (row) => [row.state, row.body].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
@@ -318,7 +343,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
     if (config.commentWatch === false) return null;
     const state = ledger(root, call.session_id);
     if (!state) return null;
-    const deadline = Date.now() + 3500;
+    const deadline = Date.now() + (event === "PreToolUse" ? MERGE_BUDGET_MS : PROMPT_BUDGET_MS);
     const gh = github(root, config, deadline, run);
     if (event === "PostToolUse") {
       const parse = PARSERS[call.tool_name];

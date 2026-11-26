@@ -160,7 +160,10 @@ function fixture(t) {
         const endpoint = args.at(-1);
         if (/issues\\/7$/.test(endpoint)) result = { pull_request: {} };
         else if (/issues\\/\\d+$/.test(endpoint)) result = {};
-        else result = [[], data.rows.filter(row => endpoint.includes(row.endpoint)).map(({endpoint, ...row}) => row)];
+        else {
+          const since = Date.parse(new URLSearchParams(endpoint.split('?')[1] ?? '').get('since') ?? '');
+          result = [[], data.rows.filter(row => endpoint.includes(row.endpoint) && !(row.updated_at < new Date(since || 0).toISOString())).map(({endpoint, ...row}) => row)];
+        }
       }
       return {status: 0, stdout: args.includes('--paginate') ? result.map(page => JSON.stringify(page)).join('\\n') : JSON.stringify(result)};
     };
@@ -187,6 +190,39 @@ function fixture(t) {
   };
   return { cwd, rows, update, run, calls };
 }
+
+test("a later read asks only for comments since the earliest unseen one", (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 4");
+  const sinceOf = () => readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line).args.at(-1))
+    .find(arg => typeof arg === "string" && arg.includes("issues/4/comments"))?.match(/since=([^&]+)/)?.[1];
+  const add = (id, updated_at) => {
+    f.rows.push({ id, endpoint: "issues/4/comments", user: { login: "other" }, body: `Comment ${id}`, html_url: `https://github.com/comments/${id}`, updated_at });
+    f.update();
+    writeFileSync(f.calls, "");
+  };
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment 1/);
+  add(10, "2026-02-01T00:00:00Z");
+  f.rows[0].body = "Long comment ".repeat(100);
+  f.update();
+  writeFileSync(f.calls, "");
+  const shown = JSON.stringify(f.run("UserPromptSubmit"));
+  assert.equal(sinceOf(), "2025-12-31T23:59:00.000Z");
+  assert.match(shown, /Comment 10/);
+  add(11, "2026-03-01T00:00:00Z");
+  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.equal(sinceOf(), "2025-12-31T23:59:00.000Z");
+  f.run("PostToolUse", "gh api repos/shawrylk/example/issues/4/comments --paginate");
+  add(12, "2026-04-01T00:00:00Z");
+  const later = JSON.stringify(f.run("UserPromptSubmit"));
+  assert.match(later, /Comment 12/);
+  assert.doesNotMatch(later, /Comment 1[01]\b/);
+  add(13, "2026-05-01T00:00:00Z");
+  const last = JSON.stringify(f.run("UserPromptSubmit"));
+  assert.equal(sinceOf(), "2026-03-31T23:59:00.000Z");
+  assert.match(last, /Comment 13/);
+  assert.doesNotMatch(last, /Comment 12\b/);
+});
 
 for (const exists of [false, true]) {
   test(`a mapped config folder that ${exists ? "exists sets GH_CONFIG_DIR" : "does not exist leaves GH_CONFIG_DIR unset"}`, (t) => {
