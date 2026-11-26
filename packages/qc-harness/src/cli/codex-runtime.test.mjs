@@ -10,6 +10,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { pinCodexNativeExecutable } from "./codex-native-executable.mjs";
 import { createCodexRuntime, createCodexInvocation } from "./codex-runtime.mjs";
+import * as runtimeModule from "./codex-runtime.mjs";
 import { decideCodexContext } from "./codex-context.mjs";
 import { readCodexUsage } from "./codex-usage-source.mjs";
 
@@ -31,14 +32,17 @@ for (const role of ["leader", "implementer", "reviewer", "scout", "tests"]) {
       assert.throws(() => createCodexInvocation({ ...choices, args: [...choices.args, ...suffix] }), /unavailable/);
   });
 }
-for (const [nativeRole, canonical] of [["scout", "reviewer"], ["tests", "implementer"]]) test(`${nativeRole} invocation admits only its canonical reservation`, { skip: !["linux", "darwin"].includes(process.platform) }, t => {
+for (const [nativeRole, canonical] of [["scout", "reviewer"], ["tests", "implementer"]]) test(`${nativeRole} invocation admits only its canonical reservation`, { skip: !["linux", "darwin"].includes(process.platform) }, async t => {
   const inherited = { QC_ROLE: process.env.QC_ROLE, QC_CODEX_WORKER: process.env.QC_CODEX_WORKER };
   delete process.env.QC_ROLE; delete process.env.QC_CODEX_WORKER;
   t.after(() => { for (const [key, value] of Object.entries(inherited)) {
     if (value === undefined) delete process.env[key]; else process.env[key] = value;
   } });
   const f = fixture(t), executable = path.join(f.dir, "native"), source = path.join(f.dir, "native.c");
-  writeFileSync(source, '#include <stdio.h>\nint main(void) { puts("codex-cli 0.172.0"); return 0; }\n');
+  writeFileSync(source, '#include <stdio.h>\n#include <unistd.h>\nint main(int argc, char **argv) {\n' +
+    'if (argc == 2) { puts("codex-cli 0.172.0"); return 0; }\n' +
+    'puts("{\\"type\\":\\"thread.started\\",\\"thread_id\\":\\"native-thread\\"}"); fflush(stdout);\n' +
+    'for (;;) pause();\n}\n');
   const built = spawnSync("cc", [source, "-o", executable], { encoding: "utf8" });
   if (built.error?.code === "ENOENT") { t.skip("native fixture requires cc"); return; }
   assert.equal(built.status, 0, built.stderr);
@@ -47,6 +51,21 @@ for (const [nativeRole, canonical] of [["scout", "reviewer"], ["tests", "impleme
     invocation: createCodexInvocation(invocationChoices(nativeRole)) });
   for (const role of ["leader", "implementer", "reviewer", "scout", "tests"].filter(role => role !== canonical)) assert.throws(() => runtime.reserve({ role, workflowParentId: "parent" }), /unavailable/);
   runtime.terminal(runtime.reserve({ role: canonical, workflowParentId: "parent" }));
+  const r = runtime.reserve({ role: canonical, workflowParentId: "parent" }), child = runtime.launch(r, "fixture");
+  const closed = once(child, "close"), output = once(child.stdout, "data");
+  t.after(async () => { child.kill(); await closed; });
+  await output;
+  runtime.startup(r, r.hookCredential, f.hook);
+  const proof = await runtime.ready(r), read = runtimeModule.codexTerminationOf(r, proof, child);
+  assert.equal(read().exit, null); assert.equal(read().close, null);
+  runtime.terminal(r); // Controlled invocation requests shutdown; kill's return is no witness.
+  assert.equal(read().revocation, "terminal-request");
+  assert.equal(read().exit, null); assert.equal(read().close, null);
+  await closed;
+  assert.deepEqual(read().exit, { code: null, signal: "SIGTERM" });
+  assert.deepEqual(read().close, read().exit);
+  assert.equal(runtime.validate(r, f.hook), null);
+  assert.throws(() => runtime.launch(r, "again"), /unavailable/);
 });
 
 test("leader invocation rejects padded compaction overrides before minting authority", () => {
@@ -176,6 +195,105 @@ test("startup fixture collects fragmented output through its completion delimite
     '{"type":"thread.started","thread_id":"native-thread"}\nexec\nmodel_auto_compact_token_limit=400000\n');
 });
 const supported = ["linux", "darwin"].includes(process.platform);
+async function terminationFixture(t, options = {}) {
+  const f = fixture(t, options), fifo = path.join(f.dir, "stdio-release");
+  assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
+  writeFileSync(path.join(f.dir, "native"), `#!/bin/sh
+read -r thread
+printf '{"type":"thread.started","thread_id":"%s"}\\nQC_FIXTURE_DONE\\n' "$thread"
+read -r outcome
+case "$outcome" in
+  nonzero) exit 7;;
+  signal) kill -TERM $$;;
+  hold) cat '${fifo}' & exit 0;;
+esac
+`, { mode: 0o700 });
+  const r = f.reserve(), child = await start(t, f, r);
+  f.runtime.startup(r, r.hookCredential, f.hook);
+  const proof = await f.runtime.ready(r);
+  return { ...f, r, child, proof, fifo };
+}
+const terminationOf = f => runtimeModule.codexTerminationOf(f.r, f.proof, f.child);
+test("original runtime termination evidence requires exact opaque admission, proof and child", { skip: !supported }, async t => {
+  const f = await terminationFixture(t), foreign = await terminationFixture(t);
+  const read = terminationOf(f), initial = read();
+  assert.deepEqual(initial, { scope: "original-child-process-and-stdio", revocation: null, processError: false, exit: null, close: null });
+  assert.equal(terminationOf(f), read);
+  for (const [handle, proof, child] of [[{}, f.proof, f.child], [{ ...f.r }, f.proof, f.child],
+    [f.r, { ...f.proof }, f.child], [f.r, initial, f.child], [f.r, read, f.child],
+    [f.r, foreign.proof, f.child], [foreign.r, f.proof, f.child], [f.r, f.proof, foreign.child],
+    [f.r, f.proof, { pid: f.child.pid }], [f.r, f.proof.nativeThreadId, f.child]])
+    assert.throws(() => runtimeModule.codexTerminationOf(handle, proof, child), /unavailable/);
+  assert.throws(() => { initial.exit = { code: 0, signal: null }; }, TypeError);
+  const diagnostic = structuredClone(initial); diagnostic.exit = { code: 0, signal: null };
+  assert.deepEqual(read(), initial);
+  const closed = once(f.child, "close"); f.child.stdin.end(); await closed;
+  const final = read();
+  assert.deepEqual(final, { ...initial, revocation: "process-exit", exit: { code: 0, signal: null }, close: { code: 0, signal: null } });
+  assert.deepEqual(read(), final); assert.equal(terminationOf(f), read);
+  assert.throws(() => { final.exit.code = 8; }, TypeError);
+  assert.equal(f.runtime.validate(f.r, f.hook), null);
+  assert.throws(() => f.runtime.launch(f.r), /unavailable/);
+  assert.throws(() => f.runtime.bind(f.r, f.r.hookCredential, f.hook), /unavailable/);
+  assert.throws(() => f.runtime.startup(f.r, f.r.hookCredential, f.hook), /unavailable/);
+  await assert.rejects(f.runtime.hook(f.r, { ...f.hook, hook_event_name: "PreToolUse" }), /unavailable/);
+  const replay = f.reserve(); await start(t, f, replay);
+  const refused = assert.rejects(f.runtime.ready(replay), /unavailable/);
+  f.runtime.startup(replay, replay.hookCredential, f.hook); await refused;
+  assert.equal(f.runtime.validate(replay, f.hook), null);
+  assert.deepEqual(read(), final);
+});
+for (const outcome of ["nonzero", "signal"]) test(`original runtime retains actual ${outcome} outcome after terminal request`, { skip: !supported }, async t => {
+  const f = await terminationFixture(t), read = terminationOf(f);
+  f.runtime.terminal(f.r);
+  assert.deepEqual(read(), { scope: "original-child-process-and-stdio", revocation: "terminal-request", processError: false, exit: null, close: null });
+  assert.throws(() => f.runtime.launch(f.r), /unavailable/);
+  const closed = once(f.child, "close"); f.child.stdin.end(outcome + "\n"); await closed;
+  const expected = outcome === "nonzero" ? { code: 7, signal: null } : { code: null, signal: "SIGTERM" };
+  assert.deepEqual(read().exit, expected); assert.deepEqual(read().close, expected);
+  assert.equal(read().revocation, "terminal-request"); assert.equal(terminationOf(f), read);
+});
+test("original runtime distinguishes actual exit from stdio close", { skip: !supported }, async t => {
+  const f = await terminationFixture(t), read = terminationOf(f);
+  let released = false;
+  t.after(() => { if (!released) writeFileSync(f.fifo, "release\n"); });
+  const exited = once(f.child, "exit"), closed = once(f.child, "close");
+  f.child.stdin.end("hold\n"); await exited;
+  assert.deepEqual(read().exit, { code: 0, signal: null }); assert.equal(read().close, null);
+  assert.equal(read().revocation, "process-exit");
+  writeFileSync(f.fifo, "release\n"); released = true; await closed;
+  assert.deepEqual(read().close, { code: 0, signal: null });
+});
+test("original runtime error revokes without inventing exit or close", { skip: !supported }, async t => {
+  const f = await terminationFixture(t), read = terminationOf(f);
+  // An error notification says nothing about whether the actual child has died.
+  f.child.emit("error", new Error("uncertain process failure"));
+  assert.deepEqual(read(), { scope: "original-child-process-and-stdio", revocation: "process-error", processError: true, exit: null, close: null });
+  assert.equal(f.runtime.validate(f.r, f.hook), null);
+  const closed = once(f.child, "close"); f.child.stdin.end("nonzero\n"); await closed;
+  assert.deepEqual(read().exit, { code: 7, signal: null }); assert.deepEqual(read().close, read().exit);
+  assert.equal(read().processError, true); assert.equal(read().revocation, "process-error");
+});
+test("original runtime refuses unlaunched, cancelled and startup-failure evidence", { skip: !supported }, async t => {
+  for (const mode of ["unlaunched", "cancel", "protocol", "spawn-error", "timeout"]) {
+    const f = fixture(t, { startupTimeoutMs: 100, ...(mode === "spawn-error" ? { executable: "/qc-absent-native" } : {}) }), r = f.reserve();
+    const ready = assert.rejects(f.runtime.ready(r), /unavailable/);
+    let child;
+    if (mode !== "unlaunched") {
+      child = f.runtime.launch(r); t.after(() => { child.stdin.end(); child.kill(); });
+      if (mode === "spawn-error") await once(child, "error");
+      else {
+        await once(child, "spawn");
+        if (mode === "protocol") child.stdin.write("invalid thread!\n");
+      }
+    }
+    if (["unlaunched", "cancel"].includes(mode)) f.runtime.terminal(r);
+    await ready;
+    assert.throws(() => runtimeModule.codexTerminationOf(r, { nativeThreadId: "native-thread", pid: child?.pid }, child), /unavailable/);
+    assert.throws(() => f.runtime.launch(r), /unavailable/);
+    assert.equal(f.runtime.validate(r, f.hook), null);
+  }
+});
 for (const role of ["implementer", "reviewer"]) {
   test(`controlled ${role} process inherits the worker boundary and cannot dispatch any child role`, { skip: !supported }, async t => {
     const f = fixture(t, { capacity: 2 }), r = f.reserve(role);
@@ -438,6 +556,7 @@ test("pending startup envelopes are bounded, authenticated and isolated", { skip
 test("startup deadlines and cancellation/error/exit remove listeners and release capacity", { skip: !supported }, async t => {
   for (const mode of ["timeout", "cancel", "error", "exit", "malformed", "mismatch"]) {
     const f = fixture(t, { capacity: 1, startupTimeoutMs: 200 }), r = f.reserve(), child = f.runtime.launch(r);
+    const closed = new Promise(resolve => child.once("close", resolve));
     t.after(() => { child.stdin.end(); child.kill(); });
     const failed = assert.rejects(f.runtime.ready(r), /unavailable/);
     f.runtime.startup(r, r.hookCredential, f.hook);
@@ -448,9 +567,13 @@ test("startup deadlines and cancellation/error/exit remove listeners and release
     if (mode === "malformed") child.stdout.emit("data", "not-json\n");
     if (mode === "mismatch") child.stdin.write("other-thread\n");
     await failed;
-    for (const [emitter, event] of [[child.stdout, "data"], [child, "spawn"], [child, "exit"], [child, "error"]])
+    if (mode === "exit") await closed;
+    for (const [emitter, event] of [[child.stdout, "data"], [child, "spawn"], [child, "error"]])
       assert.equal(emitter.listenerCount(event), 0, `${mode}: ${event}`);
+    assert.equal(child.listenerCount("exit"), mode === "exit" ? 0 : 1, `${mode}: retain original exit observer until actual exit`);
     assert.equal(f.runtime.validate(r, f.hook), null); f.runtime.terminal(f.reserve());
+    child.stdin.end(); await closed;
+    for (const event of ["spawn", "error", "exit", "close"]) assert.equal(child.listenerCount(event), 0, `${mode}: drained ${event}`);
   }
   for (const startupTimeoutMs of [0, 30001, NaN]) assert.throws(() => fixture(t, { startupTimeoutMs }), /unavailable/);
 });

@@ -14,6 +14,7 @@ const roles = ["leader", "implementer", "reviewer"];
 const unavailable = () => { throw new Error("Codex invocation unavailable"); };
 const settings = Object.freeze({ model_auto_compact_token_limit: 400000, model_post_turn_compact_threshold_percent: 0 });
 const admissions = new WeakMap();
+const terminations = new WeakMap();
 // Runner-owned cooperative worker boundary; these values are not native-event attestation.
 export const CODEX_WORKER_FEATURES = Object.freeze(["features.multi_agent=false", "features.multi_agent_v2=false"]);
 export const codexWorkerRestricted = env => Boolean(env.QC_CODEX_WORKER) ||
@@ -67,6 +68,12 @@ export function createCodexInvocation({ args, env, role }) {
 export function codexAdmissionOf(handle, input) {
   const proof = admissions.get(handle)?.(input);
   return proof ?? unavailable();
+}
+
+// Internal read capability for the exact original binding, including after live revocation.
+// This witnesses only this child's process/stdio events, never bridge or descendant quiescence.
+export function codexTerminationOf(handle, proof, child) {
+  return terminations.get(handle)?.(proof, child) ?? unavailable();
 }
 
 // commonDirOf reads unbounded metadata; this boundary permits two regular files, 4096 bytes each.
@@ -144,9 +151,10 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
   let admitted = 0;
   const get = handle => records.get(handle) ?? unavailable();
   const live = record => record.spawned && record.child.exitCode === null && record.child.signalCode === null;
-  const retire = handle => {
+  const retire = (handle, reason = "runtime-revocation") => {
     const record = records.get(handle);
     if (!record) return;
+    record.revocation = reason;
     records.delete(handle); admissions.delete(handle); clearTimeout(record.timer); record.cleanup?.();
     if (invocation && record.child) { record.child.stdin.destroy(); record.child.kill(); }
     record.reject(new Error("Codex invocation unavailable"));
@@ -222,7 +230,15 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       if (ancestor && (!live(ancestor) || !ancestor.proof || ancestor.role !== "leader")) unavailable();
       const credential = Object.freeze(Object.create(null));
       const handle = Object.freeze(Object.defineProperty({}, "hookCredential", { value: credential }));
-      const record = { role, workflowParentId, ancestor: ancestor?.proof ?? null, credential, incarnation: randomUUID() };
+      const record = { role, workflowParentId, ancestor: ancestor?.proof ?? null, credential, incarnation: randomUUID(),
+        revocation: null, processError: false, exit: null, close: null };
+      const readTermination = Object.freeze(() => Object.freeze({ scope: "original-child-process-and-stdio",
+        revocation: record.revocation, processError: record.processError, exit: record.exit, close: record.close }));
+      // Weak identity lifetime and the existing 256-original-reservations bound; no resurrection.
+      terminations.set(handle, (proof, child) => {
+        if (!record.spawned || !record.proof || proof !== record.proof || child !== record.child) unavailable();
+        return readTermination;
+      });
       record.ready = new Promise((resolve, reject) => { record.resolve = resolve; record.reject = reject; });
       record.ready.catch(() => {});
       record.timer = setTimeout(() => retire(handle), startupTimeoutMs); record.timer.unref();
@@ -266,14 +282,23 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
         const spawned = () => {
           record.spawned = true;
           if (records.has(handle)) correlate(handle, record); else record.cleanup();
-        }, ended = () => { record.processEnded = true; retire(handle); record.cleanup(); };
+        }, ended = (code, signal) => {
+          record.exit = Object.freeze({ code, signal });
+          record.processEnded = true; retire(handle, "process-exit"); record.cleanup();
+        }, failed = () => {
+          record.processError = true;
+          record.processEnded = true; retire(handle, "process-error"); record.cleanup();
+        };
         record.cleanup = () => {
           pending = ""; record.pending = null; child.stdout.off("data", capture);
-          child.off("exit", ended);
+          // Keep the captured original exit/close observers after admission removal.
           // Drain the already queued spawn/error before removing its last error handler on early cancellation.
-          if (record.spawned || record.processEnded) { child.off("spawn", spawned); child.off("error", ended); }
+          if (record.spawned || record.processEnded) { child.off("spawn", spawned); child.off("error", failed); }
         };
-        child.once("spawn", spawned); child.once("error", ended); child.once("exit", ended);
+        child.once("spawn", spawned); child.once("error", failed); child.once("exit", ended);
+        child.once("close", (code, signal) => {
+          record.close = Object.freeze({ code, signal }); child.off("exit", ended);
+        });
         if (invocation) {
           const inputError = error => { if (!["EPIPE", "EOF"].includes(error.code)) retire(handle); };
           child.stdin.on("error", inputError); child.once("close", () => child.stdin.off("error", inputError));
@@ -326,6 +351,6 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       try { const record = get(handle); return live(record) && matches(record, input) ? observe(record, input) : null; }
       catch { return null; }
     },
-    terminal(handle) { get(handle); retire(handle); },
+    terminal(handle) { get(handle); retire(handle, "terminal-request"); },
   });
 }
