@@ -71,3 +71,10 @@ test("native proof binds once, independent tasks and concurrent acceptance stay 
   release(); await assert.rejects(finishing);
   assert.equal(c.task.read(c.task.handle).state, "terminal-rejected");
 });
+test("deadline cannot reject an already committed original acceptance", async t => {
+  const { task, child } = running(), deadline = task.read(task.handle).inputs.deadline;
+  child.emit("exit", 0, null);
+  t.mock.method(Date, "now", () => deadline - 1);
+  await task.complete(() => { t.mock.method(Date, "now", () => deadline); });
+  assert.equal(task.read(task.handle).state, "completed");
+});

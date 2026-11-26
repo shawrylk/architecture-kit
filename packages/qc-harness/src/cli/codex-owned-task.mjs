@@ -62,7 +62,8 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
         if (accepting) throw Error("Logical task acceptance already pending");
         accepting = true;
         await acceptOriginal();
-        check("observed-exit");
+        // Dispatch checks the deadline before publishing its authoritative stop.
+        if (record.state !== "observed-exit") throw Error("Logical task state refused");
         move("completed");
       } catch (error) { reject(); throw error; }
     },

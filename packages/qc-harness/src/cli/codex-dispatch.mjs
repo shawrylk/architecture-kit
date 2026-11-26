@@ -102,6 +102,7 @@ export function createCodexDispatch(input, { runtime, task: ownedTask, tmp = os.
       try {
         if (accepted && !outcome) {
           validateReport();
+          ownedTask?.checkExit();
           if (["scout", "tests"].includes(input.role)) {
             if (!workflow) fail("Worker workflow unavailable");
             appendRecord(workflow.ledger, { type: "stop", session: call.session_id, agentType: type,

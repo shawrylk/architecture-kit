@@ -93,6 +93,26 @@ test("early private finish permanently refuses accepted stop", async t => {
 const native = { session_id: "native" };
 const report = "RED: node --test fails\nGREEN: node --test passes";
 
+test("deadline rejection precedes stop publication; committed acceptance stays completed", async t => {
+  for (const expired of [true, false]) {
+    const f = fixture(t, "tests"), deadline = Date.now() + 60000;
+    const task = prepareOwnedTask({ deadline }), b = f.bridge({ ...task, checkExit() {
+      task.checkExit();
+      if (expired) t.mock.method(Date, "now", () => deadline);
+    } });
+    await b.start(() => f.child); b.handback(native, "Tests prepared."); f.exit();
+    t.mock.method(Date, "now", () => f.records().some(r => r.type === "stop") ? deadline : deadline - 1);
+    const finishing = task.complete(async () => {
+      const verdict = await b.finish();
+      if (!verdict.accepted) throw Error(verdict.notes.join("; "));
+    });
+    if (expired) await assert.rejects(finishing, /deadline/); else await finishing;
+    assert.equal(task.read(task.handle).state, expired ? "terminal-rejected" : "completed");
+    assert.equal(f.records().filter(r => r.type === "stop").length, expired ? 0 : 1);
+    await b.error(); assert.equal(f.slots(), 0); t.mock.restoreAll();
+  }
+});
+
 test("tests uses configured implementer admission/slot without implementer report semantics", async t => {
   const f = fixture(t, "tests", { implementerTypes: ["acceptance-writer"] }), b = f.bridge();
   await b.start(() => { assert.equal(f.slots(), 1); return f.child; });
