@@ -13,6 +13,7 @@ import { createCodexRuntime, createCodexInvocation } from "./codex-runtime.mjs";
 import * as runtimeModule from "./codex-runtime.mjs";
 import * as bridgeModule from "./codex-bridge.mjs";
 import { decideCodexContext } from "./codex-context.mjs";
+import { prepareOwnedTask } from "./codex-owned-task.mjs";
 import { readCodexUsage } from "./codex-usage-source.mjs";
 
 const workerOverrides = ["features.multi_agent=false", "features.multi_agent_v2=false"];
@@ -215,6 +216,111 @@ process.stdin.resume();
   const proof = await f.runtime.ready(r);
   return { ...f, r, bridge, child, proof };
 }
+
+test("logical owner binds only its original genuine retirement producers once", { skip: !supported }, async t => {
+  const f = await channelFixture(t), foreign = await channelFixture(t);
+  const owner = prepareOwnedTask({ deadline: Date.now() + 10000 });
+  owner.admit(owner.handle, 1, {}); owner.watch(f.child); owner.running(f.proof, f.r);
+  assert.equal(owner.readRetirement(owner.handle).state, "unknown");
+  const second = await bridgeModule.createCodexBridge({ runtime: f.runtime, reservation: f.r });
+  t.after(() => second.close());
+  for (const [r, bridge] of [[{ ...f.r }, f.bridge], [foreign.r, foreign.bridge], [f.r, foreign.bridge],
+    [f.r, { ...f.bridge, closed: Promise.resolve() }], [f.r, second], [f.r, () => ({ state: "confirmed" })]])
+    assert.throws(() => owner.bindRetirement(r, bridge), /unavailable|refused/);
+  const other = prepareOwnedTask({ deadline: Date.now() + 10000 });
+  other.admit(other.handle, 1, {}); other.watch(foreign.child); other.running(foreign.proof, foreign.r);
+  assert.throws(() => other.bindRetirement(f.r, f.bridge), /refused/);
+  assert.throws(() => other.readRetirement(owner.handle), /capability/);
+  const cloned = prepareOwnedTask({ deadline: Date.now() + 10000 });
+  cloned.admit(cloned.handle, 1, {}); cloned.watch(f.child); cloned.running({ ...f.proof });
+  assert.throws(() => cloned.bindRetirement(f.r, f.bridge), /refused|unavailable/);
+  owner.bindRetirement(f.r, f.bridge);
+  assert.throws(() => owner.bindRetirement(f.r, f.bridge), /already bound/);
+  const initial = owner.readRetirement(owner.handle);
+  assert.equal(initial.state, "pending"); assert.equal(Object.isFrozen(initial), true);
+  assert.equal(initial.process.scope, "original-child-process-and-stdio");
+  assert.equal(initial.channel.scope, "original-launched-report-channel");
+  assert.throws(() => { initial.channel.state = "confirmed"; }, TypeError);
+  const copy = structuredClone(initial); copy.state = "confirmed";
+  assert.deepEqual(owner.readRetirement(owner.handle), initial);
+  assert.equal(JSON.stringify(initial).includes(f.bridge.env.QC_CODEX_REPORT_TOKEN), false);
+  await f.bridge.close();
+  assert.equal(owner.readRetirement(owner.handle).state, "pending");
+  const closed = once(f.child, "close"); f.child.stdin.end(); await closed;
+  const retained = owner.read(owner.handle);
+  assert.equal(owner.readRetirement(owner.handle).state, "confirmed");
+  assert.deepEqual(owner.read(owner.handle), retained);
+  assert.equal(initial.state, "pending");
+  assert.throws(() => owner.bindRetirement(foreign.r, foreign.bridge), /already bound/);
+  assert.throws(() => owner.watch(foreign.child), /state/);
+});
+test("logical owner error-only and fabricated process evidence cannot confirm retirement", { skip: !supported }, async t => {
+  const f = await channelFixture(t), owner = prepareOwnedTask({ deadline: Date.now() + 10000 });
+  owner.admit(owner.handle, 1, {}); owner.watch(f.child); owner.running(f.proof, f.r);
+  owner.bindRetirement(f.r, f.bridge); owner.reject();
+  f.child.emit("error", new Error("uncertain notification")); await f.bridge.closed;
+  const retained = owner.read(owner.handle), unknown = owner.readRetirement(owner.handle);
+  assert.equal(unknown.state, "unknown"); assert.equal(unknown.process.exit, null);
+  assert.equal(unknown.process.close, null); assert.equal(unknown.channel.state, "confirmed");
+  assert.deepEqual(owner.read(owner.handle), retained);
+  const fake = prepareOwnedTask({ deadline: Date.now() + 10000 }), child = new EventEmitter();
+  child.pid = f.child.pid;
+  fake.admit(fake.handle, 1, {}); fake.watch(child); fake.running({ ...f.proof });
+  child.emit("exit", 0, null); child.emit("close", 0, null);
+  assert.throws(() => fake.bindRetirement(f.r, f.bridge), /refused|unavailable/);
+  assert.equal(fake.readRetirement(fake.handle).state, "unknown");
+  assert.equal(fake.readRetirement(fake.handle).process, null);
+  const closed = once(f.child, "close"); f.child.stdin.end(); await closed;
+  assert.equal(owner.readRetirement(owner.handle).state, "confirmed");
+});
+for (const outcome of ["hold", "nonzero", "signal"]) test(`logical owner retains actual ${outcome} retirement after rejection`, { skip: !supported }, async t => {
+  const f = await terminationFixture(t, {}, true), owner = prepareOwnedTask({ deadline: Date.now() + 10000 });
+  owner.admit(owner.handle, 1, {}); owner.watch(f.child); owner.running(f.proof, f.r);
+  owner.bindRetirement(f.r, f.bridge); owner.reject();
+  let released = outcome !== "hold";
+  t.after(() => { if (!released) writeFileSync(f.fifo, "release\n"); });
+  const exited = once(f.child, "exit"), closed = once(f.child, "close");
+  f.child.stdin.end(outcome + "\n"); await exited; await f.bridge.closed;
+  if (outcome === "hold") {
+    const pending = owner.readRetirement(owner.handle);
+    assert.equal(pending.state, "pending"); assert.equal(pending.process.close, null);
+    assert.equal(pending.channel.state, "confirmed");
+    writeFileSync(f.fifo, "release\n"); released = true;
+  }
+  await closed;
+  const retained = owner.read(owner.handle), final = owner.readRetirement(owner.handle);
+  assert.equal(final.state, "confirmed"); assert.equal(retained.state, "terminal-rejected");
+  assert.deepEqual(final.process.exit, final.process.close);
+  assert.deepEqual(owner.read(owner.handle), retained);
+  await assert.rejects(owner.complete(() => assert.fail("retirement cannot accept")), /state/);
+});
+test("logical owner keeps held Stop work pending after exit and expired deadline", { skip: !supported }, async t => {
+  const entered = Promise.withResolvers(), work = Promise.withResolvers();
+  t.after(() => work.resolve());
+  const f = await channelFixture(t, { onStop: () => { entered.resolve(); return work.promise; } });
+  const deadline = Date.now() + 200, owner = prepareOwnedTask({ deadline });
+  owner.admit(owner.handle, 1, {}); owner.watch(f.child); owner.running(f.proof, f.r);
+  owner.bindRetirement(f.r, f.bridge);
+  const input = { ...f.hook, hook_event_name: "Stop", stop_hook_active: false, turn_id: "turn", last_assistant_message: "done" };
+  const reply = assert.rejects(bridgeModule.reportCodexHook(input, { env: f.bridge.env }), /unavailable/);
+  await entered.promise;
+  const closed = once(f.child, "close"); f.child.stdin.end(); await closed; await f.bridge.closed; await reply;
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now() + 1)));
+  const retained = owner.read(owner.handle), pending = owner.readRetirement(owner.handle);
+  assert.equal(pending.state, "pending"); assert.notEqual(pending.process.close, null);
+  assert.equal(pending.channel.serverClosed, true); assert.equal(pending.channel.routes, 0);
+  assert.equal(pending.channel.operations, 1); assert.equal(retained.usage.total, null);
+  assert.equal(retained.state, "observed-exit");
+  work.resolve(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(owner.readRetirement(owner.handle).state, "confirmed");
+  assert.deepEqual(owner.read(owner.handle), retained);
+  assert.equal(pending.channel.operations, 1);
+  assert.throws(() => owner.checkExit(), /deadline/);
+  const rejected = owner.read(owner.handle);
+  assert.equal(owner.readRetirement(owner.handle).state, "confirmed");
+  assert.deepEqual(owner.read(owner.handle), rejected);
+});
+
 const channelOf = f => bridgeModule.codexChannelRetirementOf(f.bridge, f.r, f.proof, f.child);
 test("closing the channel removes its original runtime revocation observer", { skip: !supported }, async t => {
   const f = await channelFixture(t), binding = runtimeModule.codexReportBindingOf(f.runtime, f.r);
@@ -293,7 +399,7 @@ for (const mode of ["close", "abort", "deadline", "disconnect", "error", "revoca
   assert.equal(read().operations, 0); assert.equal(read().state, "confirmed");
   assert.equal(channelOf(f), read); assert.throws(() => f.bridge.ready(), /unavailable/);
 });
-async function terminationFixture(t, options = {}) {
+async function terminationFixture(t, options = {}, withChannel = false) {
   const f = fixture(t, options), fifo = path.join(f.dir, "stdio-release");
   assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
   writeFileSync(path.join(f.dir, "native"), `#!/bin/sh
@@ -306,10 +412,14 @@ case "$outcome" in
   hold) cat '${fifo}' & exit 0;;
 esac
 `, { mode: 0o700 });
-  const r = f.reserve(), child = await start(t, f, r);
-  f.runtime.startup(r, r.hookCredential, f.hook);
+  const r = f.reserve();
+  const bridge = withChannel ? await bridgeModule.createCodexBridge({ runtime: f.runtime, reservation: r }) : null;
+  if (bridge) t.after(() => bridge.close());
+  const child = await start(t, f, r, "native-thread", bridge?.env);
+  if (bridge) await bridgeModule.reportCodexHook({ ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" }, { env: bridge.env });
+  else f.runtime.startup(r, r.hookCredential, f.hook);
   const proof = await f.runtime.ready(r);
-  return { ...f, r, child, proof, fifo };
+  return { ...f, r, child, proof, fifo, bridge };
 }
 const terminationOf = f => runtimeModule.codexTerminationOf(f.r, f.proof, f.child);
 test("original runtime termination evidence requires exact opaque admission, proof and child", { skip: !supported }, async t => {
@@ -642,6 +752,8 @@ for (const deferred of [true, false]) test(`original termination proof survives 
   if (!deferred) writeFileSync(transcript, header);
   f.runtime.startup(r, r.hookCredential, hook);
   const original = await f.runtime.ready(r);
+  const owner = prepareOwnedTask({ deadline: Date.now() + 10000 });
+  owner.admit(owner.handle, 1, {}); owner.watch(child); owner.running(original, r);
   assert.equal(original.nativeRootSessionId, deferred ? null : "native-root");
   if (deferred) writeFileSync(transcript, header);
   const enriched = f.runtime.validate(r, hook);
@@ -651,6 +763,8 @@ for (const deferred of [true, false]) test(`original termination proof survives 
   const closed = once(child, "close");
   f.runtime.terminal(r);
   child.stdin.end(); await closed; await bridge.closed;
+  owner.bindRetirement(r, bridge);
+  assert.equal(owner.readRetirement(owner.handle).state, "confirmed");
   // First acquire the reader after enrichment, revocation, actual exit and close.
   const read = runtimeModule.codexTerminationOf(r, original, child);
   assert.deepEqual(read(), { scope: "original-child-process-and-stdio", revocation: "terminal-request",

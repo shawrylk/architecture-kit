@@ -1,7 +1,8 @@
 import { createOwnedUsageSource, applyOwnedUsageReceipt } from "./codex-usage-source.mjs";
 
 import { normalizeCodexContext } from "./codex-context.mjs";
-import { codexAdmissionOf } from "./codex-runtime.mjs";
+import { codexAdmissionOf, codexTerminationOf } from "./codex-runtime.mjs";
+import { codexChannelRetirementOf } from "./codex-bridge.mjs";
 import { budgetsOf } from "./context-budgets.mjs";
 import { createHash } from "node:crypto";
 
@@ -19,7 +20,7 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
   const handle = Object.freeze({});
   const record = { inputs: freeze(structuredClone(inputs)), state: "prepared", generation: 1, native: null, exit: null };
   tasks.set(handle, record);
-  let child, nativeProof, accepting = false, usageSource;
+  let child, nativeProof, accepting = false, usageSource, retirement;
   const usageBinding = Object.freeze({}), responses = new Map();
   let total = null, refusalReason = null, nativeAdmission;
   const originalBudgets = record.inputs.config === undefined ? null : freeze(budgetsOf(record.inputs.config));
@@ -48,6 +49,22 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
   };
   publish();
   return Object.freeze({ handle, read, reject,
+    bindRetirement(reservation, bridge) {
+      if (retirement) throw Error("Logical task retirement already bound");
+      if (!child || !nativeProof || !nativeAdmission || reservation !== nativeAdmission)
+        throw Error("Logical task original retirement binding refused");
+      // Both accessors verify private original identities, even after live admission revocation.
+      const process = codexTerminationOf(reservation, nativeProof, child);
+      const channel = codexChannelRetirementOf(bridge, reservation, nativeProof, child);
+      retirement = Object.freeze({ process, channel });
+    },
+    readRetirement(candidate) {
+      read(candidate); // Capability only: safety observation never checks acceptance state/deadline.
+      const process = retirement?.process() ?? null, channel = retirement?.channel() ?? null;
+      const state = !process || !channel || process.processError && (!process.exit || !process.close) ? "unknown" :
+        process.exit && process.close && channel.state === "confirmed" ? "confirmed" : "pending";
+      return freeze({ scope: "original-child-process-and-stdio+original-launched-report-channel", state, process, channel });
+    },
     recordCall(input, admission = nativeAdmission) {
       try {
         check("running");
