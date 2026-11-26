@@ -216,7 +216,10 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
         budget: policies[record.role] });
       record.restore = createCodexRecovery(proof, recoverySettings);
       sessions.add(input.session_id); record.proof = proof;
-      observe(record, input); clearTimeout(record.timer); record.pending = null; record.resolve(record.proof);
+      observe(record, input);
+      // Termination access stays bound to the proof returned at original readiness.
+      record.originalProof = record.proof;
+      clearTimeout(record.timer); record.pending = null; record.resolve(record.proof);
       return record.proof;
     } catch { unavailable(); }
   }
@@ -236,7 +239,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
         revocation: record.revocation, processError: record.processError, exit: record.exit, close: record.close }));
       // Weak identity lifetime and the existing 256-original-reservations bound; no resurrection.
       terminations.set(handle, (proof, child) => {
-        if (!record.spawned || !record.proof || proof !== record.proof || child !== record.child) unavailable();
+        if (!record.spawned || !record.originalProof || proof !== record.originalProof || child !== record.child) unavailable();
         return readTermination;
       });
       record.ready = new Promise((resolve, reject) => { record.resolve = resolve; record.reject = reject; });

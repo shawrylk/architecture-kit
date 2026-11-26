@@ -532,6 +532,34 @@ test("deferred local header establishes a distinct root once, with immutable adm
   const replacement = transcript + ".new"; writeFileSync(replacement, header()); renameSync(replacement, transcript);
   assert.equal(f.runtime.validate(r, hook), null);
 });
+for (const deferred of [true, false]) test(`original termination proof survives rollout discovery deferred=${deferred}`, { skip: !supported }, async t => {
+  const f = fixture(t), r = f.reserve(), child = await start(t, f, r);
+  mkdirSync(path.join(f.dir, "sessions"));
+  const transcript = path.join(f.dir, "sessions", "selected.jsonl"), hook = { ...f.hook, transcript_path: transcript };
+  const header = JSON.stringify({ type: "session_meta", ordinal: 0, timestamp: new Date().toISOString(),
+    payload: { id: "native-thread", session_id: "native-root", cli_version: "0.172.0", cwd: f.dir, source: "exec" } }) + "\n";
+  if (!deferred) writeFileSync(transcript, header);
+  f.runtime.startup(r, r.hookCredential, hook);
+  const original = await f.runtime.ready(r);
+  assert.equal(original.nativeRootSessionId, deferred ? null : "native-root");
+  if (deferred) writeFileSync(transcript, header);
+  const enriched = f.runtime.validate(r, hook);
+  assert.equal(enriched.nativeRootSessionId, "native-root");
+  if (deferred) assert.notStrictEqual(enriched, original);
+  else assert.strictEqual(enriched, original);
+  const closed = once(child, "close");
+  f.runtime.terminal(r);
+  child.stdin.end(); await closed;
+  // First acquire the reader after enrichment, revocation, actual exit and close.
+  const read = runtimeModule.codexTerminationOf(r, original, child);
+  assert.deepEqual(read(), { scope: "original-child-process-and-stdio", revocation: "terminal-request",
+    processError: false, exit: { code: 0, signal: null }, close: { code: 0, signal: null } });
+  assert.equal(runtimeModule.codexTerminationOf(r, original, child), read);
+  assert.throws(() => runtimeModule.codexTerminationOf(r, { ...original }, child), /unavailable/);
+  assert.equal(f.runtime.validate(r, hook), null);
+  assert.throws(() => f.runtime.launch(r), /unavailable/);
+  assert.throws(() => f.runtime.bind(r, r.hookCredential, hook), /unavailable/);
+});
 test("pending startup envelopes are bounded, authenticated and isolated", { skip: !supported }, async t => {
   const f = fixture(t, { capacity: 2 }), a = f.reserve(), b = f.reserve();
   const children = [a, b].map(r => f.runtime.launch(r));
