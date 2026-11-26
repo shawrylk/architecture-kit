@@ -78,3 +78,9 @@ test("deadline cannot reject an already committed original acceptance", async t 
   await task.complete(() => { t.mock.method(Date, "now", () => deadline); });
   assert.equal(task.read(task.handle).state, "completed");
 });
+
+test("usage authority is unavailable without an actual native admission", () => {
+  const { task } = running();
+  assert.throws(() => task.recordUsage({}, { admission: {} }), /usage|Usage/);
+  assert.equal(task.read(task.handle).state, "terminal-rejected");
+});

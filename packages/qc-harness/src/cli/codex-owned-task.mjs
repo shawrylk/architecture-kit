@@ -1,3 +1,5 @@
+import { createOwnedUsageSource, applyOwnedUsageReceipt } from "./codex-usage-source.mjs";
+
 const tasks = new WeakMap();
 const freeze = value => {
   if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); }
@@ -9,10 +11,12 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
   const handle = Object.freeze({});
   const record = { inputs: freeze(structuredClone(inputs)), state: "prepared", generation: 1, native: null, exit: null };
   tasks.set(handle, record);
-  let child, nativeProof, accepting = false;
+  let child, nativeProof, accepting = false, usageSource;
+  const usageBinding = Object.freeze({}), responses = new Map();
+  let total = null;
   const read = candidate => {
     if (candidate !== handle || tasks.get(candidate) !== record) throw Error("Logical task capability refused");
-    return freeze({ inputs: record.inputs, state: record.state, generation: record.generation, admission: record.admission, native: record.native, exit: record.exit });
+    return freeze({ inputs: record.inputs, state: record.state, generation: record.generation, admission: record.admission, native: record.native, exit: record.exit, usage: { total, currentContext: null } });
   };
   const publish = () => observe(read(handle));
   const reject = () => {
@@ -33,6 +37,31 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
   };
   publish();
   return Object.freeze({ handle, read, reject,
+    recordUsage(input, options) {
+      try {
+        check("running");
+        usageSource ??= createOwnedUsageSource(input, { ...options, proof: nativeProof }, usageBinding);
+        return applyOwnedUsageReceipt(usageSource(input, options), usageBinding, deltas => {
+          const pending = new Map(responses), sum = { ...total };
+          for (const { identity, usage } of deltas) {
+            const encoded = JSON.stringify(usage);
+            if (pending.has(identity)) {
+              if (pending.get(identity) !== encoded) throw Error("Owned usage response conflict");
+              continue;
+            }
+            if (pending.size >= 128) throw Error("Owned usage capacity exhausted");
+            for (const [key, value] of Object.entries(usage)) {
+              const next = (sum[key] ?? 0) + value;
+              if (!Number.isSafeInteger(next)) throw Error("Owned usage overflow");
+              sum[key] = next;
+            }
+            pending.set(identity, encoded);
+          }
+          responses.clear(); for (const [key, value] of pending) responses.set(key, value);
+          total = freeze(sum); return total;
+        });
+      } catch (error) { reject(); throw error; }
+    },
     admit(candidate, generation, admission) {
       if (candidate !== handle || generation !== record.generation) { reject(); throw Error("Logical task capability/generation refused"); }
       check("prepared", candidate, generation);

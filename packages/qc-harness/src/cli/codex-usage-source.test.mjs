@@ -5,8 +5,12 @@ import { syncBuiltinESMExports } from "node:module";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readCodexUsage } from "./codex-usage-source.mjs";
+import { createOwnedUsageSource, applyOwnedUsageReceipt, readCodexUsage } from "./codex-usage-source.mjs";
 import { normalizeUsage } from "./codex-usage.mjs";
+
+import { createCodexRuntime } from "./codex-runtime.mjs";
+import { prepareOwnedTask } from "./codex-owned-task.mjs";
+import { once } from "node:events";
 
 const now = Date.parse("2026-11-26T10:00:00Z");
 const line = (type, payload, ordinal = 1, time = now) => JSON.stringify({ timestamp: new Date(time).toISOString(), ordinal, type, payload }) + "\n";
@@ -246,4 +250,128 @@ test("bounded head/tail reads support large rollouts and reject oversized metada
     assert.equal(readCodexUsage({ ...f.call, transcript_path: alias }, f.options), null);
   }
   f.save("private data\n"); assert.equal(f.read(), null);
+});
+
+// Pinned session/mod.rs:5893-5913 persists per-response usage; :1853-1860 restores snapshots.
+async function ownedFixture(t, initial = "") {
+  t.mock.method(Date, "now", () => now);
+  const f = fixture(t); f.save(initial); mkdirSync(path.join(f.home, ".git"));
+  const executable = path.join(f.home, "native");
+  writeFileSync(executable, '#!/bin/sh\nprintf \'{"type":"thread.started","thread_id":"thread"}\\n\'\ncat >/dev/null\n', { mode: 0o700 });
+  const runtime = createCodexRuntime({ worktree: f.home, executable, workflowId: "usage", codexHome: f.home });
+  const admission = runtime.reserve({ role: "implementer", workflowParentId: "parent" });
+  const child = runtime.launch(admission), task = prepareOwnedTask({ deadline: Date.now() + 60000, policy: { provider: "codex" } });
+  t.after(async () => { if (child.exitCode !== null || child.signalCode !== null) return; const ended = once(child, "exit"); child.stdin.end(); await ended; });
+  task.admit(task.handle, 1); task.watch(child);
+  await once(child, "spawn");
+  runtime.startup(admission, admission.hookCredential, { ...f.call, hook_event_name: "SessionStart", source: "startup" });
+  const proof = await runtime.ready(admission); task.running(proof);
+  const options = { admission, codexHome: f.home };
+  const usage = (amount, response = "first") => ({ ...f.usage, response_id: response,
+    usage: { input_tokens: amount - 1000, cached_input_tokens: 100, output_tokens: 1000, reasoning_output_tokens: 100, cache_write_input_tokens: 35, total_tokens: amount } });
+  const collect = () => task.recordUsage(f.call, options);
+  return { ...f, runtime, admission, child, task, proof, options, usage, collect };
+}
+const ownedTest = (name, fn) => test(name, { skip: !["linux", "darwin"].includes(process.platform) }, fn);
+ownedTest("owned real source accumulates 15k+7k once; cumulative/restored snapshots never charge", async t => {
+  const f = await ownedFixture(t), a = f.usage(15000), b = f.usage(7000, "second");
+  appendFileSync(f.file, verified(a));
+  assert.equal(f.collect().totalTokens, 15000);
+  appendFileSync(f.file, verified(b, 3));
+  const total = f.collect(); assert.equal(total.totalTokens, 22000); assert.equal(total.cachedInputTokens, 200); assert.equal(total.cacheWriteInputTokens, 70);
+  appendFileSync(f.file, verified({ ...a, thread_token_usage: { ...a.thread_token_usage, total_tokens: 99999999 } }, 5) + line("compacted", { message: "restored", latest_token_usage_record: a }, 7) + snapshot(a, 8));
+  assert.deepEqual(f.collect(), total); assert.deepEqual(f.collect(), total);
+  assert.equal(f.task.read(f.task.handle).usage.currentContext, null, "spending does not establish context");
+});
+ownedTest("opaque receipts reject clones, foreign task bindings and consumed receipt replay", async t => {
+  const f = await ownedFixture(t), binding = {}, source = createOwnedUsageSource(f.call, { ...f.options, proof: f.proof }, binding);
+  appendFileSync(f.file, verified(f.usage(15000)));
+  const receipt = source(f.call, f.options);
+  for (const bad of [{ ...receipt }, JSON.parse(JSON.stringify(receipt)), null])
+    assert.throws(() => applyOwnedUsageReceipt(bad, binding, () => assert.fail()), /receipt/);
+  assert.throws(() => applyOwnedUsageReceipt(receipt, {}, () => assert.fail()), /receipt/);
+  let count; applyOwnedUsageReceipt(receipt, binding, rows => { count = rows.length; }); assert.equal(count, 1);
+  assert.throws(() => applyOwnedUsageReceipt(receipt, binding, () => assert.fail()), /receipt/);
+});
+ownedTest("source and ledger failures are atomic, terminal, and never refresh consumption", async t => {
+  for (const kind of ["changed", "gap", "ordinal", "truncated", "rollback", "overwrite", "root", "thread", "asset", "unknown", "overflow", "bytes", "lines", "capacity", "malformed"]) {
+    await t.test(kind, async t => {
+      const f = await ownedFixture(t); appendFileSync(f.file, verified(f.usage(15000))); f.collect();
+      let rows = verified(f.usage(7000, "second"), 3);
+      if (kind === "changed") rows = verified(f.usage(7000), 3);
+      if (kind === "gap") rows = verified(f.usage(7000, "second"), 4);
+      if (kind === "ordinal") rows += snapshot(f.usage(7000), 4);
+      if (kind === "truncated") rows = rows.trimEnd();
+      if (kind === "rollback") f.save("");
+      if (kind === "overwrite") writeFileSync(f.file, readFileSync(f.file, "utf8").replace('"cached_input_tokens":100,', '"cached_input_tokens":101,'));
+      if (kind === "root" || kind === "thread") rows = verified({ ...f.usage(7000, "second"), [kind === "root" ? "session_id" : "thread_id"]: "foreign" }, 3);
+      if (kind === "asset") f.call.transcript_path = path.join(f.home, "sessions", "other.jsonl");
+      if (kind === "unknown") rows += line("event_msg", { type: "unknown_usage" }, 5);
+      if (kind === "overflow") rows = verified(f.usage(Number.MAX_SAFE_INTEGER, "second"), 3);
+      if (kind === "bytes") rows = line("response_item", { type: "reasoning", text: "x".repeat(262144) }, 3);
+      if (kind === "lines") rows = Array.from({ length: 1024 }, (_, i) => snapshot(f.usage(7000), i + 3)).join("");
+      if (kind === "capacity") rows = Array.from({ length: 128 }, (_, i) => line("token_usage_record", f.usage(7000, `r${i}`), i + 3)).join("");
+      if (kind === "malformed") rows += "bad json\n";
+      if (kind !== "rollback") appendFileSync(f.file, rows);
+      assert.throws(f.collect, /usage|Usage/);
+      const saved = f.task.read(f.task.handle); assert.equal(saved.state, "terminal-rejected"); assert.equal(saved.usage.total.totalTokens, 15000);
+      f.save(verified(f.usage(15000))); assert.throws(f.collect, /state/);
+    });
+  }
+});
+ownedTest("missing initial proof, foreign admission, unknown-only usage and completed tasks refuse", async t => {
+  for (const kind of ["empty", "snapshot", "foreign", "completed", "missing", "nonfinite"]) await t.test(kind, async t => {
+    const f = await ownedFixture(t);
+    if (kind === "snapshot") appendFileSync(f.file, snapshot(f.usage(15000), 1));
+    else if (kind !== "empty") appendFileSync(f.file, verified(f.usage(15000)));
+    if (kind === "foreign") f.options.admission = {};
+    if (kind === "nonfinite") f.save(verified({ ...f.usage(15000), usage: { ...tokens, total_tokens: 1e100 } }));
+    if (kind === "completed") { f.collect(); const ended = once(f.child, "exit"); f.child.stdin.end(); await ended; await f.task.complete(() => {}); }
+    if (kind === "missing") assert.throws(() => createOwnedUsageSource(f.call, { ...f.options, proof: {} }, {}), /usage|Usage/);
+    else assert.throws(f.collect, /usage|Usage|state/);
+  });
+});
+ownedTest("source mutation, replacement and missing response components refuse without partial ledger writes", async t => {
+  for (const kind of ["mutation", "replacement", "invalid-utf8", "missing-usage", "rollback-event", "nan-component", "root-turn"]) await t.test(kind, async t => {
+    const f = await ownedFixture(t); appendFileSync(f.file, verified(f.usage(15000))); f.collect();
+    let rows = verified(f.usage(7000, "second"), 3);
+    if (kind === "replacement") { const original = readFileSync(f.file); rmSync(f.file); writeFileSync(f.file, original); }
+    if (kind === "invalid-utf8") rows = Buffer.concat([Buffer.from(rows), Buffer.from([255, 10])]);
+    if (kind === "missing-usage") rows += line("token_usage_record", { ...f.usage(7000, "third"), usage: null }, 5);
+    if (kind === "rollback-event") rows += line("event_msg", { type: "thread_rolled_back", num_turns: 1 }, 5);
+    if (kind === "nan-component") rows += line("token_usage_record", { ...f.usage(7000, "third"), usage: { ...tokens, output_tokens: null } }, 5);
+    if (kind === "root-turn") rows += line("token_usage_record", { ...f.usage(7000, "third"), root_turn_id: "foreign" }, 5);
+    appendFileSync(f.file, rows);
+    if (kind === "mutation") {
+      const original = fs.readSync;
+      t.mock.method(fs, "readSync", (...args) => { const count = original(...args); appendFileSync(f.file, "\n"); return count; });
+      syncBuiltinESMExports(); t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+    }
+    assert.throws(f.collect, /usage|Usage/); assert.equal(f.task.read(f.task.handle).usage.total.totalTokens, 15000);
+  });
+});
+ownedTest("stale receipts cannot roll back a committed cursor; new tasks have independent ledgers", async t => {
+  const f = await ownedFixture(t), binding = {}, source = createOwnedUsageSource(f.call, { ...f.options, proof: f.proof }, binding);
+  appendFileSync(f.file, verified(f.usage(15000))); const old = source(f.call, f.options), current = source(f.call, f.options);
+  applyOwnedUsageReceipt(current, binding, () => {});
+  assert.throws(() => applyOwnedUsageReceipt(old, binding, () => assert.fail()), /usage|Usage/);
+  assert.equal(f.collect().totalTokens, 15000);
+  const other = await ownedFixture(t); appendFileSync(other.file, verified(other.usage(7000)));
+  assert.equal(other.collect().totalTokens, 7000); assert.equal(f.collect().totalTokens, 15000);
+});
+ownedTest("pre-admission history is not a fresh baseline and dead native authority cannot append", async t => {
+  const restored = await ownedFixture(t, verified(record()));
+  assert.throws(restored.collect, /usage|Usage/); assert.equal(restored.task.read(restored.task.handle).usage.total, null);
+  const f = await ownedFixture(t); appendFileSync(f.file, verified(f.usage(15000))); f.collect();
+  const ended = once(f.child, "exit"); f.child.stdin.end(); await ended;
+  assert.throws(f.collect, /state/); assert.equal(f.task.read(f.task.handle).usage.total.totalTokens, 15000);
+});
+ownedTest("native identity claims and unknown usage snapshots cannot be stripped into authority", async t => {
+  for (const change of [{ role: "leader" }, { agent_id: "thread" }, { agent_type: "profile" }]) await t.test(JSON.stringify(change), async t => {
+    const f = await ownedFixture(t); appendFileSync(f.file, verified(f.usage(15000))); Object.assign(f.call, change);
+    assert.throws(f.collect, /usage|Usage/); assert.equal(f.task.read(f.task.handle).usage.total, null);
+  });
+  const f = await ownedFixture(t); appendFileSync(f.file, verified(f.usage(15000))); f.collect();
+  appendFileSync(f.file, line("event_msg", { type: "token_count", info: null, rate_limits: null }, 3));
+  assert.throws(f.collect, /usage|Usage/); assert.equal(f.task.read(f.task.handle).usage.total.totalTokens, 15000);
 });
