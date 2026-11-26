@@ -1,6 +1,14 @@
 import { createOwnedUsageSource, applyOwnedUsageReceipt } from "./codex-usage-source.mjs";
 
-const tasks = new WeakMap();
+import { normalizeCodexContext } from "./codex-context.mjs";
+import { codexAdmissionOf } from "./codex-runtime.mjs";
+import { budgetsOf } from "./context-budgets.mjs";
+import { createHash } from "node:crypto";
+
+// Whole logical-task capacity: never evict/recharge. Successor mapping remains unsupported.
+const MAX_CALLS = 128, MAX_CALL_BYTES = 8192;
+const digest = value => createHash("sha256").update(value).digest("hex");
+const tasks = new WeakMap(), boundAdmissions = new WeakSet();
 const freeze = value => {
   if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); }
   return value;
@@ -13,10 +21,13 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
   tasks.set(handle, record);
   let child, nativeProof, accepting = false, usageSource;
   const usageBinding = Object.freeze({}), responses = new Map();
-  let total = null, refusalReason = null;
+  let total = null, refusalReason = null, nativeAdmission;
+  const originalBudgets = record.inputs.config === undefined ? null : freeze(budgetsOf(record.inputs.config));
+  let policy = freeze({ status: "unknown", role: null, budget: null });
+  const calls = new Map();
   const read = candidate => {
     if (candidate !== handle || tasks.get(candidate) !== record) throw Error("Logical task capability refused");
-    return freeze({ inputs: record.inputs, state: record.state, generation: record.generation, admission: record.admission, native: record.native, exit: record.exit, usage: { total, consumptionComplete: null, currentContext: null, refusalReason } });
+    return freeze({ inputs: record.inputs, state: record.state, generation: record.generation, admission: record.admission, native: record.native, exit: record.exit, counter: { count: calls.size, calls: [...calls.keys()], capacity: MAX_CALLS, policy }, usage: { total, consumptionComplete: null, currentContext: null, refusalReason } });
   };
   const publish = () => observe(read(handle));
   const reject = () => {
@@ -37,6 +48,31 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
   };
   publish();
   return Object.freeze({ handle, read, reject,
+    recordCall(input, admission = nativeAdmission) {
+      try {
+        check("running");
+        if (!nativeAdmission || admission !== nativeAdmission || codexAdmissionOf(admission, input) !== nativeProof)
+          throw Error("Logical task native call binding refused");
+        const call = normalizeCodexContext(input, { admission });
+        if (policy.status === "unknown") throw Error("Logical task policy UNKNOWN/refused");
+        if (typeof call.tool_name !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(call.tool_name))
+          throw Error("Logical task native call data refused");
+        // Canonical bounded JSON; retain digests only, never tool payloads or caller diagnostics.
+        const encoded = JSON.stringify(call.tool_input ?? null);
+        if (Buffer.byteLength(encoded) > MAX_CALL_BYTES) throw Error("Logical task native call data capacity refused");
+        const canonical = value => value && typeof value === "object" ? Array.isArray(value) ? value.map(canonical) :
+          Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+        const key = digest(call.tool_use_id), data = digest(JSON.stringify([
+          call.session_id, call.turn_id, call.tool_name, canonical(JSON.parse(encoded)),
+        ]));
+        if (calls.has(key)) {
+          if (calls.get(key) !== data) throw Error("Logical task native call identity conflict");
+          return calls.size;
+        }
+        if (calls.size >= MAX_CALLS) throw Error("Logical task native call capacity exhausted");
+        calls.set(key, data); publish(); return calls.size;
+      } catch (error) { reject(); throw error; }
+    },
     recordUsage(input, options) {
       try {
         check("running");
@@ -80,9 +116,25 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
         exited();
       });
     },
-    running(proof) {
+    running(proof, admission) {
       check("admitted");
       if (!child || nativeProof || proof.pid !== child.pid) { reject(); throw Error("Logical task native binding refused"); }
+      if (admission !== undefined) {
+        try {
+          let actual;
+          try { actual = codexAdmissionOf(admission, { cwd: proof.worktree, session_id: proof.nativeThreadId }); }
+          catch { throw Error("Logical task native binding refused"); }
+          if (actual !== proof ||
+              !["leader", "implementer", "reviewer"].includes(proof.role)) throw Error("Logical task native binding refused");
+          if (boundAdmissions.has(admission)) throw Error("Logical task native admission already owned");
+          if (originalBudgets) {
+            const budget = originalBudgets[proof.role === "leader" ? "orchestrator" : proof.role];
+            if (JSON.stringify(budget) !== JSON.stringify(proof.budget)) throw Error("Logical task original policy mismatch");
+            policy = freeze({ status: budget === null ? "disabled" : "configured", role: proof.role, budget });
+          }
+          boundAdmissions.add(admission); nativeAdmission = admission;
+        } catch (error) { reject(); throw error; }
+      }
       nativeProof = proof;
       record.native = freeze(structuredClone(nativeProof));
       move("running");

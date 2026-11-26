@@ -109,3 +109,13 @@ test("private quality stays UNKNOWN through lifecycle and diagnostic copies conf
   assert.throws(() => rejected.task.recordUsage({}, {}), /state/);
   assert.deepEqual(unknown(rejected.task), diagnostic);
 });
+
+
+test("caller policy hints and diagnostic proof never create private counter authority", () => {
+  const { task } = running();
+  const before = task.read(task.handle).counter;
+  assert.equal(before.count, 0); assert.equal(before.policy.status, "unknown");
+  assert.throws(() => task.recordCall({ hook_event_name: "PreToolUse", policy: null, count: 10, verified: true }, {}), /binding refused/);
+  assert.deepEqual(task.read(task.handle).counter, before);
+  assert.throws(() => task.recordCall({}, {}), /state/);
+});

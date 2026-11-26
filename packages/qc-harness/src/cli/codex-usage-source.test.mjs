@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import { syncBuiltinESMExports } from "node:module";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -253,22 +254,23 @@ test("bounded head/tail reads support large rollouts and reject oversized metada
 });
 
 // Pinned session/mod.rs:5893-5913 persists per-response usage; :1853-1860 restores snapshots.
-async function ownedFixture(t, initial = "") {
+async function ownedFixture(t, initial = "", config = {}, ownerConfig = config, role = "implementer") {
   t.mock.method(Date, "now", () => now);
   const f = fixture(t); f.save(initial); mkdirSync(path.join(f.home, ".git"));
   const executable = path.join(f.home, "native");
   writeFileSync(executable, '#!/bin/sh\nprintf \'{"type":"thread.started","thread_id":"thread"}\\n\'\ncat >/dev/null\n', { mode: 0o700 });
-  const runtime = createCodexRuntime({ worktree: f.home, executable, workflowId: "usage", codexHome: f.home });
-  const admission = runtime.reserve({ role: "implementer", workflowParentId: "parent" });
-  const child = runtime.launch(admission), task = prepareOwnedTask({ deadline: Date.now() + 60000, policy: { provider: "codex" } });
+  const runtime = createCodexRuntime({ worktree: f.home, executable, workflowId: "usage", codexHome: f.home, config });
+  const admission = runtime.reserve({ role, workflowParentId: "parent" });
+  const child = runtime.launch(admission), task = prepareOwnedTask({ deadline: Date.now() + 60000, policy: { provider: "codex" }, ...(ownerConfig === null ? {} : { config: ownerConfig }) });
   t.after(async () => { if (child.exitCode !== null || child.signalCode !== null) return; const ended = once(child, "exit"); child.stdin.end(); await ended; });
   task.admit(task.handle, 1); task.watch(child);
   await once(child, "spawn");
   runtime.startup(admission, admission.hookCredential, { ...f.call, hook_event_name: "SessionStart", source: "startup" });
-  const proof = await runtime.ready(admission); task.running(proof);
+  const proof = await runtime.ready(admission); task.running(proof, admission);
   const options = { admission, codexHome: f.home };
   const usage = (amount, response = "first") => ({ ...f.usage, response_id: response,
     usage: { input_tokens: amount - 1000, cached_input_tokens: 100, output_tokens: 1000, reasoning_output_tokens: 100, cache_write_input_tokens: 35, total_tokens: amount } });
+  f.call = { ...f.call, tool_name: "exec_command", tool_input: { command: "pwd" } };
   const collect = () => task.recordUsage(f.call, options);
   return { ...f, runtime, admission, child, task, proof, options, usage, collect };
 }
@@ -447,4 +449,132 @@ ownedTest("spending and rate-limit/recomputed/restored snapshots leave quality U
   assert.throws(f.collect, /Owned usage UNKNOWN\/refused/);
   assert.equal(quality(f).total.totalTokens, 15000);
   assert.equal(f.task.read(f.task.handle).state, "terminal-rejected");
+});
+
+ownedTest("original owner counts current native calls once and freezes original policy", async t => {
+  const config = { budgets: { implementer: { remindAt: 100, handoffAt: 200 } } };
+  const f = await ownedFixture(t, "", config), read = () => f.task.read(f.task.handle).counter;
+  assert.equal(read().count, 0);
+  assert.deepEqual(read().policy, { status: "configured", role: "implementer", budget: config.budgets.implementer });
+  config.budgets.implementer.handoffAt = 999;
+  assert.equal(f.task.recordCall(f.call), 1);
+  assert.equal(f.task.recordCall({ ...f.call }), 1);
+  assert.equal(f.task.recordCall({ ...f.call, tool_use_id: "second" }), 2);
+  const copy = structuredClone(read()); copy.count = 0; copy.policy.budget.handoffAt = 999;
+  assert.equal(read().count, 2); assert.equal(read().policy.budget.handoffAt, 200);
+  assert.throws(() => { read().policy.budget.handoffAt = 999; }, TypeError);
+  appendFileSync(f.file, verified(f.usage(15000))); f.collect();
+  assert.equal(read().count, 2); assert.equal(quality(f).total.totalTokens, 15000);
+  const other = await ownedFixture(t); assert.equal(other.task.read(other.task.handle).counter.count, 0);
+  const ended = once(f.child, "exit"); f.child.stdin.end(); await ended;
+  await f.task.complete(() => {});
+  assert.throws(() => f.task.recordCall(f.call), /state/);
+  assert.equal(read().count, 2); assert.equal(read().policy.budget.handoffAt, 200);
+});
+ownedTest("original counter distinguishes unknown policy from proved disabled policy", async t => {
+  const unknown = await ownedFixture(t, "", {}, null);
+  assert.equal(unknown.task.read(unknown.task.handle).counter.policy.status, "unknown");
+  assert.throws(() => unknown.task.recordCall(unknown.call), /policy.*UNKNOWN/);
+  const disabled = await ownedFixture(t, "", { budgets: { implementer: null } });
+  assert.deepEqual(disabled.task.read(disabled.task.handle).counter.policy, { status: "disabled", role: "implementer", budget: null });
+  assert.equal(disabled.task.recordCall(disabled.call), 1);
+});
+
+ownedTest("counter refuses foreign admissions, JSON authority and native identity conflicts", async t => {
+  for (const kind of ["clone", "foreign", "session", "role", "agent", "turn", "tool", "payload", "invalid-turn"]) {
+    const f = await ownedFixture(t), call = { ...f.call, tool_input: { b: 2, a: 1 } };
+    assert.equal(f.task.recordCall(call), 1);
+    assert.equal(f.task.recordCall({ ...call, tool_input: { a: 1, b: 2 } }), 1);
+    let input = call, admission = f.admission;
+    if (kind === "clone") admission = JSON.parse(JSON.stringify(f.admission));
+    if (kind === "foreign") admission = (await ownedFixture(t)).admission;
+    if (kind === "session") input = { ...call, session_id: "foreign" };
+    if (kind === "role") input = { ...call, role: "leader" };
+    if (kind === "agent") input = { ...call, agent_type: "leader" };
+    if (kind === "turn") input = { ...call, turn_id: "another" };
+    if (kind === "tool") input = { ...call, tool_name: "apply_patch" };
+    if (kind === "payload") input = { ...call, tool_input: { a: 2 } };
+    if (kind === "invalid-turn") input = { ...call, turn_id: "../foreign" };
+    assert.throws(() => f.task.recordCall(input, admission), /refused|identity|unavailable/);
+    assert.equal(f.task.read(f.task.handle).counter.count, 1);
+    assert.throws(() => f.task.recordCall(call), /state/);
+  }
+});
+ownedTest("counter refuses weaker runtime policy and diagnostic proofs at the original boundary", async t => {
+  const strict = { budgets: { implementer: { remindAt: 100, handoffAt: 200 } } };
+  for (const config of [{ budgets: { implementer: null } }, { budgets: { implementer: { remindAt: 200, handoffAt: 400 } } }])
+    await assert.rejects(ownedFixture(t, "", config, strict), /original policy mismatch/);
+  const f = await ownedFixture(t), other = await ownedFixture(t);
+  for (const [proof, admission] of [[structuredClone(f.proof), f.admission], [f.proof, other.admission]]) {
+    const task = prepareOwnedTask({ deadline: now + 60000, config: strict });
+    task.admit(task.handle, 1); task.watch(f.child);
+    assert.throws(() => task.running(proof, admission), /binding refused/);
+    assert.equal(task.read(task.handle).counter.count, 0);
+  }
+  const unsupported = await ownedFixture(t, "", {}, null, "tests").then(() => assert.fail("unsupported role"), error => error);
+  assert.equal(unsupported.message, "Codex invocation unavailable");
+});
+ownedTest("whole-task call capacity never evicts, overflows or reloads standalone state", async t => {
+  const f = await ownedFixture(t), read = () => f.task.read(f.task.handle).counter;
+  const directory = path.join(f.home, "qc-role-budgets"); mkdirSync(directory);
+  const file = path.join(directory, createHash("sha256").update(JSON.stringify([f.home, "thread", "implementer"])).digest("hex") + ".json");
+  writeFileSync(file, JSON.stringify({ version: 1, count: 999, calls: [], policy: {}, budget: null }));
+  assert.equal(read().capacity, 128);
+  for (let i = 0; i < 128; i++) assert.equal(f.task.recordCall({ ...f.call, tool_use_id: `call_${i}` }), i + 1);
+  rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  assert.equal(f.task.recordCall({ ...f.call, tool_use_id: "call_0" }), 128);
+  assert.equal(read().calls.length, 128);
+  assert.throws(() => read().calls.pop(), TypeError);
+  assert.throws(() => f.task.recordCall({ ...f.call, tool_use_id: "overflow" }), /capacity exhausted/);
+  assert.equal(read().count, 128); assert.equal(read().calls.length, 128);
+  assert.throws(() => f.task.recordCall(f.call), /state/);
+});
+ownedTest("counter and original policy survive refusal, death, deadline and terminal tombstones", async t => {
+  for (const kind of ["usage", "death", "deadline", "oversize", "exit"]) {
+    const f = await ownedFixture(t); f.task.recordCall(f.call);
+    const before = f.task.read(f.task.handle).counter;
+    if (kind === "usage") assert.throws(() => f.collect(), /usage UNKNOWN/);
+    if (kind === "oversize") assert.throws(() => f.task.recordCall({ ...f.call, tool_use_id: "large", tool_input: { command: "x".repeat(8193) } }), /capacity refused/);
+    if (kind === "deadline") {
+      t.mock.method(Date, "now", () => now + 60000);
+      assert.throws(() => f.task.recordCall({ ...f.call, tool_use_id: "late" }), /deadline/);
+    }
+    if (["death", "exit"].includes(kind)) {
+      const ended = once(f.child, "exit");
+      if (kind === "death") f.child.kill("SIGTERM"); else f.child.stdin.end();
+      await ended;
+    }
+    assert.throws(() => f.task.recordCall(f.call), /state/);
+    assert.deepEqual(f.task.read(f.task.handle).counter, before);
+    assert.equal(quality(f).total, null);
+  }
+});
+
+ownedTest("a live or completed physical admission cannot seed another logical owner", async t => {
+  const f = await ownedFixture(t); f.task.recordCall(f.call);
+  const attempt = (reason = /already owned/) => {
+    const task = prepareOwnedTask({ deadline: now + 60000, config: {} });
+    task.admit(task.handle, 1); task.watch(f.child);
+    assert.throws(() => task.running(f.proof, f.admission), reason);
+    assert.equal(task.read(task.handle).counter.count, 0);
+    assert.equal(f.task.read(f.task.handle).counter.count, 1);
+  };
+  attempt();
+  const ended = once(f.child, "exit"); f.child.stdin.end(); await ended;
+  await f.task.complete(() => {}); attempt(/binding refused/);
+});
+
+ownedTest("only original normalized roles count and usage failure retains prior evidence", async t => {
+  for (const role of ["leader", "reviewer"]) {
+    const f = await ownedFixture(t, "", {}, {}, role);
+    assert.equal(f.task.read(f.task.handle).counter.policy.role, role);
+    assert.equal(f.task.recordCall(f.call), 1);
+    appendFileSync(f.file, verified(f.usage(15000))); f.collect();
+    const before = f.task.read(f.task.handle).counter;
+    appendFileSync(f.file, "invalid native row\n");
+    assert.throws(() => f.collect(), /usage UNKNOWN/);
+    assert.deepEqual(f.task.read(f.task.handle).counter, before);
+    assert.equal(quality(f).total.totalTokens, 15000);
+    assert.throws(() => f.task.recordCall(f.call), /state/);
+  }
 });
