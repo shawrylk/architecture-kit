@@ -273,14 +273,27 @@ async function ownedFixture(t, initial = "") {
   return { ...f, runtime, admission, child, task, proof, options, usage, collect };
 }
 const ownedTest = (name, fn) => test(name, { skip: !["linux", "darwin"].includes(process.platform) }, fn);
+const quality = f => {
+  const evidence = f.task.read(f.task.handle).usage;
+  assert.equal(evidence.consumptionComplete, null);
+  assert.equal(evidence.currentContext, null);
+  return evidence;
+};
+// Cached protocol.rs:2497-2546: durable wire names task_started/task_complete, default collaboration.
+const boundaries = (ordinal = 1, turn = "turn") =>
+  line("event_msg", { type: "task_started", turn_id: turn, root_turn_id: turn, model_context_window: null, collaboration_mode_kind: "default" }, ordinal) +
+  line("event_msg", { type: "task_complete", turn_id: turn, root_turn_id: turn, last_agent_message: null }, ordinal + 1);
 ownedTest("owned real source accumulates 15k+7k once; cumulative/restored snapshots never charge", async t => {
   const f = await ownedFixture(t), a = f.usage(15000), b = f.usage(7000, "second");
   appendFileSync(f.file, verified(a));
   assert.equal(f.collect().totalTokens, 15000);
   appendFileSync(f.file, verified(b, 3));
   const total = f.collect(); assert.equal(total.totalTokens, 22000); assert.equal(total.cachedInputTokens, 200); assert.equal(total.cacheWriteInputTokens, 70);
+  assert.deepEqual(total, { inputTokens: 20000, cachedInputTokens: 200, outputTokens: 2000, reasoningOutputTokens: 200, cacheWriteInputTokens: 70, totalTokens: 22000 });
+  assert.deepEqual(quality(f).total, total);
   appendFileSync(f.file, verified({ ...a, thread_token_usage: { ...a.thread_token_usage, total_tokens: 99999999 } }, 5) + line("compacted", { message: "restored", latest_token_usage_record: a }, 7) + snapshot(a, 8));
   assert.deepEqual(f.collect(), total); assert.deepEqual(f.collect(), total);
+  assert.deepEqual(quality(f).total, total);
   assert.equal(f.task.read(f.task.handle).usage.currentContext, null, "spending does not establish context");
 });
 ownedTest("opaque receipts reject clones, foreign task bindings and consumed receipt replay", async t => {
@@ -315,6 +328,7 @@ ownedTest("source and ledger failures are atomic, terminal, and never refresh co
       if (kind !== "rollback") appendFileSync(f.file, rows);
       assert.throws(f.collect, /usage|Usage/);
       const saved = f.task.read(f.task.handle); assert.equal(saved.state, "terminal-rejected"); assert.equal(saved.usage.total.totalTokens, 15000);
+      assert.equal(quality(f).total.totalTokens, 15000);
       f.save(verified(f.usage(15000))); assert.throws(f.collect, /state/);
     });
   }
@@ -360,11 +374,20 @@ ownedTest("stale receipts cannot roll back a committed cursor; new tasks have in
   assert.equal(other.collect().totalTokens, 7000); assert.equal(f.collect().totalTokens, 15000);
 });
 ownedTest("pre-admission history is not a fresh baseline and dead native authority cannot append", async t => {
-  const restored = await ownedFixture(t, verified(record()));
-  assert.throws(restored.collect, /usage|Usage/); assert.equal(restored.task.read(restored.task.handle).usage.total, null);
+  for (const initial of [boundaries(), verified({ ...record(), usage: { ...tokens, input_tokens: 14000, cached_input_tokens: 100, output_tokens: 1000, reasoning_output_tokens: 100, total_tokens: 15000 } })]) {
+    const restored = await ownedFixture(t, initial);
+    assert.equal(restored.task.read(restored.task.handle).state, "running");
+    assert.equal(restored.proof.identityProvenance.fileIdentity.bytes, fs.statSync(restored.file).size);
+    assert.ok(restored.proof.identityProvenance.fileIdentity.bytes > readFileSync(restored.file).indexOf(10) + 1);
+    assert.throws(restored.collect, /Owned usage UNKNOWN\/refused: original admission includes history/);
+    assert.equal(quality(restored).total, null);
+    assert.match(quality(restored).refusalReason, /original admission includes history/);
+  }
   const f = await ownedFixture(t); appendFileSync(f.file, verified(f.usage(15000))); f.collect();
   const ended = once(f.child, "exit"); f.child.stdin.end(); await ended;
+  assert.equal(f.task.read(f.task.handle).state, "observed-exit"); quality(f);
   assert.throws(f.collect, /state/); assert.equal(f.task.read(f.task.handle).usage.total.totalTokens, 15000);
+  quality(f);
 });
 ownedTest("native identity claims and unknown usage snapshots cannot be stripped into authority", async t => {
   for (const change of [{ role: "leader" }, { agent_id: "thread" }, { agent_type: "profile" }]) await t.test(JSON.stringify(change), async t => {
@@ -374,4 +397,54 @@ ownedTest("native identity claims and unknown usage snapshots cannot be stripped
   const f = await ownedFixture(t); appendFileSync(f.file, verified(f.usage(15000))); f.collect();
   appendFileSync(f.file, line("event_msg", { type: "token_count", info: null, rate_limits: null }, 3));
   assert.throws(f.collect, /usage|Usage/); assert.equal(f.task.read(f.task.handle).usage.total.totalTokens, 15000);
+  assert.match(quality(f).refusalReason, /verified response usage absent/);
+});
+
+ownedTest("native completion boundaries cannot certify optional response usage or a final barrier", async t => {
+  const f = await ownedFixture(t);
+  assert.equal(f.proof.identityProvenance.fileIdentity.bytes, fs.statSync(f.file).size);
+  appendFileSync(f.file, verified(f.usage(15000))); f.collect();
+  // Cached session_mod.rs:5872-5913 record_observed_response_completed(None) omits TokenUsageRecord.
+  // Durable raw_response_completed persistence is unproved; only supported task boundaries are written.
+  appendFileSync(f.file, boundaries(3, "next"));
+  assert.equal(f.collect().totalTokens, 15000); assert.equal(quality(f).total.totalTokens, 15000);
+  const diagnostic = structuredClone(quality(f)); diagnostic.consumptionComplete = true; diagnostic.total.totalTokens = 0;
+  assert.equal(f.collect().totalTokens, 15000); quality(f);
+  const ended = once(f.child, "exit"); f.child.stdin.end(); await ended;
+  assert.equal(f.task.read(f.task.handle).state, "observed-exit"); quality(f);
+  await f.task.complete(() => {});
+  assert.equal(f.task.read(f.task.handle).state, "completed");
+  const completed = quality(f); assert.equal(completed.total.totalTokens, 15000);
+  assert.throws(f.collect, /state/); assert.deepEqual(quality(f), completed);
+});
+ownedTest("no verified response usage refuses without zero, baseline or terminal resurrection", async t => {
+  for (const kind of ["header", "boundaries", "null-info", "after-usage"]) await t.test(kind, async t => {
+    const f = await ownedFixture(t);
+    if (kind === "after-usage") { appendFileSync(f.file, verified(f.usage(15000))); f.collect(); }
+    if (kind === "boundaries") appendFileSync(f.file, boundaries());
+    if (["null-info", "after-usage"].includes(kind)) appendFileSync(f.file,
+      line("event_msg", { type: "token_count", info: null, rate_limits: null }, kind === "after-usage" ? 3 : 1));
+    assert.throws(f.collect, /Owned usage UNKNOWN\/refused: verified response usage absent/);
+    const rejected = quality(f);
+    assert.equal(rejected.total?.totalTokens ?? null, kind === "after-usage" ? 15000 : null);
+    assert.equal(f.task.read(f.task.handle).state, "terminal-rejected");
+    f.save(verified(f.usage(7000))); assert.throws(f.collect, /state/);
+    assert.deepEqual(quality(f), rejected);
+  });
+});
+ownedTest("spending and rate-limit/recomputed/restored snapshots leave quality UNKNOWN; world_state refuses", async t => {
+  const f = await ownedFixture(t), spending = f.usage(15000);
+  appendFileSync(f.file, line("token_usage_record", spending));
+  assert.equal(f.collect().totalTokens, 15000); quality(f);
+  const recomputed = { ...spending, usage: { ...tokens, total_tokens: 400000 } };
+  appendFileSync(f.file, snapshot(recomputed, 2) + line("event_msg", { type: "token_count", info: {
+    last_token_usage: spending.usage, total_token_usage: spending.thread_token_usage,
+  }, rate_limits: { primary: { used_percent: 10 } } }, 3) +
+    line("compacted", { message: "restored", latest_token_usage_record: spending }, 4) + snapshot(spending, 5));
+  assert.equal(f.collect().totalTokens, 15000); quality(f);
+  // Cached session_mod.rs:5130-5146 persists compacted/world_state; compacted alone proves no coverage.
+  appendFileSync(f.file, line("compacted", { message: "native compact" }, 6) + line("world_state", { full: true, state: {} }, 7));
+  assert.throws(f.collect, /Owned usage UNKNOWN\/refused/);
+  assert.equal(quality(f).total.totalTokens, 15000);
+  assert.equal(f.task.read(f.task.handle).state, "terminal-rejected");
 });

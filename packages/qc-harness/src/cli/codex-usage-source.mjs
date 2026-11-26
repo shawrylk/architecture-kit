@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 const TAIL = 262144, MAX_LINES = 1024;
 const receipts = new WeakMap();
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
-const usageUnknown = () => { throw Error("Owned usage UNKNOWN/refused"); };
+const usageUnknown = reason => { throw Error(`Owned usage UNKNOWN/refused${reason ? `: ${reason}` : ""}`); };
 const ownedProof = (admission, input) => { try { return codexAdmissionOf(admission, input); } catch { return usageUnknown(); } };
 const whole = value => Number.isSafeInteger(value) && value >= 0;
 const id = value => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -57,7 +57,8 @@ export function createOwnedUsageSource(input, { admission, codexHome, proof }, b
             Date.parse(first.timestamp) !== original.timestamp || first.ordinal !== original.ordinal || before.size > TAIL) return null;
         const bytes = read(0, before.size), headerEnd = bytes.indexOf(10) + 1;
         // No inferred fresh baseline from a restored/cumulative history at admission.
-        if (original.bytes !== headerEnd || bytes.at(-1) !== 10 || cursor &&
+        if (original.bytes !== headerEnd) return { refusalReason: "original admission includes history" };
+        if (bytes.at(-1) !== 10 || cursor &&
             (before.birthtimeMs !== cursor.birthtimeMs || before.size < cursor.bytes || digest(bytes.subarray(0, cursor.bytes)) !== cursor.digest)) return null;
         const lines = decoder.decode(bytes).slice(0, -1).split("\n");
         if (lines.length > MAX_LINES) return null;
@@ -68,16 +69,19 @@ export function createOwnedUsageSource(input, { admission, codexHome, proof }, b
           offset += Buffer.byteLength(raw) + 1;
           if (!validRow(row, timestamp, ordinal) || row.ordinal !== ordinal + 1 || !envelope(row) ||
               row.type === "session_meta" && start !== 0 || row.type === "event_msg" &&
-              (p.type === "thread_rolled_back" || p.type === "token_count" && p.info == null)) return null;
+              p.type === "thread_rolled_back") return null;
+          if (row.type === "event_msg" && p.type === "token_count" && p.info == null)
+            return { refusalReason: "verified response usage absent" };
           ordinal = row.ordinal; timestamp = Date.parse(row.timestamp);
           if (row.type !== "token_usage_record") continue;
           if (p.thread_id !== selected.session_id || p.session_id !== meta.session_id || p.root_turn_id !== p.turn_id) return null;
           if (start >= (cursor?.bytes ?? headerEnd)) deltas.push({ identity: JSON.stringify([p.session_id, p.thread_id, p.response_id]), usage: wire(p.usage) });
         }
-        if (!cursor && !deltas.length) return null;
+        if (!cursor && !deltas.length) return { refusalReason: "verified response usage absent" };
         return { deltas, cursor: { bytes: before.size, birthtimeMs: before.birthtimeMs, digest: digest(bytes) } };
       });
     if (!segment) usageUnknown();
+    if (segment.refusalReason) usageUnknown(segment.refusalReason);
     const receipt = Object.freeze({}), previous = cursor;
     receipts.set(receipt, { binding, apply: accept => {
       if (cursor !== previous || ownedProof(admission, selected) !== proof) usageUnknown();

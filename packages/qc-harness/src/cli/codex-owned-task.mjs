@@ -13,10 +13,10 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
   tasks.set(handle, record);
   let child, nativeProof, accepting = false, usageSource;
   const usageBinding = Object.freeze({}), responses = new Map();
-  let total = null;
+  let total = null, refusalReason = null;
   const read = candidate => {
     if (candidate !== handle || tasks.get(candidate) !== record) throw Error("Logical task capability refused");
-    return freeze({ inputs: record.inputs, state: record.state, generation: record.generation, admission: record.admission, native: record.native, exit: record.exit, usage: { total, currentContext: null } });
+    return freeze({ inputs: record.inputs, state: record.state, generation: record.generation, admission: record.admission, native: record.native, exit: record.exit, usage: { total, consumptionComplete: null, currentContext: null, refusalReason } });
   };
   const publish = () => observe(read(handle));
   const reject = () => {
@@ -60,7 +60,10 @@ export function prepareOwnedTask(inputs, observe = () => {}) {
           responses.clear(); for (const [key, value] of pending) responses.set(key, value);
           total = freeze(sum); return total;
         });
-      } catch (error) { reject(); throw error; }
+      } catch (error) {
+        if (!["completed", "terminal-rejected"].includes(record.state)) refusalReason = error.message;
+        reject(); throw error;
+      }
     },
     admit(candidate, generation, admission) {
       if (candidate !== handle || generation !== record.generation) { reject(); throw Error("Logical task capability/generation refused"); }

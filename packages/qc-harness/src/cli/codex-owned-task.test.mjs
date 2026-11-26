@@ -84,3 +84,28 @@ test("usage authority is unavailable without an actual native admission", () => 
   assert.throws(() => task.recordUsage({}, { admission: {} }), /usage|Usage/);
   assert.equal(task.read(task.handle).state, "terminal-rejected");
 });
+
+test("private quality stays UNKNOWN through lifecycle and diagnostic copies confer no authority", async () => {
+  const initial = prepareOwnedTask(inputs()), active = running();
+  const unknown = task => {
+    const usage = task.read(task.handle).usage;
+    assert.equal(usage.total, null);
+    assert.equal(usage.consumptionComplete, null);
+    assert.equal(usage.currentContext, null);
+    assert.throws(() => { usage.consumptionComplete = true; }, TypeError);
+    const copy = structuredClone(usage); copy.consumptionComplete = true; copy.total = { totalTokens: 0 };
+    assert.equal(task.read(task.handle).usage.consumptionComplete, null);
+    return usage;
+  };
+  unknown(initial); unknown(active.task);
+  active.child.emit("exit", 0, null); unknown(active.task);
+  await active.task.complete(() => {}); const completed = unknown(active.task);
+  assert.throws(() => active.task.recordUsage({}, {}), /state/);
+  assert.deepEqual(unknown(active.task), completed);
+  const rejected = running();
+  assert.throws(() => rejected.task.recordUsage({}, { admission: {} }), /Owned usage UNKNOWN\/refused/);
+  const diagnostic = unknown(rejected.task);
+  assert.match(diagnostic.refusalReason, /Owned usage UNKNOWN\/refused/);
+  assert.throws(() => rejected.task.recordUsage({}, {}), /state/);
+  assert.deepEqual(unknown(rejected.task), diagnostic);
+});
