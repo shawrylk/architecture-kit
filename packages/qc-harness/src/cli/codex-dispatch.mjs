@@ -38,7 +38,7 @@ const check = output => {
  * H owns launch/IPC/pinning. The returned child must be the reservation's owned child.
  * No new native payload: original native envelopes go only to the approved runtime boundary.
  */
-export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads = {} } = {}) {
+export function createCodexDispatch(input, { runtime, task: ownedTask, tmp = os.tmpdir(), reads = {} } = {}) {
   input = Object.freeze({ ...input });
   const profile = codexRoleProfile(input.role);
   const identity = normalizeCodexWorker(input), workflow = workflowAt(input.worktree), review = workflow?.review ?? reviewDefaults;
@@ -89,10 +89,12 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
     if (!dead() && child.pid) fail("Owned child termination unconfirmed");
   }
   async function terminal(kind) {
+    if (kind !== "finish") ownedTask?.reject();
     if (result) return result;
     if (ending) return ending;
     state = "ending";
     ending = (async () => {
+      if (kind === "finish") ownedTask?.checkExit();
       if (kind === "finish" && !dead()) fail("Worker exit has not been observed");
       if (kind !== "finish") await terminate();
       let accepted = kind === "finish" && child?.exitCode === 0 && report !== null;
@@ -110,6 +112,7 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
           }
         }
       } catch (error) { accepted = false; notes.push(error.message); }
+      if (!accepted) ownedTask?.reject();
       // The runner projection contains no native usage. Shared cost stays unknown, never fabricated zero.
       if (!outcome) costDecision(stopCall("SubagentStop"), tmp);
       outcome ??= Object.freeze({ accepted, notes });
@@ -121,11 +124,11 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
       state = "terminal";
       return result = outcome;
     })();
-    try { return await ending; } catch (error) { ending = null; throw error; }
+    try { return await ending; } catch (error) { ownedTask?.reject(); ending = null; throw error; }
   }
   return Object.freeze({
     async start(launch) {
-      if (state !== "new") fail();
+      if (state !== "new") { ownedTask?.reject(); fail(); }
       state = "starting";
       try {
         policyUnchanged();
@@ -155,13 +158,16 @@ export function createCodexDispatch(input, { runtime, tmp = os.tmpdir(), reads =
         // Trusted workflow projection for shared placement only; never pass a Codex rollout to Claude parsers.
         projection = mkdtempSync(path.join(tmp, "codex-worker-"));
         writeFileSync(path.join(projection, "brief.jsonl"), JSON.stringify({ type: "user", message: { role: "user", content: prompt } }) + "\n");
+        ownedTask?.admit(ownedTask.handle, 1, { workerSessionId: input.workerSessionId, task: task.record, route: profile.route, holder: claimed ? holder : null });
         handle = runtime.reserve({ role: profile.runtime, workflowParentId: input.parentSessionId });
         child = await launch(handle, prompt);
+        ownedTask?.watch(child);
         child.once("error", () => { if (!child.pid) spawnFailed = true; });
         const proof = await runtime.ready(handle);
         if (proof.pid !== child.pid) fail("Owned child identity mismatch");
         state = "running";
         admitted({ session_id: proof.nativeThreadId, cwd: input.worktree });
+        ownedTask?.running(proof);
         return { proof, notes: notes.filter(Boolean) };
       } catch (error) { await terminal("error"); throw error; }
     },

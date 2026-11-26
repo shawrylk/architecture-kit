@@ -2,9 +2,10 @@
 // after each stop until the progress file says it is done. It never calls Claude; exit 2 hands the brief back.
 
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { scoutReportProblem } from "./codex-role-profile.mjs";
+import { codexRoleProfile, scoutReportProblem } from "./codex-role-profile.mjs";
+import { prepareOwnedTask } from "./codex-owned-task.mjs";
 import { createCodexDispatch } from "./codex-dispatch.mjs";
 import { createCodexBridge } from "./codex-bridge.mjs";
 import { pinCodexNativeExecutable } from "./codex-native-executable.mjs";
@@ -317,13 +318,20 @@ function spawnRun({ invocation: { args, env }, input, log, cwd, launch }, codexC
 
 // Single owned implement/review/scout/tests invocation. Native argv uses budgets.codex;
 // the fixed dispatch role selects the separate implementer/reviewer workflow budget.
-async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
+async function ownedRun(call, settings, codexCommand, model, signal, metrics, retained, observeOwnedTask) {
   if (codexCommand.length !== 1 || !model) throw Error("Owned runner requires one native executable and an explicit model");
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
   const command = `${quote(process.execPath)} ${quote(fileURLToPath(new URL("./qc.mjs", import.meta.url)))} codex-hook`;
   const hooks = ["SessionStart", "PreToolUse", "PostToolUse", "Stop"].map(event =>
     `${event}=[{hooks=[{type="command",command=${JSON.stringify(command)},timeout=10}]}]`).join(",");
   const invocation = createCodexInvocation({ ...call.invocation, args: ["-c", "features.codex_hooks=true", "-c", `hooks={${hooks}}`, ...call.args] });
+  const workerSessionId = randomUUID(), role = ["scout", "tests"].includes(settings.role) ? settings.role : settings.review ? "reviewer" : "implementer";
+  const brief = readFileSync(settings.brief), digest = value => createHash("sha256").update(value).digest("hex");
+  const repository = realpathSync(execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: call.cwd, encoding: "utf8" }).trim());
+  const task = prepareOwnedTask({ ...retained, repository, worktree: realpathSync(call.cwd), branch: currentBranch(call.cwd),
+    parentSessionId: settings.parentSession, workerSessionId, taskId: randomUUID(), profile: codexRoleProfile(role), settings,
+    briefBytes: brief.toString("base64"), briefDigest: digest(brief), scopeProtectedDigest: digest(JSON.stringify([retained.contract, retained.allow, retained.protectedPaths])),
+    config: load(call.cwd), model, effort: metrics.effort, argv: invocation.args }, observeOwnedTask);
   let owned;
   const runtime = Object.fromEntries(["reserve", "ready", "validate", "context", "terminal", "startup", "recover", "hook", "launch"].map(name => [name, (...args) => {
     if (name === "reserve") {
@@ -334,17 +342,21 @@ async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
     }
     return owned[name](...args);
   }]));
-  const dispatch = createCodexDispatch({ parentSessionId: settings.parentSession, workerSessionId: randomUUID(),
-    role: ["scout", "tests"].includes(settings.role) ? settings.role : settings.review ? "reviewer" : "implementer", worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime });
+  let dispatch;
+  try {
+    dispatch = createCodexDispatch({ parentSessionId: settings.parentSession, workerSessionId,
+      role, worktree: call.cwd, branch: currentBranch(call.cwd), brief: settings.brief, model, report: "" }, { runtime, task });
+  } catch (error) { task.reject(); throw error; }
   let bridge, starting, child, retired = false, cancelled = false, cleanupNeeded = false;
   const close = async () => {
+    task.reject();
     try { await dispatch.error(); retired = true; await bridge?.close(); }
     catch (error) { cleanupNeeded = true; throw error; }
   };
   const cancel = () => { cancelled = true; if (child) void close().catch(() => {}); };
   signal?.addEventListener("abort", cancel, { once: true });
   process.once("SIGINT", cancel); process.once("SIGTERM", cancel);
-  const timer = setTimeout(cancel, settings.maxHours * 3600000); timer.unref();
+  const timer = setTimeout(cancel, Math.max(0, retained.deadline - Date.now())); timer.unref();
   try {
     if (signal?.aborted) throw Error("Owned runner cancelled");
     const result = await spawnRun({ ...call, invocation, launch: (observe, openLog) => starting = dispatch.start(async reservation => {
@@ -359,10 +371,10 @@ async function ownedRun(call, settings, codexCommand, model, signal, metrics) {
     }) }, codexCommand);
     await starting;
     if (result.status !== 0 || cancelled) throw Error("Owned worker exit/cancellation rejected");
-    metrics.ownedLifecycle = { close, finish: async () => {
+    metrics.ownedLifecycle = { close, finish: () => task.complete(async () => {
       const verdict = await dispatch.finish(); retired = true;
       if (!verdict.accepted) throw Error(`Owned report/exit rejected: ${verdict.notes.join("; ")}`);
-    } };
+    }) };
     return result;
   } catch (error) { await close(); throw error; }
   finally {
@@ -533,7 +545,7 @@ function completeReview(settings, started, originalStamp, message, say, recordVe
 
 async function runJob(argv, {
   run, codexCommand = ["codex"], env = process.env, say = (line) => console.error(line),
-  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation, metrics, signal,
+  fetch, now = Date.now, sleep, runCheck = runTestCommand, runMutation: mutate = runMutation, metrics, signal, observeOwnedTask,
 } = {}) {
   let settings;
   try {
@@ -771,7 +783,8 @@ async function runJob(argv, {
         role: settings.role === "review" ? "reviewer" : settings.role === "implement" ? "implementer" : settings.role });
       const call = { command: codexCommand[0], args: invocation.args, env: invocation.env, invocation, input: prompt,
         log: settings.log, cwd: settings.worktree };
-      result = settings.ownedNative ? await ownedRun(call, settings, codexCommand, model, signal, metrics) : await execute(call);
+      result = settings.ownedNative ? await ownedRun(call, settings, codexCommand, model, signal, metrics,
+        { boundary, contract, protectedPaths, allow, policy, tests, locked, testHead, testBase, codex, codexLimits, deadline: started + settings.maxHours * 3600000 }, observeOwnedTask) : await execute(call);
     } catch (error) {
       runError = error;
     }

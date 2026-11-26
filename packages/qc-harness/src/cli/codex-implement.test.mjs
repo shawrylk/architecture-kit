@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -57,11 +58,12 @@ test("owned native launch is per invocation and unsupported continuations fail b
   const f = setup(t);
   assert.equal(parseArgs(f.argv).ownedNative, false);
   assert.equal(parseArgs([...f.argv, "--owned-native"]).ownedNative, true);
-  for (const role of ["implement", "tests"]) for (const extra of [["--max-runs", "2"], ["--resume", "old"], ["--wait-reset"]]) {
+  for (const role of ["implement", "tests", "review", "scout"]) for (const extra of [["--max-runs", "2"], ["--resume", "old"], ["--wait-reset"]]) {
     const messages = [];
     assert.equal(await runCodexImplement([...f.argv, "--owned-native", "--role", role, ...extra], {
       env: {}, say: line => messages.push(line), out: quiet,
       run: () => assert.fail("unsupported role launched"),
+      observeOwnedTask: () => assert.fail("unsupported continuation prepared a task"),
     }), 4);
     assert.match(messages.join("\n"), /H3b.*continuation/);
     assert.equal(readFileSync(f.progress, "utf8"), "");
@@ -73,7 +75,7 @@ test("owned native launch is per invocation and unsupported continuations fail b
   }), 4);
 });
 
-for (const mode of ["tests-ok", "tests-report", "tests-no-lock", "tests-green-head", "tests-budget", "tests-base-missing", "tests-base-invalid", "tests-base-lock", "tests-base-map", "tests-pass-base", "tests-cap", "tests-lock", "tests-map", "tests-map-invalid", "tests-history", "tests-marker", "tests-no-handback", "tests-handback", "tests-nonzero", "tests-verify", "tests-verify-red", "tests-final-map", "tests-final-lock", "tests-final-new", "tests-final-history", "tests-source", "tests-profile", "tests-identity", "tests-admission", "tests-slot", "tests-drift", "scout-worktree-link", "scout-budget", "scout-location-link", "scout-ok", "scout-dirty-tracked", "scout-dirty-staged", "scout-dirty-untracked", "scout-untracked", "scout-tracked", "scout-staged", "scout-commit", "scout-reset", "scout-missing", "scout-stale", "scout-old", "scout-malformed", "scout-profile", "scout-identity", "scout-recovery", "scout-admission", "scout-marker", "scout-no-report", "scout-brief-report", "scout-location", "scout-progress-location", "scout-log-location", "scout-handback", "scout-nonzero", "scout-drift", "scout-label-Gap", "scout-label-Plan", "scout-label-Check", "scout-label-Risks", "scout-label-Questions", "scout-label-Breaking", "hook-first", "stdout-first", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify", "review-ok", "review-changes", "review-missing", "review-stale", "review-malformed", "review-handback", "review-nonzero", "review-proof", "review-profile", "review-identity", "review-recovery", "review-admission", "review-marker", "review-no-report", "review-old", "review-brief-report", "review-drift", "review-guard"]) {
+for (const mode of ["tests-ok", "tests-report", "tests-no-lock", "tests-green-head", "tests-budget", "tests-base-missing", "tests-base-invalid", "tests-base-lock", "tests-base-map", "tests-pass-base", "tests-cap", "tests-lock", "tests-map", "tests-map-invalid", "tests-history", "tests-marker", "tests-no-handback", "tests-handback", "tests-nonzero", "tests-verify", "tests-verify-red", "tests-final-map", "tests-final-lock", "tests-final-new", "tests-final-history", "tests-source", "tests-profile", "tests-identity", "tests-admission", "tests-slot", "tests-drift", "scout-worktree-link", "scout-budget", "scout-location-link", "scout-ok", "scout-dirty-tracked", "scout-dirty-staged", "scout-dirty-untracked", "scout-untracked", "scout-tracked", "scout-staged", "scout-commit", "scout-reset", "scout-missing", "scout-stale", "scout-old", "scout-malformed", "scout-profile", "scout-identity", "scout-recovery", "scout-admission", "scout-marker", "scout-no-report", "scout-brief-report", "scout-location", "scout-progress-location", "scout-log-location", "scout-handback", "scout-nonzero", "scout-drift", "scout-label-Gap", "scout-label-Plan", "scout-label-Check", "scout-label-Risks", "scout-label-Questions", "scout-label-Breaking", "hook-first", "stdout-first", "task-gate", "no-checkpoint", "pin", "no-hooks", "malformed", "nonzero", "signal", "drift", "channel", "provenance", "cancel", "timeout", "guard", "verify", "review-ok", "review-changes", "review-missing", "review-stale", "review-malformed", "review-handback", "review-nonzero", "review-proof", "review-profile", "review-identity", "review-recovery", "review-admission", "review-marker", "review-no-report", "review-old", "review-brief-report", "review-drift", "review-guard"]) {
   test(`actual owned runner ${mode}`, { skip: !["linux", "darwin"].includes(process.platform) }, async t => {
     const testsRole = mode.startsWith("tests-");
     const review = mode.startsWith("review-"), scout = mode.startsWith("scout-"), initialDirt = mode.startsWith("scout-dirty-");
@@ -128,6 +130,7 @@ ${["tests-verify-red", "tests-green-head"].includes(mode) ? "const env = { ...pr
         appendFileSync(f.brief, `\nVerify: \`node "${verify}"\`\n`);
       }
     }
+    if (mode === "task-gate") appendRecord(ledgerFileOf(f.worktree), { type: "verdict", branch: "feat/owned", verdict: "CHANGES_REQUIRED", sha: spawnSync("git", ["rev-parse", "HEAD"], { cwd: f.worktree, encoding: "utf8" }).stdout.trim() });
     const checkpoint = checkpointPathOf(f.worktree, parent);
     mkdirSync(path.dirname(checkpoint), { recursive: true });
     if (mode !== "no-checkpoint") writeFileSync(checkpoint, "## Goal\n## Rules\n## Tasks\n## Next\n");
@@ -260,6 +263,7 @@ if (mode === 'review-old') utimesSync(${JSON.stringify(roleReport)}, 1, 1);
 if (!['review-marker', 'scout-marker', 'tests-marker'].includes(mode)) writeFileSync(${JSON.stringify(f.progress)}, ${JSON.stringify(DONE_MARKER)});
 if (mode !== 'tests-no-handback') hook({ ...base, ...(['provenance', 'review-identity', 'scout-identity', 'tests-identity'].includes(mode) ? { session_id: 'sibling' } : {}), hook_event_name: 'Stop', turn_id: 'turn', stop_hook_active: false,
   last_assistant_message: ${testsRole} ? mode === 'tests-handback' ? ' ' : 'Tests prepared; pending implementation.' : mode === 'malformed' || ['review-handback', 'scout-handback'].includes(mode) ? 'done' : ${scout} ? scoutReport : ${review} ? verdict : 'RED: node --test failed\\nGREEN: node --test passed' });
+if (mode === 'signal') process.kill(process.pid, 'SIGTERM');
 process.exit(['nonzero', 'review-nonzero', 'scout-nonzero', 'tests-nonzero'].includes(mode) ? 6 : 0);
 `);
     const controller = new AbortController();
@@ -271,9 +275,59 @@ process.exit(['nonzero', 'review-nonzero', 'scout-nonzero', 'tests-nonzero'].inc
     const indexPath = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-path", "index"], { cwd: f.worktree, env: f.gitEnv, encoding: "utf8" }).stdout.trim();
     const initialFiles = initialDirt ? snapshot() : null, initialIndex = initialDirt ? readFileSync(indexPath) : null;
     const messages = [];
+    const logical = [];
     const code = await runCodexImplement([...f.argv, "--owned-native", "--parent-session", parent, ...(mode === "timeout" ? ["--max-hours", "0.0005"] : [])], {
+      observeOwnedTask: snapshot => {
+        logical.push(snapshot);
+        const records = readLedger(ledgerFileOf(f.worktree));
+        if (snapshot.state === "admitted") {
+          assert.equal(existsSync(path.join(f.dir, "probe")), false, "admit before pin/probe");
+          assert.equal(existsSync(path.join(f.dir, "started")), false);
+          assert.equal(records.filter(r => r.type === "dispatch").length, 1);
+          assert.equal(snapshot.admission.workerSessionId, snapshot.inputs.workerSessionId);
+          assert.equal(snapshot.admission.route, snapshot.inputs.profile.route);
+          const dir = slotDirOf(parent, os.tmpdir());
+          assert.equal(existsSync(dir) ? readdirSync(dir).filter(n => n.endsWith(".claim")).length : 0, review || scout ? 0 : 1);
+        }
+        if (["running", "observed-exit"].includes(snapshot.state)) assert.equal(records.filter(r => r.type === "stop").length, 0);
+        if (snapshot.state === "completed") assert.equal(records.filter(r => r.type === "stop").length, 1);
+      },
       run: () => assert.fail("owned runner used legacy callback"), codexCommand: [executable], env: { ...f.gitEnv, CODEX_HOME: path.join(f.dir, "home") }, signal: controller.signal, say: line => messages.push(line), out: quiet,
     });
+    if (logical.length) {
+      const original = logical[0].inputs;
+      assert.equal(original.parentSessionId, parent);
+      assert.equal(original.worktree, realpathSync(f.worktree));
+      assert.equal(original.branch, "feat/owned");
+      assert.equal(original.repository, realpathSync(path.join(f.argv[f.argv.indexOf("--worktree") + 1], "..", "wt", ".git")));
+      assert.equal(Buffer.from(original.briefBytes, "base64").toString(), readFileSync(f.brief, "utf8"));
+      assert.equal(original.briefDigest, createHash("sha256").update(readFileSync(f.brief)).digest("hex"));
+      assert.equal(original.scopeProtectedDigest, createHash("sha256").update(JSON.stringify([original.contract, original.allow, original.protectedPaths])).digest("hex"));
+      assert.equal(original.config.budgets.codex.compactAt, 123456);
+      assert.equal(original.config.budgets.implementer.handoffAt, 20000);
+      assert.equal(original.model, review && mode === "review-admission" || ["scout-admission", "tests-admission"].includes(mode) ? "unadmitted-model" : "gpt-6.1-sol");
+      assert.ok(original.argv.includes("model_auto_compact_token_limit=123456"));
+      assert.ok(original.boundary.head && original.contract.paths.length && original.tests.command.length);
+      assert.ok(Object.isFrozen(original.boundary) && Object.isFrozen(original.config.budgets));
+      assert.ok(original.deadline > Date.now() - 10000);
+      assert.ok(logical.every(s => s.inputs === original && s.generation === 1));
+      assert.equal(logical.at(-1).state, code === 0 ? "completed" : "terminal-rejected");
+      const admitted = logical.some(s => s.state === "admitted"), running = logical.find(s => s.state === "running");
+      if (["task-gate", "no-checkpoint", "tests-slot", "tests-admission", "review-admission", "scout-admission"].includes(mode)) assert.equal(admitted, false);
+      if (running) {
+        assert.equal(running.native.nativeThreadId, "thread");
+        assert.equal(running.native.repository, original.repository);
+        assert.equal(running.native.executablePin.realpath, executable);
+        assert.equal(running.native.pid, JSON.parse(readFileSync(path.join(f.dir, "started"))).pid);
+      }
+      if (mode === "signal") assert.equal(logical.at(-1).exit.signal, "SIGTERM");
+      if (code === 0) assert.deepEqual(logical.map(s => s.state), ["prepared", "admitted", "running", "observed-exit", "completed"]);
+      if (testsRole) { assert.equal(original.testBase.length, 40); assert.equal(original.tests.maxNewCases, 8); assert.deepEqual(original.locked, mode === "tests-no-lock" ? null : { "existing.test.mjs": original.locked["existing.test.mjs"] }); }
+    }
+    if (["hook-first", "stdout-first", "no-checkpoint", "tests-admission", "tests-slot", "review-ok", "scout-ok", "tests-ok", "nonzero", "guard", "verify"].includes(mode)) {
+      assert.equal(logical[0]?.state, "prepared", "actual owned runner must retain its original logical boundary");
+      assert.equal(logical.at(-1)?.state, code === 0 ? "completed" : "terminal-rejected");
+    }
     if (initialDirt) {
       assert.equal(existsSync(path.join(f.dir, "probe")), false, "dirty scout must refuse before the version probe");
       assert.equal(existsSync(path.join(f.dir, "started")), false, "dirty scout must refuse before native child launch");
@@ -288,7 +342,7 @@ process.exit(['nonzero', 'review-nonzero', 'scout-nonzero', 'tests-nonzero'].inc
     assert.equal(code, testsRole ? testsCode : scout ? scoutCode : ["scout-ok", "hook-first", "stdout-first", "review-ok", "review-changes", "review-proof", "review-recovery", "review-brief-report"].includes(mode) ? 0 : ["guard", "review-guard"].includes(mode) ? 4 : mode === "verify" ? 7 : ["review-missing", "review-stale", "review-malformed", "review-marker", "review-no-report", "review-old"].includes(mode) ? 3 : 1,
       messages.join("\n") + JSON.stringify({ probe: existsSync(path.join(f.dir, "probe")), started: existsSync(path.join(f.dir, "started")) }) +
       (existsSync(`${f.progress}.log`) ? readFileSync(`${f.progress}.log`, "utf8") : ""));
-    assert.equal(existsSync(path.join(f.dir, "started")), !initialDirt && !["tests-report", "tests-base-missing", "tests-base-invalid", "tests-map-invalid", "tests-admission", "tests-slot", "no-checkpoint", "pin", "review-admission", "review-no-report", "scout-admission", "scout-no-report", "scout-worktree-link", "scout-location-link", "scout-location", "scout-progress-location", "scout-log-location"].includes(mode), messages.join("\n"));
+    assert.equal(existsSync(path.join(f.dir, "started")), !initialDirt && !["tests-report", "tests-base-missing", "tests-base-invalid", "tests-map-invalid", "tests-admission", "tests-slot", "task-gate", "no-checkpoint", "pin", "review-admission", "review-no-report", "scout-admission", "scout-no-report", "scout-worktree-link", "scout-location-link", "scout-location", "scout-progress-location", "scout-log-location"].includes(mode), messages.join("\n"));
     if (mode === "cancel") assert.equal(controller.signal.aborted, true);
     if (existsSync(path.join(f.dir, "started"))) {
       const { pid, port } = JSON.parse(readFileSync(path.join(f.dir, "started"), "utf8"));
@@ -299,7 +353,7 @@ process.exit(['nonzero', 'review-nonzero', 'scout-nonzero', 'tests-nonzero'].inc
         socket.once("connect", () => { socket.destroy(); reject(Error("owned channel still open")); }); socket.once("error", resolve);
       });
     }
-    if (["tests-report", "tests-base-missing", "tests-base-invalid", "tests-map-invalid", "tests-admission", "tests-slot", "no-checkpoint", "review-admission", "review-no-report", "scout-admission", "scout-no-report", "scout-worktree-link", "scout-location-link", "scout-location", "scout-progress-location", "scout-log-location"].includes(mode)) {
+    if (["tests-report", "tests-base-missing", "tests-base-invalid", "tests-map-invalid", "tests-admission", "tests-slot", "task-gate", "no-checkpoint", "review-admission", "review-no-report", "scout-admission", "scout-no-report", "scout-worktree-link", "scout-location-link", "scout-location", "scout-progress-location", "scout-log-location"].includes(mode)) {
       assert.equal(existsSync(path.join(f.dir, "probe")), false);
       assert.equal(existsSync(`${f.progress}.log`), false);
     }

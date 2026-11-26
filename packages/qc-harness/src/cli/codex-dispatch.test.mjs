@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeCodexWorker } from "./codex-dispatch.mjs";
+import { prepareOwnedTask } from "./codex-owned-task.mjs";
 
 test("runner identity retains workflow role independently of native profile or agent id", () => {
   const input = { parentSessionId: "parent", workerSessionId: "worker", role: "implementer",
@@ -48,11 +49,47 @@ function fixture(t, role = "implementer", dispatch = {}) {
   const runtime = { reserve: options => { seen.push(options); return handle; }, ready: async () => proof,
     validate: (h, native) => h === handle && native.session_id === "native" ? proof : null,
     context: (h, native) => { assert.equal(h, handle); seen.push(native); return "worker-budget"; }, terminal: () => seen.push("retired") };
-  const bridge = () => createCodexDispatch(input, { runtime, tmp: root, reads: { ci: () => null, base: () => true } });
+  const bridge = task => createCodexDispatch(input, { runtime, task, tmp: root, reads: { ci: () => null, base: () => true } });
   const slots = () => existsSync(slotDirOf("parent", root)) ? readdirSync(slotDirOf("parent", root)).filter(n => n.endsWith(".claim")).length : 0;
   const records = () => readLedger(path.join(base, ".git", "qc", "ledger.jsonl"));
   return { root, input, child, exit, proof, runtime, seen, bridge, slots, records, checkpoint, head: git("rev-parse", "HEAD") };
 }
+
+test("logical admission follows original checkpoint, route, G and slot boundaries", async t => {
+  for (const refusal of ["checkpoint", "route", "G", "slot"]) {
+    const f = fixture(t), task = prepareOwnedTask({ deadline: Date.now() + 60000 });
+    if (refusal === "checkpoint") rmSync(f.checkpoint);
+    if (refusal === "route") f.input.model = "unadmitted-model";
+    if (refusal === "G") {
+      const { appendRecord, ledgerFileOf } = await import("./ledger.mjs");
+      appendRecord(ledgerFileOf(f.root), { type: "verdict", branch: f.input.branch, sha: f.head, verdict: "CHANGES_REQUIRED" });
+    }
+    if (refusal === "slot") { const dir = slotDirOf("parent", f.root); mkdirSync(dir, { recursive: true }); writeFileSync(path.join(dir, "slot-0.claim"), "pending:foreign"); }
+    await assert.rejects(f.bridge(task).start(() => assert.fail("refused launch")));
+    assert.equal(task.read(task.handle).state, "terminal-rejected");
+    assert.equal(f.seen.length, 0, "no native reservation before original admission");
+    assert.equal(f.records().filter(r => r.type === "dispatch").length, 0);
+  }
+  const f = fixture(t), task = prepareOwnedTask({ deadline: Date.now() + 60000 }), b = f.bridge(task);
+  await b.start(() => f.child);
+  assert.equal(task.read(task.handle).state, "running");
+  assert.equal(f.slots(), 1);
+  b.handback(native, report); f.exit();
+  assert.equal(task.read(task.handle).state, "observed-exit");
+  await task.complete(async () => assert.equal((await b.finish()).accepted, true));
+  assert.equal(task.read(task.handle).state, "completed");
+  await assert.rejects(b.start(() => assert.fail("duplicate launch")));
+  assert.equal(f.records().filter(r => r.type === "stop").length, 1);
+});
+
+test("early private finish permanently refuses accepted stop", async t => {
+  const f = fixture(t), task = prepareOwnedTask({ deadline: Date.now() + 60000 }), b = f.bridge(task);
+  await b.start(() => f.child); b.handback(native, report);
+  await assert.rejects(b.finish()); f.exit();
+  await assert.rejects(b.finish()); await b.error();
+  assert.equal(f.records().filter(r => r.type === "stop").length, 0);
+  assert.equal(f.slots(), 0);
+});
 const native = { session_id: "native" };
 const report = "RED: node --test fails\nGREEN: node --test passes";
 
