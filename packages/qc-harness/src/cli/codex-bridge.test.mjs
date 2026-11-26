@@ -3,6 +3,16 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createCodexBridge, reportCodexHook } from "./codex-bridge.mjs";
+import * as bridgeModule from "./codex-bridge.mjs";
+
+test("genuine server closure with a fake runtime cannot certify a launched channel", async t => {
+  const reservation = {}, proof = Object.freeze({ nativeThreadId: "thread" }), child = { pid: process.pid };
+  const bridge = await createCodexBridge({ runtime: { ready: () => proof, validate: () => proof }, reservation });
+  t.after(() => bridge.close());
+  await bridge.close();
+  for (const candidate of [bridge, { ...bridge }, JSON.parse(JSON.stringify({ env: bridge.env, closed: true }))])
+    assert.throws(() => bridgeModule.codexChannelRetirementOf(candidate, reservation, proof, child), /unavailable/);
+});
 
 const startup = { hook_event_name: "SessionStart", source: "startup", cwd: process.cwd(), session_id: "thread",
   transcript_path: null, model: "fixture", permission_mode: "default" };

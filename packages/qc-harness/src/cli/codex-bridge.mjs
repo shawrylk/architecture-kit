@@ -1,21 +1,34 @@
 import net from "node:net";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { codexSessionStartInput } from "./codex-recovery.mjs";
+import { codexReportBindingOf } from "./codex-runtime.mjs";
 
 // Match the existing context producer frame bound; startup retains its smaller envelope limit.
 const LIMIT = 65536, STARTUP_LIMIT = 8192;
 const unavailable = () => new Error("Codex report channel unavailable");
 const deadline = ms => Number.isInteger(ms) && ms > 0 && ms <= 30000;
+const retirements = new WeakMap();
+// Exact genuine server plus original runtime launch; diagnostics carry no authority.
+export function codexChannelRetirementOf(bridge, reservation, proof, child) {
+  const read = retirements.get(bridge)?.(reservation, proof, child);
+  if (!read) throw unavailable();
+  return read;
+}
 
 // Cooperative invocation bearer channel, not native-event attestation. Opaque authority never leaves this closure.
 export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000, maxConnections = 4, signal, onStop, closeOnReject = false } = {}) {
   if (!runtime || !reservation || !deadline(timeoutMs) || !Number.isInteger(maxConnections) ||
       maxConnections < 1 || maxConnections > 16 || signal?.aborted) throw unavailable();
   const token = randomBytes(32).toString("hex"), sockets = new Set();
-  let open = true, closing, busy = false, closed;
+  let open = true, closing, busy = false, closed, serverClosed = false, routes = 0, operations = 0, binding;
+  try { binding = codexReportBindingOf(runtime, reservation); } catch { /* Legacy callers remain unbound. */ }
+  const accepting = () => open && (!binding || binding.active());
+  const read = Object.freeze(() => Object.freeze({ scope: "original-launched-report-channel",
+    state: accepting() ? "open" : serverClosed && routes === 0 && operations === 0 ? "confirmed" : "pending",
+    serverClosed, routes, operations }));
   const stopped = new Promise(resolve => { closed = resolve; });
   const server = net.createServer({ allowHalfOpen: true }, socket => {
-    if (!open || sockets.size >= maxConnections) { socket.destroy(); if (closeOnReject) void close(); return; }
+    if (!accepting() || sockets.size >= maxConnections) { socket.destroy(); if (closeOnReject) void close(); return; }
     sockets.add(socket);
     let size = 0, chunks = [], routing = false, cancelRoute, responded = false;
     const expires = performance.now() + timeoutMs, timer = setTimeout(() => socket.destroy(), timeoutMs);
@@ -25,16 +38,23 @@ export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000
       if (routing || closeOnReject && !responded) { cancelRoute?.(); void close(); }
     });
     socket.on("data", chunk => {
+      if (!accepting()) { socket.destroy(); return; }
       size += chunk.length;
       if (size > LIMIT) { chunks = []; socket.destroy(); } else chunks.push(chunk);
     });
     socket.once("end", async () => {
+      routes++;
       let owned = false;
-      const active = () => open && !socket.destroyed && performance.now() < expires;
-      const wait = task => new Promise((resolve, reject) => {
-        cancelRoute = () => reject(unavailable());
-        Promise.resolve(task).then(resolve, reject);
-      });
+      const active = () => accepting() && !socket.destroyed && performance.now() < expires;
+      const wait = task => {
+        operations++;
+        // Socket cancellation settles only the route, never this original producer.
+        const settled = Promise.resolve(task).then(value => { operations--; return value; }, error => { operations--; throw error; });
+        return new Promise((resolve, reject) => {
+          cancelRoute = () => reject(unavailable());
+          settled.then(resolve, reject);
+        });
+      };
       try {
         if (!active() || size > LIMIT) throw unavailable();
         const request = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks)));
@@ -64,7 +84,7 @@ export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000
         if (Buffer.byteLength(reply) > LIMIT) throw unavailable();
         responded = true; socket.end(reply);
       } catch { if (active()) socket.end('{"ok":false}'); if (closeOnReject || !active()) void close(); }
-      finally { if (owned) busy = routing = false; cancelRoute = undefined; }
+      finally { routes--; if (owned) busy = routing = false; cancelRoute = undefined; }
     });
   });
   server.maxConnections = maxConnections;
@@ -72,8 +92,9 @@ export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000
   const close = () => {
     if (closing) return closing;
     open = false; signal?.removeEventListener("abort", close);
+    binding?.signal.removeEventListener("abort", close);
     for (const socket of sockets) socket.destroy();
-    return closing = new Promise(resolve => server.close(() => { closed(); resolve(); }));
+    return closing = new Promise(resolve => server.close(() => { serverClosed = true; closed(); resolve(); }));
   };
   try {
     await new Promise((resolve, reject) => {
@@ -83,8 +104,15 @@ export async function createCodexBridge({ runtime, reservation, timeoutMs = 5000
     server.on("error", close);
     signal?.addEventListener("abort", close, { once: true });
     if (signal?.aborted) throw unavailable();
-    return Object.freeze({ env: Object.freeze({ QC_CODEX_REPORT_PORT: String(server.address().port), QC_CODEX_REPORT_TOKEN: token }),
+    const bridge = Object.freeze({ env: Object.freeze({ QC_CODEX_REPORT_PORT: String(server.address().port), QC_CODEX_REPORT_TOKEN: token }),
       closed: stopped, ready: () => { if (!open) throw unavailable(); return runtime.ready(reservation); }, close });
+    retirements.set(bridge, (original, proof, child) => {
+      if (original !== reservation || !binding) throw unavailable();
+      binding.matches(bridge.env, proof, child); return read;
+    });
+    binding?.signal.addEventListener("abort", close, { once: true });
+    if (binding && !binding.active()) void close();
+    return bridge;
   } catch { await close(); throw unavailable(); }
 }
 

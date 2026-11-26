@@ -15,6 +15,7 @@ const unavailable = () => { throw new Error("Codex invocation unavailable"); };
 const settings = Object.freeze({ model_auto_compact_token_limit: 400000, model_post_turn_compact_threshold_percent: 0 });
 const admissions = new WeakMap();
 const terminations = new WeakMap();
+const reportBindings = new WeakMap();
 // Runner-owned cooperative worker boundary; these values are not native-event attestation.
 export const CODEX_WORKER_FEATURES = Object.freeze(["features.multi_agent=false", "features.multi_agent_v2=false"]);
 export const codexWorkerRestricted = env => Boolean(env.QC_CODEX_WORKER) ||
@@ -74,6 +75,11 @@ export function codexAdmissionOf(handle, input) {
 // This witnesses only this child's process/stdio events, never bridge or descendant quiescence.
 export function codexTerminationOf(handle, proof, child) {
   return terminations.get(handle)?.(proof, child) ?? unavailable();
+}
+
+// Internal launch binding/lifetime only; this cannot certify server or producer settlement.
+export function codexReportBindingOf(runtime, handle) {
+  return reportBindings.get(handle)?.(runtime) ?? unavailable();
 }
 
 // commonDirOf reads unbounded metadata; this boundary permits two regular files, 4096 bytes each.
@@ -156,6 +162,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
     if (!record) return;
     record.revocation = reason;
     records.delete(handle); admissions.delete(handle); clearTimeout(record.timer); record.cleanup?.();
+    record.revoked.abort();
     if (invocation && record.child) { record.child.stdin.destroy(); record.child.kill(); }
     record.reject(new Error("Codex invocation unavailable"));
   }; // Persistent closure belongs to codex-context.
@@ -223,7 +230,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       return record.proof;
     } catch { unavailable(); }
   }
-  return Object.freeze({
+  const runtime = Object.freeze({
     reserve(options) {
       if (!options || Object.keys(options).length > 3 || Object.keys(options).some(key => !["role", "workflowParentId", "parent"].includes(key))) unavailable();
       const { role, workflowParentId, parent } = options;
@@ -234,7 +241,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
       const credential = Object.freeze(Object.create(null));
       const handle = Object.freeze(Object.defineProperty({}, "hookCredential", { value: credential }));
       const record = { role, workflowParentId, ancestor: ancestor?.proof ?? null, credential, incarnation: randomUUID(),
-        revocation: null, processError: false, exit: null, close: null };
+        revocation: null, processError: false, exit: null, close: null, revoked: new AbortController() };
       const readTermination = Object.freeze(() => Object.freeze({ scope: "original-child-process-and-stdio",
         revocation: record.revocation, processError: record.processError, exit: record.exit, close: record.close }));
       // Weak identity lifetime and the existing 256-original-reservations bound; no resurrection.
@@ -242,6 +249,13 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
         if (!record.spawned || !record.originalProof || proof !== record.originalProof || child !== record.child) unavailable();
         return readTermination;
       });
+      const binding = Object.freeze({ signal: record.revoked.signal, active: Object.freeze(() => !record.revocation),
+        matches: Object.freeze((channel, proof, child) => {
+          codexTerminationOf(handle, proof, child);
+          if (!record.channel?.QC_CODEX_REPORT_PORT || channel.QC_CODEX_REPORT_PORT !== record.channel.QC_CODEX_REPORT_PORT ||
+              channel.QC_CODEX_REPORT_TOKEN !== record.channel.QC_CODEX_REPORT_TOKEN) unavailable();
+        }) });
+      reportBindings.set(handle, owner => { if (owner !== runtime) unavailable(); return binding; });
       record.ready = new Promise((resolve, reject) => { record.resolve = resolve; record.reject = reject; });
       record.ready.catch(() => {});
       record.timer = setTimeout(() => retire(handle), startupTimeoutMs); record.timer.unref();
@@ -255,6 +269,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
     },
     launch(handle, input, channel = {}) {
       const record = get(handle);
+      channel = Object.freeze({ ...channel }); // Validate, forward and retain the same original values.
       if (Object.keys(channel).some(key => !["QC_CODEX_REPORT_PORT", "QC_CODEX_REPORT_TOKEN"].includes(key)) ||
           Object.keys(channel).length && (!/^[1-9][0-9]{0,4}$/.test(channel.QC_CODEX_REPORT_PORT) ||
             Number(channel.QC_CODEX_REPORT_PORT) > 65535 || !/^[a-f0-9]{64}$/.test(channel.QC_CODEX_REPORT_TOKEN))) unavailable();
@@ -267,7 +282,7 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
         if (executablePin && checkPin(executable, executablePin) !== executableIdentity) unavailable();
         const child = spawnCommand(executablePin?.realpath ?? executable, args, { cwd: worktree,
           env: { ...(invocation?.env ?? (record.role === "leader" ? process.env : codexWorkerEnvironment(process.env, record.role))), ...channel }, stdio: ["pipe", "pipe", "pipe"] });
-        record.child = child;
+        record.child = child; record.channel = Object.freeze({ ...channel });
         let pending = "";
         const capture = chunk => {
           try {
@@ -356,4 +371,5 @@ export function createCodexRuntime({ worktree, executable, workflowId, config = 
     },
     terminal(handle) { get(handle); retire(handle, "terminal-request"); },
   });
+  return runtime;
 }

@@ -4,13 +4,14 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, symlinkSync, r
 import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { once, EventEmitter } from "node:events";
+import { once, EventEmitter, getEventListeners } from "node:events";
 import { PassThrough } from "node:stream";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { pinCodexNativeExecutable } from "./codex-native-executable.mjs";
 import { createCodexRuntime, createCodexInvocation } from "./codex-runtime.mjs";
 import * as runtimeModule from "./codex-runtime.mjs";
+import * as bridgeModule from "./codex-bridge.mjs";
 import { decideCodexContext } from "./codex-context.mjs";
 import { readCodexUsage } from "./codex-usage-source.mjs";
 
@@ -152,8 +153,8 @@ function fixture(t, options = {}) {
   const hook = { hook_event_name: "SessionStart", source: "startup", cwd: dir, session_id: "native-thread" };
   return { dir, runtime, reserve, hook };
 }
-async function start(t, f, reservation, session = "native-thread") {
-  const child = f.runtime.launch(reservation);
+async function start(t, f, reservation, session = "native-thread", channel = {}) {
+  const child = f.runtime.launch(reservation, undefined, channel);
   t.after(() => { child.stdin.end(); child.kill(); });
   child.output = new Promise((resolve, reject) => {
     let output = "";
@@ -195,6 +196,103 @@ test("startup fixture collects fragmented output through its completion delimite
     '{"type":"thread.started","thread_id":"native-thread"}\nexec\nmodel_auto_compact_token_limit=400000\n');
 });
 const supported = ["linux", "darwin"].includes(process.platform);
+async function channelFixture(t, options = {}, channel) {
+  const f = fixture(t), r = f.reserve();
+  const bridge = await bridgeModule.createCodexBridge({ runtime: f.runtime, reservation: r, ...options });
+  t.after(() => bridge.close());
+  const startup = { ...f.hook, transcript_path: null, model: "fixture", permission_mode: "default" };
+  if (!channel) writeFileSync(path.join(f.dir, "native"), `#!${process.execPath}
+process.stdin.once("data", async () => {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "native-thread" }));
+  const { reportCodexHook } = await import(${JSON.stringify(new URL("./codex-bridge.mjs", import.meta.url).href)});
+  await reportCodexHook(${JSON.stringify(startup)});
+  console.log("QC_FIXTURE_DONE");
+});
+process.stdin.resume();
+`, { mode: 0o700 });
+  const child = await start(t, f, r, "native-thread", channel ? channel(bridge) : bridge.env);
+  if (channel) await bridgeModule.reportCodexHook(startup, { env: bridge.env });
+  const proof = await f.runtime.ready(r);
+  return { ...f, r, bridge, child, proof };
+}
+const channelOf = f => bridgeModule.codexChannelRetirementOf(f.bridge, f.r, f.proof, f.child);
+test("closing the channel removes its original runtime revocation observer", { skip: !supported }, async t => {
+  const f = await channelFixture(t), binding = runtimeModule.codexReportBindingOf(f.runtime, f.r);
+  assert.equal(getEventListeners(binding.signal, "abort").length, 1);
+  await f.bridge.close();
+  assert.equal(getEventListeners(binding.signal, "abort").length, 0);
+  f.runtime.terminal(f.r);
+  assert.equal(channelOf(f)().state, "confirmed");
+});
+test("report retirement binds the genuine bridge to the original launched channel", { skip: !supported }, async t => {
+  const f = await channelFixture(t), foreign = await channelFixture(t);
+  const second = await bridgeModule.createCodexBridge({ runtime: f.runtime, reservation: f.r });
+  t.after(() => second.close());
+  const read = channelOf(f), initial = read();
+  assert.deepEqual(initial, { scope: "original-launched-report-channel", state: "open", serverClosed: false, routes: 0, operations: 0 });
+  assert.equal(channelOf(f), read); assert.equal(Object.isFrozen(read), true);
+  for (const [bridge, r, proof, child] of [[{ ...f.bridge }, f.r, f.proof, f.child],
+    [{ ...f.bridge, closed: Promise.resolve() }, f.r, f.proof, f.child], [second, f.r, f.proof, f.child],
+    [foreign.bridge, f.r, f.proof, f.child], [f.bridge, { ...f.r }, f.proof, f.child],
+    [f.bridge, foreign.r, f.proof, f.child], [f.bridge, f.r, { ...f.proof }, f.child],
+    [f.bridge, f.r, foreign.proof, f.child], [f.bridge, f.r, f.proof, foreign.child],
+    [f.bridge, f.r, f.proof.nativeThreadId, { pid: f.child.pid }]])
+    assert.throws(() => bridgeModule.codexChannelRetirementOf(bridge, r, proof, child), /unavailable/);
+  assert.throws(() => { initial.state = "confirmed"; }, TypeError);
+  const clone = structuredClone(initial); clone.state = "confirmed"; assert.deepEqual(read(), initial);
+  const closing = f.bridge.close(); assert.equal(read().state, "pending"); await closing;
+  assert.deepEqual(read(), { ...initial, state: "confirmed", serverClosed: true });
+  assert.equal(runtimeModule.codexTerminationOf(f.r, f.proof, f.child)().exit, null);
+  await assert.rejects(bridgeModule.reportCodexHook(f.hook, { env: f.bridge.env }), /unavailable/);
+  const closed = once(f.child, "close"); f.child.stdin.end(); await closed;
+  assert.equal(channelOf(f), read); assert.equal(read().state, "confirmed");
+  assert.throws(() => f.runtime.launch(f.r, undefined, f.bridge.env), /unavailable/);
+  assert.equal(JSON.stringify(read()).includes(f.bridge.env.QC_CODEX_REPORT_TOKEN), false);
+  assert.equal(JSON.stringify(read()).includes(f.bridge.env.QC_CODEX_REPORT_PORT), false);
+  for (const channel of [() => ({}), bridge => ({ ...bridge.env, QC_CODEX_REPORT_TOKEN: "0".repeat(64) }),
+    bridge => ({ ...bridge.env, QC_CODEX_REPORT_PORT: String(Number(bridge.env.QC_CODEX_REPORT_PORT) % 65535 + 1) })]) {
+    const wrong = await channelFixture(t, {}, channel); await wrong.bridge.close();
+    assert.throws(() => channelOf(wrong), /unavailable/);
+  }
+  let supplied;
+  const copied = await channelFixture(t, {}, bridge => supplied = { ...bridge.env });
+  supplied.QC_CODEX_REPORT_TOKEN = "0".repeat(64);
+  await copied.bridge.close(); assert.equal(channelOf(copied)().state, "confirmed");
+});
+test("a runtime facade cannot certify even a real child launched with its genuine bridge env", { skip: !supported }, async t => {
+  const f = fixture(t), r = f.reserve(), facade = Object.freeze({ ...f.runtime });
+  const bridge = await bridgeModule.createCodexBridge({ runtime: facade, reservation: r });
+  t.after(() => bridge.close());
+  const child = await start(t, f, r, "native-thread", bridge.env);
+  f.runtime.startup(r, r.hookCredential, f.hook);
+  const proof = await f.runtime.ready(r);
+  await bridge.close();
+  assert.throws(() => bridgeModule.codexChannelRetirementOf(bridge, r, proof, child), /unavailable/);
+});
+for (const mode of ["close", "abort", "deadline", "disconnect", "error", "revocation"]) test(`report retirement waits for actual Stop work after ${mode}`, { skip: !supported, timeout: 5000 }, async t => {
+  const entered = Promise.withResolvers(), work = Promise.withResolvers(), controller = new AbortController();
+  t.after(() => work.resolve());
+  const f = await channelFixture(t, { timeoutMs: mode === "deadline" ? 100 : 2000, signal: controller.signal,
+    onStop: () => { entered.resolve(); return work.promise; } });
+  const read = channelOf(f), client = new AbortController();
+  const input = { ...f.hook, hook_event_name: "Stop", stop_hook_active: false, turn_id: "turn", last_assistant_message: "done" };
+  const reply = assert.rejects(bridgeModule.reportCodexHook(input, { env: f.bridge.env, signal: client.signal }), /unavailable/);
+  await entered.promise; assert.equal(read().operations, 1); assert.equal(read().routes, 1);
+  await assert.rejects(bridgeModule.reportCodexHook(input, { env: f.bridge.env }), /unavailable/); // Busy cannot settle the original work.
+  assert.equal(read().operations, 1);
+  if (mode === "abort") controller.abort();
+  else if (mode === "disconnect") client.abort();
+  else if (mode === "revocation") f.runtime.terminal(f.r);
+  else if (mode !== "deadline") void f.bridge.close();
+  await f.bridge.closed; await reply;
+  assert.equal(read().serverClosed, true); assert.equal(read().state, "pending");
+  assert.equal(read().operations, 1); assert.equal(read().routes, 0);
+  await assert.rejects(bridgeModule.reportCodexHook(input, { env: f.bridge.env }), /unavailable/);
+  if (mode === "error") work.reject(new Error("producer failed after socket close")); else work.resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(read().operations, 0); assert.equal(read().state, "confirmed");
+  assert.equal(channelOf(f), read); assert.throws(() => f.bridge.ready(), /unavailable/);
+});
 async function terminationFixture(t, options = {}) {
   const f = fixture(t, options), fifo = path.join(f.dir, "stdio-release");
   assert.equal(spawnSync("mkfifo", [fifo]).status, 0);
@@ -533,7 +631,10 @@ test("deferred local header establishes a distinct root once, with immutable adm
   assert.equal(f.runtime.validate(r, hook), null);
 });
 for (const deferred of [true, false]) test(`original termination proof survives rollout discovery deferred=${deferred}`, { skip: !supported }, async t => {
-  const f = fixture(t), r = f.reserve(), child = await start(t, f, r);
+  const f = fixture(t), r = f.reserve();
+  const bridge = await bridgeModule.createCodexBridge({ runtime: f.runtime, reservation: r });
+  t.after(() => bridge.close());
+  const child = await start(t, f, r, "native-thread", bridge.env);
   mkdirSync(path.join(f.dir, "sessions"));
   const transcript = path.join(f.dir, "sessions", "selected.jsonl"), hook = { ...f.hook, transcript_path: transcript };
   const header = JSON.stringify({ type: "session_meta", ordinal: 0, timestamp: new Date().toISOString(),
@@ -549,12 +650,16 @@ for (const deferred of [true, false]) test(`original termination proof survives 
   else assert.strictEqual(enriched, original);
   const closed = once(child, "close");
   f.runtime.terminal(r);
-  child.stdin.end(); await closed;
+  child.stdin.end(); await closed; await bridge.closed;
   // First acquire the reader after enrichment, revocation, actual exit and close.
   const read = runtimeModule.codexTerminationOf(r, original, child);
   assert.deepEqual(read(), { scope: "original-child-process-and-stdio", revocation: "terminal-request",
     processError: false, exit: { code: 0, signal: null }, close: { code: 0, signal: null } });
   assert.equal(runtimeModule.codexTerminationOf(r, original, child), read);
+  const channel = bridgeModule.codexChannelRetirementOf(bridge, r, original, child);
+  assert.equal(channel().state, "confirmed");
+  assert.throws(() => bridgeModule.codexChannelRetirementOf(bridge, r, { ...original }, child), /unavailable/);
+  if (deferred) assert.throws(() => bridgeModule.codexChannelRetirementOf(bridge, r, enriched, child), /unavailable/);
   assert.throws(() => runtimeModule.codexTerminationOf(r, { ...original }, child), /unavailable/);
   assert.equal(f.runtime.validate(r, hook), null);
   assert.throws(() => f.runtime.launch(r), /unavailable/);
