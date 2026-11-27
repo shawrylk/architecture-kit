@@ -108,6 +108,12 @@ test("a file with no ESLint config is skipped, and the lint passes", (t) => {
   const result = qc();
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /lint skipped 1 file\(s\) with no ESLint config/);
+  mkdirSync(path.join(root, "nested"));
+  writeFileSync(path.join(root, "nested", "eslint.config.mjs"), 'export default [{ rules: { "no-var": "error" } }];\n');
+  writeFileSync(path.join(root, "nested", "file.mjs"), "var nested = 1;\nexport { nested };\n");
+  const nested = qc("nested/file.mjs");
+  assert.notEqual(nested.status, 0, "a config in a subfolder keeps its file linted");
+  assert.doesNotMatch(nested.stdout, /lint skipped/);
 });
 
 test("qc lint applies the baseline per file and rule up to the recorded count", (t) => {
