@@ -27,7 +27,7 @@ const POSTED_BEFORE_MS = 2 * 60_000;
 const POSTED_AFTER_MS = 60_000;
 const MARKER_TTL_MS = 10 * 60_000;
 const iso = (ms) => new Date(Math.floor(ms / 1000) * 1000).toISOString();
-const bodyText = (body) => (body ?? "").replace(/\r\n/g, "\n").trim();
+const bodyText = (body) => (body ?? "").split("\r").join("").trim();
 const itemUrl = /https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/(issues|pull)\/(\d+)/g;
 
 // GitHub links no reference inside code, so a hex colour such as `#128282` names no issue.
@@ -41,7 +41,7 @@ function references(body, repo, add, linked = false) {
   if (linked) {
     for (const match of body.matchAll(/(?<![\w/])#(\d+)\b/g)) add(repo, Number(match[1]));
   } else {
-    for (const match of body.matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\s+([^\r\n]*)/gi)) references(match[1], repo, add, true);
+    for (const match of body.matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\s+([^\n\r]*)/gi)) references(match[1], repo, add, true);
   }
 }
 
