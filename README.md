@@ -226,8 +226,9 @@ If a poll stops early, the next prompt continues with the following item, reposi
 API commands with a non-GitHub.com `--hostname` neither add watches nor acknowledge comments.
 It shows each truncated comment once and keeps it pending until you read it in full.
 It stops checking closed or merged items until a command or merge names them again.
-Merges wait until your session sees comments on the PR, the issues its body and commits reference, and the items a command linked to it.
-Comments your session posts with `gh issue comment` or `gh pr comment` never count as unseen, even when the output goes to `/dev/null`.
+Merges wait until your session sees comments on the PR, the issues its body, commits, or Development sidebar link, and the items a command linked to it.
+Comments your session posts with `gh issue comment` or `gh pr comment` do not count as unseen.
+When the output goes to `/dev/null`, the next read matches your gh login, the same body, and a creation time near the post.
 The merge check has 10 seconds; prompt checks have 3.5 seconds.
 Set `"commentWatch": false` in `qc.config.json` to disable the watch and merge gate.
 Use `github.configDirs` to map repository owners to gh configuration directories; `shawrylk` defaults to `~/.config/gh-personal`. If the mapped folder does not exist after home expansion, the watcher uses the default gh login.

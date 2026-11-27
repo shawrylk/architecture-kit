@@ -22,6 +22,10 @@ const MERGE_DEADLINE_MS = 10_000;
 const PAGE_SIZE = 100;
 // A later `since` read starts this far before the last check, so local clock skew cannot hide a comment.
 const SINCE_MARGIN_MS = 10 * 60_000;
+// A /dev/null comment matches only the viewer's comment created in this window around the post-tool hook.
+const POSTED_BEFORE_MS = 2 * 60_000;
+const POSTED_AFTER_MS = 60_000;
+const MARKER_TTL_MS = 10 * 60_000;
 const iso = (ms) => new Date(Math.floor(ms / 1000) * 1000).toISOString();
 const bodyText = (body) => (body ?? "").replace(/\r\n/g, "\n").trim();
 const itemUrl = /https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/(issues|pull)\/(\d+)/g;
@@ -37,7 +41,7 @@ function references(body, repo, add, linked = false) {
   if (linked) {
     for (const match of body.matchAll(/(?<![\w/])#(\d+)\b/g)) add(repo, Number(match[1]));
   } else {
-    for (const match of body.matchAll(/\b(?:fixes|refs)\s+([^\r\n]*)/gi)) references(match[1], repo, add, true);
+    for (const match of body.matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\s+([^\r\n]*)/gi)) references(match[1], repo, add, true);
   }
 }
 
@@ -131,11 +135,13 @@ function ledger(root, session) {
   const own = new Set();
   const reviews = new Map();
   const starts = new Map();
+  const viewers = new Map();
   let next = null;
   try {
     for (const line of readFileSync(file, "utf8").split("\n")) {
       try {
         const record = JSON.parse(line);
+        if (record.viewer?.owner && record.viewer.login) { viewers.set(record.viewer.owner, record.viewer.login); continue; }
         if (record.reviewStart) { starts.set(record.reviewStart, record.start); continue; }
         if (record.review) { reviews.set(record.review.key, record.review); continue; }
         if (record.reviewDone) { reviews.delete(record.reviewDone); continue; }
@@ -156,7 +162,7 @@ function ledger(root, session) {
       } catch { /* A torn record leaves earlier acknowledgments intact. */ }
     }
   } catch (error) { if (error.code !== "ENOENT") throw error; }
-  return { items, own, reviews, starts, next, append(record) {
+  return { items, own, reviews, starts, viewers, next, append(record) {
     mkdirSync(path.dirname(file), { recursive: true });
     appendFileSync(file, `\n${JSON.stringify(record)}\n`);
   } };
@@ -194,12 +200,13 @@ function github(root, config, deadline, run) {
 
 // Fragment: read one endpoint page by page from the item's cursor, and keep the progress of each full page.
 // Comment endpoints accept `since`; the reviews endpoint does not, so its cursor keeps the last page instead.
-async function readEndpoint(item, endpoint, gh, rows, progress) {
+async function readEndpoint(item, endpoint, gh, rows, progress, allReviews) {
   const full = `repos/${item.repo}/${endpoint}`;
   const since = !endpoint.endsWith("/reviews");
   const cursor = item.cursors?.get(endpoint) ?? {};
   const started = cursor.started ?? iso(Date.now());
-  let page = Number.isSafeInteger(cursor.page) && cursor.page > 0 ? cursor.page : 1;
+  // A merge reads every review page, so an edited review on an early page still counts.
+  let page = (since || !allReviews) && Number.isSafeInteger(cursor.page) && cursor.page > 0 ? cursor.page : 1;
   for (;;) {
     const query = [`per_page=${PAGE_SIZE}`, ...(since && cursor.since ? [`since=${cursor.since}`] : []), `page=${page}`].join("&");
     const result = await gh(item.repo, ["api", `${full}?${query}`]);
@@ -213,11 +220,11 @@ async function readEndpoint(item, endpoint, gh, rows, progress) {
   progress.set(endpoint, since ? { endpoint, since: iso(Date.parse(started) - SINCE_MARGIN_MS), page: 1 } : { endpoint, page });
 }
 
-async function comments(item, gh, progress) {
+async function comments(item, gh, progress, allReviews) {
   const endpoints = [`issues/${item.number}/comments`];
   if (item.kind === "pr") endpoints.push(`pulls/${item.number}/reviews`, `pulls/${item.number}/comments`);
   const rows = [];
-  const results = await Promise.allSettled(endpoints.map(endpoint => readEndpoint(item, endpoint, gh, rows, progress)));
+  const results = await Promise.allSettled(endpoints.map(endpoint => readEndpoint(item, endpoint, gh, rows, progress, allReviews)));
   return { rows, error: results.find(result => result.status === "rejected")?.reason };
 }
 
@@ -249,17 +256,49 @@ async function itemMetadata(repo, items, gh) {
 
 // Fragment: new rows since the item's cursor plus the pending rows not yet acknowledged.
 // A failed read keeps the rows it got as pending, saves its page progress, and throws.
-async function unseen(item, gh, state) {
+// Resource: the gh account login for a repository owner, cached in the ledger.
+async function viewerLogin(state, repo, gh) {
+  const owner = repo.split("/")[0].toLowerCase();
+  if (state.viewers.has(owner)) return state.viewers.get(owner);
+  try {
+    const login = (await gh(repo, ["api", "user"]))?.login;
+    if (typeof login !== "string" || !login) return null;
+    state.append({ viewer: { owner, login } });
+    state.viewers.set(owner, login);
+    return login;
+  } catch {
+    // Without the login no comment can match the marker, so the comment stays unseen; that is the safe side.
+    return null;
+  }
+}
+
+// Fragment: claim the session's /dev/null comment by viewer login, body, and the time nearest the post.
+async function claimComment(marker, item, rows, gh, state) {
+  const posted = Date.parse(marker.posted);
+  const candidates = Number.isNaN(posted) ? [] : rows.filter(row => row.endpoint.endsWith(`/issues/${item.number}/comments`) &&
+    !state.own.has(`${row.endpoint}:${row.id}`) && hash(bodyText(row.body)) === marker.bodyHash &&
+    Date.parse(row.created_at) >= posted - POSTED_BEFORE_MS && Date.parse(row.created_at) <= posted + POSTED_AFTER_MS);
+  const login = candidates.length ? await viewerLogin(state, item.repo, gh) : null;
+  const row = candidates.filter(row => login && row.user?.login?.toLowerCase() === login.toLowerCase())
+    .sort((a, b) => Math.abs(Date.parse(a.created_at) - posted) - Math.abs(Date.parse(b.created_at) - posted) || a.id - b.id)[0];
+  if (row) return row;
+  if (Number.isNaN(posted) || Date.now() > posted + MARKER_TTL_MS) {
+    state.append({ reviewDone: marker.key });
+    state.reviews.delete(marker.key);
+  }
+  return null;
+}
+
+async function unseen(item, gh, state, allReviews = false) {
   const progress = new Map();
-  const { rows, error } = await comments(item, gh, progress);
-  for (const marker of state.reviews.values()) {
+  const { rows, error } = await comments(item, gh, progress, allReviews);
+  for (const marker of [...state.reviews.values()]) {
     if (itemKey(marker) !== itemKey(item)) continue;
-    const comment = marker.kind === "comment";
-    const time = (row) => Date.parse(comment ? row.created_at : row.submitted_at);
-    const row = rows.filter(row => row.endpoint.endsWith(comment ? `/issues/${item.number}/comments` : "/reviews") &&
-      !state.own.has(`${row.endpoint}:${row.id}`) && time(row) >= Date.parse(marker.start) &&
-      (comment ? hash(bodyText(row.body)) === marker.bodyHash : marker.empty ? row.state === marker.state : hash(row.body ?? "") === marker.bodyHash))
-      .sort((a, b) => time(a) - time(b) || a.id - b.id)[0];
+    const row = marker.kind === "comment" ? await claimComment(marker, item, rows, gh, state)
+      : rows.filter(row => row.endpoint.endsWith("/reviews") &&
+        !state.own.has(`${row.endpoint}:${row.id}`) && Date.parse(row.submitted_at) >= Date.parse(marker.start) &&
+        (marker.empty ? row.state === marker.state : hash(row.body ?? "") === marker.bodyHash))
+        .sort((a, b) => Date.parse(a.submitted_at) - Date.parse(b.submitted_at) || a.id - b.id)[0];
     if (!row) continue;
     const key = `${row.endpoint}:${row.id}`;
     state.append({ own: [key] });
@@ -412,11 +451,10 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           const endpoint = `repos/${repo.toLowerCase()}/${resource}`;
           const keys = createdKeys(call.tool_response, endpoint);
           state.append({ own: keys });
-          // Output sent to /dev/null carries no URL, so the next read matches the session's comment by its exact body.
-          // The post-tool hook runs after GitHub stored the comment, so the match window starts before now.
+          // Output sent to /dev/null carries no URL, so the next read matches the session's comment by author, body, and time.
           const comment = bodyText(found.body);
           if (command.verb === "comment" && comment && !keys.some(key => key.startsWith(`${endpoint}:`) || /#issuecomment-\d+$/.test(key))) {
-            state.append({ review: { kind: "comment", repo: repo.toLowerCase(), number, start: iso(Date.now() - SINCE_MARGIN_MS),
+            state.append({ review: { kind: "comment", repo: repo.toLowerCase(), number, posted: new Date().toISOString(),
               bodyHash: hash(comment), key: randomUUID() } });
           }
           if (command.group === "pr" && command.verb === "review" && !keys.some(key => key.startsWith(`${endpoint}:`) || /(?:#pullrequestreview-\d+|\/pulls\/\d+\/reviews\/\d+)$/.test(key))) {
@@ -512,12 +550,17 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           selector = String(result.data?.node?.number ?? "");
         }
         if (!repo) throw new Error("repository");
-        const pr = await gh(repo, ["pr", "view", ...(selector ? [selector] : []), "-R", repo, "--json", "number,body,commits"]);
+        const pr = await gh(repo, ["pr", "view", ...(selector ? [selector] : []), "-R", repo, "--json", "number,body,commits,closingIssuesReferences"]);
         const targets = new Map();
         const key = itemKey({ repo, number: pr.number });
         const add = (repo, number, kind = "issue") => targets.set(itemKey({ repo, number }), { repo: repo.toLowerCase(), number, kind, prs: [key] });
         references(pr.body ?? "", repo, add, true);
         for (const commit of pr.commits ?? []) references(`${commit.messageHeadline ?? ""}\n${commit.messageBody ?? ""}`, repo, add);
+        for (const ref of pr.closingIssuesReferences ?? []) {
+          const owner = ref.repository?.owner?.login;
+          const name = ref.repository?.name;
+          add(owner && name ? `${owner}/${name}` : repo, ref.number);
+        }
         for (const item of state.items.values()) {
           if (item.prs.has(key)) add(item.repo, item.number, item.kind);
         }
@@ -526,7 +569,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           watch(state, target);
           const item = { ...state.items.get(itemKey(target)), ...target };
           try {
-            const { fresh, progress } = await unseen(item, gh, state);
+            const { fresh, progress } = await unseen(item, gh, state, true);
             recordPreview(state, item, fresh);
             saveCursors(state, item, progress);
             lines.push(...fresh.map(({ row }) => describe(item, row)));

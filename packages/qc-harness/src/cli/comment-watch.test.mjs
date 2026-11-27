@@ -145,7 +145,7 @@ function fixture(t) {
       if (data.fail || args.some(arg => arg.includes(data.failEndpoint ?? 'NEVER_MATCH'))) return { status: 1, stderr: data.failure ?? 'TOKEN_MUST_STAY_SECRET' };
       if (args[0] === 'api' && args[1].includes('/git/ref/heads/') && args.at(-2) === '--jq' && args.at(-1) === '.object.sha') return { status: 0, stdout: data.baseOid };
       let result;
-      if (args[0] === 'pr') result = { baseRefName: 'main', baseRefOid: data.baseOid, labels: [], number: 7, body: data.body ?? 'Fixes #4; https://github.com/ArentInc/other/issues/8', commits: data.commits ?? [] };
+      if (args[0] === 'pr') result = { baseRefName: 'main', baseRefOid: data.baseOid, labels: [], number: 7, body: data.body ?? 'Fixes #4; https://github.com/ArentInc/other/issues/8', commits: data.commits ?? [], closingIssuesReferences: data.closing ?? [] };
       else if (args[1] === 'user') result = { login: 'self' };
       else if (args[1] === 'graphql') {
         const query = args.find(arg => arg.startsWith('query=')) ?? '';
@@ -806,4 +806,80 @@ test("a merge names one new foreign comment and ignores watched issues the PR do
   assert.equal(denied?.permissionDecision, "deny");
   assert.match(denied.permissionDecisionReason, /@reviewer on shawrylk\/example#4 .*Please keep the permission assertions/);
   assert.doesNotMatch(denied.permissionDecisionReason, /Session triage note|Dashboard chatter/);
+});
+
+const issueNote = (id, number, body, login, at) => ({ id, endpoint: `issues/${number}/comments`, user: { login }, body,
+  html_url: `https://github.com/shawrylk/example/issues/${number}#issuecomment-${id}`, created_at: at, updated_at: at });
+
+test("a foreign comment with the same body as an own /dev/null comment still denies the merge", (t) => {
+  const f = fixture(t);
+  const earlier = new Date(Date.now() - 120_000).toISOString();
+  const now = new Date().toISOString();
+  f.rows.length = 0;
+  f.rows.push(issueNote(60, 4, "LGTM", "reviewer", earlier), issueNote(61, 4, "LGTM", "self", now));
+  f.update({ body: "Fixes #4" });
+  f.run("PostToolUse", 'gh issue comment 4 --body "LGTM" >/dev/null', "comment-watch.mjs", "session-a", { stdout: "", stderr: "" }, "Bash");
+  const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
+  assert.equal(denied?.permissionDecision, "deny");
+  assert.match(denied.permissionDecisionReason, /@reviewer on shawrylk\/example#4/);
+  assert.doesNotMatch(denied.permissionDecisionReason, /@self/);
+});
+
+test("an own comment marker from a failed post never claims a later foreign comment", (t) => {
+  const f = fixture(t);
+  f.rows.length = 0;
+  f.update({ body: "Fixes #4" });
+  f.run("PostToolUse", 'gh issue comment 4 --body "Done." >/dev/null 2>&1 || true', "comment-watch.mjs", "session-a", { stdout: "", stderr: "" }, "Bash");
+  f.rows.push(issueNote(70, 4, "Done.", "reviewer", new Date().toISOString()));
+  f.update({ body: "Fixes #4" });
+  const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
+  assert.equal(denied?.permissionDecision, "deny");
+  assert.match(denied.permissionDecisionReason, /@reviewer on shawrylk\/example#4 .*Done\./);
+});
+
+test("an own /dev/null comment stays unseen when the viewer login cannot be read", (t) => {
+  const f = fixture(t);
+  f.rows.length = 0;
+  f.rows.push(issueNote(75, 4, "Session note", "self", new Date().toISOString()));
+  f.update({ body: "Fixes #4", failEndpoint: "user" });
+  f.run("PostToolUse", 'gh issue comment 4 --body "Session note" >/dev/null', "comment-watch.mjs", "session-a", { stdout: "", stderr: "" }, "Bash");
+  const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
+  assert.equal(denied?.permissionDecision, "deny");
+  assert.match(denied.permissionDecisionReason, /Session note/);
+});
+
+for (const [link, extra] of [
+  ["a commit that says Closes #4", { commits: [{ messageHeadline: "fix: x", messageBody: "Closes #4" }] }],
+  ["a commit that says Resolved #4", { commits: [{ messageHeadline: "Resolved #4", messageBody: "" }] }],
+  ["the Development sidebar", { closing: [{ number: 4, repository: { name: "example", owner: { login: "shawrylk" } } }] }],
+]) test(`an issue linked by ${link} gates the merge`, (t) => {
+  const f = fixture(t);
+  f.rows.length = 0;
+  f.update({ body: "Summary only", ...extra });
+  f.run("PostToolUse", "gh issue view 4", "comment-watch.mjs", "session-a", { stdout: "", stderr: "" }, "Bash");
+  f.rows.push(issueNote(80, 4, "Requirement changed, do not merge", "reviewer", new Date().toISOString()));
+  f.update({ body: "Summary only", ...extra });
+  const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
+  assert.equal(denied?.permissionDecision, "deny");
+  assert.match(denied.permissionDecisionReason, /Requirement changed, do not merge/);
+});
+
+test("a merge reads every review page, so an edited review on page 1 still denies", (t) => {
+  const f = fixture(t);
+  f.rows.length = 0;
+  for (let id = 1; id <= 150; id++) f.rows.push({ id, endpoint: "pulls/7/reviews", user: { login: "reviewer" }, state: "COMMENTED",
+    body: `Review ${id}`, html_url: `https://github.com/shawrylk/example/pull/7#pullrequestreview-${id}`, submitted_at: "2026-01-01T00:00:00Z" });
+  f.update({ body: "Summary only" });
+  f.run("PostToolUse", "gh pr view 7");
+  assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Review 150\b/);
+  assert.equal(f.run("UserPromptSubmit"), null);
+  assert.notEqual(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput?.permissionDecision, "deny");
+  f.rows[0].body = "Edited: this breaks the import path";
+  f.update({ body: "Summary only" });
+  writeFileSync(f.calls, "");
+  const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
+  assert.equal(denied?.permissionDecision, "deny");
+  assert.match(denied.permissionDecisionReason, /Edited: this breaks the import path/);
+  const reviewReads = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start && /pulls\/7\/reviews/.test(call.args.at(-1)));
+  assert.match(reviewReads[0].args.at(-1), /page=1$/);
 });
