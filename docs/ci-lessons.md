@@ -77,3 +77,9 @@ Rule: To prove a read error on every OS, read a folder and match `EISDIR|EPERM|E
 Symptom: `spawnSync ... node.exe ETIMEDOUT` at `preset.test.mjs:216` on windows-latest.
 Cause: a flake. The pull request did not change the lint code, and the child process ran past its timeout on a loaded runner.
 Rule: none: a flake that passed on a rerun
+
+## a stalled Windows remote loses its transport process at the deadline
+
+Symptom: "the remote transport kept its socket open" at `commit-guard.test.mjs:439` on windows-latest, in preview run 45916222496 for the #311 comment-watch branch.
+Cause: a flake. The branch did not change `commit-guard.mjs` or its test, and the Linux preview of the same head passed.
+Rule: none: a flake that passed on a rerun

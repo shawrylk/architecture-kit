@@ -16,6 +16,18 @@ import { commandWords } from "./shell-command.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const itemKey = ({ repo, number }) => `${repo.toLowerCase()}#${number}`;
+// Prompt and Stop hooks have 5 seconds. The merge guard hook has 25 seconds and also spends up to 6 seconds on its lane.
+const POLL_DEADLINE_MS = 3500;
+const MERGE_DEADLINE_MS = 10_000;
+const PAGE_SIZE = 100;
+// A later `since` read starts this far before the last check, so local clock skew cannot hide a comment.
+const SINCE_MARGIN_MS = 10 * 60_000;
+// A /dev/null comment matches only the viewer's comment created in this window around the post-tool hook.
+const POSTED_BEFORE_MS = 2 * 60_000;
+const POSTED_AFTER_MS = 60_000;
+const MARKER_TTL_MS = 10 * 60_000;
+const iso = (ms) => new Date(Math.floor(ms / 1000) * 1000).toISOString();
+const bodyText = (body) => (body ?? "").split("\r").join("").trim();
 const itemUrl = /https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/(issues|pull)\/(\d+)/g;
 
 // GitHub links no reference inside code, so a hex colour such as `#128282` names no issue.
@@ -29,7 +41,7 @@ function references(body, repo, add, linked = false) {
   if (linked) {
     for (const match of body.matchAll(/(?<![\w/])#(\d+)\b/g)) add(repo, Number(match[1]));
   } else {
-    for (const match of body.matchAll(/\b(?:fixes|refs)\s+([^\r\n]*)/gi)) references(match[1], repo, add, true);
+    for (const match of body.matchAll(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs)\s+([^\n\r]*)/gi)) references(match[1], repo, add, true);
   }
 }
 
@@ -123,11 +135,13 @@ function ledger(root, session) {
   const own = new Set();
   const reviews = new Map();
   const starts = new Map();
+  const viewers = new Map();
   let next = null;
   try {
     for (const line of readFileSync(file, "utf8").split("\n")) {
       try {
         const record = JSON.parse(line);
+        if (record.viewer?.owner && record.viewer.login) { viewers.set(record.viewer.owner, record.viewer.login); continue; }
         if (record.reviewStart) { starts.set(record.reviewStart, record.start); continue; }
         if (record.review) { reviews.set(record.review.key, record.review); continue; }
         if (record.reviewDone) { reviews.delete(record.reviewDone); continue; }
@@ -135,8 +149,9 @@ function ledger(root, session) {
         if (record.next) { next = record.next; continue; }
         if (typeof record.retired === "string") { const item = items.get(record.retired); if (item) item.retired = true; continue; }
         const key = itemKey(record);
-        const item = items.get(key) ?? { repo: record.repo, number: record.number, seen: new Set(), shown: new Set(), pending: new Map(), prs: new Set() };
+        const item = items.get(key) ?? { repo: record.repo, number: record.number, seen: new Set(), shown: new Set(), pending: new Map(), prs: new Set(), cursors: new Map() };
         if (record.kind) item.kind = record.kind;
+        if (record.cursor?.endpoint) item.cursors.set(record.cursor.endpoint, record.cursor);
         if (record.retired === false) item.retired = false;
         if (record.updatedAt !== undefined) item.updatedAt = record.updatedAt;
         for (const pr of record.prs ?? []) item.prs.add(pr);
@@ -147,7 +162,7 @@ function ledger(root, session) {
       } catch { /* A torn record leaves earlier acknowledgments intact. */ }
     }
   } catch (error) { if (error.code !== "ENOENT") throw error; }
-  return { items, own, reviews, starts, next, append(record) {
+  return { items, own, reviews, starts, viewers, next, append(record) {
     mkdirSync(path.dirname(file), { recursive: true });
     appendFileSync(file, `\n${JSON.stringify(record)}\n`);
   } };
@@ -183,16 +198,49 @@ function github(root, config, deadline, run) {
   };
 }
 
-async function comments(item, gh) {
-  const prefix = `repos/${item.repo}`;
-  const list = async (endpoint) => {
-    const pages = await gh(item.repo, ["api", "--paginate", `${prefix}/${endpoint}?per_page=100`]);
-    if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error("pages");
-    return pages.flat().map(row => ({ ...row, endpoint: `${prefix}/${endpoint}` }));
-  };
+// Fragment: read one endpoint page by page from the item's cursor, and keep the progress of each full page.
+// Comment endpoints accept `since`; the reviews endpoint does not, so its cursor keeps the last page instead.
+async function readEndpoint(item, endpoint, gh, rows, progress, fromStart) {
+  const full = `repos/${item.repo}/${endpoint}`;
+  const since = !endpoint.endsWith("/reviews");
+  const cursor = item.cursors?.get(endpoint) ?? {};
+  const started = cursor.started ?? iso(Date.now());
+  // A merge reads from page 1: an edit moves a comment to an earlier `since` page, and reviews have no `since`.
+  let page = !fromStart && Number.isSafeInteger(cursor.page) && cursor.page > 0 ? cursor.page : 1;
+  for (;;) {
+    const query = [`per_page=${PAGE_SIZE}`, ...(since && cursor.since ? [`since=${cursor.since}`] : []), `page=${page}`].join("&");
+    const result = await gh(item.repo, ["api", `${full}?${query}`]);
+    if (!Array.isArray(result)) throw new Error("pages");
+    rows.push(...result.map(row => ({ ...row, endpoint: full })));
+    if (result.length < PAGE_SIZE) break;
+    // A resumed scan reads this full page again, so a deleted comment that shifts the pages hides no row.
+    progress.set(endpoint, { endpoint, since: cursor.since ?? null, page, started });
+    page++;
+  }
+  progress.set(endpoint, since ? { endpoint, since: iso(Date.parse(started) - SINCE_MARGIN_MS), page: 1 } : { endpoint, page });
+}
+
+async function comments(item, gh, progress, fromStart) {
   const endpoints = [`issues/${item.number}/comments`];
   if (item.kind === "pr") endpoints.push(`pulls/${item.number}/reviews`, `pulls/${item.number}/comments`);
-  return (await Promise.all(endpoints.map(list))).flat();
+  const rows = [];
+  const results = await Promise.allSettled(endpoints.map(endpoint => readEndpoint(item, endpoint, gh, rows, progress, fromStart)));
+  return { rows, error: results.find(result => result.status === "rejected")?.reason };
+}
+
+function saveCursors(state, item, progress) {
+  for (const cursor of progress.values()) state.append({ repo: item.repo, number: item.number, cursor });
+}
+
+const ownRow = (state, row) => state.own.has(row.html_url) || state.own.has(row.url) || state.own.has(`${row.endpoint}:${row.id}`);
+const previewOf = (row) => ({ id: row.id, url: row.url, html_url: row.html_url, endpoint: row.endpoint, user: { login: row.user?.login },
+  state: row.state, body: (row.body ?? "").slice(0, 700), truncated: true });
+
+// Fragment: pending rows the session has not acknowledged; a legacy record without a preview still names its comment.
+function pendingRows(item, all) {
+  return [...(item.pending?.values() ?? [])].filter(pending => !item.seen?.has(pending.stamp) && (all || pending.row))
+    .map(pending => ({ stamp: pending.stamp, row: pending.row ?? pending.preview ??
+      { id: pending.id, url: pending.url, html_url: pending.url, endpoint: pending.endpoint, body: "", truncated: true } }));
 }
 
 // Fragment: ask for every watched item's metadata in one request per repository.
@@ -206,14 +254,51 @@ async function itemMetadata(repo, items, gh) {
   return result.data.repository;
 }
 
-async function unseen(item, gh, state) {
-  const rows = await comments(item, gh);
-  for (const marker of state.reviews.values()) {
+// Fragment: new rows since the item's cursor plus the pending rows not yet acknowledged.
+// A failed read keeps the rows it got as pending, saves its page progress, and throws.
+// Resource: the gh account login for a repository owner, cached in the ledger.
+async function viewerLogin(state, repo, gh) {
+  const owner = repo.split("/")[0].toLowerCase();
+  if (state.viewers.has(owner)) return state.viewers.get(owner);
+  try {
+    const login = (await gh(repo, ["api", "user"]))?.login;
+    if (typeof login !== "string" || !login) return null;
+    state.append({ viewer: { owner, login } });
+    state.viewers.set(owner, login);
+    return login;
+  } catch {
+    // Without the login no comment can match the marker, so the comment stays unseen; that is the safe side.
+    return null;
+  }
+}
+
+// Fragment: claim the session's /dev/null comment by viewer login, body, and the time nearest the post.
+async function claimComment(marker, item, rows, gh, state) {
+  const posted = Date.parse(marker.posted);
+  const candidates = Number.isNaN(posted) ? [] : rows.filter(row => row.endpoint.endsWith(`/issues/${item.number}/comments`) &&
+    !state.own.has(`${row.endpoint}:${row.id}`) && hash(bodyText(row.body)) === marker.bodyHash &&
+    Date.parse(row.created_at) >= posted - POSTED_BEFORE_MS && Date.parse(row.created_at) <= posted + POSTED_AFTER_MS);
+  const login = candidates.length ? await viewerLogin(state, item.repo, gh) : null;
+  const row = candidates.filter(row => login && row.user?.login?.toLowerCase() === login.toLowerCase())
+    .sort((a, b) => Math.abs(Date.parse(a.created_at) - posted) - Math.abs(Date.parse(b.created_at) - posted) || a.id - b.id)[0];
+  if (row) return row;
+  if (Number.isNaN(posted) || Date.now() > posted + MARKER_TTL_MS) {
+    state.append({ reviewDone: marker.key });
+    state.reviews.delete(marker.key);
+  }
+  return null;
+}
+
+async function unseen(item, gh, state, fromStart = false) {
+  const progress = new Map();
+  const { rows, error } = await comments(item, gh, progress, fromStart);
+  for (const marker of [...state.reviews.values()]) {
     if (itemKey(marker) !== itemKey(item)) continue;
-    const row = rows.filter(row => row.endpoint.endsWith("/reviews") &&
-      !state.own.has(`${row.endpoint}:${row.id}`) && Date.parse(row.submitted_at) >= Date.parse(marker.start) &&
-      (marker.empty ? row.state === marker.state : hash(row.body ?? "") === marker.bodyHash))
-      .sort((a, b) => Date.parse(a.submitted_at) - Date.parse(b.submitted_at) || a.id - b.id)[0];
+    const row = marker.kind === "comment" ? await claimComment(marker, item, rows, gh, state)
+      : rows.filter(row => row.endpoint.endsWith("/reviews") &&
+        !state.own.has(`${row.endpoint}:${row.id}`) && Date.parse(row.submitted_at) >= Date.parse(marker.start) &&
+        (marker.empty ? row.state === marker.state : hash(row.body ?? "") === marker.bodyHash))
+        .sort((a, b) => Date.parse(a.submitted_at) - Date.parse(b.submitted_at) || a.id - b.id)[0];
     if (!row) continue;
     const key = `${row.endpoint}:${row.id}`;
     state.append({ own: [key] });
@@ -221,13 +306,23 @@ async function unseen(item, gh, state) {
     state.append({ reviewDone: marker.key });
     state.reviews.delete(marker.key);
   }
-  return rows.filter((row) => !state.own.has(row.html_url) && !state.own.has(row.url) && !state.own.has(`${row.endpoint}:${row.id}`) && (row.body?.trim() || row.state))
+  const fresh = new Map(rows.filter((row) => !ownRow(state, row) && (row.body?.trim() || row.state))
     .map((row) => ({ row, stamp: hash(JSON.stringify([row.html_url, row.id, row.updated_at ?? row.submitted_at ?? row.created_at, row.body, row.state])) }))
-    .filter(({ stamp }) => !item.seen?.has(stamp));
+    .filter(({ stamp }) => !item.seen?.has(stamp)).map(entry => [entry.stamp, entry]));
+  const read = [...fresh.values()];
+  for (const entry of pendingRows(item, true)) if (!fresh.has(entry.stamp) && !ownRow(state, entry.row)) fresh.set(entry.stamp, entry);
+  if (error) {
+    const kept = read.filter(({ stamp }) => !item.pending?.has(stamp))
+      .map(({ row, stamp }) => ({ stamp, id: row.id, endpoint: row.endpoint, url: row.url, ...(truncated(row) ? { preview: previewOf(row) } : { row }) }));
+    if (kept.length) state.append({ repo: item.repo, number: item.number, pending: kept });
+    saveCursors(state, item, progress);
+    throw error;
+  }
+  return { fresh: [...fresh.values()], progress };
 }
 
 const bodyOf = (row) => [row.state, row.body].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-const truncated = (row) => bodyOf(row).length > 700;
+const truncated = (row) => row.truncated === true || bodyOf(row).length > 700;
 const describe = (item, row) => `@${row.user?.login ?? "unknown"} on ${itemKey(item)} ${row.html_url}: ${bodyOf(row).slice(0, 700)}${truncated(row) ? ` [truncated; read in full: gh api ${row.endpoint} --paginate]` : ""}`;
 const context = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 
@@ -236,7 +331,7 @@ function recordPreview(state, item, fresh, acknowledge = false) {
   const seen = acknowledge ? fresh.filter(({ row }) => !truncated(row)).map(({ stamp }) => stamp) : [];
   const shown = fresh.filter(({ row }) => truncated(row)).map(({ stamp }) => stamp);
   const pending = fresh.filter(({ row }) => truncated(row) || !acknowledge)
-    .map(({ row, stamp }) => ({ stamp, id: row.id, endpoint: row.endpoint, url: row.url, ...(!truncated(row) ? { row } : {}) }));
+    .map(({ row, stamp }) => ({ stamp, id: row.id, endpoint: row.endpoint, url: row.url, ...(!truncated(row) ? { row } : { preview: previewOf(row) }) }));
   if (seen.length || pending.length) state.append({ repo: item.repo, number: item.number, seen, shown, pending });
 }
 
@@ -318,7 +413,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
     if (config.commentWatch === false) return null;
     const state = ledger(root, call.session_id);
     if (!state) return null;
-    const deadline = Date.now() + 3500;
+    const deadline = Date.now() + (event === "PreToolUse" ? MERGE_DEADLINE_MS : POLL_DEADLINE_MS);
     const gh = github(root, config, deadline, run);
     if (event === "PostToolUse") {
       const parse = PARSERS[call.tool_name];
@@ -326,7 +421,8 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
       const origin = originOf(root, 1000);
       if (call.tool_response?.is_error || call.tool_response?.exit_code > 0) return null;
       const watched = watchedItems(call, origin, parse);
-      const prs = [...state.items.values(), ...watched].filter(item => item.kind === "pr");
+      // Only a PR named in the same command links an item; a later merge reads the PR body and commits for the rest.
+      const prs = watched.filter(item => item.kind === "pr");
       for (const item of watched) watch(state, { ...item, prs: prs.filter(pr => pr.repo === item.repo).map(itemKey) });
       for (const { words, env } of ghCalls(call.tool_input?.command ?? "", parse)) {
         const command = { ...ghCommand(words), env };
@@ -355,6 +451,12 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           const endpoint = `repos/${repo.toLowerCase()}/${resource}`;
           const keys = createdKeys(call.tool_response, endpoint);
           state.append({ own: keys });
+          // Output sent to /dev/null carries no URL, so the next read matches the session's comment by author, body, and time.
+          const comment = bodyText(found.body);
+          if (command.verb === "comment" && comment && !keys.some(key => key.startsWith(`${endpoint}:`) || /#issuecomment-\d+$/.test(key))) {
+            state.append({ review: { kind: "comment", repo: repo.toLowerCase(), number, posted: new Date().toISOString(),
+              bodyHash: hash(comment), key: randomUUID() } });
+          }
           if (command.group === "pr" && command.verb === "review" && !keys.some(key => key.startsWith(`${endpoint}:`) || /(?:#pullrequestreview-\d+|\/pulls\/\d+\/reviews\/\d+)$/.test(key))) {
             const body = found.body.replace(/^\n/, "");
             const start = state.starts.get(hash(call.tool_input.command)) ?? new Date(Math.floor(Date.now() / 1000) * 1000).toISOString();
@@ -410,10 +512,10 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           if (!info || !["OPEN", "CLOSED", "MERGED"].includes(info.state) || typeof info.updatedAt !== "string" || !info.updatedAt) throw new Error("response");
           if (info.__typename === "PullRequest") item.kind = "pr";
           const changed = info.updatedAt !== item.updatedAt;
-          const fresh = changed ? await unseen(item, gh, state)
-            : [...item.pending.values()].filter(pending => pending.row && !item.seen.has(pending.stamp)).map(({ row, stamp }) => ({ row, stamp }));
+          const { fresh, progress } = changed ? await unseen(item, gh, state) : { fresh: pendingRows(item, false), progress: new Map() };
           lines.push(...fresh.filter(({ stamp }) => !item.shown.has(stamp)).map(({ row }) => describe(item, row)));
           recordPreview(state, item, fresh, event === "UserPromptSubmit");
+          saveCursors(state, item, progress);
           if (changed) state.append({ repo: item.repo, number: item.number, kind: item.kind, updatedAt: info.updatedAt });
           if (["CLOSED", "MERGED"].includes(info.state)) state.append({ retired: itemKey(item) });
         } catch (error) {
@@ -448,22 +550,28 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           selector = String(result.data?.node?.number ?? "");
         }
         if (!repo) throw new Error("repository");
-        const pr = await gh(repo, ["pr", "view", ...(selector ? [selector] : []), "-R", repo, "--json", "number,body,commits"]);
+        const pr = await gh(repo, ["pr", "view", ...(selector ? [selector] : []), "-R", repo, "--json", "number,body,commits,closingIssuesReferences"]);
         const targets = new Map();
         const key = itemKey({ repo, number: pr.number });
         const add = (repo, number, kind = "issue") => targets.set(itemKey({ repo, number }), { repo: repo.toLowerCase(), number, kind, prs: [key] });
         references(pr.body ?? "", repo, add, true);
         for (const commit of pr.commits ?? []) references(`${commit.messageHeadline ?? ""}\n${commit.messageBody ?? ""}`, repo, add);
+        for (const ref of pr.closingIssuesReferences ?? []) {
+          const owner = ref.repository?.owner?.login;
+          const name = ref.repository?.name;
+          add(owner && name ? `${owner}/${name}` : repo, ref.number);
+        }
         for (const item of state.items.values()) {
-          if (item.prs.has(key) || (item.kind !== "pr" && !item.prs.size && item.repo === repo.toLowerCase())) add(item.repo, item.number, item.kind);
+          if (item.prs.has(key)) add(item.repo, item.number, item.kind);
         }
         add(repo, pr.number, "pr");
         await Promise.all([...targets.values()].map(async target => {
           watch(state, target);
           const item = { ...state.items.get(itemKey(target)), ...target };
           try {
-            const fresh = await unseen(item, gh, state);
+            const { fresh, progress } = await unseen(item, gh, state, true);
             recordPreview(state, item, fresh);
+            saveCursors(state, item, progress);
             lines.push(...fresh.map(({ row }) => describe(item, row)));
           }
           catch { failed = true; lines.push(`GitHub comments for ${itemKey(target)} could not be checked.`); }
