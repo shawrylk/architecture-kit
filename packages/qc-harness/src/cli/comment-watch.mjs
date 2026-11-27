@@ -200,13 +200,13 @@ function github(root, config, deadline, run) {
 
 // Fragment: read one endpoint page by page from the item's cursor, and keep the progress of each full page.
 // Comment endpoints accept `since`; the reviews endpoint does not, so its cursor keeps the last page instead.
-async function readEndpoint(item, endpoint, gh, rows, progress, allReviews) {
+async function readEndpoint(item, endpoint, gh, rows, progress, fromStart) {
   const full = `repos/${item.repo}/${endpoint}`;
   const since = !endpoint.endsWith("/reviews");
   const cursor = item.cursors?.get(endpoint) ?? {};
   const started = cursor.started ?? iso(Date.now());
-  // A merge reads every review page, so an edited review on an early page still counts.
-  let page = (since || !allReviews) && Number.isSafeInteger(cursor.page) && cursor.page > 0 ? cursor.page : 1;
+  // A merge reads from page 1: an edit moves a comment to an earlier `since` page, and reviews have no `since`.
+  let page = !fromStart && Number.isSafeInteger(cursor.page) && cursor.page > 0 ? cursor.page : 1;
   for (;;) {
     const query = [`per_page=${PAGE_SIZE}`, ...(since && cursor.since ? [`since=${cursor.since}`] : []), `page=${page}`].join("&");
     const result = await gh(item.repo, ["api", `${full}?${query}`]);
@@ -220,11 +220,11 @@ async function readEndpoint(item, endpoint, gh, rows, progress, allReviews) {
   progress.set(endpoint, since ? { endpoint, since: iso(Date.parse(started) - SINCE_MARGIN_MS), page: 1 } : { endpoint, page });
 }
 
-async function comments(item, gh, progress, allReviews) {
+async function comments(item, gh, progress, fromStart) {
   const endpoints = [`issues/${item.number}/comments`];
   if (item.kind === "pr") endpoints.push(`pulls/${item.number}/reviews`, `pulls/${item.number}/comments`);
   const rows = [];
-  const results = await Promise.allSettled(endpoints.map(endpoint => readEndpoint(item, endpoint, gh, rows, progress, allReviews)));
+  const results = await Promise.allSettled(endpoints.map(endpoint => readEndpoint(item, endpoint, gh, rows, progress, fromStart)));
   return { rows, error: results.find(result => result.status === "rejected")?.reason };
 }
 
@@ -289,9 +289,9 @@ async function claimComment(marker, item, rows, gh, state) {
   return null;
 }
 
-async function unseen(item, gh, state, allReviews = false) {
+async function unseen(item, gh, state, fromStart = false) {
   const progress = new Map();
-  const { rows, error } = await comments(item, gh, progress, allReviews);
+  const { rows, error } = await comments(item, gh, progress, fromStart);
   for (const marker of [...state.reviews.values()]) {
     if (itemKey(marker) !== itemKey(item)) continue;
     const row = marker.kind === "comment" ? await claimComment(marker, item, rows, gh, state)

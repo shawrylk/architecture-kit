@@ -883,3 +883,26 @@ test("a merge reads every review page, so an edited review on page 1 still denie
   const reviewReads = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start && /pulls\/7\/reviews/.test(call.args.at(-1)));
   assert.match(reviewReads[0].args.at(-1), /page=1$/);
 });
+
+test("a merge rereads a partial comment scan from page 1, so an edit on an early page still denies", (t) => {
+  const f = fixture(t);
+  f.rows.length = 0;
+  for (let id = 1; id <= 300; id++) f.rows.push(issueNote(id, 4, id === 1 ? "LGTM" : `Note ${id}`, "reviewer", "2026-01-01T00:00:00Z"));
+  f.update({ body: "Fixes #4" });
+  // The ledger of a first scan that stopped at page 3, after a prompt acknowledged every row it had shown.
+  const stamp = (row) => createHash("sha256").update(JSON.stringify([row.html_url, row.id, row.updated_at, row.body, row.state])).digest("hex");
+  const dir = path.join(f.cwd, ".git", "qc");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, `comment-watch-${createHash("sha256").update("session-a").digest("hex")}.jsonl`), [
+    { repo: "shawrylk/example", number: 4, kind: "issue", prs: ["shawrylk/example#7"], seen: f.rows.map(stamp) },
+    { repo: "shawrylk/example", number: 4, cursor: { endpoint: "issues/4/comments", since: null, page: 3, started: new Date(Date.now() - 60_000).toISOString() } },
+  ].map(record => JSON.stringify(record)).join("\n") + "\n");
+  Object.assign(f.rows[0], { body: "blocker, do not merge", updated_at: new Date().toISOString() });
+  f.update({ body: "Fixes #4" });
+  writeFileSync(f.calls, "");
+  const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
+  assert.equal(denied?.permissionDecision, "deny");
+  assert.match(denied.permissionDecisionReason, /@reviewer on shawrylk\/example#4 .*blocker, do not merge/);
+  const reads = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start && /issues\/4\/comments/.test(call.args.at(-1)));
+  assert.match(reads[0].args.at(-1), /page=1$/);
+});
