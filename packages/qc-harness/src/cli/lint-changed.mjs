@@ -10,6 +10,15 @@ import { pathToFileURL } from "node:url";
 import { gitOut, gitStatusWithin } from "./git-read.mjs";
 
 const LINTABLE = /\.(?:[cm]?[jt]sx?)$/;
+const CONFIG_NAMES = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cjs", "eslint.config.ts", "eslint.config.mts", "eslint.config.cts"];
+
+/** True when a flat config sits in the folder of `file` or in any folder above it. */
+function configAbove(file) {
+  for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
+    if (CONFIG_NAMES.some((name) => existsSync(path.join(dir, name)))) return true;
+    if (path.dirname(dir) === dir) return false;
+  }
+}
 const DIFF_TIMEOUT_MS = 30_000;
 
 /**
@@ -174,13 +183,21 @@ export async function runLintChanged(config, args) {
   const eslint = new ESLint({ cwd: root });
   const files = [];
   const applicableBaseline = new Map();
+  let unconfigured = 0;
   for (const file of new Set([...changed.keys(), ...Object.keys(baseline)])) {
     if (!LINTABLE.test(file) || (wanted.size > 0 && !wanted.has(file))) continue;
+    // ESLint can arrive as a dependency of another package, so an install does not mean the repository uses it.
+    // ESLint 9 looks up the config from cwd only, so a config in a subfolder keeps the file and its old error.
+    if (typeof eslint.findConfigFile === "function" && !(await eslint.findConfigFile(path.join(root, file))) && !configAbove(path.join(root, file))) {
+      unconfigured++;
+      continue;
+    }
     if (await eslint.isPathIgnored(path.join(root, file))) continue;
     if (Object.hasOwn(baseline, file)) applicableBaseline.set(file, baseline[file]);
     if (!options.staged && !existsSync(path.join(root, file))) continue;
     files.push(file);
   }
+  if (unconfigured > 0) console.log(`lint skipped ${unconfigured} file(s) with no ESLint config`);
   const results = [];
   for (const file of files) {
     const filePath = path.join(root, file);
