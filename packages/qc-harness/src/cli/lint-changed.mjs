@@ -174,13 +174,20 @@ export async function runLintChanged(config, args) {
   const eslint = new ESLint({ cwd: root });
   const files = [];
   const applicableBaseline = new Map();
+  let unconfigured = 0;
   for (const file of new Set([...changed.keys(), ...Object.keys(baseline)])) {
     if (!LINTABLE.test(file) || (wanted.size > 0 && !wanted.has(file))) continue;
+    // ESLint can arrive as a dependency of another package, so an install does not mean the repository uses it.
+    if (typeof eslint.findConfigFile === "function" && !(await eslint.findConfigFile(path.join(root, file)))) {
+      unconfigured++;
+      continue;
+    }
     if (await eslint.isPathIgnored(path.join(root, file))) continue;
     if (Object.hasOwn(baseline, file)) applicableBaseline.set(file, baseline[file]);
     if (!options.staged && !existsSync(path.join(root, file))) continue;
     files.push(file);
   }
+  if (unconfigured > 0) console.log(`lint skipped ${unconfigured} file(s) with no ESLint config`);
   const results = [];
   for (const file of files) {
     const filePath = path.join(root, file);
