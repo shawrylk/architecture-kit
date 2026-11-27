@@ -58,7 +58,7 @@ test("throwaway-db falls back to shell-free npx on POSIX and keeps the command s
   const argv = ["--port", "auto", "--", "node", "script with spaces.mjs", "a&b"];
   await runTool("throwaway-db", argv, options);
   assert.deepEqual(calls, [["npx", ["--yes", "-p",
-    "github:shawrylk/qc-throwaway-db#042fb52425d92ad5f656aa2c18884350ebe4dc08", "qc-throwaway-db", ...argv,
+    "github:shawrylk/qc-throwaway-db#44c1a1189de893d1dbd181bbc2bea95cc6898dd3", "qc-throwaway-db", ...argv,
   ], { stdio: "inherit", env: { PATH: "/bin", CUSTOM: "kept", npm_config_allow_git: "all" } }]]);
 });
 

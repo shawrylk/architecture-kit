@@ -6,7 +6,7 @@ import path from "node:path";
 const TOOLS = {
   stack: { repo: "shawrylk/qc-stack", sha: "e34c270d92e3995b2e512f6eb690ea3cb0bc4699", bin: "qc-stack" },
   screens: { repo: "shawrylk/qc-screens", sha: "886c303508f4406f397b2221b470115c3cb89589", bin: "qc-screens" },
-  "throwaway-db": { repo: "shawrylk/qc-throwaway-db", sha: "042fb52425d92ad5f656aa2c18884350ebe4dc08", bin: "qc-throwaway-db" },
+  "throwaway-db": { repo: "shawrylk/qc-throwaway-db", sha: "44c1a1189de893d1dbd181bbc2bea95cc6898dd3", bin: "qc-throwaway-db" },
 };
 
 /** Runs a pinned tool without passing its arguments through a shell. */
