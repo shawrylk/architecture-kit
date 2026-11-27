@@ -4,7 +4,7 @@
 
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gitOut, gitStatusWithin } from "./git-read.mjs";
@@ -15,7 +15,7 @@ const CONFIG_NAMES = ["eslint.config.js", "eslint.config.mjs", "eslint.config.cj
 /** True when a flat config sits in the folder of `file` or in any folder above it. */
 function configAbove(file) {
   for (let dir = path.dirname(file); ; dir = path.dirname(dir)) {
-    if (CONFIG_NAMES.some((name) => existsSync(path.join(dir, name)))) return true;
+    if (CONFIG_NAMES.some((name) => statSync(path.join(dir, name), { throwIfNoEntry: false })?.isFile())) return true;
     if (path.dirname(dir) === dir) return false;
   }
 }

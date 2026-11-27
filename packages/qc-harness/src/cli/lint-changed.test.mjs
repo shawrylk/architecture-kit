@@ -116,6 +116,16 @@ test("a file with no ESLint config is skipped, and the lint passes", (t) => {
   assert.doesNotMatch(nested.stdout, /lint skipped/);
 });
 
+test("a directory named eslint.config.mjs above a changed file is skipped", (t) => {
+  const { root, qc } = repo(t);
+  rmSync(path.join(root, "eslint.config.mjs"));
+  mkdirSync(path.join(root, "eslint.config.mjs"));
+  writeFileSync(path.join(root, "src", "new.mjs"), "var fresh = 1;\nexport { fresh };\n");
+  const result = qc();
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /lint skipped 1 file\(s\) with no ESLint config/);
+});
+
 test("qc lint applies the baseline per file and rule up to the recorded count", (t) => {
   const { root, qc } = repo(t);
   writeFileSync(path.join(root, "eslint-suppressions.json"), JSON.stringify({ "src/old.mjs": { "no-var": { count: 1 } } }));
