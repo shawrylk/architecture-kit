@@ -197,6 +197,8 @@ The workflow must accept `workflow_dispatch` with the `os` input.
 
 ### Check platform readiness
 
+The pull request guard is off by default. Set `ready.enforce` to `true` to turn it on.
+When it is on, `gh pr create` needs `--draft`, and `gh pr ready` needs passing platform legs for the head.
 `ready.platforms` defaults to `["linux"]`; this repository sets `["linux", "windows"]`.
 `qc ready-check` checks passing legs for the current head against the added lines of `git diff <check.base>...HEAD`.
 One passing leg suffices when the diff has no platform risk.

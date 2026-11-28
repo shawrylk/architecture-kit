@@ -11,7 +11,8 @@ export const CONFIG_FILE = "qc.config.json";
 export const defaults = {
   commentWatch: true,
   github: { configDirs: { shawrylk: "~/.config/gh-personal" } },
-  ready: { platforms: ["linux"] },
+  // The PR guard (draft on create, platform legs before ready) runs only when a repository sets enforce.
+  ready: { enforce: false, platforms: ["linux"] },
   checkpoint: { maxAgeMinutes: 30 },
   post: { aiLabel: true },
   ci: { requiredChecks: [] },
@@ -801,6 +802,7 @@ export function load(root = process.cwd()) {
       config.ready.platforms.some((os) => !["linux", "windows", "darwin"].includes(os)) || new Set(config.ready.platforms).size !== config.ready.platforms.length) {
     throw new TypeError("ready.platforms must be a non-empty array of distinct linux, windows and darwin platforms");
   }
+  if (typeof config.ready.enforce !== "boolean") throw new TypeError("ready.enforce must be a boolean");
   if (!isPlainObject(config.check)) throw new TypeError("check must be an object");
   const { related, sincePush, e2e, commands, base } = config.check;
   const command = (value) => typeof value === "string" && value.trim().length > 0;

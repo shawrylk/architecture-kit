@@ -8,6 +8,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { branchAt, originOf, repoOfSpelling } from "./git-read.mjs";
 import { runGh } from "./gh-run.mjs";
 import { readyProblems } from "./legs.mjs";
+import { load } from "../config.mjs";
 import { cdTarget, commandEnv, commandWords, segmentsOf } from "./shell-command.mjs";
 
 const deny = (reason) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
@@ -106,6 +107,7 @@ export function decidePr(call, { gh = runGh, problems = readyProblems } = {}) {
       const options = { ...optionsOf(words.filter((_, i) => i !== group && i !== verbAt)), verb: words[verbAt] };
       const root = checkoutRootOf(cwd);
       if (!root || !existsSync(path.join(root, "qc.config.json"))) continue;
+      if (!load(root).ready.enforce) continue;
       const origin = originOf(root);
       if (!origin) continue;
       const ghEnv = { ...settings(process.env), ...env, ...settings(commandEnv(segment)) };

@@ -15,7 +15,7 @@ function workspace(t) {
   git("init", "-q");
   git("checkout", "-qb", "feat/206-pr-guard");
   git("remote", "add", "origin", "https://github.com/o/r.git");
-  writeFileSync(path.join(cwd, "qc.config.json"), "{}");
+  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ ready: { enforce: true } }));
   return cwd;
 }
 const call = (cwd, command, extra = {}) => ({ cwd, tool_name: "Bash", hook_event_name: "PreToolUse", tool_input: { command }, ...extra });
@@ -27,6 +27,14 @@ test("create requires the controller and a draft", (t) => {
   assert.match(reason(decidePr(call(cwd, "gh pr create --draft", { agent_id: "a" }), { gh: emptyGh })), /sub-branch.*qc integrate/);
   assert.match(reason(decidePr(call(cwd, "gh pr create"), { gh: emptyGh })), /--draft/);
   assert.equal(decidePr(call(cwd, "gh pr create --draft"), { gh: emptyGh }), null);
+});
+
+test("the guard is off unless the repository sets ready.enforce", (t) => {
+  const cwd = workspace(t);
+  writeFileSync(path.join(cwd, "qc.config.json"), "{}");
+  for (const command of ["gh pr create", "gh pr ready 7"]) {
+    assert.equal(decidePr(call(cwd, command), { gh: () => assert.fail("no gh call when the guard is off") }), null);
+  }
 });
 
 test("only Bash PreToolUse in a configured origin checkout is guarded", (t) => {
@@ -102,13 +110,13 @@ test("ready uses the ledger for the PR head even when the checkout head differs"
   git("add", ".");
   git("commit", "-qm", "base");
   git("branch", "base");
-  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ check: { base: "base" }, ready: { platforms: ["linux", "windows"] } }));
+  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ check: { base: "base" }, ready: { enforce: true, platforms: ["linux", "windows"] } }));
   writeFileSync(path.join(cwd, "risk.mjs"), "process.platform;\n");
   git("add", ".");
   git("commit", "-qm", "risk");
   const head = git("rev-parse", "HEAD");
   git("checkout", "-q", "base");
-  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ check: { base: "base" }, ready: { platforms: ["linux", "windows"] } }));
+  writeFileSync(path.join(cwd, "qc.config.json"), JSON.stringify({ check: { base: "base" }, ready: { enforce: true, platforms: ["linux", "windows"] } }));
   const gh = () => JSON.stringify({ headRefOid: head });
   assert.match(reason(decidePr(call(cwd, "gh pr ready 12"), { gh })), /linux, windows/);
   appendLeg(cwd, { head, os: "linux", source: "local" });
