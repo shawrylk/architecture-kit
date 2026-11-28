@@ -1,0 +1,3 @@
+# Check out every text file with LF on every platform. Tests and hooks split repository text on "\n",
+# and the skill size limit counts bytes, so a CRLF checkout breaks them on Windows.
+* text=auto eol=lf
