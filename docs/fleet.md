@@ -6,15 +6,17 @@ Pair the fleet as shown below. Install Codex and sign in on each node. Each node
 
 ```sh
 qc fleet start                   # job slots follow this machine's capacity
-qc fleet start --jobs 2          # at most two job slots
+qc fleet start --jobs 2          # two job slots
 qc fleet start --jobs 0          # no jobs
 qc fleet start --leader          # the leader also runs jobs
 qc fleet worker                  # the same as fleet start --jobs auto
 ```
 
-A node takes jobs by default. Without `--jobs`, the node uses `auto` mode. A number caps the slots. `--jobs 0` turns jobs off. `--jobs auto` goes back to the default. The node saves the mode in `node.json`. A restart without `--jobs`, also after `fleet stop`, keeps the saved mode. `fleet worker` is `fleet start --jobs auto`. Use `fleet stop` before you change the mode of a running node. `fleet start` prints the mode and the slot count, for example `fleet node started: 5c96 (jobs auto, 6 slots)`. Pairing, issue assignment, platform checks and heartbeats work in every mode.
+A node takes jobs by default. Without `--jobs`, the node uses `auto` mode. A number sets the slots as given. `--jobs 0` turns jobs off. `--jobs auto` goes back to the default. The node saves the mode in `node.json`. A restart without `--jobs`, also after `fleet stop`, keeps the saved mode. `fleet worker` is `fleet start --jobs auto`. `qc fleet slots <n>` or `qc fleet slots auto` changes the mode of the running node with no restart. The leader changes another node with `qc fleet slots <n> --node <id>`. Jobs that run go on, and the next heartbeat reports the new count. `fleet start` prints the mode and the slot count, for example `fleet node started: 5c96 (jobs auto, 6 slots)`. Pairing, issue assignment, platform checks and heartbeats work in every mode.
 
-In `auto` mode, the node gives one slot for each two logical cores and one slot for each 2.5 GB of free memory. It takes the smaller count. The count is at least 1 and has no fixed ceiling. macOS reports low free memory because it keeps idle memory as cache. On macOS, the node counts the larger of free memory and half of total memory. The node counts the slots again at each heartbeat, so the count follows the load. The count never drops below the jobs that run now. With a number, the slot count is the smaller of that number and the `auto` count. The load rule still blocks placement: CPU at 90% or more, memory at 90% or more off macOS, or a round-trip time of 2000 ms or more.
+In `auto` mode, the node gives one slot for each two logical cores and one slot for each 2.5 GB of free memory. It takes the smaller count. The count is at least 1 and has no fixed ceiling. macOS reports low free memory because it keeps idle memory as cache. On macOS, the node reads `vm_stat` and counts active, wired and compressed pages as used. If `vm_stat` fails, it counts the larger of free memory and half of total memory. The memory load in the heartbeat uses the same reading. The node counts the slots again at each heartbeat, so the count follows the load. The count never drops below the jobs that run now. With a number, the slot count is that number, above the `auto` count too: the owner decides.
+
+The leader moves the other nodes to a new kit version with `qc fleet update <version>`, or one node with `--node <id>`. A node that gets the message takes no new job. When its live jobs end, it stops and starts `npx architecture-harness@<version> fleet start` with the same role and job mode. If the new version does not start, the old version starts again. A node older than this command ignores the message, so update it by hand one last time. The load rule still blocks placement: CPU at 90% or more, memory at 90% or more off macOS, or a round-trip time of 2000 ms or more.
 
 Send a brief from the current leader:
 

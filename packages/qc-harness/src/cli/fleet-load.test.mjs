@@ -19,6 +19,13 @@ test("first CPU sample is unknown; memory and CPU deltas round to two decimals",
 });
 
 
+test("macOS memory load counts active, wired and compressed pages only", () => {
+  const vmStat = () => "Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free: 5.\nPages active: 30.\nPages inactive: 400.\nPages wired down: 15.\nPages occupied by compressor: 5.\n";
+  const mac = { cpus: () => [], freemem: () => 4096 * 5, totalmem: () => 4096 * 500, platform: () => "darwin", vmStat };
+  assert.equal(sampleLoad({ os: mac }).mem, 0.1);
+  assert.equal(sampleLoad({ os: { ...mac, vmStat: () => "garbage" } }).mem, 0.5);
+});
+
 test("load samples report the host platform", () => {
   for (const platform of ["darwin", "linux", "win32"]) {
     const load = sampleLoad({ os: { ...fakeOS([{ user: 10, idle: 90 }]), platform: () => platform } });

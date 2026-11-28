@@ -5,6 +5,7 @@ import { dispatchTick } from "./fleet-dispatch.mjs";
 import { platformTick } from "./fleet-platform.mjs";
 import { jobsHeartbeat, jobsTick, liveJob, recoverJobs, savedJobMode } from "./fleet-jobs.mjs";
 import { jobSlots } from "./fleet-capacity.mjs";
+import { KIT_VERSION, pendingUpdate, startUpdate } from "./fleet-update.mjs";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
 import { spawn as spawnProcess } from "node:child_process";
@@ -435,7 +436,7 @@ function savedRole(root, fallbackLeader = false) {
 }
 
 function allowLeaderMessage(root, fleet, now, message, term, role = savedRole(root)) {
-  if (!["assign", "approve", "answer", "codex-job", "codex-cancel"].includes(message.kind)) return true;
+  if (!["assign", "approve", "answer", "codex-job", "codex-cancel", "codex-slots", "kit-update"].includes(message.kind)) return true;
   return role.leader && (term === undefined || role.term === term) && canAssign(root, fleet, now);
 }
 
@@ -600,6 +601,12 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       void platformTick({ ...platform, root, fleet, clock, gh, fetch, signal: sends.signal, warn })
         .catch(error => warn(`fleet platform: ${error.message}`));
       void jobsTick({ root, fleet, repo, clock, fetch, signal: sends.signal, warn, os: host }).catch(error => warn(`fleet jobs: ${error.message}`));
+      const update = pendingUpdate(root);
+      if (update && jobsHeartbeat(root, fleet.secret, host).live === 0) {
+        warn(`fleet update: ${KIT_VERSION} stops and ${update} starts`);
+        startUpdate({ root, version: update, leader, mode: savedJobMode(readState(root, "node")) ?? "auto" });
+        shutdown(); return;
+      }
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
         allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) });
       if (!closing && clock() >= nextAssign) {

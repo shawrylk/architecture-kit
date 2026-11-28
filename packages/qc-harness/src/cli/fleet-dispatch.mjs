@@ -5,12 +5,27 @@ import { liveJob, redactJobText, tailLines, validJob, validJobId } from "./fleet
 import { createMessage } from "./fleet-message.mjs";
 import { flushOutbox } from "./fleet-node.mjs";
 import { validPlatformBranch } from "./fleet-platform.mjs";
+import { requestUpdate, validKitVersion } from "./fleet-update.mjs";
 import { highestTerm, livePeer, readState, writeState } from "./fleet-state.mjs";
 
-export const DISPATCH_VERBS = ["job", "jobs", "cancel"];
+export const DISPATCH_VERBS = ["job", "jobs", "cancel", "slots", "update"];
 export function parseDispatchArgs(verb, args) {
   if (verb === "jobs" && args.length === 0) return { verb };
   if (verb === "cancel" && args.length === 1 && validJobId(args[0])) return { verb, id: args[0] };
+  if (verb === "update") {
+    const [version, flag, node, ...rest] = args;
+    if (!validKitVersion(version)) throw new Error("update needs a version such as 0.32.0");
+    if (flag === undefined) return { verb, version };
+    if (flag !== "--node" || !/^[a-z0-9-]{1,32}$/.test(node ?? "") || rest.length) throw new Error("update takes only --node <id>");
+    return { verb, version, "--node": node };
+  }
+  if (verb === "slots") {
+    const [value, flag, node, ...rest] = args;
+    if (value !== "auto" && !(/^\d+$/.test(value ?? "") && Number.isSafeInteger(Number(value)))) throw new Error("slots needs auto or a nonnegative integer");
+    if (flag === undefined) return { verb, mode: value === "auto" ? value : Number(value) };
+    if (flag !== "--node" || !/^[a-z0-9-]{1,32}$/.test(node ?? "") || rest.length) throw new Error("slots takes only --node <id>");
+    return { verb, mode: value === "auto" ? value : Number(value), "--node": node };
+  }
   if (verb !== "job") throw new Error(`${verb} needs ${verb === "cancel" ? "a job id" : "no arguments"}`);
   const options = { verb };
   for (let i = 0; i < args.length; i++) {
@@ -61,6 +76,26 @@ export async function runDispatch(options, context) {
       say(redactJobText(`${row.id} ${row.node} ${row.state} ${row.branch} ${step} ${Math.max(0, Math.floor((clock() - row.created) / 1000))}s`, fleet.secret));
     }
     return 0;
+  }
+  if (options.verb === "update") {
+    requireLeader(root);
+    // With no --node, every other active node gets the version. The leader updates itself only by name.
+    const targets = options["--node"] ? [options["--node"]] : fleet.nodes.filter(node => node.active !== false && node.id !== fleet.self).map(node => node.id);
+    if (targets.some(id => !fleet.nodes.some(node => node.id === id))) throw new Error("unknown node id");
+    for (const target of targets) {
+      if (target === fleet.self) requestUpdate(root, options.version);
+      else await queueMessage(context, target, "kit-update", { version: options.version });
+    }
+    say(`update ${options.version} ${targets.join(" ")}`); return 0;
+  }
+  if (options.verb === "slots") {
+    const target = options["--node"] ?? fleet.self;
+    if (target === fleet.self) writeState(root, "node", { ...readState(root, "node"), jobs: { mode: options.mode } });
+    else {
+      if (!fleet.nodes.some(node => node.id === target)) throw new Error("unknown node id");
+      await queueMessage(context, target, "codex-slots", { mode: options.mode });
+    }
+    say(`slots ${target} ${options.mode}`); return 0;
   }
   requireLeader(root);
   const jobs = readState(root, "jobs");

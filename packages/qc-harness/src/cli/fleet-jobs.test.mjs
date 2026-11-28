@@ -116,6 +116,17 @@ for (const code of [1, 2]) test(`worker exit ${code} keeps checkout and enforces
     assert.ok(f.sent.some(row => row.body.id === "later" && row.body.state === "started"));
   }
 });
+test("slots from the leader change the job mode of a running node; other senders and bad modes do not", async t => {
+  const f = fixture(t), before = readState(f.root, "node");
+  const send = async (body, from = "leader") => { writeState(f.root, "queue", [{ id: String(Math.random()), repo: "o/r", kind: "codex-slots", from, body }]); await jobsTick(f.deps); };
+  await send({ mode: 7 }, "other"); await send({ mode: -1 }); await send({ mode: 7, extra: true });
+  assert.deepEqual(readState(f.root, "node"), before);
+  await send({ mode: 7 });
+  assert.deepEqual(readState(f.root, "node"), { ...before, jobs: { mode: 7 } });
+  assert.equal(jobsHeartbeat(f.root).max, 7);
+  await send({ mode: "auto" });
+  assert.equal(readState(f.root, "node").jobs.mode, "auto");
+});
 test("cancel only from leader aborts job and keeps checkout", async t => {
   const f = fixture(t); f.queue(); await jobsTick(f.deps); await f.settle();
   f.queue({ id: "job-1" }, "codex-cancel", "other"); await jobsTick(f.deps);

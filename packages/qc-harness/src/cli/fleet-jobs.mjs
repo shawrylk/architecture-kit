@@ -9,6 +9,7 @@ import { runGit } from "./fleet-git.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { sendMessage } from "./fleet-node.mjs";
 import { validPlatformBranch } from "./fleet-platform.mjs";
+import { pendingUpdate, requestUpdate } from "./fleet-update.mjs";
 import { highestTerm, latestLeader, livePeer, readState, stateDir, writeState } from "./fleet-state.mjs";
 
 const execute = promisify(execFile);
@@ -50,7 +51,8 @@ export function savedJobMode(node) {
 export function jobsHeartbeat(root, secret, host = os) {
   const saved = readState(root, "jobs-local"), rows = Object.values(saved.jobs ?? {}).filter(liveJob);
   const mode = savedJobMode(readState(root, "node")) ?? "auto";
-  return { max: jobSlots(mode, { host, live: rows.length }), live: rows.length, limitedUntil: saved.limitedUntil ?? 0,
+  // A node that waits for a kit update takes no new job: its live jobs end first.
+  return { max: pendingUpdate(root) ? rows.length : jobSlots(mode, { host, live: rows.length }), live: rows.length, limitedUntil: saved.limitedUntil ?? 0,
     steps: rows.map(row => ({ id: row.id, step: status(row, secret).split("\n").at(-1).slice(0, 120) })) };
 }
 export function jobLeader(root, now, self) {
@@ -191,13 +193,23 @@ export async function jobsTick(context) {
   if (ticks.has(root) || signal?.aborted) return;
   ticks.add(root);
   try {
-    const queue = readState(root, "queue"), message = queue.find(row => ["codex-job", "codex-cancel"].includes(row.kind));
+    const queue = readState(root, "queue"), message = queue.find(row => ["codex-job", "codex-cancel", "codex-slots", "kit-update"].includes(row.kind));
     if (!message) return;
     writeState(root, "queue", queue.filter(row => row !== message));
     const body = message.body, row = { id: validJobId(body?.id) ? body.id : "invalid", repo: message.repo, leader: message.from };
     const leader = jobLeader(root, clock(), fleet.self);
     // Drop a job from a non-leader without a reply: a follower never reads codex-result rows.
     if (message.from !== leader) return;
+    // The leader sets the job mode of this node. The next heartbeat reports the new slots; running jobs go on.
+    if (message.kind === "codex-slots") {
+      if (!body || Object.keys(body).some(key => key !== "mode") || !validJobMode(body.mode)) return;
+      writeState(root, "node", { ...readState(root, "node"), jobs: { mode: body.mode } });
+      return;
+    }
+    if (message.kind === "kit-update") {
+      if (body && Object.keys(body).every(key => key === "version")) requestUpdate(root, body.version);
+      return;
+    }
     if (!repo || message.repo !== repo) { await result(context, row, "refused", { reason: "repository does not match worker checkout" }); return; }
     if (message.kind === "codex-cancel") {
       if (!body || !validJobId(body.id) || Object.keys(body).some(key => key !== "id")) return;
