@@ -1,8 +1,5 @@
 {
   "name": "architecture",
-  "description": "Bounded vertical slice architecture: the decision register, the gates that enforce it, and the hooks that hold an agent to it",
-  "version": "0.30.1",
-  "dependencies": [
-    "ai-chat-assistant"
-  ]
+  "description": "Core Codex work, fleet control, reviews and four hooks.",
+  "version": "0.30.1"
 }

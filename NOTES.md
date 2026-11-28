@@ -123,5 +123,5 @@ falls back to defaults rather than being told it has no config.
 - The plugin was **not** reinstalled via `claude plugin marketplace add` — that mutates the user's
   installed plugin set. The hooks were exercised directly with `CLAUDE_PLUGIN_ROOT` set, which is
   the same code path the installed plugin runs.
-- `commands/adopt.md` is agent-driven, not a CLI path, so nothing here exercises it.
+- `plugins/architecture-extras/commands/adopt.md` is agent-driven, not a CLI path, so nothing here exercises it.
 - Config toggles were spot-checked (one gate off → `enforcement-map` fails), not swept per knob.

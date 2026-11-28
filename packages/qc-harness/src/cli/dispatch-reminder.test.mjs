@@ -27,7 +27,7 @@ test("the orchestrator note requires the SessionStart checkpoint before dispatch
 });
 
 const NOTE = fileURLToPath(new URL("./dispatch-reminder.mjs", import.meta.url));
-const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
+const HOOKS = fileURLToPath(new URL("../../../../plugins/architecture-extras/hooks/hooks.json", import.meta.url));
 
 /** Three checkouts: one per config, and `null` writes no config at all. */
 function checkouts(t, configs) {
@@ -63,8 +63,8 @@ test("with the section on, every start adds the note, a compaction included", (t
 test("the note names the workflow, the four types, and the parallel rule, in a short text", () => {
   for (const word of [
     "superpowers:subagent-driven-development",
-    "architecture:sdd-planner",
-    "architecture:sdd-implementer",
+    "architecture-extras:sdd-planner",
+    "architecture-extras:sdd-implementer",
     "architecture:sdd-reviewer",
     "architecture:sdd-branch-reviewer",
     "up to 3 implementers at once",
@@ -192,7 +192,7 @@ test("the default and custom parallel limits state the rule directly; one keeps 
   assert.equal(
     serial,
     "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
-    "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
+    "Dispatch architecture-extras:sdd-planner to write a plan, architecture-extras:sdd-implementer for one task, and " +
     "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
     "whole branch. " +
     "Run one implementer at a time: a hook refuses a second. Name a model on any other dispatch, and " +
@@ -308,14 +308,14 @@ test("the models line names each role's models for the runtime, and how to dispa
   assert.match(modelsLine({ models: {}, runtime: null }), /unknown runtime \(set QC_RUNTIME to claude or codex\): sdd-planner the session's model/);
 });
 
-test("the controller note makes Codex the first choice, names its skill, and falls back to Claude sonnet on exit 2", () => {
+test("the controller note names Codex first and stops new starts on a usage limit", () => {
   for (const phrase of [
     /Implementer work runs on Codex first/,
     /qc codex-implement --brief <file> --worktree <path> --progress <file>/,
     /load the `architecture:codex` skill before the first dispatch/,
     /exit 2 \(a Codex limit\)/,
-    /architecture:sdd-implementer \(sonnet\)/,
-    /same brief/,
+    /stop new starts and tell the owner/,
+    /tell the owner/,
   ]) {
     assert.match(CODEX_LINE, phrase);
   }

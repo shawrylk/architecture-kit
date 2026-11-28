@@ -12,7 +12,7 @@ This skill applies only to a repository with a `qc.config.json` at its root. Wit
 - Claude orchestrates. It owns the design, writes briefs, approves scout plans, watches CI, merges, and closes issues.
 - Codex writes each change to code: a feature, a CI fix, a review fix, and a merge with conflicts.
 - The main session edits only the paths the guard allows, such as `*.md` and `docs/**`, and fixes inside the `swarm.direct` limits.
-- On exit 2, a Codex limit, send the same brief to `architecture:sdd-implementer` (sonnet) with a prompt line `Runtime: claude <reason>`.
+- On `EXIT: 2` (a Codex usage limit), stop new starts and tell the owner.
 - Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other.
 
 ## Scout, then approve, then code
@@ -68,7 +68,7 @@ npx qc codex-implement --brief <brief.md> --worktree <absolute worktree path> --
 |---|---|---|
 | 0 | Done | Read the report tail, then the diff |
 | 1 | Bad input, or no `codex` on the `PATH` | Fix the command or the brief |
-| 2 | A Codex limit | Send the brief to `architecture:sdd-implementer` |
+- On `EXIT: 2` (a Codex usage limit), stop new starts and tell the owner.
 | 3 | Out of runs, or a runner check failed | Read the progress tail |
 | 4 | Guard refused | Drop or rewrite the refused commits; rotate any secret that reached a remote |
 | 5 | Paused | Wait for the operator to run `qc resume` |

@@ -10,9 +10,10 @@ const FIELDS = new Set([
   "allowed-tools", "model", "context", "agent", "hooks",
 ]);
 
-for (const folder of readdirSync(SKILLS, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
+for (const skillRoot of [SKILLS, fileURLToPath(new URL("../../../../plugins/architecture-extras/skills/", import.meta.url))])
+for (const folder of readdirSync(skillRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
   test(`${folder.name} has bounded skill metadata with a use clause and known fields`, () => {
-    const text = readFileSync(path.join(SKILLS, folder.name, "SKILL.md"), "utf8");
+    const text = readFileSync(path.join(skillRoot, folder.name, "SKILL.md"), "utf8");
     const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
     assert.ok(match, "skill has frontmatter");
     const fields = Object.fromEntries([...match[1].matchAll(/^([\w-]+):\s*(.*)$/gm)]

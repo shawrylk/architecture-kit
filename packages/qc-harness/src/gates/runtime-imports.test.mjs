@@ -47,11 +47,11 @@ function hookJavaScript(source) {
 function runtimeImports(root) {
   const violations = [];
   let hookScripts = 0;
-  for (const directory of ["packages/qc-harness/src", "hooks"]) {
+  for (const directory of ["packages/qc-harness/src", "hooks", "plugins/architecture-extras/hooks"]) {
     for (const entry of readdirSync(join(root, directory), { recursive: true }).map(String)) {
       // Test modules execute in the development installation, outside the plugin runtime.
       if (!/\.(?:mjs|cjs|js|sh)$/.test(entry) || /\.(?:test|browser-test)\.(?:mjs|cjs|js)$/.test(entry)) continue;
-      if (entry.endsWith(".sh") && directory !== "hooks") continue;
+      if (entry.endsWith(".sh") && !directory.endsWith("hooks")) continue;
       const file = directory + "/" + entry.replaceAll("\\", "/");
       const source = readFileSync(join(root, file), "utf8");
       const bodies = entry.endsWith(".sh") ? hookJavaScript(source) : [source];
@@ -72,6 +72,8 @@ test("plugin runtime imports only built-ins and relative files", () => {
 });
 
 for (const [file, source] of [
+  ["plugins/architecture-extras/hooks/probe.mjs", 'import "forbidden-peer";'],
+  ["plugins/architecture-extras/hooks/probe.sh", `node -e 'require("forbidden-peer");'`],
   ["hooks/probe.cjs", 'const peer = require("forbidden-peer");'],
   ["packages/qc-harness/src/probe.cjs", 'require("forbidden-peer");'],
   ["hooks/probe.sh", `#!/bin/sh
@@ -86,11 +88,12 @@ node -e "$SCRIPT"`],
     const root = mkdtempSync(join(tmpdir(), "qc-runtime-imports-"));
     try {
       mkdirSync(join(root, "hooks"), { recursive: true });
+      mkdirSync(join(root, "plugins/architecture-extras/hooks"), { recursive: true });
       mkdirSync(join(root, "packages/qc-harness/src"), { recursive: true });
       writeFileSync(join(root, file), source);
       assert.deepEqual(runtimeImports(root).violations, [`${file}: forbidden-peer`]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 }
@@ -109,6 +112,6 @@ test("qc check runs from a plugin cache with no node_modules", () => {
     assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /RUN /);
   } finally {
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });

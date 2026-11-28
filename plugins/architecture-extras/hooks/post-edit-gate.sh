@@ -22,10 +22,10 @@ cd "$ROOT" || exit 0
 if [ -f "$ROOT/node_modules/architecture-harness/src/cli/qc.mjs" ]; then
   QC_CLI="$ROOT/node_modules/architecture-harness/src/cli/qc.mjs"
 else
-  QC_CLI="${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"
+  QC_CLI="${QC_HARNESS_ROOT}/src/cli/qc.mjs"
 fi
 # An installed harness too old to carry `qc lint` leaves it to the bundled copy.
-if [ -f "$(dirname "$QC_CLI")/lint-changed.mjs" ]; then TOOL_CLI="$QC_CLI"; else TOOL_CLI="${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"; fi
+if [ -f "$(dirname "$QC_CLI")/lint-changed.mjs" ]; then TOOL_CLI="$QC_CLI"; else TOOL_CLI="${QC_HARNESS_ROOT}/src/cli/qc.mjs"; fi
 
 OUT=""
 # Only the lines the change adds: an older problem in the same file is not this edit's to fix.

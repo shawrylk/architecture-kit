@@ -9,7 +9,7 @@ follow the approved Design and name any missing precedent in their report.
 | `packages/qc-harness/src/config.mjs` | Defaults and configuration validation; commands consume it. |
 | `packages/qc-harness/src/gates/` | Repository checks; use shared helpers and report findings. |
 | `packages/qc-harness/src/glob.mjs` | Shared matching rules; imports no command. |
-| `agents/` | Dispatch contracts; forward documented flags to the runner. |
+| `agents/` and `plugins/architecture-extras/agents/` | Core and optional dispatch contracts; forward documented flags to the runner. |
 | `skills/codex/brief-template.md` | Orchestrator's brief format; Design is an input to implementation. |
 | `docs/reference.md` | User-facing command and configuration contract. |
 

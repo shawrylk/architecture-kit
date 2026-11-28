@@ -6,15 +6,16 @@ Code, and Codex meet the same checks: in the editor, at a commit, at a push, and
 The gates judge the change, never the history. Lint reports only a problem on a line the change
 adds, so a repository adopts the kit without a cleanup first.
 
-## Two halves
+## Package and plugins
 
 | Half | Install | Holds |
 |---|---|---|
 | Package `architecture-harness` | `pnpm add -D` | the `qc` CLI, the gates, the ESLint preset, and the templates |
-| Plugin `architecture` | `claude plugin install` | the Claude Code hooks, skills, and subagent types |
+| Plugin `architecture` | `claude plugin install` | core Codex work, fleet control, reviews and four hooks |
+| Plugin `architecture-extras` | optional `claude plugin install` | all other skills, agents, commands and hooks |
 
-The plugin calls the CLI of the package. Each half works alone. In a repository without
-`qc.config.json`, every hook of the plugin does nothing.
+The core plugin includes its hook code. Extras hooks use the package installed in the project.
+The npm package also works alone. Each hook keeps its own scope and opt-in settings.
 
 ## Install
 
@@ -35,14 +36,31 @@ claude plugin install architecture@architecture-kit
 
 The `stable` branch moves only at a release, so work on `main` does not reach your PCs. To get each release, turn on auto-update once on each PC: run `/plugin`, open the **Marketplaces** tab, select `architecture-kit`, and turn on auto-update. Claude Code checks after a session starts and loads a new version at the next launch, or after `/reload-plugins`.
 
-Claude Code updates a plugin only when its `version` changes. A release sets the same version in `packages/qc-harness/package.json`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
+Claude Code updates a plugin only when its `version` changes. A release sets the same version in `packages/qc-harness/package.json`, `.claude-plugin/plugin.json`, `plugins/architecture-extras/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 
 To split the open issues across several PCs, read [Split work across PCs](docs/fleet.md).
 For Codex jobs, start `qc fleet worker` on each node and send briefs with `qc fleet job` on the leader. See [Codex worker](docs/fleet.md#codex-worker).
 `/fleet start` runs the fleet from Claude.
 
-The plugin depends on [ai-chat-assistant](https://github.com/shawrylk/ai-chat-assistant),
-which has its own pinned entry in the marketplace.
+The core plugin has no plugin dependency. The marketplace still offers `ai-chat-assistant` as a separate install.
+
+Core includes agents `codex`, `sdd-reviewer` and `sdd-branch-reviewer`, skill `codex`, and command `fleet`.
+Its hooks are `comment-watch` on UserPromptSubmit and PostToolUse, `merge-guard` on PreToolUse, PostToolUse and PostToolUseFailure,
+`context-watch` on UserPromptSubmit and PostToolUse, and `bash-command-guard` on PreToolUse. Core has no Stop hook.
+On a Codex usage limit (exit 2), stop new starts and tell the owner.
+
+Extras is off by default. It holds agents `sdd-implementer` and `sdd-planner`; commands `adopt`, `check` and `feature`;
+and skills `architecture`, `enforcement`, `applying-engineering-standards`, `navigating-source-code`, `registering-work`,
+`reviewing-before-merge`, `security`, `swarm`, `writing-decision-final-specs` and `writing-plain-english`.
+It also holds all other hooks. Install the npm package in each project before you enable extras:
+
+```bash
+pnpm add -D architecture-harness --save-exact
+claude plugin install architecture-extras@architecture-kit
+```
+
+Extras hooks use that installed package. Their launcher and shell scripts are inside the extras install tree.
+The npm package keeps every CLI verb. The file `packages/qc-harness/src/gates/plain-language.mjs` keeps its path.
 
 `qc stack`, `qc screens` and `qc throwaway-db` run from pinned GitHub commits on first use.
 The CLI installs them through npm, so the first run needs access to GitHub. Commands and flags stay the same.
@@ -100,8 +118,8 @@ export default preset({
 
 | Moment | Runs | A red result |
 |---|---|---|
-| After an edit by Claude Code | `qc lint` and `qc check` on the edited file | shows the problem to the agent |
-| At the end of a Claude Code turn | `qc typecheck`, `qc lint`, and `qc check` | blocks the stop, once per failure |
+| After an edit by Claude Code with extras | `qc lint` and `qc check` on the edited file | shows the problem to the agent |
+| At the end of a Claude Code turn with extras | `qc typecheck`, `qc lint`, and `qc check` | blocks the stop, once per failure |
 | `git commit` | `qc lint --staged`, `qc typecheck`, and `qc check` on the staged files | refuses the commit |
 | `git push` | `qc check` on the whole repository | refuses the push |
 | CI | `qc check`, `qc typecheck`, `qc lint --base`, and the tests | fails the build |

@@ -52,7 +52,7 @@ test("only an implementer's stop frees the slot, and an empty agent type frees n
   assert.equal(releaseSlot(dir, ""), false);
   assert.equal(releaseSlot(dir, "architecture:sdd-reviewer"), false);
   assert.equal(claimFiles(dir).length, 1);
-  assert.equal(releaseSlot(dir, "architecture:sdd-implementer"), true);
+  assert.equal(releaseSlot(dir, "architecture-extras:sdd-implementer"), true);
   assert.deepEqual(claimFiles(dir), []);
   assert.equal(claimSlot(dir, settings, Date.now()), null);
 });

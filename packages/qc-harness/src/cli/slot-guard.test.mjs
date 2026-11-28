@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { decide } from "./slot-guard.mjs";
 
-const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
+const HOOKS = fileURLToPath(new URL("../../../../plugins/architecture-extras/hooks/hooks.json", import.meta.url));
 const call = (tool_name, tool_input, agent_id = "agent-1") => ({ hook_event_name: "PreToolUse", tool_name, tool_input, agent_id });
 const denied = (output) => output?.hookSpecificOutput?.permissionDecision === "deny";
 

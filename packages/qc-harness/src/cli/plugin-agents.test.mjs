@@ -10,6 +10,8 @@ import { dispatchRefusal, dispatchSettings } from "./dispatch.mjs";
 const AGENTS = fileURLToPath(new URL("../../../../agents/", import.meta.url));
 const README = fileURLToPath(new URL("../../../../docs/reference.md", import.meta.url));
 const PLUGIN = "architecture";
+const EXTRAS = fileURLToPath(new URL("../../../../plugins/architecture-extras/agents/", import.meta.url));
+const pluginOf = (name) => ["sdd-planner", "sdd-implementer"].includes(name) ? "architecture-extras" : PLUGIN;
 // The built-in tools a background subagent keeps, as the Claude Code sub-agents page lists them.
 // Claude Code drops any other listed name without an error, so such a name is dead weight.
 const SUBAGENT_TOOLS = new Set([
@@ -72,21 +74,21 @@ function frontmatterOf(file) {
 
 /** Each README table row for a shipped type, as its bare name and the backticked names in its Tools cell. */
 function readmeToolsOf(markdown) {
-  const rows = markdown.split(/\r?\n/).filter((line) => line.startsWith(`| \`${PLUGIN}:`));
+  const rows = markdown.split(/\r?\n/).filter((line) => /^\| `architecture(?:-extras)?:/.test(line));
   return Object.fromEntries(
     rows.map((row) => {
       const cells = row.split("|").map((cell) => cell.trim());
-      const name = cells[1].replace(/`/g, "").slice(PLUGIN.length + 1);
+      const name = cells[1].replace(/`/g, "").split(":").at(-1);
       return [name, [...cells[4].matchAll(/`([^`]+)`/g)].map((match) => match[1])];
     }),
   );
 }
 
-const frontOf = (name) => frontmatterOf(path.join(AGENTS, `${name}.md`));
+const frontOf = (name) => frontmatterOf(path.join(pluginOf(name) === PLUGIN ? AGENTS : EXTRAS, `${name}.md`));
 
 test("each subagent type inherits the session model, has a model in every runtime, and keeps its effort and tool list", () => {
   assert.deepEqual(
-    readdirSync(AGENTS).sort(),
+    [...readdirSync(AGENTS), ...readdirSync(EXTRAS)].sort(),
     Object.keys(SHIPPED).map((name) => `${name}.md`).sort(),
     "agents/ holds exactly the shipped types",
   );
@@ -99,7 +101,7 @@ test("each subagent type inherits the session model, has a model in every runtim
     assert.deepEqual(listOf(front.tools), want.tools, name);
     for (const models of Object.values(runtimeModels)) {
       assert.ok(models[name]?.length > 0, name);
-      assert.deepEqual(models[`${PLUGIN}:${name}`], models[name], name);
+      assert.deepEqual(models[`${pluginOf(name)}:${name}`], models[name], name);
     }
   }
 });
@@ -142,14 +144,14 @@ test("the README reader takes a CRLF checkout and skips the rows of other tables
 });
 
 test("the session note names only the types the plugin ships", () => {
-  const named = new Set([...REMINDER.matchAll(/architecture:([a-z-]+)/g)].map((match) => match[1]));
+  const named = new Set([...REMINDER.matchAll(/architecture(?:-extras)?:([a-z-]+)/g)].map((match) => match[1]));
   assert.deepEqual([...named].sort(), Object.keys(EXPECTED).sort());
 });
 
 test("the default allowed types are the shipped types, bare and scoped", () => {
-  const shipped = Object.keys(EXPECTED).flatMap((name) => [name, `${PLUGIN}:${name}`]);
+  const shipped = Object.keys(EXPECTED).flatMap((name) => [name, `${pluginOf(name)}:${name}`]);
   assert.deepEqual([...dispatchDefaults.allowedTypes].sort(), shipped.sort());
-  assert.deepEqual(dispatchDefaults.implementerTypes, ["sdd-implementer", `${PLUGIN}:sdd-implementer`]);
+  assert.deepEqual(dispatchDefaults.implementerTypes, ["sdd-implementer", "architecture-extras:sdd-implementer"]);
 });
 
 test("no type pins a prompt cache lifetime, so a user's own setting decides it", () => {
@@ -163,7 +165,7 @@ test("no type pins a prompt cache lifetime, so a user's own setting decides it",
 
 test("both reviewers review only the increment when the dispatch carries a Reviewed line, and still put the verdict first", () => {
   for (const name of ["sdd-reviewer", "sdd-branch-reviewer"]) {
-    const text = readFileSync(path.join(AGENTS, `${name}.md`), "utf8").replace(/\r/g, "");
+    const text = readFileSync(path.join(pluginOf(name) === PLUGIN ? AGENTS : EXTRAS, `${name}.md`), "utf8").replace(/\r/g, "");
     assert.match(text, /`Reviewed: <sha>`/, name);
     assert.match(text, /<sha>\.\.<head>/, name);
     assert.match(text, /only that increment|only the increment/i, name);

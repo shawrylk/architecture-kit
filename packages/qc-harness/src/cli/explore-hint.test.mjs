@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { decide, excerptOf, replacedOutput } from "./explore-hint.mjs";
 
-const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
+const HOOKS = fileURLToPath(new URL("../../../../plugins/architecture-extras/hooks/hooks.json", import.meta.url));
 
 const TOOLS = [{ name: "CocoIndex", use: "find the files for a concept", how: 'ccc search "<question>"' }];
 

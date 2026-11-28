@@ -34,7 +34,7 @@ const BODY_REF = /(?<![\w/#])#(\d+)\b/g;
 const REF_LINE = /^\s*(?:[-*]\s+)?(?:refs|closes|fixes|resolves)\b/i;
 const PR_URL = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/;
 const POST_EVENTS = new Set(["PostToolUse", "PostToolUseFailure"]);
-const REVIEWER = { branch: "the branch reviewer (sdd-branch-reviewer)", task: "the task reviewer (sdd-reviewer)" };
+const REVIEWER = { branch: "the branch reviewer (architecture:sdd-branch-reviewer)", task: "the task reviewer (architecture:sdd-reviewer)" };
 
 const deny = (reason) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
 const context = (text) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: text } });

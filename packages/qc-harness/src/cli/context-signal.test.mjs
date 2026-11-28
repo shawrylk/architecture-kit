@@ -4,7 +4,7 @@ import { contextDefaults } from "../config.mjs";
 import { LEVELS, callsLeft, contextSettings, contextVerdict, estimateOf, handbackStamp } from "./context-signal.mjs";
 
 const settings = contextSettings();
-const IMPL = "architecture:sdd-implementer";
+const IMPL = "architecture-extras:sdd-implementer";
 const facts = (context, extra = {}) => ({ context, first: 40_000, count: 10, budget: 100, estimate: null, agentType: IMPL, fired: null, ...extra });
 
 test("the signal is on with the defaults, and `false` turns it off", () => {

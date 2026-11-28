@@ -12,7 +12,7 @@ export function routeRefusal(input, settings, limit) {
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
   if (isCodexType(type)) {
     if (!limit) return null;
-    const preferred = "architecture:sdd-implementer";
+    const preferred = "architecture-extras:sdd-implementer";
     const fallback = settings.implementerTypes.includes(preferred) ? preferred :
       settings.implementerTypes.find((name) => name.endsWith("sdd-implementer")) ?? preferred;
     const brief = prompt.match(/^[\t ]*Brief:[^\r\n]*$/m)?.[0] ?? "Brief: <path>";

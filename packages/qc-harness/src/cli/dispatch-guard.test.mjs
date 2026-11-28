@@ -11,7 +11,7 @@ import { runtimeTagOf } from "./dispatch-route.mjs";
 import { checkpointPathOf } from "./checkpoint.mjs";
 
 const GUARD = fileURLToPath(new URL("./dispatch-guard.mjs", import.meta.url));
-const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
+const HOOKS = fileURLToPath(new URL("../../../../plugins/architecture-extras/hooks/hooks.json", import.meta.url));
 
 /** A checkout that turns the guard on, one whose swarm section has no dispatch key, one with no config, and a temp folder. */
 // The guard process below runs under Codex, whatever runtime runs the test.
@@ -65,7 +65,7 @@ const subagentEvent = (cwd, agent_type, hook_event_name = "SubagentStop") => ({
 const reasonOf = (output) =>
   output?.hookSpecificOutput?.permissionDecision === "deny" ? output.hookSpecificOutput.permissionDecisionReason : null;
 const implementer = {
-  subagent_type: "architecture:sdd-implementer",
+  subagent_type: "architecture-extras:sdd-implementer",
   description: "Task 1",
   prompt: "Brief: brief.md\nRuntime: claude test",
 };
@@ -101,7 +101,7 @@ test("a codex dispatch while Codex is limited is refused and names the sonnet im
   writeLimit(limitFileOf({}, ws.tmp), { until: Date.now() + 3_600_000, source: "codex" });
   const input = { subagent_type: "codex", model: "gpt-6.1-sol", prompt: "Brief: brief.md" };
   const reason = reasonOf(decide(agentCall(ws.on, input), ws.tmp, Date.now(), { codexModel: null })) ?? "";
-  for (const text of ["qc codex status", "architecture:sdd-implementer", "sonnet", "Brief: brief.md"]) {
+  for (const text of ["qc codex status", "architecture-extras:sdd-implementer", "sonnet", "Brief: brief.md"]) {
     assert.ok(reason.includes(text), text);
   }
   assert.equal(existsSync(ws.slots), false);
@@ -132,7 +132,7 @@ test("a checkout with no config, or a swarm section with no dispatch key, sees n
     assert.equal(decide(agentCall(cwd, { prompt: "x".repeat(500) }), ws.tmp), null);
     assert.equal(decide(agentCall(cwd, implementer), ws.tmp), null);
     assert.equal(decide(agentCall(cwd, implementer), ws.tmp), null);
-    assert.equal(decide(subagentEvent(cwd, "architecture:sdd-implementer"), ws.tmp), null);
+    assert.equal(decide(subagentEvent(cwd, "architecture-extras:sdd-implementer"), ws.tmp), null);
   }
   assert.equal(existsSync(ws.slots), false);
 });
@@ -173,14 +173,14 @@ test("a second implementer is refused until the first one stops, and the refusal
   decide(subagentEvent(ws.on, ""), ws.tmp);
   decide(subagentEvent(ws.on, "architecture:sdd-reviewer"), ws.tmp);
   assert.notEqual(reasonOf(decide(agentCall(ws.on, implementer), ws.tmp)), null);
-  decide(subagentEvent(ws.on, "architecture:sdd-implementer"), ws.tmp);
+  decide(subagentEvent(ws.on, "architecture-extras:sdd-implementer"), ws.tmp);
   assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
 });
 
 test("a stop in a worktree with no config still frees the slot", (t) => {
   const ws = workspace(t);
   decide(agentCall(ws.on, implementer), ws.tmp);
-  decide(subagentEvent(ws.plain, "architecture:sdd-implementer"), ws.tmp);
+  decide(subagentEvent(ws.plain, "architecture-extras:sdd-implementer"), ws.tmp);
   assert.equal(decide(agentCall(ws.on, implementer), ws.tmp), null);
 });
 
@@ -188,20 +188,20 @@ test("a planner and a reviewer run beside an implementer", (t) => {
   const ws = workspace(t);
   decide(agentCall(ws.on, implementer), ws.tmp);
   assert.equal(reasonOf(decide(agentCall(ws.on, reviewerOf(ws, "architecture:sdd-reviewer")), ws.tmp)), null);
-  assert.equal(decide(agentCall(ws.on, { subagent_type: "architecture:sdd-planner", prompt: "p" }), ws.tmp), null);
+  assert.equal(decide(agentCall(ws.on, { subagent_type: "architecture-extras:sdd-planner", prompt: "p" }), ws.tmp), null);
 });
 
 test("the tier guard refuses a type on the wrong family, naming the type, the model and the allowed families", (t) => {
   const ws = workspace(t);
   const refused = (input) => reasonOf(decide(agentCall(ws.on, input), ws.tmp)) ?? "";
-  assert.match(refused({ subagent_type: "architecture:sdd-planner", model: "sonnet", prompt: "p" }), /architecture:sdd-planner/);
-  assert.match(refused({ subagent_type: "architecture:sdd-implementer", model: "opus", prompt: "p" }), /architecture:sdd-implementer/);
+  assert.match(refused({ subagent_type: "architecture-extras:sdd-planner", model: "sonnet", prompt: "p" }), /architecture-extras:sdd-planner/);
+  assert.match(refused({ subagent_type: "architecture-extras:sdd-implementer", model: "opus", prompt: "p" }), /architecture-extras:sdd-implementer/);
   assert.match(refused({ model: "opus", prompt: "p" }), /general-purpose/);
 });
 
 test("every shipped role accepts GPT 6.1 Sol without a cache note", (t) => {
   const ws = workspace(t);
-  for (const subagent_type of ["architecture:sdd-planner", "architecture:sdd-branch-reviewer", "architecture:sdd-reviewer", "architecture:sdd-implementer"]) {
+  for (const subagent_type of ["architecture-extras:sdd-planner", "architecture:sdd-branch-reviewer", "architecture:sdd-reviewer", "architecture-extras:sdd-implementer"]) {
     const prompt = subagent_type.endsWith("reviewer") ? reviewerOf(ws, subagent_type).prompt : implementer.prompt;
     const output = decide(agentCall(ws.on, { subagent_type, model: "gpt-6.1-sol", prompt }), ws.tmp);
     assert.equal(reasonOf(output), null, subagent_type);
@@ -211,14 +211,14 @@ test("every shipped role accepts GPT 6.1 Sol without a cache note", (t) => {
 });
 
 test("a repository's models override replaces one type's families and leaves the rest at default", (t) => {
-  const ws = workspace(t, { maxPromptChars: 80, models: { "architecture:sdd-planner": ["sonnet"] } });
+  const ws = workspace(t, { maxPromptChars: 80, models: { "architecture-extras:sdd-planner": ["sonnet"] } });
   assert.equal(
-    decide(agentCall(ws.on, { subagent_type: "architecture:sdd-planner", model: "sonnet", prompt: "p" }), ws.tmp),
+    decide(agentCall(ws.on, { subagent_type: "architecture-extras:sdd-planner", model: "sonnet", prompt: "p" }), ws.tmp),
     null,
   );
   assert.match(
-    reasonOf(decide(agentCall(ws.on, { subagent_type: "architecture:sdd-implementer", model: "opus", prompt: "p" }), ws.tmp)) ?? "",
-    /architecture:sdd-implementer/,
+    reasonOf(decide(agentCall(ws.on, { subagent_type: "architecture-extras:sdd-implementer", model: "opus", prompt: "p" }), ws.tmp)) ?? "",
+    /architecture-extras:sdd-implementer/,
   );
 });
 
@@ -301,8 +301,8 @@ test("agents in one assistant message share the first dispatch age check", (t) =
 test("a resumed implementer holds the slot again", (t) => {
   const ws = workspace(t, { implementerSlots: 1 });
   decide(agentCall(ws.on, implementer), ws.tmp);
-  decide(subagentEvent(ws.on, "architecture:sdd-implementer"), ws.tmp);
-  decide(subagentEvent(ws.on, "architecture:sdd-implementer", "SubagentStart"), ws.tmp);
+  decide(subagentEvent(ws.on, "architecture-extras:sdd-implementer"), ws.tmp);
+  decide(subagentEvent(ws.on, "architecture-extras:sdd-implementer", "SubagentStart"), ws.tmp);
   assert.match(reasonOf(decide(agentCall(ws.on, implementer), ws.tmp)) ?? "", /holds the one implementer slot/);
 });
 
@@ -350,7 +350,7 @@ test("hooks.json runs the guard on Agent, SubagentStart and SubagentStop", () =>
 
 const slotCall = (cwd, toolUseId) => agentCall(cwd, implementer, { tool_use_id: toolUseId });
 const agentEvent = (cwd, agentId, hook_event_name) => ({
-  ...subagentEvent(cwd, "architecture:sdd-implementer", hook_event_name),
+  ...subagentEvent(cwd, "architecture-extras:sdd-implementer", hook_event_name),
   agent_id: agentId,
 });
 

@@ -8,10 +8,17 @@
   "plugins": [
     {
       "name": "architecture",
-      "description": "Bounded vertical slice architecture: the decision register, the gates that enforce it, and the hooks that hold an agent to it",
+      "description": "Core Codex work, fleet control, reviews and four hooks.",
       "version": "0.30.1",
       "category": "workflow",
       "source": "./"
+    },
+    {
+      "name": "architecture-extras",
+      "description": "Optional skills, agents, commands and hooks for the architecture kit.",
+      "version": "0.30.1",
+      "category": "workflow",
+      "source": "./plugins/architecture-extras"
     },
     {
       "name": "ai-chat-assistant",

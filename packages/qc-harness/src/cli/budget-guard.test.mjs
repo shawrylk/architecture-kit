@@ -114,7 +114,7 @@ function transcripts(ws, agentId, contexts, prompt = "Read the brief.") {
   return main;
 }
 
-const signalCall = (ws, main, agentType = "architecture:sdd-implementer", tool_name = "Bash", tool_input = { command: "npm test" }) => ({
+const signalCall = (ws, main, agentType = "architecture-extras:sdd-implementer", tool_name = "Bash", tool_input = { command: "npm test" }) => ({
   ...callOf(ws.linked, "a1", tool_name, tool_input),
   agent_type: agentType,
   transcript_path: main,

@@ -175,7 +175,7 @@
 ### Task 8: breaking-change questions, shorter skills, and cut rules
 
 **Files:**
-- Modify: `skills/codex/SKILL.md` (at most 100 lines), `skills/swarm/SKILL.md`
+- Modify: `skills/codex/SKILL.md` (at most 100 lines), `plugins/architecture-extras/skills/swarm/SKILL.md`
 - Modify: the CI-failure hold code (`ci-failures.mjs`), the per-scope review rule in `merge-guard.mjs`
 - New: `qc ask --issue <n> "<question>"`: adds a `needs-user` label and a comment.
 - Test: `ci-failures.test.mjs`, `merge-guard.test.mjs`, a docs test for the skill line count

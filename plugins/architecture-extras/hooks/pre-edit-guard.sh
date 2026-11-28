@@ -3,4 +3,4 @@
 # node script so it can parse the hook's JSON and emit a well-formed deny — see
 # packages/qc-harness/src/cli/work-order-guard.mjs.
 set -uo pipefail
-node "${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/work-order-guard.mjs"
+node "${QC_HARNESS_ROOT}/src/cli/work-order-guard.mjs"

@@ -141,10 +141,10 @@ test("wrappers, nested shells, changed directories, and multiple calls keep the 
 });
 
 test("the Bash PreToolUse hook runs the PR guard", () => {
-  const hooks = JSON.parse(readFileSync(new URL("../../../../hooks/hooks.json", import.meta.url), "utf8"));
-  const entry = hooks.hooks.PreToolUse.find((entry) => entry.hooks.some((hook) => hook.command.includes("/pr-guard.mjs")));
+  const hooks = JSON.parse(readFileSync(new URL("../../../../plugins/architecture-extras/hooks/hooks.json", import.meta.url), "utf8"));
+  const entry = hooks.hooks.PreToolUse.find((entry) => entry.hooks.some((hook) => hook.command.includes("pr-guard.mjs")));
   assert.equal(entry.matcher, "Bash");
-  assert.ok(entry.hooks.find((hook) => hook.command.includes("/pr-guard.mjs")).timeout >= 10);
+  assert.ok(entry.hooks.find((hook) => hook.command.includes("pr-guard.mjs")).timeout >= 10);
 });
 
 test("ready fails closed when the head or legs cannot be read", (t) => {

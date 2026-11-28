@@ -51,7 +51,7 @@ function commitIn(dir, name) {
   return git(dir, "rev-parse", "HEAD");
 }
 
-const dispatch = (cwd, prompt, subagent_type = "architecture:sdd-implementer", extra = {}) => ({
+const dispatch = (cwd, prompt, subagent_type = "architecture-extras:sdd-implementer", extra = {}) => ({
   session_id: "s",
   cwd,
   hook_event_name: "PreToolUse",
@@ -65,7 +65,7 @@ const implementerStop = (ws, head, branch = "feat/1-x", handoff = null) =>
   appendRecord(ws.ledger, {
     type: "stop",
     session: "s",
-    agentType: "architecture:sdd-implementer",
+    agentType: "architecture-extras:sdd-implementer",
     agentId: "a1",
     role: "implementer",
     branch,
@@ -111,7 +111,7 @@ test("with swarm.dispatch off, the gate passes and writes nothing", (t) => {
 
 test("a dispatch with no worktree line is recorded as no task, and the session remembers the checkout", (t) => {
   const ws = workspace(t);
-  for (const call of [dispatch(ws.main, "Plan it.", "architecture:sdd-planner"), dispatch(ws.main, `Read the brief.\nBrief: ${BRIEF}`)]) {
+  for (const call of [dispatch(ws.main, "Plan it.", "architecture-extras:sdd-planner"), dispatch(ws.main, `Read the brief.\nBrief: ${BRIEF}`)]) {
     const task = judgeTask(call, ws.tmp);
     assert.equal(task.refusal, null);
     assert.equal(recordDispatch(task), null);
@@ -285,7 +285,7 @@ test("the worktree may be spelled with forward slashes, and on Windows in any ca
 
 test("a subagent's own dispatch is left to its definition", (t) => {
   const ws = workspace(t);
-  assert.equal(dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked), "architecture:sdd-implementer", { agent_id: "agent-9" }), ws.tmp), null);
+  assert.equal(dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked), "architecture-extras:sdd-implementer", { agent_id: "agent-9" }), ws.tmp), null);
   assert.equal(existsSync(ws.ledger), false);
 });
 
@@ -293,7 +293,7 @@ test("an implementer the task gate refuses holds no implementer slot", (t) => {
   const ws = workspace(t);
   recordDispatch(judgeTask(dispatch(ws.main, taskPrompt(ws.linked)), ws.tmp));
   implementerStop(ws, commitIn(ws.linked, "b.txt"));
-  const output = dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked, "Runtime: claude test"), "architecture:sdd-implementer", { tool_use_id: "toolu_2" }), ws.tmp);
+  const output = dispatchDecide(dispatch(ws.main, taskPrompt(ws.linked, "Runtime: claude test"), "architecture-extras:sdd-implementer", { tool_use_id: "toolu_2" }), ws.tmp);
   assert.match(output?.hookSpecificOutput?.permissionDecisionReason ?? "", /^Task gate:/);
   const slots = path.join(ws.tmp, "architecture-kit", "dispatch");
   const claims = existsSync(slots) ? readdirSync(slots, { recursive: true }).filter((name) => String(name).endsWith(".claim")) : [];
@@ -352,7 +352,7 @@ test("a worktree in another repository is judged by that repository's workflow a
   assert.equal(recordDispatch(task), null);
   assert.deepEqual(readLedger(b.ledger).map((record) => [record.type, record.task, record.branch]), [["dispatch", true, "feat/9-o"]]);
   assert.equal(existsSync(ws.ledger), false, "the cwd repository's ledger stays untouched");
-  appendRecord(b.ledger, { type: "stop", session: "s", agentType: "architecture:sdd-implementer", agentId: "a9", role: "implementer", branch: "feat/9-o", head: commitIn(b.linked, "b.txt") });
+  appendRecord(b.ledger, { type: "stop", session: "s", agentType: "architecture-extras:sdd-implementer", agentId: "a9", role: "implementer", branch: "feat/9-o", head: commitIn(b.linked, "b.txt") });
   assert.match(judgeTask(dispatch(ws.main, taskPrompt(b.linked)), ws.tmp).refusal ?? "", /no review in the ledger/);
 });
 

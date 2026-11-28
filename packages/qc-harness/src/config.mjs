@@ -595,13 +595,13 @@ export const dispatchDefaults = {
     "sdd-planner",
     "sdd-reviewer",
     "sdd-branch-reviewer",
-    "architecture:sdd-implementer",
-    "architecture:sdd-planner",
+    "architecture-extras:sdd-implementer",
+    "architecture-extras:sdd-planner",
     "architecture:sdd-reviewer",
     "architecture:sdd-branch-reviewer",
   ],
   // Types that share the slots of a session.
-  implementerTypes: ["sdd-implementer", "architecture:sdd-implementer"],
+  implementerTypes: ["sdd-implementer", "architecture-extras:sdd-implementer"],
   // The longest prompt, in characters. A brief belongs in a file.
   maxPromptChars: 12000,
   // A slot with no stop expires after this many minutes.
@@ -617,11 +617,11 @@ const roleModels = (planning, working, other, watching = other) => ({
   codex: watching,
   "architecture:codex": watching,
   "sdd-planner": planning,
-  "architecture:sdd-planner": planning,
+  "architecture-extras:sdd-planner": planning,
   "sdd-branch-reviewer": planning,
   "architecture:sdd-branch-reviewer": planning,
   "sdd-implementer": working,
-  "architecture:sdd-implementer": working,
+  "architecture-extras:sdd-implementer": working,
   "sdd-reviewer": working,
   "architecture:sdd-reviewer": working,
   "*": other,
@@ -658,7 +658,7 @@ export const contextDefaults = {
   handoffRatio: 5,
   minCallsLeft: 15,
   repeatEvery: 20,
-  handoffTypes: ["sdd-implementer", "architecture:sdd-implementer", "general-purpose"],
+  handoffTypes: ["sdd-implementer", "architecture-extras:sdd-implementer", "general-purpose"],
 };
 
 export const PROMOTION_SCOPE = "promotion";
@@ -684,7 +684,7 @@ export const reviewDefaults = {
     branch: ["sdd-branch-reviewer", "architecture:sdd-branch-reviewer"],
   },
   // The agent types whose stop runs the plan check.
-  plannerTypes: ["sdd-planner", "architecture:sdd-planner"],
+  plannerTypes: ["sdd-planner", "architecture-extras:sdd-planner"],
   // Refuse a branch-reviewer dispatch with no `Reviewed: <sha>` line once the ledger holds a branch verdict on the branch.
   oneBranchReview: true,
   // Skill names, bare or after a `plugin:` prefix, that the model may not call. `[]` turns the check off.

@@ -42,7 +42,7 @@ node evals/agents/run.mjs --agent claude --tasks skill-activation --arm kit --ki
 ```
 
 The grader reads `transcript.jsonl` for an assistant `Skill` tool call with the exact expected skill name.
-The task expects `architecture:writing-plain-english` and records `expectedSkill` and `skillActivated` in `results.jsonl`.
+The task expects `architecture-extras:writing-plain-english` and records `expectedSkill` and `skillActivated` in `results.jsonl`.
 `solved` requires both the hidden guide tests and activation.
 A mention in text, a `Read` call, or a different skill earns no activation credit.
 Codex runs receive no activation credit because this grader requires the Claude `Skill` tool format.

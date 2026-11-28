@@ -116,15 +116,15 @@ test("restoration caps lines and characters and reports read errors without bloc
 });
 
 test("checkpoint has exactly one SessionStart hook", () => {
-  const hooks = JSON.parse(readFileSync(new URL("../../../../hooks/hooks.json", import.meta.url), "utf8"));
-  const entries = hooks.hooks.SessionStart.flatMap((entry) => entry.hooks).filter((hook) => hook.command.includes("/checkpoint.mjs"));
+  const hooks = JSON.parse(readFileSync(new URL("../../../../plugins/architecture-extras/hooks/hooks.json", import.meta.url), "utf8"));
+  const entries = hooks.hooks.SessionStart.flatMap((entry) => entry.hooks).filter((hook) => hook.command.includes("checkpoint.mjs"));
   assert.equal(entries.length, 1);
-  assert.match(hooks.description, /checkpoint/i);
+  assert.match(hooks.description, /Optional/i);
 });
 
 test("both orchestrator skills use the session checkpoint and its fixed headings", () => {
   for (const skill of ["codex", "swarm"]) {
-    const source = readFileSync(new URL(`../../../../skills/${skill}/SKILL.md`, import.meta.url), "utf8");
+    const source = readFileSync(new URL(`../../../../${skill === "codex" ? "" : "plugins/architecture-extras/"}skills/${skill}/SKILL.md`, import.meta.url), "utf8");
     assert.ok(source.includes("<git common dir>/qc/checkpoints/<session_id>.md"), skill);
     for (const heading of ["## Goal", "## Rules", "## Tasks", "## Next"]) assert.ok(source.includes(heading), `${skill}: ${heading}`);
     assert.doesNotMatch(source, /`checkpoint\.md` in the scratchpad/);

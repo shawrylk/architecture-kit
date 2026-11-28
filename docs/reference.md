@@ -7,16 +7,17 @@ The reference architecture: vertical slices over a thin shared kernel. Tenant is
 create, update and offline replay that are deliberately three different mechanisms. Every rule ships
 beside the check that enforces it — and every check ships a case that must fail.
 
-## Two halves
+## Package and plugins
 
 | | Install | Holds |
 |---|---|---|
-| Plugin `architecture` | `claude plugin install` | agent hooks, subagent types, skills, slash commands |
+| Plugin `architecture` | `claude plugin install` | core Codex work, fleet control, reviews and four hooks |
+| Plugin `architecture-extras` | optional `claude plugin install` | all other skills, agents, commands and hooks |
 | Package `architecture-harness` | `pnpm add -D` | gates, lint rules, the `qc` CLI, doc templates |
 
-The plugin's hooks call the package's CLI. Either half works alone: the package is an ordinary dev
-dependency. The plugin's hooks and kit skills apply only in repositories with a `qc.config.json`.
-The six global skills apply in every repository: `applying-engineering-standards`, `navigating-source-code`,
+Core hooks use the code shipped with core. Extras hooks use the installed npm package.
+Each hook keeps its own scope and opt-in settings. Kit skills apply in repositories with a `qc.config.json`.
+The six global skills in extras apply in every repository when extras is enabled: `applying-engineering-standards`, `navigating-source-code`,
 `registering-work`, `reviewing-before-merge`, `writing-decision-final-specs`, and `writing-plain-english`.
 The `claude/CLAUDE.core.md` template names these global rules; `qc setup` copies it into your Claude rules.
 
@@ -31,8 +32,25 @@ claude plugin marketplace add shawrylk/architecture-kit
 claude plugin install architecture@architecture-kit
 ```
 
-The plugin depends on [ai-chat-assistant](https://github.com/shawrylk/ai-chat-assistant),
-which has its own pinned GitHub entry in this marketplace.
+The core plugin has no plugin dependency. The marketplace still offers `ai-chat-assistant` as a separate install.
+
+Core includes agents `codex`, `sdd-reviewer` and `sdd-branch-reviewer`, skill `codex`, and command `fleet`.
+Its hooks are `comment-watch` on UserPromptSubmit and PostToolUse, `merge-guard` on PreToolUse, PostToolUse and PostToolUseFailure,
+`context-watch` on UserPromptSubmit and PostToolUse, and `bash-command-guard` on PreToolUse. Core has no Stop hook.
+On a Codex usage limit (exit 2), stop new starts and tell the owner.
+
+Extras is off by default. It holds agents `sdd-implementer` and `sdd-planner`; commands `adopt`, `check` and `feature`;
+and skills `architecture`, `enforcement`, `applying-engineering-standards`, `navigating-source-code`, `registering-work`,
+`reviewing-before-merge`, `security`, `swarm`, `writing-decision-final-specs` and `writing-plain-english`.
+It also holds all other hooks. Install the npm package in each project before you enable extras:
+
+```bash
+pnpm add -D architecture-harness --save-exact
+claude plugin install architecture-extras@architecture-kit
+```
+
+Extras hooks use that installed package. Their launcher and shell scripts are inside the extras install tree.
+The npm package keeps every CLI verb. The file `packages/qc-harness/src/gates/plain-language.mjs` keeps its path.
 
 The `sdd-*` subagent types and the `codex` skill follow the `subagent-driven-development` skill of the
 `superpowers` plugin. Install it if you use them:
@@ -389,7 +407,7 @@ note and exits 0.
 
 ### 6. Hold an agent to the same rules
 
-Install the plugin per [Install](#install) above, if you have not already.
+Install `architecture-extras` per [Install](#install) above to use the edit and Stop hooks. Core does not run these checks.
 
 A fast per-file pass runs after every edit: `qc lint` and `qc check` on the edited file. At the end
 of a turn, the stop gate runs `qc typecheck`, `qc lint` on the changed lines, and `qc check`. A red
@@ -555,7 +573,7 @@ section turns the signal off. When the hook finds no transcript for an agent, it
 | `handoffRatio` | `5` | the ratio for the hand-off note |
 | `minCallsLeft` | `15` | the calls of work the hand-off note needs left |
 | `repeatEvery` | `20` | the hand-off note repeats after this many calls |
-| `handoffTypes` | `["sdd-implementer", "architecture:sdd-implementer", "general-purpose"]` | the types that get the hand-off note |
+| `handoffTypes` | `["sdd-implementer", "architecture-extras:sdd-implementer", "general-purpose"]` | the types that get the hand-off note |
 
 Give each agent its own worktree under `.worktree/` in the main checkout (QC-015):
 
@@ -618,8 +636,8 @@ The plugin ships four subagent types for `superpowers:subagent-driven-developmen
 
 | Type | Model | Effort | Tools | Role |
 |---|---|---|---|---|
-| `architecture:sdd-planner` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | writes one plan and edits nothing else |
-| `architecture:sdd-implementer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
+| `architecture-extras:sdd-planner` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | writes one plan and edits nothing else |
+| `architecture-extras:sdd-implementer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell`, `Skill`, `Edit`, `Write` | implements one task from a brief file, and writes a report file |
 | `architecture:sdd-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews one task, read-only |
 | `architecture:sdd-branch-reviewer` | `inherit` | `high` | `Read`, `Grep`, `Glob`, `Bash`, `PowerShell` | reviews the whole branch before merge, read-only |
 | `architecture:codex` | `haiku` | none | `Bash` | requires the description prefix `Codex <model> · `; starts one `qc codex-implement` job and waits in bounded steps |
@@ -724,8 +742,8 @@ Load `architecture:codex` before the first implementer dispatch; the skill cover
 
 | Key | Default | Meaning |
 |---|---|---|
-| `allowedTypes` | the four types, bare and with the `architecture:` prefix | the types that may omit `model` |
-| `implementerTypes` | `["sdd-implementer", "architecture:sdd-implementer"]` | the types that share the slots |
+| `allowedTypes` | the four types, bare and with their core or extras plugin prefix | the types that may omit `model` |
+| `implementerTypes` | `["sdd-implementer", "architecture-extras:sdd-implementer"]` | the types that share the slots |
 | `maxPromptChars` | `12000` | the longest prompt, in characters |
 | `slotMinutes` | `60` | when a slot with no stop expires |
 | `implementerSlots` | `3` | how many implementers run at once in a session; a positive whole number |
@@ -777,7 +795,7 @@ Each diagnostic prints only when data exists; JSON includes `collapses` and `hoo
 #### Evaluate skill activation
 
 The manual agent eval includes `skill-activation`, which asks for a cart guide with and without the kit.
-Its grader requires an assistant `Skill` call naming `architecture:writing-plain-english` in the run transcript.
+Its grader requires an assistant `Skill` call naming `architecture-extras:writing-plain-english` in the run transcript.
 Text that mentions the skill earns no activation credit.
 The `noop` and `reference` controls prove failure and success with synthetic transcripts.
 The package test script runs the offline grader tests in CI; the eval itself never runs in CI.

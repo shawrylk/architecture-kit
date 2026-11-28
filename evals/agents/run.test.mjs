@@ -10,7 +10,7 @@ test("skill activation requires an assistant Skill call naming the exact expecte
   const dir = mkdtempSync(path.join(os.tmpdir(), "qc-skill-eval-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const transcript = path.join(dir, "run.jsonl");
-  const expected = "architecture:writing-plain-english";
+  const expected = "architecture-extras:writing-plain-english";
   const event = (name, skill, type = "assistant") => ({ type, message: {
     content: [{ type: "tool_use", name, input: { skill } }],
   } });

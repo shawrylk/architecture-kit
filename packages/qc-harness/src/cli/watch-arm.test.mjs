@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ARM_NOTE, decide } from "./watch-arm.mjs";
 
 const NOTE = fileURLToPath(new URL("./watch-arm.mjs", import.meta.url));
-const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
+const HOOKS = fileURLToPath(new URL("../../../../plugins/architecture-extras/hooks/hooks.json", import.meta.url));
 
 function checkouts(t, configs) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-dispatch-note-")));
@@ -82,6 +82,6 @@ test("hooks.json arms the watch on SessionStart without a matcher", () => {
   assert.deepEqual(entries.map((entry) => entry.matcher), [undefined]);
   const hook = entries[0].hooks.find((item) => item.command.includes("watch-arm.mjs"));
   assert.equal(hook.type, "command");
-  assert.equal(hook.command, 'node "${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/watch-arm.mjs"');
+  assert.equal(hook.command, 'node "${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs" watch-arm.mjs');
   assert.equal(hook.timeout, 10);
 });

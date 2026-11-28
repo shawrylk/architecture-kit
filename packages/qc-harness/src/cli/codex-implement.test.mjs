@@ -1199,7 +1199,7 @@ test("the codex agent's default command passes the runner's argument limits", ()
 });
 
 test("the sdd implementer names the e2e exit step beside the database step", () => {
-  const agent = readFileSync(new URL("../../../../agents/sdd-implementer.md", import.meta.url), "utf8");
+  const agent = readFileSync(new URL("../../../../plugins/architecture-extras/agents/sdd-implementer.md", import.meta.url), "utf8");
   assert.match(agent, /throwaway-db[^\n]+\n[^\n]*`check.e2e`[^\n]*`npx qc gate-slot -- npx qc throwaway-db -- npx qc e2e`/);
 });
 

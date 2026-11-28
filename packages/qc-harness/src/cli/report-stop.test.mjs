@@ -85,7 +85,7 @@ const denied = (output) => output?.hookSpecificOutput?.permissionDecisionReason 
 test("with swarm.dispatch off, or for another agent type, nothing is judged or written", (t) => {
   const ws = workspace(t);
   assert.equal(decide(handback(ws.plain, "architecture:sdd-reviewer", "no verdict"), ws.tmp), null);
-  assert.equal(decide(stop(ws.plain, "architecture:sdd-implementer", "done"), ws.tmp), null);
+  assert.equal(decide(stop(ws.plain, "architecture-extras:sdd-implementer", "done"), ws.tmp), null);
   assert.equal(decide(stop(ws.on, "Explore", "done"), ws.tmp), null);
   assert.equal(existsSync(ws.ledger), false);
 });
@@ -163,7 +163,7 @@ test("a reviewer stop with no hand-back and no verdict line is blocked", (t) => 
 
 test("an implementer report needs a RED line and a GREEN line", (t) => {
   const ws = workspace(t);
-  assert.match(denied(decide(handback(ws.on, "architecture:sdd-implementer", "DONE\nGREEN: 5 pass"), ws.tmp)) ?? "", /RED:/);
+  assert.match(denied(decide(handback(ws.on, "architecture-extras:sdd-implementer", "DONE\nGREEN: 5 pass"), ws.tmp)) ?? "", /RED:/);
   const blocked = decide(stop(ws.on, "sdd-implementer", "DONE\nRED: node --test x: 1 fail"), ws.tmp);
   assert.equal(blocked.decision, "block");
   assert.match(blocked.reason, /GREEN:/);
@@ -181,7 +181,7 @@ test("a stop whose cwd holds no config uses the checkout its session remembered"
 });
 
 test("the agent definitions ask for the lines the hook checks", () => {
-  const read = (name) => readFileSync(path.join(AGENTS, `${name}.md`), "utf8");
+  const read = (name) => readFileSync(new URL(`../../../../${name === "sdd-implementer" ? "plugins/architecture-extras/" : ""}agents/${name}.md`, import.meta.url), "utf8");
   assert.match(read("sdd-implementer"), /`RED:`/);
   assert.match(read("sdd-implementer"), /`GREEN:`/);
   assert.match(read("sdd-reviewer"), /VERDICT: APPROVED <sha>/);
@@ -211,7 +211,7 @@ function linkedTask(ws, t) {
   appendRecord(ws.ledger, {
     type: "dispatch",
     session: "s",
-    agentType: "architecture:sdd-implementer",
+    agentType: "architecture-extras:sdd-implementer",
     task: true,
     worktree: linked,
     branch: "feat/2-y",
@@ -225,7 +225,7 @@ const REPORT = "DONE\nRED: node --test x: 1 fail\nGREEN: node --test x: 1 pass";
 test("an implementer stop records the full head and the branch of the worktree its own prompt names", (t) => {
   const ws = workspace(t);
   const { head, linked } = linkedTask(ws, t);
-  assert.equal(decide(stop(ws.on, "architecture:sdd-implementer", REPORT, namesWorktree(ws, "i1", linked)), ws.tmp), null);
+  assert.equal(decide(stop(ws.on, "architecture-extras:sdd-implementer", REPORT, namesWorktree(ws, "i1", linked)), ws.tmp), null);
   const record = readLedger(ws.ledger).find((entry) => entry.type === "stop");
   assert.equal(record.head, head);
   assert.equal(record.branch, "feat/2-y");
@@ -236,7 +236,7 @@ test("an implementer stop records the full head and the branch of the worktree i
 test("an implementer stop whose prompt names no worktree writes no head and no branch, and says so", (t) => {
   const ws = workspace(t);
   linkedTask(ws, t);
-  assert.match(decide(stop(ws.on, "architecture:sdd-implementer", REPORT), ws.tmp)?.systemMessage ?? "", /records no head/);
+  assert.match(decide(stop(ws.on, "architecture-extras:sdd-implementer", REPORT), ws.tmp)?.systemMessage ?? "", /records no head/);
   const record = readLedger(ws.ledger).find((entry) => entry.type === "stop");
   assert.equal(record.head, undefined);
   assert.equal(record.branch, undefined);
@@ -251,7 +251,7 @@ test("a verdict on a commit several branches name takes the branch the dispatch'
 });
 
 const REVIEWER = "architecture:sdd-reviewer";
-const IMPLEMENTER = "architecture:sdd-implementer";
+const IMPLEMENTER = "architecture-extras:sdd-implementer";
 
 test("a stop that a block already held once ends with a message, and records nothing", (t) => {
   const ws = workspace(t);
@@ -486,12 +486,12 @@ test("an implementer that hands off reports a checked note in place of the RED a
   const ws = workspace(t);
   const note = path.join(ws.tmp, "handoffs", "t3-1.md");
   mkdirSync(path.dirname(note), { recursive: true });
-  const missing = decide(handback(ws.on, "architecture:sdd-implementer", `DONE_WITH_CONCERNS\nHANDOFF: ${note}`), ws.tmp);
+  const missing = decide(handback(ws.on, "architecture-extras:sdd-implementer", `DONE_WITH_CONCERNS\nHANDOFF: ${note}`), ws.tmp);
   assert.match(denied(missing) ?? "", /a hand-off note at .*t3-1\.md that exists and reads \(ENOENT\)/);
   writeFileSync(note, NOTE.replace("Head: 1a2b3c4\n", ""));
-  assert.match(denied(decide(handback(ws.on, "architecture:sdd-implementer", `DONE\nHANDOFF: ${note}`), ws.tmp)) ?? "", /a line `Head: <value>` in the hand-off note/);
+  assert.match(denied(decide(handback(ws.on, "architecture-extras:sdd-implementer", `DONE\nHANDOFF: ${note}`), ws.tmp)) ?? "", /a line `Head: <value>` in the hand-off note/);
   writeFileSync(note, NOTE);
-  assert.equal(decide(handback(ws.on, "architecture:sdd-implementer", `DONE\nHANDOFF: ${note}`), ws.tmp), null);
+  assert.equal(decide(handback(ws.on, "architecture-extras:sdd-implementer", `DONE\nHANDOFF: ${note}`), ws.tmp), null);
   const stopped = decide(stop(ws.on, "sdd-implementer", `DONE\nHANDOFF: ${note}`), ws.tmp);
   assert.equal(stopped?.decision, undefined);
   const [record] = readLedger(ws.ledger);
@@ -499,7 +499,7 @@ test("an implementer that hands off reports a checked note in place of the RED a
 });
 
 test("the implementer definition names the HANDOFF line and the resume from a note", () => {
-  const body = readFileSync(path.join(AGENTS, "sdd-implementer.md"), "utf8");
+  const body = readFileSync(new URL("../../../../plugins/architecture-extras/agents/sdd-implementer.md", import.meta.url), "utf8");
   assert.match(body, /`HANDOFF: <note path>`/);
   assert.match(body, /git log --oneline <Head>\.\.HEAD/);
 });

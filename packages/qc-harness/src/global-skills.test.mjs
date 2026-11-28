@@ -9,7 +9,7 @@ const PLUGIN = fileURLToPath(new URL("../../../", import.meta.url));
 
 test("each global skill has its folder name and a Use when description in its frontmatter", () => {
   for (const skill of GLOBAL_SKILLS) {
-    const text = readFileSync(`${PLUGIN}skills/${skill}/SKILL.md`, "utf8");
+    const text = readFileSync(`${PLUGIN}plugins/architecture-extras/skills/${skill}/SKILL.md`, "utf8");
     const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text)?.[1] ?? "";
     assert.equal(/^name: (.+)$/m.exec(frontmatter)?.[1], skill, skill);
     assert.match(frontmatter, /^description: "Use when/m, skill);
@@ -18,7 +18,7 @@ test("each global skill has its folder name and a Use when description in its fr
 
 test("global skill files contain no paths tied to a user's machine", () => {
   for (const skill of GLOBAL_SKILLS) {
-    const folder = `${PLUGIN}skills/${skill}`;
+    const folder = `${PLUGIN}plugins/architecture-extras/skills/${skill}`;
     for (const entry of readdirSync(folder, { recursive: true, withFileTypes: true })) {
       if (!entry.isFile()) continue;
       const path = join(entry.parentPath, entry.name);
@@ -28,21 +28,21 @@ test("global skill files contain no paths tied to a user's machine", () => {
 });
 
 test("shipped global skills use neutral text and optional source navigation tools", () => {
-  const registration = readFileSync(`${PLUGIN}skills/registering-work/SKILL.md`, "utf8");
+  const registration = readFileSync(`${PLUGIN}plugins/architecture-extras/skills/registering-work/SKILL.md`, "utf8");
   assert.doesNotMatch(registration, /performance review|employer|roleflow\//i);
   assert.match(registration, /merged pull request with no issue behind it leaves the work untracked/i);
-  const review = readFileSync(`${PLUGIN}skills/reviewing-before-merge/SKILL.md`, "utf8");
+  const review = readFileSync(`${PLUGIN}plugins/architecture-extras/skills/reviewing-before-merge/SKILL.md`, "utf8");
   assert.doesNotMatch(review, /Keep this bar local|Do not add it to a shared rules file/);
   assert.doesNotMatch(review, /suspend|early development|fast, cheap iteration/i);
   assert.match(review, /Run `\/code-review` against the pull request before it merges/);
-  const navigation = readFileSync(`${PLUGIN}skills/navigating-source-code/SKILL.md`, "utf8");
+  const navigation = readFileSync(`${PLUGIN}plugins/architecture-extras/skills/navigating-source-code/SKILL.md`, "utf8");
   assert.match(navigation, /gitnexus.*optional/i);
   assert.match(navigation, /^description: .*falling back to the Claude Code `Grep` and `Glob` tools/m);
   assert.match(navigation, /unavailable.*Claude Code `Grep` and `Glob` tools/i);
 });
 
 test("the plugin contains exactly the global skills and the kit skills", () => {
-  assert.deepEqual(readdirSync(`${PLUGIN}skills`).sort(), [
+  assert.deepEqual([...readdirSync(`${PLUGIN}skills`), ...readdirSync(`${PLUGIN}plugins/architecture-extras/skills`)].sort(), [
     ...GLOBAL_SKILLS,
     "architecture",
     "codex",

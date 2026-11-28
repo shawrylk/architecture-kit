@@ -9,7 +9,7 @@ import { dispatchSettingsAt, exploreSettingsAt, exploreToolLines } from "./dispa
 
 const reminder = (implementerSlots) =>
   "Subagent workflow (swarm.dispatch in qc.config.json): run a plan with superpowers:subagent-driven-development. " +
-  "Dispatch architecture:sdd-planner to write a plan, architecture:sdd-implementer for one task, and " +
+  "Dispatch architecture-extras:sdd-planner to write a plan, architecture-extras:sdd-implementer for one task, and " +
   "architecture:sdd-reviewer to review it; before merge, dispatch architecture:sdd-branch-reviewer to review the " +
   "whole branch. " +
   slotsRule(implementerSlots) + " Name a model on any other dispatch, and " +
@@ -30,7 +30,7 @@ export const CODEX_LINE =
   "When codex.requireApproval is true, an implement brief needs ## Design and Approved: <scout report>; the orchestrator enables it. " +
   "Every implement/tests run checks Paths, Design dependency names, and codex.maxDiffLines (default 400); split larger issues. " +
   "Forward --resume <session id> only when requested; each run logs its actual session id. " +
-  "On exit 2 (a Codex limit), dispatch the same brief to an architecture:sdd-implementer (sonnet). " +
+  "On exit 2 (a Codex limit), stop new starts and tell the owner. " +
   "Start each Agent description with `Codex <model> · ` for a codex type or `Claude <model> · ` for any other; " +
   "the guard refuses a codex dispatch while `qc codex status` shows a limit and requires `Runtime: claude <reason>` for an implementer dispatch while Codex is free. " +
   "Update the session checkpoint named by SessionStart before each dispatch and compaction; it is the source of truth for open work.";
@@ -52,7 +52,7 @@ const ROLES = ["sdd-planner", "sdd-implementer", "sdd-reviewer", "sdd-branch-rev
 
 /** One added line naming each role's models for the session's runtime, so a dispatch names the right one. */
 export function modelsLine({ models, runtime }) {
-  const roles = ROLES.map((role) => `${role} ${(models[`architecture:${role}`] ?? models[role] ?? models["*"] ?? ["the session's model"]).join(" or ")}`);
+  const roles = ROLES.map((role) => `${role} ${(models[`${["sdd-planner", "sdd-implementer"].includes(role) ? "architecture-extras" : "architecture"}:${role}`] ?? models[role] ?? models["*"] ?? ["the session's model"]).join(" or ")}`);
   const how = runtime === "claude" ? "Name that model on each dispatch: the guard refuses a role dispatch with no model." : "A role with no named model inherits the session's.";
   const where = runtime ? `the ${runtime} runtime` : "an unknown runtime (set QC_RUNTIME to claude or codex)";
   return ` Models for ${where}: ${roles.join(", ")}. ${how}`;

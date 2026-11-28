@@ -7,11 +7,11 @@ const core = readFileSync(new URL("../../../../user-config/claude/CLAUDE.core.md
 
 test("the core template requires review before merge", () => {
   assert.doesNotMatch(core, /suspend/i);
-  assert.ok(core.includes("**Review before merge.** Every pull request gets a review before it merges. `architecture:reviewing-before-merge` has the details."));
+  assert.ok(core.includes("**Review before merge.** Every pull request gets a review before it merges. `architecture-extras:reviewing-before-merge` has the details."));
 });
 
 test("the review skill supplies a route when the guard denies code-review", () => {
-  const skill = readFileSync(new URL("../../../../skills/reviewing-before-merge/SKILL.md", import.meta.url), "utf8");
+  const skill = readFileSync(new URL("../../../../plugins/architecture-extras/skills/reviewing-before-merge/SKILL.md", import.meta.url), "utf8");
   assert.match(skill, /guard.*denies.*`\/code-review`.*`architecture:sdd-branch-reviewer`.*user.*`\/code-review`/);
 });
 
@@ -31,7 +31,7 @@ test("the core template excludes setup markers", () => {
 
 for (const name of GLOBAL_SKILLS) {
   test(`the core template qualifies every reference to ${name}`, () => {
-    assert.ok(core.includes(`architecture:${name}`));
-    assert.doesNotMatch(core, new RegExp("(?<!architecture:)\\b" + name + "\\b"));
+    assert.ok(core.includes(`architecture-extras:${name}`));
+    assert.doesNotMatch(core, new RegExp("(?<!architecture-extras:)\\b" + name + "\\b"));
   });
 }

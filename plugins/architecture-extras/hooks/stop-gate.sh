@@ -116,11 +116,11 @@ trap 'rm -rf "$LOGS"' EXIT
 if [ -f "$ROOT/node_modules/architecture-harness/src/cli/qc.mjs" ]; then
   QC_CLI="$ROOT/node_modules/architecture-harness/src/cli/qc.mjs"
 else
-  QC_CLI="${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"
+  QC_CLI="${QC_HARNESS_ROOT}/src/cli/qc.mjs"
 fi
 # `qc typecheck` and `qc lint` came after `check`: an installed harness too old to carry them leaves
 # both to the bundled copy, which reads only this repository's own tsc and ESLint.
-if [ -f "$(dirname "$QC_CLI")/lint-changed.mjs" ]; then TOOL_CLI="$QC_CLI"; else TOOL_CLI="${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli/qc.mjs"; fi
+if [ -f "$(dirname "$QC_CLI")/lint-changed.mjs" ]; then TOOL_CLI="$QC_CLI"; else TOOL_CLI="${QC_HARNESS_ROOT}/src/cli/qc.mjs"; fi
 # A real newline, so the failure text prints as it is, backslashes and all.
 NL=$'\n'
 FAIL=""
@@ -142,7 +142,7 @@ node "$TOOL_CLI" lint >"$LOGS/lint" 2>&1 || {
 # A copy too old to carry `doctor` answers with its usage text and exit 1, which is not drift.
 # Probe for the file, so "no doctor here" stays distinguishable from "doctor says no".
 DOCTOR=""
-for candidate in "$ROOT/node_modules/architecture-harness/src/cli" "${CLAUDE_PLUGIN_ROOT}/packages/qc-harness/src/cli"; do
+for candidate in "$ROOT/node_modules/architecture-harness/src/cli" "${QC_HARNESS_ROOT}/src/cli"; do
   if [ -f "$candidate/doctor.mjs" ]; then DOCTOR="$candidate/qc.mjs"; break; fi
 done
 if [ -n "$DOCTOR" ] && ! node "$DOCTOR" doctor >"$LOGS/doctor" 2>&1; then

@@ -221,7 +221,7 @@ function fakeSession(t) {
   mkdirSync(subagents, { recursive: true });
   writeFileSync(path.join(projectDir, "s1.jsonl"), `${line("m1", 0, 0, 500)}\n`);
   writeFileSync(path.join(subagents, "agent-a1.jsonl"), `${line("i1", 0, 0, 1000)}\n${line("i1", 0, 0, 1000)}\n${line("i2", 1, 1000, 100)}\n`);
-  writeFileSync(path.join(subagents, "agent-a1.meta.json"), JSON.stringify({ agentType: "architecture:sdd-implementer" }));
+  writeFileSync(path.join(subagents, "agent-a1.meta.json"), JSON.stringify({ agentType: "architecture-extras:sdd-implementer" }));
   writeFileSync(path.join(subagents, "agent-a2.jsonl"), `${line("r1", 2, 0, 300)}\n`);
   writeFileSync(path.join(subagents, "notes.jsonl"), `${line("z1", 3, 0, 9)}\n`);
   const older = path.join(projectDir, "s0.jsonl");
@@ -333,8 +333,8 @@ test("qc tokens --json reports each type once per request, and an agent with no 
   const report = JSON.parse(lines.join("\n"));
   assert.equal(report.session, "s1");
   const byType = Object.fromEntries(report.types.map((stats) => [stats.type, stats]));
-  assert.deepEqual(Object.keys(byType), ["main", "architecture:sdd-implementer", "unknown"]);
-  assert.equal(byType["architecture:sdd-implementer"].calls, 2);
+  assert.deepEqual(Object.keys(byType), ["main", "architecture-extras:sdd-implementer", "unknown"]);
+  assert.equal(byType["architecture-extras:sdd-implementer"].calls, 2);
   assert.equal(byType.unknown.calls, 1);
 });
 
@@ -343,7 +343,7 @@ test("qc tokens prints a table with a footer that names the rates", (t) => {
   const lines = [];
   assert.equal(runTokens({ root: project }, ["--claude-dir", dir, "--session", "s1"], (text) => lines.push(text)), 0);
   const text = lines.join("\n");
-  assert.match(text, /architecture:sdd-implementer/);
+  assert.match(text, /architecture-extras:sdd-implementer/);
   assert.match(text, /total/);
   assert.match(text, /API list prices/);
   assert.match(text, /subagentPromptCacheTtl/);

@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "hooks", "stop-gate.sh");
+const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "plugins", "architecture-extras", "hooks", "stop-gate.sh");
 
 /**
  * A qc CLI stub that logs `<label> <command>` and exits with the code given for that command.
@@ -32,7 +32,7 @@ function stubHarness(cliDir, label, log, codes, withDoctor, outputs = {}) {
 /** A repository that adopted the kit, and a plugin whose bundled copy is older: its `check` fails. */
 function workspace(t, installed) {
   const base = realpathSync.native(mkdtempSync(path.join(os.tmpdir(), "qc-stop-gate-")));
-  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const repo = path.join(base, "repo");
   mkdirSync(repo, { recursive: true });
   writeFileSync(path.join(repo, "qc.config.json"), "{}");
@@ -56,7 +56,7 @@ function workspace(t, installed) {
       env: {
         ...process.env,
         CLAUDE_PROJECT_DIR: repo,
-        CLAUDE_PLUGIN_ROOT: pluginRoot,
+        CLAUDE_PLUGIN_ROOT: pluginRoot, QC_HARNESS_ROOT: path.join(pluginRoot, "packages", "qc-harness"),
         QC_STOP_EXTRA: "",
         TMPDIR: tmp,
         TEMP: tmp,
@@ -395,7 +395,7 @@ test("two checkout roots do not share a fingerprint", (t) => {
   const runIn = (ws) =>
     spawnSync("bash", [HOOK], {
       input: JSON.stringify({ hook_event_name: "Stop" }),
-      env: { ...process.env, CLAUDE_PROJECT_DIR: ws.repo, CLAUDE_PLUGIN_ROOT: path.join(path.dirname(ws.tmpDir), "plugin"), QC_STOP_EXTRA: "", ...shared },
+      env: { ...process.env, CLAUDE_PROJECT_DIR: ws.repo, CLAUDE_PLUGIN_ROOT: path.join(path.dirname(ws.tmpDir), "plugin"), QC_HARNESS_ROOT: path.join(path.dirname(ws.tmpDir), "plugin", "packages", "qc-harness"), QC_STOP_EXTRA: "", ...shared },
       encoding: "utf8",
     });
   runIn(a);

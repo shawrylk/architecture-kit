@@ -16,7 +16,7 @@ process.env.QC_RUNTIME = "codex";
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, stdio: "pipe", encoding: "utf8" }).trim();
 const BRANCH_REVIEWER = "architecture:sdd-branch-reviewer";
 const TASK_REVIEWER = "architecture:sdd-reviewer";
-const IMPLEMENTER = "architecture:sdd-implementer";
+const IMPLEMENTER = "architecture-extras:sdd-implementer";
 const green = () => ({ reason: null, unknown: null });
 
 /** A checkout with an origin that holds main, and a linked worktree on feat/1-x that starts at main. */

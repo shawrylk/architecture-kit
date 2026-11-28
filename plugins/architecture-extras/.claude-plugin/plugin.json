@@ -1,0 +1,5 @@
+{
+  "name": "architecture-extras",
+  "description": "Optional skills, agents, commands and hooks for the architecture kit.",
+  "version": "0.30.1"
+}

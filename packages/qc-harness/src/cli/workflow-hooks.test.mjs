@@ -7,12 +7,14 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HOOKS = fileURLToPath(new URL("../../../../hooks/hooks.json", import.meta.url));
-const HOOKS_DIR = path.dirname(HOOKS);
+const HOOKS_DIR = fileURLToPath(new URL("../../../../plugins/architecture-extras/hooks/", import.meta.url));
 const CLI = fileURLToPath(new URL(".", import.meta.url));
 const { hooks } = JSON.parse(readFileSync(HOOKS, "utf8"));
+const { hooks: optional } = JSON.parse(readFileSync(path.join(HOOKS_DIR, "hooks.json"), "utf8"));
+for (const [event, groups] of Object.entries(optional)) hooks[event] = [...(hooks[event] ?? []), ...groups];
 
 const matchersOf = (event, script) =>
-  (hooks[event] ?? []).filter((entry) => entry.hooks.some((hook) => hook.command.includes(`/${script}"`))).map((entry) => entry.matcher);
+  (hooks[event] ?? []).filter((entry) => entry.hooks.some((hook) => hook.command.includes(script))).map((entry) => entry.matcher);
 
 test("hooks.json runs each workflow check on its events", () => {
   assert.deepEqual(matchersOf("PreToolUse", "controller-guard.mjs"), ["Write|Edit|MultiEdit|NotebookEdit"]);
@@ -31,7 +33,7 @@ test("hooks.json runs each workflow check on its events", () => {
 test("every node script hooks.json names exists", () => {
   const scripts = Object.values(hooks)
     .flat()
-    .flatMap((entry) => entry.hooks.map((hook) => /src\/cli\/([a-z-]+\.mjs)/.exec(hook.command)?.[1]))
+    .flatMap((entry) => entry.hooks.map((hook) => (hook.command.endsWith(".mjs") ? hook.command.split(" ").at(-1) : /src\/cli\/([a-z-]+\.mjs)/.exec(hook.command)?.[1])))
     .filter(Boolean);
   for (const script of new Set(scripts)) assert.ok(existsSync(path.join(CLI, script)), script);
 });
@@ -45,7 +47,7 @@ test("every hook script in src/cli is registered, in hooks.json or in a shell ho
   const entries = readdirSync(CLI).filter((file) => file.endsWith(".mjs") && !file.endsWith(".test.mjs"))
     .filter((file) => /\bisEntryPoint\b/.test(readFileSync(path.join(CLI, file), "utf8")));
   assert.ok(entries.length >= 15, `found only ${entries.length} hook entries`);
-  const unregistered = entries.filter((file) => !registered.includes(`/${file}\\"`) && !shellHooks.includes(file));
+  const unregistered = entries.filter((file) => !registered.includes(file) && !shellHooks.includes(file));
   assert.deepEqual(unregistered, [], "each hook entry point must be registered, or it never runs");
 });
 
@@ -88,9 +90,9 @@ test("workflow scripts stay silent without swarm.dispatch, and the merge guard d
 
 test("hooks.json runs the skill guard on the Skill tool, and gives the dispatch guard time for its git and gh reads", () => {
   assert.deepEqual(matchersOf("PreToolUse", "skill-guard.mjs"), ["Skill"]);
-  const entry = hooks.PreToolUse.find((candidate) => candidate.hooks.some((hook) => hook.command.includes("/dispatch-guard.mjs\"")));
+  const entry = hooks.PreToolUse.find((candidate) => candidate.hooks.some((hook) => hook.command.includes("dispatch-guard.mjs")));
   assert.equal(entry.matcher, "Agent");
-  assert.equal(entry.hooks.find((hook) => hook.command.includes("/dispatch-guard.mjs\"")).timeout, 30);
+  assert.equal(entry.hooks.find((hook) => hook.command.includes("dispatch-guard.mjs")).timeout, 30);
 });
 
 test("the skill guard is silent without swarm.dispatch, and denies a code-review skill with it", (t) => {
@@ -129,6 +131,6 @@ test("only the command and merge PreToolUse guards add REPL to their matchers", 
   assert.deepEqual(matchersOf("PreToolUse", "bash-command-guard.mjs"), ["Bash|PowerShell|REPL"]);
   const replHooks = Object.entries(hooks).flatMap(([event, entries]) => entries
     .filter((entry) => entry.matcher?.split("|").includes("REPL"))
-    .flatMap((entry) => entry.hooks.map((hook) => [event, /src\/cli\/([a-z-]+\.mjs)/.exec(hook.command)?.[1]])));
+    .flatMap((entry) => entry.hooks.map((hook) => [event, (hook.command.endsWith(".mjs") ? hook.command.split(" ").at(-1) : /src\/cli\/([a-z-]+\.mjs)/.exec(hook.command)?.[1])])));
   assert.deepEqual(replHooks, [["PreToolUse", "bash-command-guard.mjs"], ["PreToolUse", "merge-guard.mjs"]]);
 });

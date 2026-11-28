@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "hooks", "post-edit-gate.sh");
+const HOOK = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "plugins", "architecture-extras", "hooks", "post-edit-gate.sh");
 
 /** A session's project checkout, one linked worktree, a checkout with no config, a folder in none, and a qc CLI that records where it ran. */
 function workspace() {
@@ -33,7 +33,7 @@ function workspace() {
   );
   // The hook calls the CLI twice, for lint and for check; each folder it ran in counts once.
   const ranIn = () => (existsSync(log) ? [...new Set(readFileSync(log, "utf8").trim().split("\n").map((dir) => realpathSync.native(dir)))] : []);
-  return { project, linked, plain, outside, pluginRoot: path.join(base, "plugin"), ranIn, cleanup: () => rmSync(base, { recursive: true, force: true }) };
+  return { project, linked, plain, outside, pluginRoot: path.join(base, "plugin"), ranIn, cleanup: () => rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 function runHook(ws, file, featureDir = "features") {
@@ -42,7 +42,7 @@ function runHook(ws, file, featureDir = "features") {
   writeFileSync(featureFile, "export {};\n");
   return spawnSync("bash", [HOOK], {
     input: JSON.stringify({ tool_input: { file_path: featureFile } }),
-    env: { ...process.env, CLAUDE_PROJECT_DIR: ws.project, CLAUDE_PLUGIN_ROOT: ws.pluginRoot },
+    env: { ...process.env, CLAUDE_PROJECT_DIR: ws.project, QC_HARNESS_ROOT: path.join(ws.pluginRoot, "packages", "qc-harness"), CLAUDE_PLUGIN_ROOT: ws.pluginRoot },
     encoding: "utf8",
   }).status;
 }

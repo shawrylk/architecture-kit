@@ -9,7 +9,7 @@ import { readLedger } from "./ledger.mjs";
 import { decide, planPathOf } from "./plan-stop.mjs";
 
 const HOOK = fileURLToPath(new URL("./plan-stop.mjs", import.meta.url));
-const PLANNER = fileURLToPath(new URL("../../../../agents/sdd-planner.md", import.meta.url));
+const PLANNER = fileURLToPath(new URL("../../../../plugins/architecture-extras/agents/sdd-planner.md", import.meta.url));
 const GOOD = [
   "# Plan",
   "",
@@ -46,7 +46,7 @@ const handback = (cwd, message, event = "PreToolUse") => ({
   tool_name: "SubagentHandback",
   tool_input: { message },
   agent_id: "planner-1",
-  agent_type: "architecture:sdd-planner",
+  agent_type: "architecture-extras:sdd-planner",
 });
 const stop = (cwd, last, active = false) => ({
   session_id: "s",

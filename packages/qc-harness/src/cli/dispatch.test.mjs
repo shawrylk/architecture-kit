@@ -47,9 +47,9 @@ test("a wrong value names its key", () => {
 });
 
 test("a repository's models merges key by key with the defaults", () => {
-  const settings = dispatchSettings({ dispatch: { models: { "architecture:sdd-planner": ["sonnet"] } } });
-  assert.deepEqual(settings.models["architecture:sdd-planner"], ["sonnet"]);
-  assert.deepEqual(settings.models["architecture:sdd-implementer"], runtimeModels.codex["architecture:sdd-implementer"]);
+  const settings = dispatchSettings({ dispatch: { models: { "architecture-extras:sdd-planner": ["sonnet"] } } });
+  assert.deepEqual(settings.models["architecture-extras:sdd-planner"], ["sonnet"]);
+  assert.deepEqual(settings.models["architecture-extras:sdd-implementer"], runtimeModels.codex["architecture-extras:sdd-implementer"]);
 });
 
 test("familyOf finds the first known family a model string contains, lower-cased", () => {
@@ -77,7 +77,7 @@ test("a dispatch with neither a model nor an allowed type is refused, and the re
     const reason = dispatchRefusal(input, on) ?? "";
     assert.match(reason, /names no model/, JSON.stringify(input));
     assert.match(reason, /swarm\.dispatch\.allowedTypes/);
-    assert.match(reason, /architecture:sdd-implementer/);
+    assert.match(reason, /architecture-extras:sdd-implementer/);
   }
 });
 
@@ -106,12 +106,12 @@ test("the model rule comes before the length rule", () => {
 });
 
 test("a planner on sonnet is refused, and an implementer on opus is refused", () => {
-  const planner = dispatchRefusal({ subagent_type: "architecture:sdd-planner", model: "sonnet" }, on) ?? "";
-  assert.match(planner, /architecture:sdd-planner/);
+  const planner = dispatchRefusal({ subagent_type: "architecture-extras:sdd-planner", model: "sonnet" }, on) ?? "";
+  assert.match(planner, /architecture-extras:sdd-planner/);
   assert.match(planner, /"sonnet"/);
   assert.match(planner, /gpt-6\.1-sol/);
-  const implementer = dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "opus" }, on) ?? "";
-  assert.match(implementer, /architecture:sdd-implementer/);
+  const implementer = dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", model: "opus" }, on) ?? "";
+  assert.match(implementer, /architecture-extras:sdd-implementer/);
   assert.match(implementer, /"opus"/);
   assert.match(implementer, /gpt-6\.1-sol/);
 });
@@ -141,11 +141,11 @@ test("a fork keeps its current rule and never reaches the tier check", () => {
 });
 
 test("a repository override replaces one type's families and leaves the rest at default", () => {
-  const withOverride = dispatchSettings({ dispatch: { models: { "architecture:sdd-planner": ["sonnet"] } } });
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-planner", model: "sonnet" }, withOverride), null);
+  const withOverride = dispatchSettings({ dispatch: { models: { "architecture-extras:sdd-planner": ["sonnet"] } } });
+  assert.equal(dispatchRefusal({ subagent_type: "architecture-extras:sdd-planner", model: "sonnet" }, withOverride), null);
   assert.match(
-    dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "opus" }, withOverride) ?? "",
-    /architecture:sdd-implementer/,
+    dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", model: "opus" }, withOverride) ?? "",
+    /architecture-extras:sdd-implementer/,
   );
 });
 
@@ -153,7 +153,7 @@ test("an omitted type is general-purpose, and only a listed type is an implement
   assert.equal(typeOf({}), "general-purpose");
   assert.equal(typeOf({ subagent_type: "" }), "general-purpose");
   assert.equal(typeOf({ subagent_type: " \t" }), "general-purpose");
-  assert.equal(isImplementer("architecture:sdd-implementer", on), true);
+  assert.equal(isImplementer("architecture-extras:sdd-implementer", on), true);
   assert.equal(isImplementer("sdd-implementer", on), true);
   assert.equal(isImplementer("architecture:sdd-reviewer", on), false);
 });
@@ -221,10 +221,10 @@ test("exploreToolLines gives one `- name: use (how)` line per tool, in config or
 
 test("a shipped type that names a full model id gets a cache note, never a refusal", () => {
   const settings = { ...dispatchDefaults };
-  const note = dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "claude-sonnet-5", prompt: "x" }, settings);
+  const note = dispatchNote({ subagent_type: "architecture-extras:sdd-implementer", model: "claude-sonnet-5", prompt: "x" }, settings);
   assert.match(note, /share no prompt cache/);
-  assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", model: "gpt-6.1-sol", prompt: "x" }, settings), null);
-  assert.equal(dispatchNote({ subagent_type: "architecture:sdd-implementer", prompt: "x" }, settings), null);
+  assert.equal(dispatchNote({ subagent_type: "architecture-extras:sdd-implementer", model: "gpt-6.1-sol", prompt: "x" }, settings), null);
+  assert.equal(dispatchNote({ subagent_type: "architecture-extras:sdd-implementer", prompt: "x" }, settings), null);
   assert.equal(dispatchNote({ subagent_type: "general-purpose", model: "claude-sonnet-5", prompt: "x" }, settings), null);
 });
 
@@ -260,23 +260,23 @@ test("under Claude Code the no-model refusal covers only the four roles, not ano
 
 test("under Claude Code each role takes its Claude tier, and a role dispatch must name it", () => {
   const settings = dispatchSettings({ dispatch: {} }, "claude");
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "p" }, settings), null);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", model: "sonnet", prompt: "p" }, settings), null);
   assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-branch-reviewer", model: "opus", prompt: "p" }, settings), null);
-  assert.match(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "gpt-6.1-sol" }, settings) ?? "", /may run only on sonnet/);
-  assert.match(dispatchRefusal({ subagent_type: "architecture:sdd-planner", prompt: "p" }, settings) ?? "", /inherits the session's model.*Pass `model` with opus/);
+  assert.match(dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", model: "gpt-6.1-sol" }, settings) ?? "", /may run only on sonnet/);
+  assert.match(dispatchRefusal({ subagent_type: "architecture-extras:sdd-planner", prompt: "p" }, settings) ?? "", /inherits the session's model.*Pass `model` with opus/);
   assert.equal(dispatchRefusal({ subagent_type: "Explore", model: "haiku", prompt: "p" }, settings), null);
 });
 
 test("under Codex a role dispatch with no model inherits the session's GPT model", () => {
   const settings = dispatchSettings({ dispatch: {} }, "codex");
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", prompt: "p" }, settings), null);
-  assert.match(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet" }, settings) ?? "", /may run only on gpt-6\.1-sol/);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", prompt: "p" }, settings), null);
+  assert.match(dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", model: "sonnet" }, settings) ?? "", /may run only on gpt-6\.1-sol/);
 });
 
 test("an unknown runtime refuses a named model with no listed families, and a repository's models still apply", () => {
   const unknown = dispatchSettings({ dispatch: {} }, null);
-  assert.match(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet" }, unknown) ?? "", /runtime is unknown.*QC_RUNTIME/);
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", prompt: "p" }, unknown), null);
-  const listed = dispatchSettings({ dispatch: { models: { "architecture:sdd-implementer": ["sonnet"] } } }, null);
-  assert.equal(dispatchRefusal({ subagent_type: "architecture:sdd-implementer", model: "sonnet", prompt: "p" }, listed), null);
+  assert.match(dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", model: "sonnet" }, unknown) ?? "", /runtime is unknown.*QC_RUNTIME/);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", prompt: "p" }, unknown), null);
+  const listed = dispatchSettings({ dispatch: { models: { "architecture-extras:sdd-implementer": ["sonnet"] } } }, null);
+  assert.equal(dispatchRefusal({ subagent_type: "architecture-extras:sdd-implementer", model: "sonnet", prompt: "p" }, listed), null);
 });

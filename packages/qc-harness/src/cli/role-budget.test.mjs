@@ -32,7 +32,7 @@ test("the orchestrator reminds exactly at compactAt", () => {
 
 test("budgetRoleOf resolves the configured roles only while dispatch is on", () => {
   for (const [agentType, role] of [
-    ["architecture:sdd-implementer", "implementer"],
+    ["architecture-extras:sdd-implementer", "implementer"],
     ["architecture:sdd-reviewer", "reviewer"],
     ["sdd-branch-reviewer", "reviewer"],
     ["general-purpose", null],
@@ -43,7 +43,7 @@ test("budgetRoleOf resolves the configured roles only while dispatch is on", () 
   const swarm = { dispatch: { implementerTypes: ["builder"] }, review: { reviewerTypes: { task: ["checker"] } } };
   assert.equal(budgetRoleOf("builder", swarm), "implementer");
   assert.equal(budgetRoleOf("checker", swarm), "reviewer");
-  assert.equal(budgetRoleOf("architecture:sdd-implementer", swarm), null);
+  assert.equal(budgetRoleOf("architecture-extras:sdd-implementer", swarm), null);
 });
 
 test("the role budget reminds at the line once", () => {
