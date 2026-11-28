@@ -419,6 +419,27 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
 });
 
+test("serve passes checkout repository to the worker job tick", async t => {
+  const root = fixture(t), sent = [];
+  let tick;
+  const server = await serveNode({ root, fleet, repo: "o/r", clock: () => now,
+    gh: apiResponse, listen: { port: 0 }, timer: fn => { tick = fn; }, clearTimer: () => {},
+    onSignal: () => {}, offSignal: () => {},
+    fetch: async (_url, options) => { sent.push(JSON.parse(options.body)); return { status: 202 }; } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  writeState(root, "peers", { b: { leader: true, term: 1, time: now } });
+  for (const repo of ["other/repo", "o/r"]) {
+    writeState(root, "queue", [message({ repo, kind: "codex-job", body: {
+      id: "job-1", branch: "feat/job", base: "main", brief: "brief", rounds: 1,
+    } })]);
+    await tick();
+    for (let n = 0; n < 12; n++) await new Promise(resolve => setImmediate(resolve));
+    const result = sent.filter(row => row.kind === "codex-result").at(-1);
+    assert.equal(result.body.state, "refused");
+    assert.equal(result.body.reason, repo === "o/r" ? "no free job slots" : "repository does not match worker checkout");
+  }
+});
+
 test("serve advertises a hostname as its bound IPv4 to a receiver, refreshes the same fleet for HTTP, heartbeats and expiry, and closes discovery on shutdown", async t => {
   const { createBeacon, readDiscovered, startDiscovery } = await import("./fleet-discover.mjs");
   const order = getDefaultResultOrder();

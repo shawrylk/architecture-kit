@@ -585,7 +585,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       dispatchTick({ root, fleet, clock });
       void platformTick({ ...platform, root, fleet, clock, gh, fetch, signal: sends.signal, warn })
         .catch(error => warn(`fleet platform: ${error.message}`));
-      void jobsTick({ root, fleet, clock, fetch, signal: sends.signal, warn }).catch(error => warn(`fleet jobs: ${error.message}`));
+      void jobsTick({ root, fleet, repo, clock, fetch, signal: sends.signal, warn }).catch(error => warn(`fleet jobs: ${error.message}`));
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
         allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) });
       if (!closing && clock() >= nextAssign) {

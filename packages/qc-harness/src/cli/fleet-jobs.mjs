@@ -154,7 +154,7 @@ async function executeJob(context, row, entry) {
 }
 /** Remove a queue row before the first await, then reserve one slot for each job. */
 export async function jobsTick(context) {
-  const { root, fleet, clock = Date.now, git = runGit, signal, warn = console.error } = context;
+  const { root, fleet, repo, clock = Date.now, git = runGit, signal, warn = console.error } = context;
   if (ticks.has(root) || signal?.aborted) return;
   ticks.add(root);
   try {
@@ -164,6 +164,7 @@ export async function jobsTick(context) {
     const body = message.body, row = { id: validJobId(body?.id) ? body.id : "invalid", repo: message.repo, leader: message.from };
     const leader = jobLeader(root, clock(), fleet.self);
     if (message.from !== leader) { await result(context, row, "refused", { reason: "sender is not current leader" }); return; }
+    if (!repo || message.repo !== repo) { await result(context, row, "refused", { reason: "repository does not match worker checkout" }); return; }
     if (message.kind === "codex-cancel") {
       if (!body || !validJobId(body.id) || Object.keys(body).some(key => key !== "id")) return;
       const entry = running.get(root)?.get(body.id);

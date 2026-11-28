@@ -19,7 +19,7 @@ function fixture(t) {
   const sent = [], calls = [];
   let release;
   const pending = new Promise(resolve => { release = resolve; });
-  const deps = { root, fleet, clock: () => now, warn: () => {},
+  const deps = { root, fleet, repo: "o/r", clock: () => now, warn: () => {},
     fetch: async (_url, opts) => { sent.push(JSON.parse(opts.body)); return { status: 202 }; },
     git: async (cwd, ...args) => { calls.push([cwd, ...args]); return { stdout: args[0] === "rev-parse" ? head : "" }; },
     loop: async (_cwd, _args, { signal }) => { calls.push(["loop", _args]); return Promise.race([pending, new Promise(resolve => signal.addEventListener("abort", () => resolve({ code: 1 }), { once: true }))]); } };
@@ -47,6 +47,30 @@ for (const rule of ["disabled", "full", "limited", "known", "local", "origin", "
     await jobsTick(f.deps);
     assert.equal(f.sent.at(-1).body.state, "refused");
     assert.ok(!f.calls.some(row => row.includes("worktree")));
+  });
+}
+for (const repo of ["other/repo"]) {
+  test(`worker refuses job repository ${repo} before git`, async t => {
+    const f = fixture(t);
+    writeState(f.root, "queue", [{ id: "foreign", repo, from: "leader", kind: "codex-job", body: f.body }]);
+    await jobsTick(f.deps); await f.settle();
+    assert.equal(f.sent.at(-1).body.state, "refused");
+    assert.match(f.sent.at(-1).body.reason, /repository/);
+    assert.equal(f.calls.length, 0);
+    assert.deepEqual(readState(f.root, "jobs-local"), {});
+    assert.equal(readState(f.root, "queue").length, 0);
+  });
+  test(`worker refuses cancellation repository ${repo}`, async t => {
+    const f = fixture(t); f.queue(); await jobsTick(f.deps); await f.settle();
+    writeState(f.root, "queue", [{ id: "foreign", repo, from: "leader", kind: "codex-cancel", body: { id: "job-1" } }]);
+    await jobsTick(f.deps); await f.settle();
+    assert.equal(jobsHeartbeat(f.root).live, 1);
+    assert.equal(f.sent.at(-1).body.state, "refused");
+    assert.match(f.sent.at(-1).body.reason, /repository/);
+    writeState(f.root, "queue", [{ id: "cancel", repo: "o/r", from: "leader", kind: "codex-cancel", body: { id: "job-1" } }]);
+    await jobsTick(f.deps); await f.settle();
+    assert.equal(f.sent.at(-1).body.state, "cancelled");
+    assert.ok(!f.calls.some(row => row.includes("push") || row.includes("remove")));
   });
 }
 test("worker starts several jobs, reports steps, pushes approval without force, removes approved checkout", async t => {

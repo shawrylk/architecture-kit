@@ -23,10 +23,13 @@ function parse(argv) {
 }
 const read = file => readFileSync(file, "utf8");
 const field = (text, name) => new RegExp(`^${name}: \x60([^\x60]+)\x60`, "m").exec(text)?.[1];
-const replaceField = (text, name, value) => text.replace(new RegExp(`^${name}: .*`, "m"), () => `${name}: \`${value}\``);
+function setField(text, name, value) {
+  const pattern = new RegExp(`^${name}: .*`, "m"), line = `${name}: \`${value}\``;
+  return pattern.test(text) ? text.replace(pattern, () => line) : text.replace(/^## Task/m, () => `${line}\n## Task`);
+}
 function fixBrief(source, dir, name, proof) {
-  let text = replaceField(replaceField(source, "Report", path.join(dir, `${name}-report.md`)), "Progress", path.join(dir, `${name}-progress.md`));
-  text = text.replace(/^Proof: .*\r?\n/gm, "").replace(/^(Approved: .*)$/m, line => `${line}\nProof: \`${proof}\``);
+  let text = setField(setField(source, "Report", path.join(dir, `${name}-report.md`)), "Progress", path.join(dir, `${name}-progress.md`));
+  text = setField(text.replace(/^Proof: .*\r?\n/gm, ""), "Proof", proof);
   const start = text.indexOf("## Task"), next = text.indexOf("\n## ", start + 1);
   if (start < 0) throw new Error("brief needs ## Task");
   return text.slice(0, start) + "## Task\n\n1. Fix each finding in the review report named on the Proof line. Keep every product decision above.\n- Write each regression test first.\n- A finding that needs a product decision the brief does not give: write it under Questions in the report and fix the rest.\n2. Keep this run under 400 changed lines.\n\n" + (next < 0 ? "" : text.slice(next + 1));
@@ -36,9 +39,9 @@ async function reviewBrief(source, { dir, name, proof, base, worktree, git }) {
   const issue = /^Issue: `?#?(\d+)`?/m.exec(source)?.[1];
   if (!issue || !/^[a-f0-9]{40}$/i.test(head)) throw new Error("review needs an issue and a commit head");
   let text = source.replace(/^# Brief: /m, "# Brief: review ");
-  text = replaceField(replaceField(text, "Report", path.join(dir, `${name}-report.md`)), "Progress", path.join(dir, `${name}-progress.md`));
+  text = setField(setField(text, "Report", path.join(dir, `${name}-report.md`)), "Progress", path.join(dir, `${name}-progress.md`));
   text = text.replace(/^Verify: .*$/m, "Verify: none").replace(/^Proof: .*\r?\n/gm, "");
-  text = text.replace(/^Approved: .*$/m, () => `Proof: \`${proof}\``);
+  text = setField(text.replace(/^Approved: .*\r?\n/gm, ""), "Proof", proof);
   const start = text.indexOf("## Task");
   if (start < 0) throw new Error("brief needs ## Task");
   text = text.slice(0, start) + `## Task\n\n1. Review the diff \`${base}...${head}\` against issue #${issue} and the decisions above.\n2. Check correctness, security, tenant and record safety, tests that prove each decision, and removed or weakened assertions.\n3. Write each finding with file, line, severity and a concrete failure. Write \`FINDINGS: <n>\` on its own line, then \`VERDICT: APPROVED\` or \`VERDICT: CHANGES_REQUIRED\`, as the report's last block.\n\n## Run shape\n\n1. Edit no file except the report and the progress file. Make no commit and no push.\n2. Read at most 15 files. Use narrow reads and searches.\n3. Never stop to ask: write the question in the report and continue.\n\n## Commit\n\nNone. A review makes no commit and no push.\n\n## Exit criteria\n\n- The report ends with the verdict block.\n- Write the runner's marker as the last line, alone, only when the exit criteria hold.\n`;
@@ -99,6 +102,7 @@ export async function runCodexLoop(argv, { implement = runCodexImplement, git = 
       const verdict = existsSync(report) ? [...read(report).matchAll(/^VERDICT:\s*(\S+)/gm)].at(-1)?.[1] : null;
       note(`${name} exit ${code} ${verdict ?? "None"}`);
       if (code === 2) { note(`STOP LIMIT ${name}`); return 2; }
+      if (code !== 0) { note(`STOP ${name} exit ${code}`); return 1; }
       if (verdict === "APPROVED") { note("DONE APPROVED"); return 0; }
       if (verdict !== "CHANGES_REQUIRED") { note(`STOP ${name} has no verdict`); return 1; }
       const fix = `loop-fix${suffix}-${n}`; current = `${fix}.md`;

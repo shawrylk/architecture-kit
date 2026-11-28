@@ -47,6 +47,49 @@ for (const mode of ["approve", "fix", "exhaust", "limit", "from-review", "review
     }
   });
 }
+for (const exit of [1, 2, 4, 7, 42]) test(`codex-loop rejects approval when review exits ${exit}`, async t => {
+  const dir = setup(t);
+  let calls = 0;
+  const code = await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--skip-implement"], {
+    git: async (_cwd, ...args) => ({ stdout: args[0] === "rev-parse" ? "a".repeat(40) : "" }),
+    implement: async args => {
+      calls++;
+      assert.ok(args.includes("--review"));
+      writeFileSync(args[args.indexOf("--report") + 1], "VERDICT: APPROVED\n");
+      return exit;
+    },
+  });
+  assert.equal(code, exit === 2 ? 2 : 1);
+  assert.equal(calls, 1);
+  assert.equal(readFileSync(path.join(dir, "loop.status"), "utf8"),
+    `loop-review-1 exit ${exit} APPROVED\n${exit === 2 ? "STOP LIMIT loop-review-1" : `STOP loop-review-1 exit ${exit}`}\n`);
+});
+for (const mode of ["fix", "from-review"]) test(`codex-loop ${mode} links proof without approval metadata`, async t => {
+  const dir = setup(t), briefs = new Map();
+  const source = path.join(dir, "implement.md"), prior = path.join(dir, "prior.md");
+  writeFileSync(source, readFileSync(source, "utf8").replace(/^Approved: .*\n/m, ""));
+  const code = await runCodexLoop(["--dir", dir, "--brief", "implement.md",
+    ...(mode === "from-review" ? ["--from-review", prior] : [])], {
+    git: async (_cwd, ...args) => ({ stdout: args[0] === "rev-parse" ? "a".repeat(40) : "" }),
+    implement: async args => {
+      const file = args[args.indexOf("--brief") + 1], name = path.basename(file);
+      briefs.set(name, readFileSync(file, "utf8"));
+      if (args.includes("--review")) writeFileSync(args[args.indexOf("--report") + 1],
+        `VERDICT: ${mode === "fix" && name === "loop-review-1.md" ? "CHANGES_REQUIRED" : "APPROVED"}\n`);
+      return 0;
+    },
+  });
+  assert.equal(code, 0);
+  const links = mode === "fix"
+    ? [["loop-review-1", "implement-report.md"], ["loop-fix-1", "loop-review-1-report.md"], ["loop-review-2", "loop-fix-1-report.md"]]
+    : [["loop-fix-0", "prior.md"], ["loop-review-1", "loop-fix-0-report.md"]];
+  for (const [name, proof] of links) {
+    const text = briefs.get(`${name}.md`);
+    assert.equal(text.match(/^Proof: .*$/gm)?.length, 1, `${name} needs one Proof line`);
+    assert.ok(text.includes(`Proof: \`${path.join(dir, proof)}\``), name);
+    assert.doesNotMatch(text, /^Approved:/m);
+  }
+});
 test("codex-loop invalid arguments exit 2", async () => {
   assert.equal(await runCodexLoop(["--rounds", "0"], { warn: () => {} }), 2);
 });
