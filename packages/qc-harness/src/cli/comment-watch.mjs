@@ -578,12 +578,13 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
             const { fresh, progress } = await unseen(item, gh, state, true);
             recordPreview(state, item, fresh);
             saveCursors(state, item, progress);
-            lines.push(...fresh.map(({ row }) => row.html_url));
+            // A full read of the thread is the one step an agent can take to clear a comment, so name it.
+            lines.push(...fresh.map(({ row }) => `${row.html_url} (read: gh api ${row.endpoint} --paginate)`));
           }
           catch { failed = true; lines.push(`GitHub comments for ${itemKey(target)} could not be checked.`); }
         }));
       }
-      if (lines.length || failed) return { hookSpecificOutput: { hookEventName: event, permissionDecision: "deny", permissionDecisionReason: `Merge guard: read these unseen GitHub comments on the next prompt before merging. Retry any failed checks.\n${lines.join("\n")}` } };
+      if (lines.length || failed) return { hookSpecificOutput: { hookEventName: event, permissionDecision: "deny", permissionDecisionReason: `Merge guard: unseen GitHub comments block this merge. Run each read below with its literal path, not a shell variable, then retry the merge. Retry any failed checks.\n${lines.join("\n")}` } };
     }
     return null;
   } catch {

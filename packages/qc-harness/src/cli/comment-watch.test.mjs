@@ -270,6 +270,20 @@ test("prompts show shared-login feedback once, retain failures, and isolate sess
   assert.equal(f.run("UserPromptSubmit"), null);
 });
 
+test("merge guard names a read for each comment, and the reads clear the merge without a prompt", (t) => {
+  const f = fixture(t);
+  const command = "gh pr merge 7 -R shawrylk/example";
+  f.update();
+  const denied = f.run("PreToolUse", command, "merge-guard.mjs").hookSpecificOutput;
+  assert.equal(denied.permissionDecision, "deny");
+  assert.match(denied.permissionDecisionReason, /literal path, not a shell variable/);
+  const reads = [...new Set([...denied.permissionDecisionReason.matchAll(/\(read: (gh api \S+) --paginate\)/g)].map(match => match[1]))];
+  assert.ok(reads.length > 0, denied.permissionDecisionReason);
+  for (const read of reads) f.run("PostToolUse", read);
+  const passed = f.run("PreToolUse", command, "merge-guard.mjs");
+  assert.notEqual(passed?.hookSpecificOutput?.permissionDecision, "deny", JSON.stringify(passed));
+});
+
 test("merge guard names unseen PR and linked issue comments until a prompt acknowledges them", (t) => {
   const f = fixture(t);
   const command = "gh pr merge 7 -R shawrylk/example";
@@ -920,7 +934,8 @@ test("previews stop at 300 characters and keep the full-read pointer", (t) => {
   const guard = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs").hookSpecificOutput;
   assert.equal(guard.permissionDecision, "deny");
   assert.ok(guard.permissionDecisionReason.includes(f.rows[0].html_url));
-  assert.doesNotMatch(guard.permissionDecisionReason, /xxx|hidden request|gh api/);
+  assert.doesNotMatch(guard.permissionDecisionReason, /xxx|hidden request/);
+  assert.match(guard.permissionDecisionReason, /\(read: gh api repos\/shawrylk\/example\/issues\/4\/comments --paginate\)/);
 });
 
 test("deadline notes need three failures of the same item and reset on success", async (t) => {
