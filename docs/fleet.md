@@ -24,6 +24,7 @@ Send a brief from the current leader:
 qc fleet job --brief implement.md --branch feat/example --base main --rounds 3
 qc fleet job --brief implement.md --branch feat/other --base main --node ab12 --id other
 qc fleet jobs
+qc fleet jobs --detail other
 qc fleet cancel other
 qc watch --fleet
 ```
@@ -34,7 +35,7 @@ A worker accepts job and cancel messages only from the current leader. It refuse
 
 Code moves through GitHub. Git calls that can run a repository hook, such as `worktree add`, `commit` and `push`, stop after 20 minutes. Other git calls stop after 60 seconds. The worker fetches the base and creates the requested branch. After approval it pushes the branch without force, then removes the worktree. The leader ships the branch. A limit exit holds new jobs for 60 minutes. A limit or stop keeps the worktree for inspection. A failed or cancelled job removes its worktree and its local branch, so a retry of the same branch is not refused. A restart reports each job that was live as failed with reason `node restarted` and keeps its worktree. A missed heartbeat marks live jobs as lost once; a later result can update them.
 
-`fleet jobs` shows the ID, node, state, branch, last step and age. Heartbeats carry slot counts, the limit time and the last loop status line for each live job, cut to 120 characters. `watch --fleet` emits `EVENT fleet:codex-result <id> <state> <branch> <head|->` once per result or lost-node event.
+`fleet jobs` shows the ID, node, state, branch, last step and age. A stopped or failed job also sends a detail: the end of its newest report and progress file, the head commit of its worktree, and the push or hook output if there is any. The worker removes each line that contains `--secret`, `token`, `password` or `Authorization`, and it keeps the detail under 4000 characters. `fleet jobs` then prints a second line for the job, such as `committed 7612386b1, not on origin`. `fleet jobs --detail <id>` prints the stored detail in full. The detail goes in a second result message, because a leader before 0.33.0 refuses a result with an unknown field. A node before 0.33.0 sends no detail. Heartbeats carry slot counts, the limit time and the last loop status line for each live job, cut to 120 characters. `watch --fleet` emits `EVENT fleet:codex-result <id> <state> <branch> <head|->` once per result or lost-node event.
 
 To run a brief on one PC, use `qc codex-loop --dir <run dir> --brief <name> [--rounds <n>] [--from-review <report>] [--skip-implement] [--base <ref>]`. The base defaults to `origin/main`. The loop implements, reviews, fixes findings and reviews again. It appends each step to `loop.status`. Exit 0 means approval, 2 means a usage or spend limit, and 1 means another stop.
 
