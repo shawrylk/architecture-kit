@@ -57,7 +57,7 @@ export async function runDispatch(options, context) {
   if (options.verb === "jobs") {
     const peers = readState(root, "peers");
     for (const row of Object.values(readState(root, "jobs"))) {
-      const step = peers[row.node]?.jobs?.steps?.find(step => step.id === row.id)?.step ?? row.step ?? "-";
+      const step = peers[row.node]?.jobs?.steps?.find(step => step.id === row.id)?.step || row.step || "-";
       say(redactJobText(`${row.id} ${row.node} ${row.state} ${row.branch} ${step} ${Math.max(0, Math.floor((clock() - row.created) / 1000))}s`, fleet.secret));
     }
     return 0;
@@ -108,6 +108,9 @@ export function dispatchTick({ root, fleet, clock = Date.now }) {
     if (!row || row.node !== message.from || row.repo !== message.repo || !validResult(body, row)) continue;
     // A late started result must not undo a final result or a lost-node decision.
     if (body.state === "started" && !["queued", "starting"].includes(row.state)) continue;
+    // A final result stays final; a refusal counts only before the worker started the job.
+    if (!["queued", "starting", "started", "lost"].includes(row.state)) continue;
+    if (body.state === "refused" && !["queued", "starting"].includes(row.state)) continue;
     if (body.state === row.state) continue;
     const status = body.status === undefined ? row.status : tailLines(body.status, fleet.secret);
     Object.assign(row, { state: body.state, time: clock(), ...(body.head ? { head: body.head } : {}),

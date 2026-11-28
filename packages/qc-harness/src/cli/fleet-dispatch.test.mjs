@@ -88,6 +88,19 @@ test("result validates node, repo and fields; watch receives each event once; lo
   assert.equal(readState(f.root, "jobs").job.state, "approved");
   assert.equal(await runWatch(["--fleet"], { cwd: f.root, say: line => events.push(line) }), 0);
   assert.equal(events.at(-1), `EVENT fleet:codex-result job approved feat/worker ${head}`);
+  f.queue({ id: "job", state: "refused", branch: "feat/worker", reason: "job id already known" });
+  f.queue({ id: "job", state: "stopped", branch: "feat/worker", status: "STOP late" }); dispatchTick(f.deps);
+  assert.equal(readState(f.root, "jobs").job.state, "approved");
+});
+
+test("a refusal after the worker started the job does not replace its state; jobs prints - for an empty step", async t => {
+  const f = fixture(t);
+  await runDispatch(parseDispatchArgs("job", [...f.args, "--id", "job"]), f.deps);
+  f.queue({ id: "job", state: "started", branch: "feat/worker" }); dispatchTick(f.deps);
+  f.queue({ id: "job", state: "refused", branch: "feat/worker", reason: "late" }); dispatchTick(f.deps);
+  assert.equal(readState(f.root, "jobs").job.state, "started");
+  const peers = readState(f.root, "peers"); peers.b.jobs.steps = [{ id: "job", step: "" }]; writeState(f.root, "peers", peers);
+  await runDispatch(parseDispatchArgs("jobs", []), f.deps); assert.match(f.lines.at(-1), /^job b started feat\/worker - \d+s$/);
 });
 test("dispatch never sends fleet secret in brief and detects folder read error", async t => {
   const f = fixture(t);

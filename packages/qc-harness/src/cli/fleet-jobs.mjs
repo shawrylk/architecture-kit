@@ -163,7 +163,8 @@ export async function jobsTick(context) {
     writeState(root, "queue", queue.filter(row => row !== message));
     const body = message.body, row = { id: validJobId(body?.id) ? body.id : "invalid", repo: message.repo, leader: message.from };
     const leader = jobLeader(root, clock(), fleet.self);
-    if (message.from !== leader) { await result(context, row, "refused", { reason: "sender is not current leader" }); return; }
+    // Drop a job from a non-leader without a reply: a follower never reads codex-result rows.
+    if (message.from !== leader) return;
     if (!repo || message.repo !== repo) { await result(context, row, "refused", { reason: "repository does not match worker checkout" }); return; }
     if (message.kind === "codex-cancel") {
       if (!body || !validJobId(body.id) || Object.keys(body).some(key => key !== "id")) return;

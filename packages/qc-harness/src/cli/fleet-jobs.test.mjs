@@ -45,8 +45,11 @@ for (const rule of ["disabled", "full", "limited", "known", "local", "origin", "
     if (["local", "origin"].includes(rule)) f.deps.git = async (_cwd, ...args) => ({ stdout: args[0] === (rule === "local" ? "for-each-ref" : "ls-remote") ? (rule === "local" ? "refs/heads/feat/job\n" : `${head}\trefs/heads/feat/job\n`) : "" });
     f.queue({}, "codex-job", rule === "wrong-leader" ? "other" : "leader");
     await jobsTick(f.deps);
-    assert.equal(f.sent.at(-1).body.state, "refused");
+    // A non-leader gets no reply: a follower never reads codex-result rows, so a reply would stay queued.
+    if (rule === "wrong-leader") assert.equal(f.sent.length, 0);
+    else assert.equal(f.sent.at(-1).body.state, "refused");
     assert.ok(!f.calls.some(row => row.includes("worktree")));
+    assert.equal(readState(f.root, "queue").length, 0);
   });
 }
 for (const repo of ["other/repo"]) {
