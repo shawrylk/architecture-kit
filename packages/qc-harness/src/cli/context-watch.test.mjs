@@ -60,12 +60,11 @@ test("a disabled orchestrator budget keeps the watch silent", (t) => {
   assert.equal(fs.existsSync(f.state), false);
 });
 
-test("compaction reminder tells the session to update its checkpoint now", (t) => {
+test("compaction reminder stays short when checkpoints are enabled", (t) => {
   const f = fixture(t);
   writeFileSync(path.join(f.tmp, "qc.config.json"), "{}");
   const note = f.at(400_000).hookSpecificOutput.additionalContext;
-  assert.match(note, /Update the checkpoint now/);
-  assert.ok(note.includes(path.join(f.tmp, ".git", "qc", "checkpoints", "s.md")));
+  assert.equal(note, "Context is about 400K tokens. At the next clean break, ask the user to run /compact.");
 });
 
 test("without checkpoint settings the reminder omits the checkpoint", (t) => {
@@ -82,7 +81,7 @@ test("an invalid Git pointer preserves the compaction reminder", (t) => {
   writeFileSync(path.join(f.tmp, "qc.config.json"), "{}");
   const note = f.at(400_000).hookSpecificOutput.additionalContext;
   assert.match(note, /compact/);
-  assert.match(note, /Update the checkpoint now: the session checkpoint/);
+  assert.doesNotMatch(note, /checkpoint/i);
 });
 
 test("state changes use an atomic replacement", (t) => {
@@ -337,7 +336,7 @@ test("speaks once per rising step and resets after compaction", (t) => {
     hookSpecificOutput: {
       hookEventName: "PostToolUse",
       additionalContext:
-        "Context is about 210K tokens. At the next clean break (a task, review, or merge just finished, nothing mid-fix), update the resume notes and ask the user to run /compact before you continue.",
+        "Context is about 210K tokens. At the next clean break, ask the user to run /compact.",
     },
   });
   assert.equal(f.at(210_000), null);

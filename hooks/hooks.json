@@ -1,5 +1,5 @@
 {
-  "description": "Comment notices, merge checks, context notes and command checks.",
+  "description": "Watch comments and context, check merges, and guard shell commands.",
   "hooks": {
     "UserPromptSubmit": [
       {

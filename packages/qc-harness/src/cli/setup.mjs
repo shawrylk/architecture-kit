@@ -3,11 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { GLOBAL_SKILLS } from "../global-skills.mjs";
-import { applyBlock } from "./setup-block.mjs";
 import { checkTools, personSteps } from "./setup-checks.mjs";
 import { budgetsOf, compactClaude, compactCodex } from "./setup-compaction.mjs";
 import { dropPersonalSkills } from "./setup-skills.mjs";
-import { assertSafePath, backupFile, configPaths, kitUserConfigDir } from "./user-config.mjs";
+import { assertSafePath, backupFile, configPaths } from "./user-config.mjs";
 
 /** Resource: read a safe file or use its default when it is absent. */
 function read(file, fallback) {
@@ -59,13 +58,9 @@ export async function runSetup(args, options = {}) {
     const budgets = budgetsOf(configText);
     const claude = compactClaude(read(paths.claude, "{}"), { models: values.model ?? [], window: budgets.orchestrator });
     const codex = compactCodex(read(paths.codex, ""), budgets.codex);
-    const coreFile = path.join(claudeDir, "CLAUDE.md");
-    const template = path.join(options.kitDir ?? kitUserConfigDir(), "claude", "CLAUDE.core.md");
-    const core = applyBlock(read(coreFile, ""), read(template));
     const plans = [
       { file: paths.claude, ...claude },
       { file: paths.codex, ...codex },
-      { file: coreFile, text: core.text, changed: core.changed ? ["core"] : [] },
     ].filter((plan) => plan.changed.length);
     const skillsOptions = { claudeDir, settingsText: claude.text, names: skillNames(claudeDir) };
     const skills = dropPersonalSkills({ ...skillsOptions, dryRun: true });

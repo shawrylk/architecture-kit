@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -468,7 +468,7 @@ test("package staging includes all shared files and resolves them outside the ch
   const f = fixture(t);
   const target = path.join(f.root, "node_modules/architecture-harness/user-config");
   packageUserConfig(f.kitDir, target);
-  assert.equal(readFileSync(path.join(target, "claude/CLAUDE.core.md"), "utf8"), "core\n");
+  assert.equal(existsSync(path.join(target, "claude/CLAUDE.core.md")), false);
   assert.equal(readFileSync(path.join(target, "claude/statusline.js"), "utf8"), "console.log('status');\n");
   assert.equal(readFileSync(path.join(target, "codex/config.shared.toml"), "utf8"), readFileSync(path.join(f.kitDir, "codex/config.shared.toml"), "utf8"));
   assert.equal(readFileSync(path.join(target, "claude/settings.shared.json"), "utf8"), readFileSync(path.join(f.kitDir, "claude/settings.shared.json"), "utf8"));

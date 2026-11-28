@@ -154,6 +154,7 @@ function ledger(root, session) {
         if (record.cursor?.endpoint) item.cursors.set(record.cursor.endpoint, record.cursor);
         if (record.retired === false) item.retired = false;
         if (record.updatedAt !== undefined) item.updatedAt = record.updatedAt;
+        if (record.deadlineFailures !== undefined) item.deadlineFailures = record.deadlineFailures;
         for (const pr of record.prs ?? []) item.prs.add(pr);
         for (const pending of record.pending ?? []) item.pending.set(pending.stamp, pending);
         for (const stamp of record.seen ?? []) item.seen.add(stamp);
@@ -234,7 +235,7 @@ function saveCursors(state, item, progress) {
 
 const ownRow = (state, row) => state.own.has(row.html_url) || state.own.has(row.url) || state.own.has(`${row.endpoint}:${row.id}`);
 const previewOf = (row) => ({ id: row.id, url: row.url, html_url: row.html_url, endpoint: row.endpoint, user: { login: row.user?.login },
-  state: row.state, body: (row.body ?? "").slice(0, 700), truncated: true });
+  state: row.state, body: (row.body ?? "").slice(0, 300), truncated: true });
 
 // Fragment: pending rows the session has not acknowledged; a legacy record without a preview still names its comment.
 function pendingRows(item, all) {
@@ -322,8 +323,8 @@ async function unseen(item, gh, state, fromStart = false) {
 }
 
 const bodyOf = (row) => [row.state, row.body].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-const truncated = (row) => row.truncated === true || bodyOf(row).length > 700;
-const describe = (item, row) => `@${row.user?.login ?? "unknown"} on ${itemKey(item)} ${row.html_url}: ${bodyOf(row).slice(0, 700)}${truncated(row) ? ` [truncated; read in full: gh api ${row.endpoint} --paginate]` : ""}`;
+const truncated = (row) => row.truncated === true || bodyOf(row).length > 300;
+const describe = (item, row) => `@${row.user?.login ?? "unknown"} on ${itemKey(item)} ${row.html_url}: ${bodyOf(row).slice(0, 300)}${truncated(row) ? ` [truncated; read in full: gh api ${row.endpoint} --paginate]` : ""}`;
 const context = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 
 // Ledger: retain truncated previews so a full read can acknowledge them from any hook.
@@ -488,6 +489,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
         repos.get(repo).push(item);
       }
       let failed = 0;
+      let repeatedDeadline = false;
       let checked = 0;
       const reasons = new Set();
       let stopped = false;
@@ -517,8 +519,12 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
           recordPreview(state, item, fresh, event === "UserPromptSubmit");
           saveCursors(state, item, progress);
           if (changed) state.append({ repo: item.repo, number: item.number, kind: item.kind, updatedAt: info.updatedAt });
+          if (item.deadlineFailures) state.append({ repo: item.repo, number: item.number, deadlineFailures: 0 });
           if (["CLOSED", "MERGED"].includes(info.state)) state.append({ retired: itemKey(item) });
         } catch (error) {
+          const deadlineFailures = error.message === "deadline" ? (item.deadlineFailures ?? 0) + 1 : 0;
+          state.append({ repo: item.repo, number: item.number, deadlineFailures });
+          repeatedDeadline ||= deadlineFailures >= 3;
           reasons.add(failureReason(error));
           if (rateLimited(error) || error.message === "deadline") { stopAfter(item); break; }
           failed++;
@@ -526,7 +532,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
         checked++;
       }
       if (stopped) failed += items.length - checked;
-      if (failed) lines.push(`Comment watch: ${failed} items could not be checked (${[...reasons].join(", ")}); retry on the next prompt.`);
+      if (failed && (repeatedDeadline || [...reasons].some(reason => reason !== "deadline"))) lines.push(`Comment watch: ${failed} items could not be checked (${[...reasons].join(", ")}); retry on the next prompt.`);
       return lines.length ? (event === "Stop" ? { systemMessage: lines.join("\n") } : context(event, lines.join("\n"))) : null;
     }
     if (event === "PreToolUse") {
@@ -572,7 +578,7 @@ export async function commentWatch(call, { gh: run = runCommentGh, merges: merge
             const { fresh, progress } = await unseen(item, gh, state, true);
             recordPreview(state, item, fresh);
             saveCursors(state, item, progress);
-            lines.push(...fresh.map(({ row }) => describe(item, row)));
+            lines.push(...fresh.map(({ row }) => row.html_url));
           }
           catch { failed = true; lines.push(`GitHub comments for ${itemKey(target)} could not be checked.`); }
         }));

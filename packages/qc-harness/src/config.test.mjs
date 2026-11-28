@@ -16,8 +16,10 @@ test("the direct lane owns its review path default and accepts replacements", ()
   assert.deepEqual(directSettings({ direct: { reviewPaths: ["local/**"] } }).reviewPaths, ["local/**"]);
 });
 
-test("throwaway database schema command defaults to null", () => {
-  assert.equal(defaults.throwawayDb.schemaCommand, null);
+test("defaults omit unused fields and personal GitHub settings", () => {
+  assert.equal(Object.hasOwn(defaults, "throwawayDb"), false);
+  assert.equal(Object.hasOwn(defaults, "generators"), false);
+  assert.deepEqual(defaults.github.configDirs, {});
 });
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -321,20 +323,21 @@ test("every lint rule has a switch, and every switch names a rule", () => {
 
 // A module under gates/ that no run and no codegen calls: a reader that gates share.
 const libraries = ["call-args", "contract-operations", "scrub"];
+const generators = ["tenant-tables", "contract-compose"];
 
 test("every gate is either switchable, a generator, or a named library", () => {
   const files = readdirSync(path.join(here, "gates"))
     .filter((file) => file.endsWith(".mjs") && !file.endsWith(".test.mjs"))
     .map((file) => file.replace(/\.mjs$/, ""))
     .sort();
-  const accounted = [...Object.keys(defaults.gates), ...defaults.generators, ...libraries].sort();
+  const accounted = [...Object.keys(defaults.gates), ...generators, ...libraries].sort();
   assert.deepEqual(accounted, files);
 });
 
 test("a library is neither a switch nor a generator", () => {
   for (const library of libraries) {
     assert.equal(defaults.gates[library], undefined);
-    assert.ok(!defaults.generators.includes(library));
+    assert.ok(!generators.includes(library));
   }
 });
 
@@ -351,7 +354,7 @@ test("every switch under gates is one the check runner reads", async () => {
 });
 
 test("a generator is not offered as a switch", () => {
-  for (const generator of defaults.generators) {
+  for (const generator of generators) {
     assert.equal(defaults.gates[generator], undefined);
   }
 });

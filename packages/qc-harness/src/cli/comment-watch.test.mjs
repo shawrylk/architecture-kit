@@ -38,9 +38,9 @@ test("an enterprise API read cannot acknowledge pending GitHub.com feedback", (t
   f.run("PostToolUse", "gh issue view 4");
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
   f.run("PostToolUse", "gh api --hostname ghe.example.com repos/shawrylk/example/issues/4/comments");
-  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
   f.run("PostToolUse", "gh api --hostname github.com repos/shawrylk/example/issues/4/comments");
-  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
 });
 
 for (const [tool_name, prefix] of [
@@ -70,9 +70,9 @@ for (const [tool_name, prefix] of [
   writeFileSync(f.calls, "");
   assert.equal(f.run("UserPromptSubmit"), null);
   assert.equal(readFileSync(f.calls, "utf8"), "");
-  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
   f.run("PostToolUse", `${prefix}gh api --hostname github.com repos/shawrylk/example/issues/4/comments`, "comment-watch.mjs", "session-a", "", tool_name);
-  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
 });
 
 for (const [tool_name, prefix] of [
@@ -103,7 +103,7 @@ for (const [tool_name, prefix] of [
   f.run("PostToolUse", `${prefix}gh api https://api.github.com/repos/shawrylk/example/issues/4/comments --paginate`, "comment-watch.mjs", "session-a", "", tool_name);
   assert.equal(f.run("UserPromptSubmit"), null);
   assert.match(readFileSync(f.calls, "utf8"), /item_4:/);
-  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
 });
 
 test("PowerShell detects explicit repositories, body files, and commit references", (t) => {
@@ -278,7 +278,8 @@ test("merge guard names unseen PR and linked issue comments until a prompt ackno
   f.update();
   const denied = f.run("PreToolUse", command, "merge-guard.mjs").hookSpecificOutput;
   assert.equal(denied.permissionDecision, "deny");
-  for (const id of [1, 2, 3, 5]) assert.match(denied.permissionDecisionReason, new RegExp(`Comment ${id}`));
+  for (const id of [1, 2, 3, 5]) assert.ok(denied.permissionDecisionReason.includes(`https://github.com/comments/${id}`));
+  assert.doesNotMatch(denied.permissionDecisionReason, /Comment [0-9]|@other/);
   assert.equal(f.run("PreToolUse", command, "merge-guard.mjs").hookSpecificOutput.permissionDecision, "deny");
   f.run("UserPromptSubmit");
   const passed = f.run("PreToolUse", command, "merge-guard.mjs");
@@ -322,10 +323,10 @@ test("truncated comments print once across prompts and Stop but still block merg
   for (let attempt = 0; attempt < 2; attempt++) {
     const guard = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
     assert.equal(guard?.hookSpecificOutput?.permissionDecision, "deny");
-    assert.match(JSON.stringify(guard), /truncated/);
+    assert.match(JSON.stringify(guard), /https:\/\/github\.com\/comments\/1/);
   }
   f.run("PostToolUse", "gh issue view 4 --comments");
-  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
 });
 
 test("full reads acknowledge only the comment kinds their output contains", (t) => {
@@ -351,14 +352,14 @@ test("full reads acknowledge only the comment kinds their output contains", (t) 
     assert.match(output, /gh api repos\/shawrylk\/example\/pulls\/7\/comments --paginate/, command);
     assert.doesNotMatch(output, /hidden request/, command);
     assert.equal(f.run("UserPromptSubmit"), null, command);
-    assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/i, command);
+    assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/, command);
     assert.equal(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput?.permissionDecision, "deny", command);
     f.run("PostToolUse", command, "comment-watch.mjs", "session-a", { exit_code: 1 });
     assert.equal(f.run("UserPromptSubmit"), null, command);
-    assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/i, command);
+    assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/, command);
     f.run("PostToolUse", command);
     const remaining = JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs"));
-    for (const row of f.rows) assert.equal(remaining.includes(`Comment ${row.id} `), !seen.includes(row.id), command);
+    for (const row of f.rows) assert.equal(remaining.includes(row.html_url), !seen.includes(row.id), command);
   }
 });
 
@@ -473,8 +474,8 @@ test("merge targets include commit-only references and issues an earlier command
   f.run("PostToolUse", "gh pr view 7");
   f.run("PostToolUse", 'gh pr comment 7 --body "Refs #10"');
   const output = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
-  assert.match(JSON.stringify(output), /Comment 9/);
-  assert.match(JSON.stringify(output), /Comment 10/);
+  assert.match(JSON.stringify(output), /https:\/\/github\.com\/comments\/9/);
+  assert.match(JSON.stringify(output), /https:\/\/github\.com\/comments\/10/);
 });
 
 test("full reads acknowledge truncated previews from a merge refusal or Stop", (t) => {
@@ -483,7 +484,7 @@ test("full reads acknowledge truncated previews from a merge refusal or Stop", (
     f.rows[0].body = "x".repeat(850);
     f.update();
     f.run("PostToolUse", "gh pr view 7");
-    assert.match(JSON.stringify(f.run(event, "gh pr merge 7", event === "PreToolUse" ? "merge-guard.mjs" : "comment-watch.mjs")), /truncated/);
+    assert.match(JSON.stringify(f.run(event, "gh pr merge 7", event === "PreToolUse" ? "merge-guard.mjs" : "comment-watch.mjs")), /https:\/\/github\.com\/comments\/1/);
     f.run("PostToolUse", "gh issue view 4 --comments");
     assert.doesNotMatch(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
   }
@@ -497,7 +498,7 @@ test("API merges check comments with dispatch on and off in both shells", (t) =>
       for (const command of ["gh api -X PUT repos/shawrylk/example/pulls/7/merge", 'gh api graphql -f query=\'mutation { mergePullRequest(input: {pullRequestId: "PR_7"}) { clientMutationId } }\'']) {
         const output = f.run("PreToolUse", command, "merge-guard.mjs", "session-a", "", tool);
         assert.equal(output?.hookSpecificOutput?.permissionDecision, "deny");
-        assert.match(JSON.stringify(output), /Comment 4/);
+        assert.match(JSON.stringify(output), /https:\/\/github\.com\/comments\/4/);
       }
     }
   }
@@ -586,7 +587,7 @@ test("a merge checks a retired issue named in the PR body again", (t) => {
   writeFileSync(f.calls, "");
   const guard = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs");
   assert.equal(guard?.hookSpecificOutput?.permissionDecision, "deny");
-  assert.match(JSON.stringify(guard), /Feedback after retirement/);
+  assert.match(JSON.stringify(guard), /https:\/\/github\.com\/comments\/1/);
   assert.match(readFileSync(f.calls, "utf8"), /issues\/4\/comments/);
 });
 
@@ -634,11 +635,11 @@ test("consecutive polls continue past an item whose comments exhaust the deadlin
       return JSON.stringify([{ id: 5, body: "Later feedback", updated_at: "2026-01-01T00:00:00Z" }]);
     },
   });
-  assert.match(JSON.stringify(await poll()), /2 items could not be checked \(deadline\)/);
+  assert.doesNotMatch(JSON.stringify(await poll()), /could not be checked/);
   requests.length = 0;
   const second = JSON.stringify(await poll());
   assert.match(second, /Later feedback/);
-  assert.match(second, /1 items could not be checked \(deadline\)/);
+  assert.doesNotMatch(second, /could not be checked/);
   assert.match(requests[1].at(-1), /issues\/5\/comments/);
   assert.match(requests[2].at(-1), /issues\/4\/comments/);
 });
@@ -665,12 +666,12 @@ test("poll rotation reaches another repository after two items exhaust the deadl
     },
   });
   for (let i = 0; i < 2; i++) {
-    assert.match(JSON.stringify(await poll()), /3 items could not be checked \(deadline\)/);
+    assert.doesNotMatch(JSON.stringify(await poll()), /could not be checked/);
   }
   requests.length = 0;
   const third = JSON.stringify(await poll());
   assert.match(third, /Other repository feedback/);
-  assert.match(third, /2 items could not be checked \(deadline\)/);
+  assert.doesNotMatch(third, /could not be checked/);
   assert.match(requests[1].at(-1), /repos\/owner\/other\/issues\/8\/comments/);
   const metadata = requests.filter(args => args[1] === "graphql");
   assert.equal(metadata.length, 2);
@@ -696,8 +697,7 @@ test("all poll requests share the 3.5 second deadline", async (t) => {
     },
   });
   assert.equal(requests.length, 1);
-  assert.equal(output.hookSpecificOutput.additionalContext,
-    "Comment watch: 2 items could not be checked (deadline); retry on the next prompt.");
+  assert.equal(output, null);
 });
 
 test("old ledger records stay readable and previews append without replacing them", (t) => {
@@ -715,9 +715,9 @@ test("old ledger records stay readable and previews append without replacing the
   writeFileSync(file, old);
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /truncated/);
   assert.equal(f.run("UserPromptSubmit"), null);
-  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.match(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
   f.run("PostToolUse", "gh issue view 4 --comments");
-  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /truncated/);
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
   assert.ok(readFileSync(file, "utf8").startsWith(old));
 });
 
@@ -729,7 +729,7 @@ test("a closed item's short Stop preview is acknowledged on the next prompt with
   writeFileSync(f.calls, "");
   assert.match(JSON.stringify(f.run("UserPromptSubmit")), /Comment 1/);
   assert.equal(readFileSync(f.calls, "utf8"), "");
-  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /Comment 1/);
+  assert.doesNotMatch(JSON.stringify(f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")), /https:\/\/github\.com\/comments\/1/);
 });
 
 test("a gh API command naming a retired item watches it again", (t) => {
@@ -752,7 +752,7 @@ test("a 500-comment issue no longer exceeds the deadline after its first check",
   f.update({ rowDelay: 8 });
   f.run("PostToolUse", "gh issue view 4");
   const first = JSON.stringify(f.run("UserPromptSubmit"));
-  assert.match(first, /1 items could not be checked \(deadline\)/);
+  assert.doesNotMatch(first, /could not be checked/);
   const output = JSON.stringify(f.run("UserPromptSubmit"));
   assert.doesNotMatch(output, /could not be checked/);
   assert.match(output, /Old note 1\b/);
@@ -804,8 +804,8 @@ test("a merge names one new foreign comment and ignores watched issues the PR do
   f.update({ body: "Fixes #4" });
   const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
   assert.equal(denied?.permissionDecision, "deny");
-  assert.match(denied.permissionDecisionReason, /@reviewer on shawrylk\/example#4 .*Please keep the permission assertions/);
-  assert.doesNotMatch(denied.permissionDecisionReason, /Session triage note|Dashboard chatter/);
+  assert.ok(denied.permissionDecisionReason.includes("https://github.com/shawrylk/example/issues/4#issuecomment-52"));
+  assert.doesNotMatch(denied.permissionDecisionReason, /issuecomment-50|issuecomment-51|Session triage note|Dashboard chatter/);
 });
 
 const issueNote = (id, number, body, login, at) => ({ id, endpoint: `issues/${number}/comments`, user: { login }, body,
@@ -821,8 +821,8 @@ test("a foreign comment with the same body as an own /dev/null comment still den
   f.run("PostToolUse", 'gh issue comment 4 --body "LGTM" >/dev/null', "comment-watch.mjs", "session-a", { stdout: "", stderr: "" }, "Bash");
   const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
   assert.equal(denied?.permissionDecision, "deny");
-  assert.match(denied.permissionDecisionReason, /@reviewer on shawrylk\/example#4/);
-  assert.doesNotMatch(denied.permissionDecisionReason, /@self/);
+  assert.ok(denied.permissionDecisionReason.includes("https://github.com/shawrylk/example/issues/4#issuecomment-60"));
+  assert.doesNotMatch(denied.permissionDecisionReason, /issuecomment-61|@self/);
 });
 
 test("an own comment marker from a failed post never claims a later foreign comment", (t) => {
@@ -834,7 +834,7 @@ test("an own comment marker from a failed post never claims a later foreign comm
   f.update({ body: "Fixes #4" });
   const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
   assert.equal(denied?.permissionDecision, "deny");
-  assert.match(denied.permissionDecisionReason, /@reviewer on shawrylk\/example#4 .*Done\./);
+  assert.ok(denied.permissionDecisionReason.includes("https://github.com/shawrylk/example/issues/4#issuecomment-70"));
 });
 
 test("an own /dev/null comment stays unseen when the viewer login cannot be read", (t) => {
@@ -845,7 +845,7 @@ test("an own /dev/null comment stays unseen when the viewer login cannot be read
   f.run("PostToolUse", 'gh issue comment 4 --body "Session note" >/dev/null', "comment-watch.mjs", "session-a", { stdout: "", stderr: "" }, "Bash");
   const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
   assert.equal(denied?.permissionDecision, "deny");
-  assert.match(denied.permissionDecisionReason, /Session note/);
+  assert.ok(denied.permissionDecisionReason.includes("https://github.com/shawrylk/example/issues/4#issuecomment-75"));
 });
 
 for (const [link, extra] of [
@@ -861,7 +861,7 @@ for (const [link, extra] of [
   f.update({ body: "Summary only", ...extra });
   const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
   assert.equal(denied?.permissionDecision, "deny");
-  assert.match(denied.permissionDecisionReason, /Requirement changed, do not merge/);
+  assert.ok(denied.permissionDecisionReason.includes("https://github.com/shawrylk/example/issues/4#issuecomment-80"));
 });
 
 test("a merge reads every review page, so an edited review on page 1 still denies", (t) => {
@@ -879,7 +879,7 @@ test("a merge reads every review page, so an edited review on page 1 still denie
   writeFileSync(f.calls, "");
   const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
   assert.equal(denied?.permissionDecision, "deny");
-  assert.match(denied.permissionDecisionReason, /Edited: this breaks the import path/);
+  assert.ok(denied.permissionDecisionReason.includes("https://github.com/shawrylk/example/pull/7#pullrequestreview-1"));
   const reviewReads = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start && /pulls\/7\/reviews/.test(call.args.at(-1)));
   assert.match(reviewReads[0].args.at(-1), /page=1$/);
 });
@@ -902,7 +902,56 @@ test("a merge rereads a partial comment scan from page 1, so an edit on an early
   writeFileSync(f.calls, "");
   const denied = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs")?.hookSpecificOutput;
   assert.equal(denied?.permissionDecision, "deny");
-  assert.match(denied.permissionDecisionReason, /@reviewer on shawrylk\/example#4 .*blocker, do not merge/);
+  assert.ok(denied.permissionDecisionReason.includes("https://github.com/shawrylk/example/issues/4#issuecomment-1"));
   const reads = readFileSync(f.calls, "utf8").trim().split("\n").map(JSON.parse).filter(call => call.start && /issues\/4\/comments/.test(call.args.at(-1)));
   assert.match(reads[0].args.at(-1), /page=1$/);
+});
+
+test("previews stop at 300 characters and keep the full-read pointer", (t) => {
+  const f = fixture(t);
+  f.rows[0].body = "x".repeat(300) + "hidden request";
+  f.update();
+  f.run("PostToolUse", "gh issue view 4");
+  const preview = JSON.stringify(f.run("UserPromptSubmit"));
+  assert.ok(preview.includes("x".repeat(300)));
+  assert.ok(!preview.includes("x".repeat(301)));
+  assert.doesNotMatch(preview, /hidden request/);
+  assert.match(preview, /gh api repos\/shawrylk\/example\/issues\/4\/comments --paginate/);
+  const guard = f.run("PreToolUse", "gh pr merge 7", "merge-guard.mjs").hookSpecificOutput;
+  assert.equal(guard.permissionDecision, "deny");
+  assert.ok(guard.permissionDecisionReason.includes(f.rows[0].html_url));
+  assert.doesNotMatch(guard.permissionDecisionReason, /xxx|hidden request|gh api/);
+});
+
+test("deadline notes need three failures of the same item and reset on success", async (t) => {
+  const f = fixture(t);
+  f.run("PostToolUse", "gh issue view 4; gh issue view 5");
+  let failing = 4;
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const poll = () => commentWatch({ cwd: f.cwd, session_id: "session-a", hook_event_name: "UserPromptSubmit" }, {
+    gh: async (args, options) => {
+      if (args[1] === "graphql") return JSON.stringify({ data: { repository: {
+        item_4: { state: "OPEN", updatedAt: String(now) },
+        item_5: { state: "OPEN", updatedAt: String(now) },
+      } } });
+      if (args.at(-1).includes(`issues/${failing}/comments`)) {
+        now += options.timeoutMs;
+        throw new Error("deadline");
+      }
+      return "[]";
+    },
+  });
+  for (const item of [4, 5]) {
+    failing = item;
+    assert.doesNotMatch(JSON.stringify(await poll()), /could not be checked/);
+  }
+  failing = 4;
+  assert.doesNotMatch(JSON.stringify(await poll()), /could not be checked/);
+  assert.match(JSON.stringify(await poll()), /could not be checked \(deadline\)/);
+  failing = null;
+  assert.doesNotMatch(JSON.stringify(await poll()), /could not be checked/);
+  now += 1;
+  failing = 4;
+  assert.doesNotMatch(JSON.stringify(await poll()), /could not be checked/);
 });

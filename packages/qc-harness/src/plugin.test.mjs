@@ -91,10 +91,10 @@ test("core and extras have separate parts and hook paths inside each installed t
 });
 
 
-test("core Codex instructions stop new starts on a usage limit", () => {
+test("core controllers stop new starts and watchers report a usage limit", () => {
   for (const file of ["agents/codex.md", "skills/codex/SKILL.md"]) {
     const text = readFileSync(`${PLUGIN}${file}`, "utf8");
-    assert.match(text, /EXIT: 2.*stop new starts and tell the owner/);
+    assert.match(text, file.startsWith("agents/") ? /On exit 2, report the limit and stop/ : /exit 2, stop new starts and tell the owner/);
     assert.doesNotMatch(text, /sdd-implementer/);
   }
 });

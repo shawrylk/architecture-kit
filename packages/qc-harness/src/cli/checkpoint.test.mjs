@@ -122,8 +122,8 @@ test("checkpoint has exactly one SessionStart hook", () => {
   assert.match(hooks.description, /Optional/i);
 });
 
-test("both orchestrator skills use the session checkpoint and its fixed headings", () => {
-  for (const skill of ["codex", "swarm"]) {
+test("extras documents the session checkpoint and its fixed headings", () => {
+  for (const skill of ["swarm"]) {
     const source = readFileSync(new URL(`../../../../${skill === "codex" ? "" : "plugins/architecture-extras/"}skills/${skill}/SKILL.md`, import.meta.url), "utf8");
     assert.ok(source.includes("<git common dir>/qc/checkpoints/<session_id>.md"), skill);
     for (const heading of ["## Goal", "## Rules", "## Tasks", "## Next"]) assert.ok(source.includes(heading), `${skill}: ${heading}`);
@@ -132,8 +132,8 @@ test("both orchestrator skills use the session checkpoint and its fixed headings
   }
 });
 
-test("the reference and Codex skill document the prompt rule caps and filters", () => {
-  for (const file of ["docs/reference.md", "skills/codex/SKILL.md"]) {
+test("the reference documents the prompt rule caps and filters", () => {
+  for (const file of ["docs/reference.md"]) {
     const source = readFileSync(new URL(`../../../../${file}`, import.meta.url), "utf8");
     assert.match(source, /20 `Rule:` lines/);
     assert.match(source, /2,000 characters/);

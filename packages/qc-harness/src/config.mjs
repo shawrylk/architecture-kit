@@ -10,7 +10,7 @@ export const CONFIG_FILE = "qc.config.json";
 
 export const defaults = {
   commentWatch: true,
-  github: { configDirs: { shawrylk: "~/.config/gh-personal" } },
+  github: { configDirs: {} },
   // The PR guard (draft on create, platform legs before ready) runs only when a repository sets enforce.
   ready: { enforce: false, platforms: ["linux"] },
   checkpoint: { maxAgeMinutes: 30 },
@@ -40,10 +40,6 @@ export const defaults = {
     maxRuns: 2,
     requireApproval: false,
     maxDiffLines: 400,
-  },
-
-  throwawayDb: {
-    schemaCommand: null,
   },
 
   // Token limits keep each role within its context: compactAt compacts, remindAt warns, and handoffAt hands off.
@@ -500,11 +496,6 @@ export const defaults = {
     "ui-catalog": false,
     "ui-dupes": false,
   },
-
-  // Gates that produce rather than inspect: a repository's codegen imports these and
-  // writes their output. `qc check` does not run them, so they carry no switch — a
-  // switch that changed nothing would be a lie about what the config controls.
-  generators: ["tenant-tables", "contract-compose"],
 
   rules: {
     "no-comment-paragraph": true,

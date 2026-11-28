@@ -1,8 +1,6 @@
 {
-  "//": "The kit is bound by the kit. A rule it ships and cannot itself satisfy is not a rule.",
   "featureRoots": [],
   "codex": { "model": "gpt-6.1-sol" },
-  "swarm": { "review": { "runtime": "codex" } },
   "ready": { "platforms": ["linux", "windows"] },
   "docs": {
     "root": "packages/qc-harness/templates/docs",
@@ -56,11 +54,9 @@
       "test-mirror": "off-by-design"
     }
   },
-  "//floor": "This is a CLI package, not an application: it has no features, SQL, routes or frontend for these to inspect. Its own enforcement map is the template it ships, proven by its suite instead.",
   "language": {
     "allowNonEnglish": [
       "packages/qc-harness/src/gates/english-source.test.mjs"
     ]
-  },
-  "//language": "A gate that detects Japanese needs Japanese to be proven by a case that must fail."
+  }
 }

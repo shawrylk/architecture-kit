@@ -12,7 +12,7 @@ import { runSetup } from "./setup.mjs";
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), "qc-setup-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const home = join(root, "home");
   const kitDir = join(root, "kit");
   const cwd = join(root, "project");
@@ -68,12 +68,12 @@ test("sets up user files and logs each changed key", async (t) => {
   const codexTime = statSync(f.codex).mtimeMs;
   assert.equal(await runSetup([], f.options), 0);
   assert.deepEqual(JSON.parse(readFileSync(f.settings, "utf8")), { theme: "dark", autoCompactEnabled: true });
-  assert.equal(readFileSync(f.claude, "utf8"), `${CORE_BEGIN}\ncore rule\n${CORE_END}\n`);
+  assert.equal(existsSync(f.claude), false);
   assert.equal(readFileSync(f.codex, "utf8"), 'model = "x"');
   assert.equal(statSync(f.codex).mtimeMs, codexTime);
   assert.ok(f.logs.includes(`Change ${f.settings}: autoCompactEnabled`));
-  assert.ok(f.logs.some((line) => line.startsWith(`Change ${f.claude}: `)));
-  assert.equal(f.logs.filter((line) => line.startsWith("Change ")).length, 2);
+  assert.equal(f.logs.some((line) => line.startsWith(`Change ${f.claude}: `)), false);
+  assert.equal(f.logs.filter((line) => line.startsWith("Change ")).length, 1);
   const backup = readdirSync(dirname(f.settings)).find((name) => name.startsWith("settings.json.bak-"));
   assert.ok(backup);
   assert.equal(readFileSync(join(dirname(f.settings), backup), "utf8"), '{"theme":"dark"}');
@@ -83,7 +83,7 @@ test("sets up user files and logs each changed key", async (t) => {
 test("a second run preserves every file and creates no backup", async (t) => {
   const f = fixture(t);
   assert.equal(await runSetup([], f.options), 0);
-  for (const file of [f.settings, f.codex, f.claude]) utimesSync(file, 100, 100);
+  for (const file of [f.settings, f.codex]) utimesSync(file, 100, 100);
   const before = snapshot(f.root);
   f.logs.length = 0;
   assert.equal(await runSetup([], { ...f.options, now: new Date("2026-01-03T03:04:05Z") }), 0);
@@ -92,13 +92,16 @@ test("a second run preserves every file and creates no backup", async (t) => {
   assert.ok(f.logs.includes("Setup matches."));
 });
 
-test("preserves text outside the markers when the template changes", async (t) => {
+test("core setup preserves personal rules and needs no extras template", async (t) => {
   const f = fixture(t);
+  const personal = `Personal rules\n${CORE_BEGIN}\nold rules\n${CORE_END}\n`;
+  writeFileSync(f.claude, personal);
+  rmSync(f.template);
+  const before = statSync(f.claude).mtimeMs;
   assert.equal(await runSetup([], f.options), 0);
-  writeFileSync(f.claude, `Personal rules\n${readFileSync(f.claude, "utf8")}More personal rules\n`);
-  writeFileSync(f.template, "changed core rule\n");
-  assert.equal(await runSetup([], f.options), 0);
-  assert.equal(readFileSync(f.claude, "utf8"), `Personal rules\n${CORE_BEGIN}\nchanged core rule\n${CORE_END}\nMore personal rules\n`);
+  assert.equal(readFileSync(f.claude, "utf8"), personal);
+  assert.equal(statSync(f.claude).mtimeMs, before);
+  assert.deepEqual(readdirSync(dirname(f.claude)).filter(name => name.startsWith("CLAUDE.md.bak-")), []);
 });
 
 test("a dry run leaves all files and personal skills intact", async (t) => {
@@ -246,12 +249,11 @@ test("a late planning error leaves files and skills untouched", async (t) => {
   assert.equal(f.logs.at(-1), "qc setup: tool check failed");
 });
 
-test("invalid markers fail before any write", async (t) => {
+test("core setup leaves incomplete legacy markers alone", async (t) => {
   const f = fixture(t);
   writeFileSync(f.claude, `${CORE_BEGIN}\n`);
-  const before = snapshot(f.root);
-  assert.equal(await runSetup([], f.options), 2);
-  assert.deepEqual(snapshot(f.root), before);
+  assert.equal(await runSetup([], f.options), 0);
+  assert.equal(readFileSync(f.claude, "utf8"), `${CORE_BEGIN}\n`);
 });
 
 test("rejects credential paths before any write", async (t) => {
