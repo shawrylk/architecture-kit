@@ -38,6 +38,7 @@ The `stable` branch moves only at a release, so work on `main` does not reach yo
 Claude Code updates a plugin only when its `version` changes. A release sets the same version in `packages/qc-harness/package.json`, `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
 
 To split the open issues across several PCs, read [Split work across PCs](docs/fleet.md).
+For Codex jobs, start `qc fleet worker` on each node and send briefs with `qc fleet job` on the leader. See [Codex worker](docs/fleet.md#codex-worker).
 `/fleet start` runs the fleet from Claude.
 
 The plugin depends on [ai-chat-assistant](https://github.com/shawrylk/ai-chat-assistant),

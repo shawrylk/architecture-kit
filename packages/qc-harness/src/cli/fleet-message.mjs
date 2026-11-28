@@ -1,6 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
-export const KINDS = Object.freeze(["assign", "plan", "approve", "question", "answer", "say", "pushed", "verdict", "platform-check", "platform-result", "heartbeat", "propose-leader", "leader"]);
+export const KINDS = Object.freeze(["assign", "plan", "approve", "question", "answer", "say", "pushed", "verdict", "platform-check", "platform-result", "codex-job", "codex-result", "codex-cancel", "heartbeat", "propose-leader", "leader"]);
 const plain = value => value !== null && typeof value === "object" && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const validSecret = secret => typeof secret === "string" && secret.length >= 64 && !/[^0-9a-f]/i.test(secret);
 

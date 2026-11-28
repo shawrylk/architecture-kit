@@ -253,7 +253,7 @@ export async function runWatch(argv, { gh = readGh, say = console.log, warn = co
         const leader = readState(cwd, "node").leader === true;
         const messages = leader
           ? [...readState(cwd, "queue").filter(message => ["plan", "question"].includes(message.kind)),
-            ...readState(cwd, "inbox").filter(message => message.kind === "say")]
+            ...readState(cwd, "inbox").filter(message => ["say", "codex-result"].includes(message.kind))]
           : readState(cwd, "inbox");
         messages.push(...pairingMessages(cwd, leader, now()));
         const proposal = readState(cwd, "proposal");

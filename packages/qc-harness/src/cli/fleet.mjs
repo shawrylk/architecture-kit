@@ -10,6 +10,7 @@ import { checkoutRootOf } from "./checkout-root.mjs";
 import { runGh } from "./gh-run.mjs";
 import { gitOut, originOf } from "./git-read.mjs";
 import { sendPushed, validPlatformBranch } from "./fleet-platform.mjs";
+import { DISPATCH_VERBS, parseDispatchArgs, runDispatch } from "./fleet-dispatch.mjs";
 import { TALK_VERBS, parseTalkArgs, runTalk } from "./fleet-talk.mjs";
 import { highestTerm, latestLeader, readState, writeState } from "./fleet-state.mjs";
 import { confirmLeader, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
@@ -17,7 +18,7 @@ import { createKey, validateKey, pairingDecision, readPairing } from "./fleet-pa
 import { effectiveFleet, readDiscovered } from "./fleet-discover.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init [--self <id>] [--nodes <id:weight:size,...>] [--port <port>] [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | say <node-id|leader> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] | serve [--leader] | stop | allow <code> | deny <code> | accept <code> | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
+const USAGE = "usage: qc fleet init [--self <id>] [--nodes <id:weight:size,...>] [--port <port>] [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | say <node-id|leader> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] [--jobs <n>] | job --brief <file> --branch <b> --base <ref> [--rounds 3] [--node <id>] [--id <id>] | jobs | cancel <id> | worker [--jobs <n>] | serve [--leader] [--jobs <n>] | stop | allow <code> | deny <code> | accept <code> | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -144,10 +145,11 @@ function parseArgs(argv) {
     if (args.length !== 1 || !/^\d{6}$/.test(args[0])) throw new Error(`${verb} needs a 6-digit code`);
     return { verb, code: args[0] };
   }
+  if (DISPATCH_VERBS.includes(verb)) return parseDispatchArgs(verb, args);
   if (TALK_VERBS.includes(verb)) return parseTalkArgs(verb, args);
   const hasIssue = ["progress", "owns", "pushed"].includes(verb);
   const rest = hasIssue ? args.slice(1) : args;
-  const allowed = verb === "init" ? ["--self", "--nodes", "--port", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve"].includes(verb) ? ["--leader"] : verb === "pushed" ? ["--branch", "--head"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns", "confirm-leader"].includes(verb) ? [] : null;
+  const allowed = verb === "init" ? ["--self", "--nodes", "--port", "--secret", "--addresses", "--force"] : verb === "next" ? ["--repo", "--all"] : verb === "status" ? ["--repo"] : ["start", "serve", "worker"].includes(verb) ? ["--leader", "--jobs"] : verb === "pushed" ? ["--branch", "--head"] : verb === "progress" ? ["--step", "--branch", "--head"] : ["stop", "owns", "confirm-leader"].includes(verb) ? [] : null;
   if (!allowed) throw new Error(USAGE);
   const options = { verb };
   if (hasIssue) {
@@ -172,6 +174,7 @@ function parseArgs(argv) {
     const branch = options["--branch"];
     if (branch !== undefined && (!branch || /[\s~^:?*\[\\\x00-\x1f\x7f]/.test(branch) || /(^[-/.]|[/.]$|\.\.|@\{|\/\/|\.lock(?:\/|$)|\/\.)/.test(branch) || branch === "@")) throw new Error("--branch needs a valid branch name");
   }
+  if (options["--jobs"] !== undefined && (!/^\d+$/.test(options["--jobs"]) || !Number.isSafeInteger(Number(options["--jobs"])))) throw new Error("--jobs needs a nonnegative integer");
   return options;
 }
 
@@ -272,7 +275,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
       }
       if ((fleet.discover && !fleet.secret) || (!origin(cwd) && !options["--repo"])) return 0;
     }
-    if (["start", "stop", "serve"].includes(options.verb)) {
+    if (["start", "stop", "serve", "worker"].includes(options.verb)) {
       return runNodeVerb(options, { root: cwd, fleet, configuredFleet, env, gh, git, origin, say, warn, node }).catch(error => { warn(error.message); return 1; });
     }
     if (options.verb === "confirm-leader") {
@@ -283,6 +286,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
     const localRepo = origin(cwd);
     const repo = (options["--repo"] ?? localRepo)?.toLowerCase();
     if (!repo) throw new Error("--repo is required when origin has no repository");
+    if (DISPATCH_VERBS.includes(options.verb)) return runDispatch(options, { root: cwd, fleet, repo, say, ...node }).catch(error => { warn(error.message); return 1; });
     if (TALK_VERBS.includes(options.verb)) {
       return runTalk(options, { root: cwd, fleet, repo, gh, say, node }).catch(error => { warn(error.message); return 1; });
     }
@@ -346,7 +350,7 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
 }
 
 async function runNodeVerb(options, { root, fleet, configuredFleet, env, gh, git, origin, say, warn, node }) {
-  const deps = { gh, git, ...node, root, fleet, configuredFleet, env, fleetFile: fleetPath(env), leader: options["--leader"] === true };
+  const deps = { gh, git, ...node, root, fleet, configuredFleet, env, fleetFile: fleetPath(env), leader: options["--leader"] === true, jobs: Number(options["--jobs"] ?? (options.verb === "worker" ? 6 : 0)) };
   if (options.verb === "serve") {
     const kitRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const kit = gitOut(kitRoot, "rev-parse", "HEAD")?.trim() || null;
@@ -354,7 +358,7 @@ async function runNodeVerb(options, { root, fleet, configuredFleet, env, gh, git
     const server = await serveNode({ ...deps, holdLabel, repo: origin(root) ?? "qc/fleet", kit, warn });
     return new Promise(resolve => server.once("close", () => resolve(0)));
   }
-  if (options.verb === "start") {
+  if (["start", "worker"].includes(options.verb)) {
     const result = await startNode(deps);
     say(`fleet node ${result.already ? "already running" : "started"}: ${fleet.self}`);
   } else {

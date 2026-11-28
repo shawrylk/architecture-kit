@@ -13,7 +13,13 @@ const validLoad = load => load !== null && typeof load === "object" && !Array.is
     load[key] === null || (Number.isFinite(load[key]) && load[key] >= 0 && load[key] <= limit)) &&
   (load.platform === undefined || (typeof load.platform === "string" && load.platform.length > 0)) &&
   Object.keys(load).every(key => ["platform", "cpu", "mem", "rtt"].includes(key));
+const validJobs = jobs => jobs && typeof jobs === "object" && !Array.isArray(jobs) &&
+  [jobs.max, jobs.live, jobs.limitedUntil].every(value => Number.isSafeInteger(value) && value >= 0) &&
+  Object.keys(jobs).every(key => ["max", "live", "limitedUntil", "steps"].includes(key)) && Array.isArray(jobs.steps) &&
+  jobs.steps.length === jobs.live && jobs.steps.every(row => row && /^[a-z0-9][a-z0-9-]{0,39}$/.test(row.id) &&
+    typeof row.step === "string" && row.step.length <= 120 && Object.keys(row).every(key => ["id", "step"].includes(key)));
 const validHeartbeat = body => validTerm(body.term) && typeof body.leader === "boolean" && (body.kit === null || typeof body.kit === "string") &&
+  (body.jobs === undefined || validJobs(body.jobs)) &&
   (body.load === undefined || validLoad(body.load)) &&
   (body.work === undefined || (Array.isArray(body.work) && body.work.every(validWork))) &&
   (body.assigned === undefined || (Array.isArray(body.assigned) && body.assigned.every(assignmentRef)));
@@ -53,6 +59,7 @@ export function receiveMessage({ root, fleet, message, clock = Date.now }) {
       ...(message.body.load === undefined ? {} : { load: message.body.load }),
       ...(message.body.os === undefined ? {} : { os: message.body.os }),
       ...(message.body.work === undefined ? {} : { work: message.body.work }),
+      ...(message.body.jobs === undefined ? {} : { jobs: message.body.jobs }),
       ...(message.body.assigned === undefined ? {} : { assigned: message.body.assigned }) }, enumerable: true, configurable: true, writable: true });
     for (const peer of Object.values(peers)) if ((peer.term ?? 1) < highest) peer.leader = false;
     writeState(root, "peers", peers);

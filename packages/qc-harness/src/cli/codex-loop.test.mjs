@@ -1,0 +1,71 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { runCodexLoop } from "./codex-loop.mjs";
+
+function setup(t) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "qc-loop-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  writeFileSync(path.join(dir, "implement.md"), `# Brief: test\nWorktree: \`${dir}\`\nIssue: \`#0\`\nPaths: \`src/\`\nReport: \`${dir}/implement-report.md\`\nProgress: \`${dir}/implement-progress.md\`\nVerify: none\nApproved: \`spec.md\`\n## Task\n1. Work.\n## Commit\nCommit only.\n`);
+  return dir;
+}
+for (const mode of ["approve", "fix", "exhaust", "limit", "from-review", "review-limit", "bad-exit"]) {
+  test(`codex-loop ${mode} status and exit`, async t => {
+    const dir = setup(t), calls = [];
+    const result = await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--rounds", "2", "--base", "origin/topic", ...(mode === "from-review" ? ["--from-review", path.join(dir, "prior.md")] : [])], {
+      warn: () => {}, git: async (_root, ...args) => ({ stdout: args[0] === "rev-parse" ? "a".repeat(40) : "outside.mjs\0" }),
+      implement: async args => {
+        calls.push(args);
+        if (mode === "limit") return 2;
+        if (mode === "bad-exit") return 1;
+        if (args.includes("--review")) {
+          if (mode === "review-limit") return 2;
+          const changes = mode === "exhaust" || (mode === "fix" && calls.length === 2);
+          writeFileSync(args[args.indexOf("--report") + 1], `VERDICT: ${changes ? "CHANGES_REQUIRED" : "APPROVED"}\n`);
+        }
+        return 0;
+      },
+    });
+    const status = readFileSync(path.join(dir, "loop.status"), "utf8");
+    assert.equal(result, mode.includes("limit") ? 2 : ["exhaust", "bad-exit"].includes(mode) ? 1 : 0);
+    if (mode === "limit") assert.equal(status, "implement exit 2\nSTOP LIMIT implement\n");
+    if (mode === "exhaust") assert.match(status, /STOP 2 rounds without approval\n$/);
+    if (mode === "bad-exit") assert.match(status, /STOP implement exit 1/);
+    if (mode === "fix") assert.match(status, /loop-fix-1 exit 0\nloop-review-2 exit 0 APPROVED\nDONE APPROVED/);
+    if (mode === "approve") {
+      assert.equal(status, "implement exit 0\nloop-review-1 exit 0 APPROVED\nDONE APPROVED\n");
+      const review = readFileSync(path.join(dir, "loop-review-1.md"), "utf8");
+      assert.match(review, /origin\/topic\.\.\./);
+      assert.match(review, /outside.mjs/);
+      assert.match(review, /Make no commit and no push/);
+    }
+    if (mode === "from-review") {
+      assert.match(status, /^loop-fix-0 exit 0/);
+      assert.match(readFileSync(path.join(dir, "loop-fix-0.md"), "utf8"), /prior.md/);
+    }
+  });
+}
+test("codex-loop invalid arguments exit 2", async () => {
+  assert.equal(await runCodexLoop(["--rounds", "0"], { warn: () => {} }), 2);
+});
+test("skip implement archives stale proof and keeps wrapper output; review defaults to origin/main", async t => {
+  const dir = setup(t);
+  writeFileSync(path.join(dir, "loop-review-1-report.md"), "VERDICT: APPROVED\n");
+  writeFileSync(path.join(dir, "loop-review-1-progress.md"), "stale progress\n");
+  let calls = 0;
+  const code = await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--skip-implement"], {
+    clock: () => 123, git: async (_cwd, ...args) => ({ stdout: args[0] === "rev-parse" ? "a".repeat(40) : "" }),
+    implement: async (args, options) => {
+      calls++; assert.ok(args.includes("--review"));
+      assert.equal(readFileSync(path.join(dir, "old-123-loop-review-1-report.md"), "utf8"), "VERDICT: APPROVED\n");
+      options.say("review output");
+      writeFileSync(args[args.indexOf("--report") + 1], "VERDICT: APPROVED\n");
+      return 0;
+    },
+  });
+  assert.equal(code, 0); assert.equal(calls, 1);
+  assert.equal(readFileSync(path.join(dir, "loop-review-1.wrapper"), "utf8"), "review output\n");
+  assert.match(readFileSync(path.join(dir, "loop-review-1.md"), "utf8"), /origin\/main\.\.\./);
+});

@@ -1,4 +1,39 @@
 # Split work across PCs
+
+## Codex worker
+
+Pair the fleet as shown below. Install Codex and sign in on each node. Each node uses its own Codex login. Then start the worker on each node:
+
+```sh
+qc fleet worker                 # six job slots
+qc fleet worker --jobs 2        # two job slots
+qc fleet start --leader --jobs 2 # the leader can also run jobs
+```
+
+`fleet worker` is `fleet start --jobs 6`. Use `fleet stop` before you change the slot count of a running node. Plain `fleet start` has zero job slots. Pairing, issue assignment, platform checks and heartbeats still work with no `--jobs` flag.
+
+Send a brief from the current leader:
+
+```sh
+qc fleet job --brief implement.md --branch feat/example --base main --rounds 3
+qc fleet job --brief implement.md --branch feat/other --base main --node ab12 --id other
+qc fleet jobs
+qc fleet cancel other
+qc watch --fleet
+```
+
+The leader picks an active, addressed node with a recent heartbeat, free slots and no limit window. It uses the same CPU, memory and round-trip load limits as issue assignment. It picks the most free slots, then the lowest node ID. `--node` selects one node and still checks these rules. Job IDs use lower-case letters, digits and hyphens, start with a letter or digit, and have at most 40 characters. The default ID uses the branch name and four random hex digits. Rounds must be from 1 to 6; the default is 3. Briefs must be at most 64 KiB.
+
+A worker accepts job and cancel messages only from the current leader. It refuses known job IDs, existing branches, full slots and a live limit window. It runs only the installed `qc codex-loop` on the brief; it does not run a command supplied in a message field. Codex follows the brief in a separate worktree. The worker replaces the Worktree, Report and Progress paths with local paths. Keep the shared fleet secret out of briefs. Messages are signed and contain no fleet secret.
+
+Code moves through GitHub. The worker fetches the base and creates the requested branch. After approval it pushes the branch without force, then removes the worktree. The leader ships the branch. A limit exit holds new jobs for 60 minutes. A limit, stop, error or cancel keeps the worktree for inspection. A restart reports each job that was live as failed with reason `node restarted` and keeps its worktree. A missed heartbeat marks live jobs as lost once; a later result can update them.
+
+`fleet jobs` shows the ID, node, state, branch, last step and age. Heartbeats carry slot counts, the limit time and the last loop status line for each live job, cut to 120 characters. `watch --fleet` emits `EVENT fleet:codex-result <id> <state> <branch> <head|->` once per result or lost-node event.
+
+To run a brief on one PC, use `qc codex-loop --dir <run dir> --brief <name> [--rounds <n>] [--from-review <report>] [--skip-implement] [--base <ref>]`. The base defaults to `origin/main`. The loop implements, reviews, fixes findings and reviews again. It appends each step to `loop.status`. Exit 0 means approval, 2 means a usage or spend limit, and 1 means another stop.
+
+## Pair the PCs
+
 Fleet assigns free open issues across PCs on the LAN. Install `architecture-harness` and authenticate `gh` on each PC. Run init on each PC to get a random four-character hex name and an X25519 key pair; it prints only `fleet name: <id>`. On the first PC run `fleet start --leader` to create and save the shared secret. On each other PC run `fleet start` to join. Compare the six-digit code shown by `fleet status` on both PCs, then run `fleet allow <code>` on the Leader and `fleet accept <code>` on the joining PC:
 
 ```sh

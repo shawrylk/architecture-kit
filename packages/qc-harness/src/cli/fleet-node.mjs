@@ -1,7 +1,9 @@
 import os from "node:os";
 import { sampleLoad } from "./fleet-load.mjs";
 import { hostOS } from "./legs.mjs";
+import { dispatchTick } from "./fleet-dispatch.mjs";
 import { platformTick } from "./fleet-platform.mjs";
+import { jobsHeartbeat, jobsTick, recoverJobs } from "./fleet-jobs.mjs";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
 import { spawn as spawnProcess } from "node:child_process";
@@ -66,7 +68,7 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
     let size = 0;
     req.on("data", chunk => {
       size += chunk.length;
-      if (size > (pairRoute ? 2048 : LIMIT)) {
+      if (size > (pairRoute ? 2048 : LIMIT * 8)) {
         if (!res.writableEnded) reply(413, { ok: false, reason: "body-too-large" });
         chunks.length = 0;
       } else chunks.push(chunk);
@@ -77,6 +79,7 @@ export async function createNodeServer({ root = process.cwd(), fleet, clock = Da
       let message;
       try { message = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
       catch { reply(400, { ok: false, reason: "bad-json" }); return; }
+      if (!pairRoute && size > LIMIT && message?.kind !== "codex-job") { reply(413, { ok: false, reason: "body-too-large" }); return; }
       try {
         const sender = req.socket.remoteAddress?.replace(/^::ffff:/, "");
         const result = pairRoute ? { ok: pairing?.receivePair(message, sender) === true }
@@ -208,7 +211,7 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
       return { repo: row.repo, issue: row.issue, epoch: row.epoch, step: current.step ?? null,
         branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
     });
-    return { kit, os: hostOS(), load, ...role, work, ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
+    return { kit, os: hostOS(), load, ...role, work, jobs: jobsHeartbeat(root, fleet.secret), ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
       .map(({ repo, issue, epoch }) => ({ repo, issue, epoch })) } : {}) };
   };
   const local = bodyFor(fleet.self);
@@ -262,7 +265,7 @@ async function healthy(node, instance, fetch, timeout) {
   } catch { return false; }
 }
 
-export async function startNode({ root = process.cwd(), fleet, leader = false, spawn = spawnProcess,
+export async function startNode({ root = process.cwd(), fleet, leader = false, jobs = 0, spawn = spawnProcess,
   kill = process.kill, clock = Date.now, fetch = nodeFetch, sleep = sleepFor, env = process.env }) {
   const self = localNode(fleet);
   const record = readState(root, "node");
@@ -278,14 +281,14 @@ export async function startNode({ root = process.cwd(), fleet, leader = false, s
   const log = openSync(path.join(stateDir(root), "node.log"), "a", 0o600);
   let child, spawnError;
   try {
-    child = spawn(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "fleet", "serve", ...(leader ? ["--leader"] : [])],
+    child = spawn(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "fleet", "serve", ...(leader ? ["--leader"] : []), ...(jobs ? ["--jobs", String(jobs)] : [])],
       { cwd: root, env: { ...env, QC_FLEET_INSTANCE: instance }, detached: true, stdio: ["ignore", log, log], windowsHide: true });
     child.once("error", error => { spawnError = error; });
     child.unref();
   } finally { closeSync(log); }
   try {
     if (!Number.isSafeInteger(child.pid) || child.pid <= 0) throw new Error("fleet node spawn failed");
-    writeState(root, "node", { pid: child.pid, leader, instance });
+    writeState(root, "node", { pid: child.pid, leader, instance, jobs: { max: jobs } });
     const deadline = clock() + 5000;
     while (clock() < deadline) {
       if (spawnError) throw spawnError;
@@ -418,7 +421,7 @@ function savedRole(root, fallbackLeader = false) {
 }
 
 function allowLeaderMessage(root, fleet, now, message, term, role = savedRole(root)) {
-  if (!["assign", "approve", "answer"].includes(message.kind)) return true;
+  if (!["assign", "approve", "answer", "codex-job", "codex-cancel"].includes(message.kind)) return true;
   return role.leader && (term === undefined || role.term === term) && canAssign(root, fleet, now);
 }
 
@@ -513,7 +516,7 @@ export function confirmLeader({ root, fleet, clock = Date.now }) {
 }
 
 /** One serial tick avoids overlapping network retries and heartbeats. */
-export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, os: host = os, clock = Date.now,
+export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, jobs = 0, os: host = os, clock = Date.now,
   configuredFleet = fleet, interfaces, discovery = {}, env = process.env, fleetFile = env.QC_FLEET_FILE,
   fetch = nodeFetch, gh = runGh, git, platform = {}, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
@@ -559,8 +562,9 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   try {
     const previous = readState(root, "node"), election = readState(root, "election");
     leader = leader || previous.leader === true;
-    writeState(root, "node", { pid, leader, instance, term: previous.term ?? highestTerm(root) });
+    writeState(root, "node", { pid, leader, instance, term: previous.term ?? highestTerm(root), jobs: { max: jobs } });
     writeState(root, "election", { ...election, started: election.started ?? clock(), highest: highestTerm(root) });
+    await recoverJobs({ root, fleet, clock, fetch, signal: sends.signal });
   }
   catch (error) { discoverySocket?.close(); server.close(); throw error; }
   interval = timer(async () => {
@@ -578,8 +582,10 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       leader = savedRole(root).leader;
       receiveAssignments(root, fleet, clock(), leader);
       receiveTalk(root, fleet, leader, clock());
+      dispatchTick({ root, fleet, clock });
       void platformTick({ ...platform, root, fleet, clock, gh, fetch, signal: sends.signal, warn })
         .catch(error => warn(`fleet platform: ${error.message}`));
+      void jobsTick({ root, fleet, clock, fetch, signal: sends.signal, warn }).catch(error => warn(`fleet jobs: ${error.message}`));
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
         allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) });
       if (!closing && clock() >= nextAssign) {

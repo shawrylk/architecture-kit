@@ -49,6 +49,7 @@ const USAGE = `qc — architecture gates
                            record a failed run, or rerun the open test files before a push
   qc ask --issue <n> "<question>"  label the issue needs-user and post the question
   qc budget report        each role's end context, peaks at handoffAt, and advice on its limit
+  qc codex-loop --dir <run dir> --brief <name> [--rounds <n>] [--from-review <report>] [--skip-implement] [--base <ref>]
   qc codex-implement --brief <file> --worktree <path> --progress <file> [--log <file>] [--max-runs <n>] [--role <scout|tests|implement|review>] [--review] [--report <file>] [--resume <id>] [--effort <low|medium|high>] [--wait-reset] [--max-hours <n>] [--poll-minutes <n>]
                            run a brief through codex exec as an implementer; done means the last non-empty progress line equals ALL TASKS DONE after trimming whitespace
                            the runner supplies the marker; write it as the last line, alone, only when the exit criteria hold; never quote it elsewhere or wait for it; exit 2 on a Codex limit
@@ -154,6 +155,11 @@ async function main() {
     process.exit(await runLease(rest));
   }
   // The runner reads no configuration, so it runs from any folder.
+  if (command === "codex-loop") {
+    const { runCodexLoop } = await import("./codex-loop.mjs");
+    process.exitCode = await runCodexLoop(rest);
+    return;
+  }
   if (command === "codex-implement") {
     const { runCodexImplement } = await import("./codex-implement.mjs");
     process.exitCode = await runCodexImplement(rest);

@@ -316,7 +316,11 @@ test("next prints the oldest five or all, exits 3 when empty, and status adds th
 
 test("init routes through qc from an empty folder, creates mode 0600 and refuses replacement", t => {
   const guide = readFileSync(new URL("../../../../docs/fleet.md", import.meta.url), "utf8");
-  assert.ok(guide.trimEnd().split("\n").length <= 40);
+  const worker = guide.split("## Codex worker\n")[1]?.split("## Pair the PCs\n")[0];
+  const pairing = guide.split("## Pair the PCs\n")[1];
+  assert.ok(worker && worker.trim().split("\n").length <= 40);
+  assert.ok(pairing && pairing.trim().split("\n").length <= 40);
+  for (const verb of ["worker", "job", "jobs", "cancel"]) assert.ok(worker.includes(`qc fleet ${verb}`));
   assert.match(guide, /QC_FLEET_FILE/);
   assert.match(guide, /active.*false/);
   const reference = readFileSync(new URL("../../../../docs/reference.md", import.meta.url), "utf8");
@@ -644,4 +648,18 @@ test("start migrates keys, leader creates secret, and pairing CLI and status sha
   assert.equal(f.run(["deny", code], { node: { clock: () => now } }).code, 0);
   assert.equal(f.run(["allow", "123"], { node: { clock: () => now } }).code, 1);
   assert.equal(f.run(["accept", code], { node: { clock: () => now } }).code, 1);
+});
+
+for (const [verb, count] of [["worker", 6], ["worker", 2], ["start", 3]]) test(`CLI ${verb} starts ${count} job slots`, async t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]);
+  let instance, args;
+  const result = await f.run([verb, ...(count === 6 ? [] : ["--jobs", String(count)])], { node: {
+    spawn: (_command, argv, opts) => { args = argv; instance = opts.env.QC_FLEET_INSTANCE; return { pid: 456, once() {}, unref() {} }; },
+    kill: () => {}, clock: () => 1000, fetch: async () => ({ status: 200, json: async () => ({ ok: true, instance }) }),
+  } });
+  assert.equal(result.code, 0, result.errors.join("\n"));
+  assert.equal(readState(f.cwd, "node").jobs.max, count);
+  assert.deepEqual(args.slice(-2), ["--jobs", String(count)]);
+  for (const bad of ["-1", "1.5", "no", "9007199254740992"]) assert.equal((await f.run([verb, "--jobs", bad])).code, 1);
 });

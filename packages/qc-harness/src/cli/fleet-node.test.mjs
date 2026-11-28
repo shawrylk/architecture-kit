@@ -54,6 +54,7 @@ test("HTTP routes, JSON, signature refusal, replay, byte limit and durable queue
   }
   const post = body => fetch(`${base}/message`, { method: "POST", body });
   assert.equal((await post("{")).status, 400);
+  assert.equal((await post("null" + " ".repeat(65536))).status, 413);
   const invalid = await post(JSON.stringify({ ...message(), sig: "00".repeat(32) }));
   assert.equal(invalid.status, 400);
   assert.deepEqual(await invalid.json(), { ok: false, reason: "bad-signature" });
@@ -128,13 +129,13 @@ test("heartbeat targets only other active addressed nodes and records receipt ti
   assert.equal(received[0].url, "http://127.0.0.1:8081/message");
   assert.equal(received[0].message.kind, "heartbeat");
   assert.equal(received[0].message.body.os, process.platform === "win32" ? "windows" : process.platform);
-  assert.deepEqual(received[0].message.body, { load: initialLoad, kit: "commit", os: process.platform === "win32" ? "windows" : process.platform, term: 1, leader: true, work: [], assigned: [] });
+  assert.deepEqual(received[0].message.body, { load: initialLoad, kit: "commit", os: process.platform === "win32" ? "windows" : process.platform, term: 1, leader: true, work: [], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] }, assigned: [] });
   const server = await createNodeServer({ root, fleet, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
   const beat = message({ kind: "heartbeat", body: { kit: null, term: 1, leader: false } });
   assert.equal((await post(beat)).status, 202);
-  assert.deepEqual(readState(root, "peers"), { a: { load: { ...initialLoad, rtt: 0 }, time: now, os: host, kit: "commit", term: 1, leader: true, work: [], assigned: [] }, b: { time: now, messageTime: beat.time, kit: null, term: 1, leader: false } });
+  assert.deepEqual(readState(root, "peers"), { a: { load: { ...initialLoad, rtt: 0 }, time: now, os: host, kit: "commit", term: 1, leader: true, work: [], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] }, assigned: [] }, b: { time: now, messageTime: beat.time, kit: null, term: 1, leader: false } });
   assert.equal((await post(message({ kind: "heartbeat", body: { leader: "yes" } }))).status, 400);
   assert.deepEqual(readState(root, "queue"), []);
 });
@@ -147,7 +148,7 @@ test("heartbeat ordering saves signed time and ignores older or equal snapshots 
   t.after(() => new Promise(resolve => server.close(resolve)));
   const post = (sent, body) => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST",
     body: JSON.stringify(message({ kind: "heartbeat", time: new Date(sent).toISOString(), body })) });
-  const body = { kit: "new", term: 1, leader: true, work: [], assigned: [] };
+  const body = { kit: "new", term: 1, leader: true, work: [], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] }, assigned: [] };
   assert.equal((await post(now, body)).status, 202);
   const saved = readState(root, "peers");
   assert.equal(saved.b.messageTime, new Date(now).toISOString());
@@ -294,7 +295,7 @@ test("start detaches with a log, start twice is idempotent, stop keeps state and
   writeState(root, "peers", { b: { time: now, leader: true, term: 1, kit: null, assigned: [{ repo: "o/r", issue: 7, epoch: 1 }] } });
   const p = processDeps(root);
   assert.deepEqual(await startNode({ ...p.deps, leader: true }), { running: true, already: false });
-  assert.deepEqual(readState(root, "node"), { pid: 12345, leader: true, instance: p.spawned[0].options.env.QC_FLEET_INSTANCE });
+  assert.deepEqual(readState(root, "node"), { pid: 12345, leader: true, instance: p.spawned[0].options.env.QC_FLEET_INSTANCE, jobs: { max: 0 } });
   assert.equal(p.spawned.length, 1);
   const spawned = p.spawned[0];
   assert.equal(spawned.command, process.execPath);
@@ -328,7 +329,7 @@ test("start names missing secret/address, times out and cleans up; stale records
   await assert.rejects(startNode(p.deps), /health.*5 s/);
   assert.equal(p.time() - now, 5000);
   assert.equal(existsSync(path.join(stateDir(root), "node.json")), false);
-  writeState(root, "node", { pid: 12345, leader: true, instance: p.spawned[0].options.env.QC_FLEET_INSTANCE });
+  writeState(root, "node", { pid: 12345, leader: true, instance: p.spawned[0].options.env.QC_FLEET_INSTANCE, jobs: { max: 0 } });
   p.setLive(false);
   p.setReady(true);
   assert.deepEqual(await stopNode(p.deps), { stopped: true, already: true });
@@ -408,7 +409,7 @@ test("serve schedules heartbeats every 30 seconds, retries every second and clos
   time += 1000;
   await timers[0].fn();
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0].body, { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [], assigned: [] });
+  assert.deepEqual(sent[0].body, { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] }, assigned: [] });
   assert.equal(readState(root, "node").leader, true);
   const closed = new Promise(resolve => server.once("close", resolve));
   signals.get("SIGTERM")();
@@ -824,19 +825,19 @@ test("heartbeats carry own work, per-recipient Leader assignments, and replace p
   const fetcher = async (_url, options) => { received.push(JSON.parse(options.body)); return { status: 202 }; };
   await heartbeat({ root, fleet: nodes, repo: "o/r", leader: true, clock: () => now, fetch: fetcher });
   assert.deepEqual(received.map(row => row.body), [
-    { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 2, epoch: 1 }] },
-    { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 3, epoch: 1 }] },
+    { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [work], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] }, assigned: [{ repo: "o/r", issue: 2, epoch: 1 }] },
+    { load: initialLoad, os: host, kit: null, term: 1, leader: true, work: [work], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] }, assigned: [{ repo: "o/r", issue: 3, epoch: 1 }] },
   ]);
   received.length = 0;
   writeState(root, "assignments", { "o/r#1": held(1, "a", 2) });
   await heartbeat({ root, fleet: nodes, repo: "o/r", clock: () => now, fetch: fetcher });
-  assert.deepEqual(received[0].body, { load: { ...initialLoad, rtt: 0 }, os: host, kit: null, term: 1, leader: false, work: [{ repo: "o/r", issue: 1, epoch: 2, step: null, branch: null, head: null }] });
+  assert.deepEqual(received[0].body, { load: { ...initialLoad, rtt: 0 }, os: host, kit: null, term: 1, leader: false, work: [{ repo: "o/r", issue: 1, epoch: 2, step: null, branch: null, head: null }], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] } });
   const server = await createNodeServer({ root, fleet: nodes, clock: () => now, listen: { port: 0 } });
   t.after(() => new Promise(resolve => server.close(resolve)));
   let sentTime = now;
   const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST",
     body: JSON.stringify(message({ kind: "heartbeat", body, time: new Date(sentTime++).toISOString() })) });
-  const body = { os: host, kit: null, term: 1, leader: true, work: [work], assigned: [{ repo: "o/r", issue: 1, epoch: 2 }] };
+  const body = { os: host, kit: null, term: 1, leader: true, work: [work], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] }, assigned: [{ repo: "o/r", issue: 1, epoch: 2 }] };
   assert.equal((await post(body)).status, 202);
   assert.deepEqual(readState(root, "peers").b, { time: now, messageTime: new Date(now).toISOString(), ...body });
   assert.equal((await post({ ...body, work: [], assigned: [] })).status, 202);
@@ -1142,7 +1143,7 @@ test("promotion during the heartbeat send to A gives C the rebuilt assignment at
   } });
   assert.equal(sent.length, 2);
   assert.equal(sent[1].url, "http://127.0.0.1:18082/message");
-  assert.deepEqual(sent[1].body, { load: initialLoad, os: host, kit: null, leader: true, term: 2, work: [],
+  assert.deepEqual(sent[1].body, { load: initialLoad, os: host, kit: null, leader: true, term: 2, work: [], jobs: { max: 0, live: 0, limitedUntil: 0, steps: [] },
     assigned: [{ repo: "o/r", issue: 7, epoch: 3 }] });
 });
 
@@ -1515,4 +1516,19 @@ test("serve rereads the fleet file and leaves join mode on a tick without restar
   assert.equal(JSON.parse(readFileSync(file, "utf8")).secret, secret);
   assert.ok(githubReads > 0);
   assert.equal((await fetch(`${base}/message`, { method: "POST", body: "{}" })).status, 400);
+});
+
+test("HTTP carries a full 64 KiB job brief and checks job heartbeat fields", async t => {
+  const root = fixture(t), server = await createNodeServer({ root, fleet, clock: () => now, listen: { port: 0 } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const post = body => fetch(`http://127.0.0.1:${server.address().port}/message`, { method: "POST", body: JSON.stringify(body) });
+  const body = { id: "job", branch: "feat/job", base: "main", brief: "\n".repeat(65536), rounds: 3 };
+  assert.equal((await post(message({ kind: "codex-job", body }))).status, 202);
+  assert.equal(readState(root, "queue")[0].body.brief.length, 65536);
+  const jobs = { max: 6, live: 1, limitedUntil: 0, steps: [{ id: "job", step: "implement exit 0" }] };
+  assert.equal((await post(message({ kind: "heartbeat", body: { kit: null, term: 1, leader: false, jobs } }))).status, 202);
+  assert.deepEqual(readState(root, "peers").b.jobs, jobs);
+  for (const change of [{ max: -1 }, { live: 1.5 }, { limitedUntil: "no" }, { steps: [{ id: "../bad", step: "x" }] }, { steps: [{ id: "job", step: "x".repeat(121) }] }]) {
+    assert.equal((await post(message({ kind: "heartbeat", body: { kit: null, term: 1, leader: false, jobs: { ...jobs, ...change } } }))).status, 400);
+  }
 });
