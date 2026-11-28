@@ -118,13 +118,20 @@ export async function runCodexLoop(argv, { implement = runCodexImplement, git = 
       if (verdict === "APPROVED") {
         try {
           const plan = briefPlanOf(source);
-          if (plan?.task && markTaskDone(filePlanStore(worktree), plan.plan, plan.task)) {
-            const issue = /^Issue: `?#?(\d+)`?/m.exec(source)?.[1];
-            await git(worktree, "add", "--", plan.plan);
-            const args = ["commit", "-m", `docs(plan): mark task ${plan.task} done`, "-m", `Refs #${issue}`];
-            if (load(worktree).commitMessage?.attribution) args.push("-m", "Co-Authored-By: Codex <noreply@openai.com>");
-            await git(worktree, ...args, "--only", "--", plan.plan);
-            note(`PLAN DONE Task ${plan.task}`);
+          if (plan?.task) {
+            const store = filePlanStore(worktree), before = store.read(plan.plan);
+            if (markTaskDone(store, plan.plan, plan.task)) {
+              try {
+                const issue = /^Issue: `?#?(\d+)`?/m.exec(source)?.[1];
+                const args = ["commit", "-m", `docs(plan): mark task ${plan.task} done`, "-m", `Refs #${issue}`];
+                if (load(worktree).commitMessage?.attribution) args.push("-m", "Co-Authored-By: Codex <noreply@openai.com>");
+                await git(worktree, ...args, "--only", "--", plan.plan);
+              } catch (error) {
+                store.write(plan.plan, before);
+                throw error;
+              }
+              note(`PLAN DONE Task ${plan.task}`);
+            }
           }
         } catch (error) { note(`STOP plan tick: ${error.message}`); return 1; }
         note("DONE APPROVED");

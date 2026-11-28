@@ -48,6 +48,19 @@ test("a run that edits the plan file exits 4", async (t) => {
   assert.equal(code, 4);
   assert.match(messages.join("\n"), /changed docs\/plans\/12-demo\.md/);
 });
+for (const replacement of ["", "Plan: `docs/plans/other.md`\n"]) test(`the plan edit guard keeps the initial reference when the child changes Plan to ${replacement.trim() || "empty"}`, async (t) => {
+  const brief = PLAN_BRIEF.replace(/^Paths:.*$/m, "Paths: `docs/plans/12-demo.md`");
+  const f = setup(t, { codex: {} }, { plan: PLAN_FIXTURE, brief });
+  const messages = [];
+  const code = await runCodexImplement(f.argv, { say: (line) => messages.push(line), out: quiet, run: async () => {
+    appendFileSync(path.join(f.worktree, "docs/plans/12-demo.md"), "edit\n");
+    writeFileSync(f.argv[1], brief.replace(/^Plan:.*\n/m, replacement));
+    appendFileSync(f.progress, DONE_MARKER);
+    return { status: 0, tail: "" };
+  }});
+  assert.equal(code, 4);
+  assert.match(messages.join("\n"), /changed docs\/plans\/12-demo\.md/);
+});
 test("codex.requirePlan must be a boolean", async (t) => {
   const f = setup(t, { codex: { requirePlan: "yes" } });
   const messages = [];

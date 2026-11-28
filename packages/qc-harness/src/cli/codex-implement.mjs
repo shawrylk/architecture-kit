@@ -564,8 +564,11 @@ async function runJob(argv, {
   let boundary;
   let contract;
   let policy;
+  let planRef;
   try {
-    policy = verificationPolicy(readFileSync(settings.brief, "utf8"), settings);
+    const brief = readFileSync(settings.brief, "utf8");
+    policy = verificationPolicy(brief, settings);
+    planRef = settings.role === "implement" ? briefPlanOf(brief) : null;
   } catch (error) {
     metrics.refusal = error.refusal ?? "other";
     return finish(say, `cannot prepare the brief: ${error.message}`, 1);
@@ -658,7 +661,6 @@ async function runJob(argv, {
         for (const finding of findings) say(`qc codex-implement: guard refused: ${findingName(finding)}`);
         return 4;
       }
-      const planRef = settings.role === "implement" ? briefPlanOf(readFileSync(settings.brief, "utf8")) : null;
       if (planRef && planFileTouched({ worktree: settings.worktree, base: boundary.head, plan: planRef.plan })) {
         metrics.refusal = "plan-edit";
         say(`qc codex-implement: guard refused: the run changed ${planRef.plan}; only \`qc plan done\` ticks the plan`);

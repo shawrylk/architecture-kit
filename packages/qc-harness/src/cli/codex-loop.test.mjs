@@ -141,7 +141,7 @@ test("codex-loop ticks the task and commits on DONE APPROVED", async (t) => {
   const dir = planSetup(t), calls = [];
   assert.equal(await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--rounds", "1"], { warn: () => {}, git: fakeGit(calls), implement: approve }), 0);
   assert.ok(taskDone(parsePlanDoc(readFileSync(path.join(dir, "docs/plans/12-demo.md"), "utf8")).tasks[1]));
-  assert.deepEqual(calls.find((args) => args[0] === "add"), ["add", "--", "docs/plans/12-demo.md"]);
+  assert.equal(calls.some((args) => args[0] === "add"), false);
   assert.deepEqual(calls.find((args) => args[0] === "commit"), ["commit", "-m", "docs(plan): mark task 2 done", "-m", "Refs #12", "--only", "--", "docs/plans/12-demo.md"]);
   assert.match(readFileSync(path.join(dir, "loop.status"), "utf8"), /PLAN DONE Task 2\nDONE APPROVED\n$/);
 });
@@ -155,6 +155,39 @@ test("codex-loop stops when the tick commit fails", async (t) => {
   const git = async (root, ...args) => { if (args[0] === "commit") throw new Error("hook refused"); return fakeGit()(root, ...args); };
   assert.equal(await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--rounds", "1"], { warn: () => {}, git, implement: approve }), 1);
   assert.match(readFileSync(path.join(dir, "loop.status"), "utf8"), /STOP plan tick: hook refused/);
+});
+for (const stagedPlan of [false, true]) test(`a refused tick commit restores the plan and index, then a skip retry commits it (staged plan: ${stagedPlan})`, async (t) => {
+  const { execFileSync } = await import("node:child_process");
+  const dir = planSetup(t), ref = "docs/plans/12-demo.md", file = path.join(dir, ref);
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  git("init", "-q"); git("config", "user.name", "Test"); git("config", "user.email", "test@example.com");
+  git("add", ref); git("commit", "-qm", "test: seed");
+  if (stagedPlan) {
+    writeFileSync(file, PLAN_FIXTURE.replace("Ship the demo.", "Ship the demo with tests."));
+    git("add", ref);
+  }
+  const before = readFileSync(file, "utf8") + "\nLocal note.\n";
+  writeFileSync(file, before);
+  writeFileSync(path.join(dir, "other.mjs"), "other\n"); git("add", "other.mjs");
+  const indexBefore = git("ls-files", "--stage"), headBefore = git("rev-parse", "HEAD");
+  const hooks = path.join(dir, "hooks"); mkdirSync(hooks);
+  writeFileSync(path.join(hooks, "pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  git("config", "core.hooksPath", hooks);
+  const args = ["--dir", dir, "--brief", "implement.md", "--base", "HEAD"];
+  const options = { warn: () => {}, git: async (_root, ...args) => ({ stdout: git(...args) }), implement: approve };
+  assert.equal(await runCodexLoop(args, options), 1);
+  assert.equal(readFileSync(file, "utf8"), before);
+  assert.equal(git("ls-files", "--stage"), indexBefore);
+  assert.equal(git("rev-parse", "HEAD"), headBefore);
+  writeFileSync(path.join(hooks, "pre-commit"), "#!/bin/sh\nexit 0\n");
+  assert.equal(await runCodexLoop([...args, "--skip-implement"], { ...options, implement: async (args) => {
+    assert.ok(args.includes("--review"));
+    return approve(args);
+  }}), 0);
+  assert.notEqual(git("rev-parse", "HEAD"), headBefore);
+  assert.equal(git("show", `HEAD:${ref}`), tickTask(before, 2));
+  assert.equal(git("diff", "--cached", "--name-only").trim(), "other.mjs");
+  assert.match(readFileSync(path.join(dir, "loop.status"), "utf8"), /PLAN DONE Task 2\nDONE APPROVED\n$/);
 });
 test("plan tick attribution follows the config", async (t) => {
   const dir=planSetup(t), calls=[];
