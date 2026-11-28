@@ -39,8 +39,11 @@ export const defaults = {
     briefMaxSteps: 6,
     maxRuns: 2,
     requireApproval: false,
+    requirePlan: false,
     maxDiffLines: 400,
   },
+
+  plan: { dir: "docs/plans", fileLines: 500 },
 
   // Token limits keep each role within its context: compactAt compacts, remindAt warns, and handoffAt hands off.
   // toolOutputTokens caps one Codex tool output; null compactAt preserves codex.compactTokens.

@@ -1,5 +1,8 @@
+import { PLAN_FIXTURE } from "./plan-fixture.mjs";
+import { parsePlanDoc, taskDone } from "./plan-parse.mjs";
+import { tickTask } from "./plan-edit.mjs";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -111,4 +114,63 @@ test("skip implement archives stale proof and keeps wrapper output; review defau
   assert.equal(code, 0); assert.equal(calls, 1);
   assert.equal(readFileSync(path.join(dir, "loop-review-1.wrapper"), "utf8"), "review output\n");
   assert.match(readFileSync(path.join(dir, "loop-review-1.md"), "utf8"), /origin\/main\.\.\./);
+});
+function planSetup(t, text = PLAN_FIXTURE) {
+  const dir = setup(t);
+  const brief = path.join(dir, "implement.md");
+  writeFileSync(brief, readFileSync(brief,"utf8").replace("Issue: `#0`", "Issue: `#12`").replace(/^Paths:.*$/m, "Paths: `.`\nPlan: `docs/plans/12-demo.md`\nTask: `2`"));
+  mkdirSync(path.join(dir,"docs/plans"),{recursive:true});
+  writeFileSync(path.join(dir,"docs/plans/12-demo.md"), text);
+  return dir;
+}
+function fakeGit(calls = []) {
+  return async (_root,...args) => { calls.push(args); return {stdout: args[0] === "rev-parse" ? "a".repeat(40) : args[0] === "diff" ? "src/features/demo/trigger.mjs\0src/other.mjs\0" : ""}; };
+}
+async function approve(args) {
+  if (args.includes("--review")) writeFileSync(args[args.indexOf("--report")+1],"VERDICT: APPROVED\n");
+  return 0;
+}
+test("codex-loop puts plan notes in the review brief", async (t) => {
+  const dir = planSetup(t);
+  await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--rounds", "1"], { warn: () => {}, git: fakeGit(), implement: approve });
+  const review = readFileSync(path.join(dir, "loop-review-1.md"), "utf8");
+  assert.match(review, /Plan drift: files outside Task 2/);
+  assert.match(review, /Plan check: compare the diff with Task 2/);
+});
+test("codex-loop ticks the task and commits on DONE APPROVED", async (t) => {
+  const dir = planSetup(t), calls = [];
+  assert.equal(await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--rounds", "1"], { warn: () => {}, git: fakeGit(calls), implement: approve }), 0);
+  assert.ok(taskDone(parsePlanDoc(readFileSync(path.join(dir, "docs/plans/12-demo.md"), "utf8")).tasks[1]));
+  assert.deepEqual(calls.find((args) => args[0] === "add"), ["add", "--", "docs/plans/12-demo.md"]);
+  assert.deepEqual(calls.find((args) => args[0] === "commit"), ["commit", "-m", "docs(plan): mark task 2 done", "-m", "Refs #12", "--only", "--", "docs/plans/12-demo.md"]);
+  assert.match(readFileSync(path.join(dir, "loop.status"), "utf8"), /PLAN DONE Task 2\nDONE APPROVED\n$/);
+});
+test("codex-loop makes no commit when the task is already ticked", async (t) => {
+  const dir = planSetup(t, tickTask(PLAN_FIXTURE, 2)), calls = [];
+  await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--rounds", "1"], { warn: () => {}, git: fakeGit(calls), implement: approve });
+  assert.equal(calls.some((args) => args[0] === "commit"), false);
+});
+test("codex-loop stops when the tick commit fails", async (t) => {
+  const dir = planSetup(t);
+  const git = async (root, ...args) => { if (args[0] === "commit") throw new Error("hook refused"); return fakeGit()(root, ...args); };
+  assert.equal(await runCodexLoop(["--dir", dir, "--brief", "implement.md", "--rounds", "1"], { warn: () => {}, git, implement: approve }), 1);
+  assert.match(readFileSync(path.join(dir, "loop.status"), "utf8"), /STOP plan tick: hook refused/);
+});
+test("plan tick attribution follows the config", async (t) => {
+  const dir=planSetup(t), calls=[];
+  writeFileSync(path.join(dir,"qc.config.json"),JSON.stringify({commitMessage:{attribution:true}}));
+  assert.equal(await runCodexLoop(["--dir",dir,"--brief","implement.md"],{warn:()=>{},git:fakeGit(calls),implement:approve}),0);
+  assert.ok(calls.find((args)=>args[0]==="commit").includes("Co-Authored-By: Codex <noreply@openai.com>"));
+});
+test("the tick commit leaves other staged files for their owner", async (t) => {
+  const {execFileSync} = await import("node:child_process");
+  const dir=planSetup(t);
+  const git=(...args)=>execFileSync("git",args,{cwd:dir,encoding:"utf8",stdio:["ignore","pipe","pipe"]});
+  git("init","-q"); git("config","user.name","Test"); git("config","user.email","test@example.com");
+  git("add","docs/plans/12-demo.md"); git("commit","-qm","test: seed");
+  writeFileSync(path.join(dir,"other.mjs"),"other\n"); git("add","other.mjs");
+  const result=await runCodexLoop(["--dir",dir,"--brief","implement.md","--base","HEAD"],{warn:()=>{},git:async(_root,...args)=>({stdout:git(...args)}),implement:approve});
+  assert.equal(result,0);
+  assert.equal(git("diff-tree","--no-commit-id","--name-only","-r","HEAD").trim(),"docs/plans/12-demo.md");
+  assert.equal(git("diff","--cached","--name-only").trim(),"other.mjs");
 });

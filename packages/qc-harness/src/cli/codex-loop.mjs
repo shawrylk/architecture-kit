@@ -3,6 +3,12 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import path from "node:path";
 import { promisify } from "node:util";
 import { runCodexImplement } from "./codex-implement.mjs";
+import { load } from "../config.mjs";
+import { briefPlanOf } from "./plan-gate.mjs";
+import { planSettings } from "./plan-file-check.mjs";
+import { filePlanStore } from "./plan-store.mjs";
+import { markTaskDone } from "./plan-commands.mjs";
+import { planReviewText } from "./plan-review.mjs";
 
 const execute = promisify(execFile);
 const runGit = (root, ...args) => execute("git", args, { cwd: root, maxBuffer: 4 * 1024 * 1024 });
@@ -46,13 +52,19 @@ async function reviewBrief(source, { dir, name, proof, base, worktree, git }) {
   if (start < 0) throw new Error("brief needs ## Task");
   text = text.slice(0, start) + `## Task\n\n1. Review the diff \`${base}...${head}\` against issue #${issue} and the decisions above.\n2. Check correctness, security, tenant and record safety, tests that prove each decision, and removed or weakened assertions.\n3. Write each finding with file, line, severity and a concrete failure. Write \`FINDINGS: <n>\` on its own line, then \`VERDICT: APPROVED\` or \`VERDICT: CHANGES_REQUIRED\`, as the report's last block.\n\n## Run shape\n\n1. Edit no file except the report and the progress file. Make no commit and no push.\n2. Read at most 15 files. Use narrow reads and searches.\n3. Never stop to ask: write the question in the report and continue.\n\n## Commit\n\nNone. A review makes no commit and no push.\n\n## Exit criteria\n\n- The report ends with the verdict block.\n- Write the runner's marker as the last line, alone, only when the exit criteria hold.\n`;
   const scope = /^Paths: (.+)$/m.exec(source)?.[1];
+  let files = [];
+  if (scope || briefPlanOf(source)) {
+    // Git uses NUL separators so file names with spaces stay intact.
+    try { files = (await git(worktree, "diff", "--name-only", "-z", `${base}...HEAD`)).stdout.split("\0").filter(Boolean); } catch { files = []; }
+  }
   if (scope) {
     const paths = [...scope.matchAll(/`([^`]+)`/g)].map(match => match[1]);
-    // Git uses NUL separators so file names with spaces stay intact.
-    let files;
-    try { files = (await git(worktree, "diff", "--name-only", "-z", `${base}...HEAD`)).stdout.split("\0").filter(Boolean); } catch { files = []; }
     const extra = files.filter(file => !paths.some(p => p === "." || p === "./" || file === p || file.startsWith(p.replace(/\/$/, "") + "/")));
     if (extra.length) text += `\nScope check: outside Paths (diff against ${base}): ${extra.map(file => `\`${file}\``).join(", ")}. The report must give each file a reason and the smallest change; check consumers of a shared part. Report a file without a sound reason as a P1 finding.\n`;
+  }
+  if (briefPlanOf(source)) {
+    const notes = await planReviewText({ source, worktree, base, files, git, fileLines: planSettings(load(worktree)).fileLines });
+    text += `\n${notes}\n`;
   }
   return text;
 }
@@ -103,7 +115,21 @@ export async function runCodexLoop(argv, { implement = runCodexImplement, git = 
       note(`${name} exit ${code} ${verdict ?? "None"}`);
       if (code === 2) { note(`STOP LIMIT ${name}`); return 2; }
       if (code !== 0) { note(`STOP ${name} exit ${code}`); return 1; }
-      if (verdict === "APPROVED") { note("DONE APPROVED"); return 0; }
+      if (verdict === "APPROVED") {
+        try {
+          const plan = briefPlanOf(source);
+          if (plan?.task && markTaskDone(filePlanStore(worktree), plan.plan, plan.task)) {
+            const issue = /^Issue: `?#?(\d+)`?/m.exec(source)?.[1];
+            await git(worktree, "add", "--", plan.plan);
+            const args = ["commit", "-m", `docs(plan): mark task ${plan.task} done`, "-m", `Refs #${issue}`];
+            if (load(worktree).commitMessage?.attribution) args.push("-m", "Co-Authored-By: Codex <noreply@openai.com>");
+            await git(worktree, ...args, "--only", "--", plan.plan);
+            note(`PLAN DONE Task ${plan.task}`);
+          }
+        } catch (error) { note(`STOP plan tick: ${error.message}`); return 1; }
+        note("DONE APPROVED");
+        return 0;
+      }
       if (verdict !== "CHANGES_REQUIRED") { note(`STOP ${name} has no verdict`); return 1; }
       const fix = `loop-fix${suffix}-${n}`; current = `${fix}.md`;
       writeFileSync(path.join(dir, current), fixBrief(source, dir, fix, report));

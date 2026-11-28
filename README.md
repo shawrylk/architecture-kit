@@ -161,6 +161,8 @@ A commented-out import can also count.
 
 ## Task and merge gates
 
+With `codex.requirePlan` on, an implement run needs an approved plan task; see [the plans page](docs/plans.md).
+
 The task gate reads CI on the current branch head, including commits after an implementer stops.
 Failed or running CI lets the next implementer continue the task when its prompt has no `Fix:` line.
 

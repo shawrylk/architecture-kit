@@ -11,6 +11,9 @@ import path from "node:path";
 import { setTimeout as pause } from "node:timers/promises";
 import { load } from "../config.mjs";
 import { checkDiffShape } from "./diff-shape.mjs";
+import { briefPlanOf, planStartRefusal, planFileTouched } from "./plan-gate.mjs";
+import { filePlanStore } from "./plan-store.mjs";
+import { planCheckOptions } from "./plan-file-check.mjs";
 import { testsCovering } from "./check-commands.mjs";
 import { limitFileOf, resetTimeOf, writeLimit } from "./codex-limit.mjs";
 import { parseMaxHours, parsePollMinutes, waitForCodexReset } from "./codex-reset.mjs";
@@ -178,6 +181,7 @@ function codexSettingsOf(worktree) {
     if (!Number.isInteger(value) || value < 1) throw new Error(`codex.${key} in qc.config.json must be a positive whole number, got ${JSON.stringify(value)}`);
   }
   if (typeof codex.requireApproval !== "boolean") throw new Error("codex.requireApproval in qc.config.json must be a boolean");
+  if (typeof codex.requirePlan !== "boolean") throw new Error("codex.requirePlan in qc.config.json must be a boolean");
   if (typeof codex.preamble !== "string") throw new Error("codex.preamble in qc.config.json must be a string");
   if (!Array.isArray(codex.disablePlugins) || !codex.disablePlugins.every((name) => typeof name === "string" && name.trim())) {
     throw new Error("codex.disablePlugins in qc.config.json must be an array of non-empty strings");
@@ -195,11 +199,13 @@ function validateBrief(brief, codex, settings) {
   validatePaths(brief);
   if (codex.requireApproval && settings.role === "implement") {
     if (!/^## Design[ \t]*\r?$/m.test(brief)) throw refusalError("brief:design", "## Design is required for implement when codex.requireApproval is true");
-    const approved = briefPath(brief, "Approved", settings.brief);
-    if (!approved) throw refusalError("brief:approval", "Approved: is required for implement when codex.requireApproval is true");
-    try {
-      if (!readFileSync(approved, "utf8").trim()) throw new Error("empty approval report");
-    } catch { throw refusalError("brief:approval", `Approved: must name a readable, non-empty approval report: ${approved}`); }
+    if (!(codex.requirePlan && briefPlanOf(brief))) {
+      const approved = briefPath(brief, "Approved", settings.brief);
+      if (!approved) throw refusalError("brief:approval", "Approved: is required for implement when codex.requireApproval is true");
+      try {
+        if (!readFileSync(approved, "utf8").trim()) throw new Error("empty approval report");
+      } catch { throw refusalError("brief:approval", `Approved: must name a readable, non-empty approval report: ${approved}`); }
+    }
   }
   let tasks = 0;
   let steps = 0;
@@ -564,6 +570,13 @@ async function runJob(argv, {
     metrics.refusal = error.refusal ?? "other";
     return finish(say, `cannot prepare the brief: ${error.message}`, 1);
   }
+  if (codex.requirePlan && settings.role === "implement") {
+    try {
+      const brief = readFileSync(settings.brief, "utf8");
+      const refusal = planStartRefusal({ brief, paths: diffContract(brief).paths, store: filePlanStore(settings.worktree), options: planCheckOptions(load(settings.worktree)) });
+      if (refusal) { metrics.refusal = "brief:plan"; return finish(say, refusal, 1); }
+    } catch (error) { metrics.refusal = "brief:plan"; return finish(say, `cannot prepare the brief: ${error.message}`, 1); }
+  }
   for (let count = 1; count <= settings.maxRuns; count += 1) {
     if (isDone(settings.progress)) {
       const refused = await verifyTests();
@@ -643,6 +656,12 @@ async function runJob(argv, {
       if (findings.length) {
         metrics.refusal = /^[a-z0-9-]{1,40}$/.test(findings[0].rule) ? `guard:${findings[0].rule}` : "other";
         for (const finding of findings) say(`qc codex-implement: guard refused: ${findingName(finding)}`);
+        return 4;
+      }
+      const planRef = settings.role === "implement" ? briefPlanOf(readFileSync(settings.brief, "utf8")) : null;
+      if (planRef && planFileTouched({ worktree: settings.worktree, base: boundary.head, plan: planRef.plan })) {
+        metrics.refusal = "plan-edit";
+        say(`qc codex-implement: guard refused: the run changed ${planRef.plan}; only \`qc plan done\` ticks the plan`);
         return 4;
       }
       if (["implement", "tests"].includes(settings.role)) {

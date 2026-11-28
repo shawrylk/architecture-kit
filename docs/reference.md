@@ -1115,6 +1115,9 @@ The runner validates the worktree's brief and Codex settings before launch:
 | `codex.envAllow` | `[]`; an array of non-empty strings naming extra environment variables, with no leading or trailing whitespace |
 | Required brief fields | a `Paths:` line naming owned paths in backticks, and a `## Product decisions` heading; manifest paths also require `## Design` |
 | `codex.requireApproval` | boolean, default `false`; implement requires Design and Approved when true |
+| `codex.requirePlan` | boolean, default `false`; a first implement needs `Plan:` and `Task:` of an approved plan; see `docs/plans.md` |
+| `plan.dir` | `"docs/plans"`; where `qc plan new` writes plans |
+| `plan.fileLines` | positive whole number, default `500`; the soft line limit per file; a task `Split:` line allows more |
 | `codex.maxDiffLines` | positive whole number, default `400` |
 | `tests.maxNewCases` | nonnegative whole number, default `8`; added cases allowed in a tests job |
 | `tests.maxExtraCases` | nonnegative whole number, default `4`; added cases allowed in an implement job with locked tests |

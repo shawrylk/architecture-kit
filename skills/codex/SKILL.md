@@ -9,12 +9,11 @@ description: Use only in a repository with `qc.config.json` to implement changes
 
 Claude owns design, briefs, approval, CI, merges, and issues. Codex writes code and fixes. On exit 2, stop new starts and tell the owner.
 
-## Scout, then approve, then code
+## Plan, then code
 
-1. Run `--role scout` for a read-only plan.
-2. Check the report against the design. Record answers in `## Product decisions`.
-3. For a breaking change or unresolved product question, run `npx qc ask --issue <n> "<question>"` and wait.
-4. Supply `Approved: <report>` when `codex.requireApproval` is on. Run `--role implement`, or `--role tests` first.
+1. Run `npx qc plan new <issue> <topic>`, fill it in, and get it approved. Give the brief `Plan: <file>` and `Task: <N>`.
+2. After a compaction, run `npx qc plan status <file>` for the next open task.
+3. Check a new issue or finding with `npx qc plan revalidate <file> <ref>` before you code it. Ask product questions with `npx qc ask`.
 
 ## Write the brief
 

@@ -70,6 +70,9 @@ const USAGE = `qc — architecture gates
   qc stack up|down|status [names...] [--timeout <milliseconds>]
                            run repository plugins from ~/.qc/stacks.json
   qc plan-check <plan.md>  each task names files, a test step and a commit step, within the tool-call budget
+  qc plan new <issue> <topic> | check <file> | status <file> | approve <file> --by <name> | done <file> <N>
+  qc plan revalidate <file> <ref> --fits <N> | --adds "<title>" --files <a,b> | --new-plan | --out "<reason>"
+                           write, check, resume, revalidate, approve and tick a plan in docs/plans/
   qc review promotion <pr>  write the scoped promotion brief for the configured integration and release branches
   qc tokens [--session <id>] [--project <dir>] [--claude-dir <dir>] [--json]
                            one session's tokens and cache hit rate per agent type, from its transcripts
@@ -311,6 +314,10 @@ async function main() {
     case "budget": {
       const { runBudget } = await import("./budget-report.mjs");
       process.exit(runBudget(config, rest));
+    }
+    case "plan": {
+      const { runPlan } = await import("./plan-commands.mjs");
+      process.exit(runPlan(config, rest));
     }
     case "plan-check": {
       const { runPlanCheck } = await import("./plan-check.mjs");

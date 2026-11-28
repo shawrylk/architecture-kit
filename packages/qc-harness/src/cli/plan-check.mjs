@@ -29,7 +29,7 @@ const NO_TEST_SPELLING = "`Test: none — <reason>`";
 const tidy = (word) => word.replace(/^[(["']+/, "").replace(/[)\]"',;.]+$/, "").replace(/:\d+(?:-\d+)?$/, "");
 
 /** The fragment that reads every path a Create, Modify, Test, Delete, or Rename line names. */
-function filesOf(line) {
+export function filesOf(line) {
   const rest = line.replace(/^[^:]*:/, "");
   const found = [/^\s*`([^`\s]+)`/.exec(rest)?.[1]];
   for (const [, span] of rest.matchAll(/`([^`\s]+)`/g)) found.push(span);
