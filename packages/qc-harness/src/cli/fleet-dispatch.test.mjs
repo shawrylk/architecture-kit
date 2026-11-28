@@ -131,3 +131,53 @@ test("dispatch never sends fleet secret in brief and detects folder read error",
   await assert.rejects(runDispatch(parseDispatchArgs("job", ["--brief", f.root, "--branch", "feat/x", "--base", "main"]), f.deps), /EISDIR|EPERM|EACCES/);
   assert.equal(f.sent.length, 0);
 });
+test("leader stores the detail of a stopped job; jobs prints one summary line and jobs --detail prints all of it", async t => {
+  const f = fixture(t), secret = f.fleet.secret;
+  const detail = { reportTail: `report\nkey ${secret}`, progressTail: "task 2 open", pushError: "not ok 7 - saves the row\nerror: failed to push", head: { commit: head, ahead: true, onOrigin: false }, command: "rm" };
+  await runDispatch(parseDispatchArgs("job", [...f.args, "--id", "job"]), f.deps);
+  f.queue({ id: "job", state: "started", branch: "feat/worker" }); dispatchTick(f.deps);
+  f.queue({ id: "job", state: "stopped", branch: "feat/worker", status: "STOP implement exit 3" });
+  f.queue({ id: "job", state: "stopped", branch: "feat/worker", status: "STOP implement exit 3", detail }); dispatchTick(f.deps);
+  const row = readState(f.root, "jobs").job;
+  assert.equal(row.state, "stopped"); assert.equal(row.step, "STOP implement exit 3");
+  assert.deepEqual(row.detail, { reportTail: "report\nkey [REDACTED]", progressTail: "task 2 open", pushError: detail.pushError, head: detail.head });
+  assert.equal(readState(f.root, "inbox").filter(event => event.detail?.includes(" stopped ")).length, 1);
+  f.queue({ id: "job", state: "stopped", branch: "feat/worker", detail: { reportTail: "a later detail" } }); dispatchTick(f.deps);
+  assert.deepEqual(readState(f.root, "jobs").job.detail, row.detail);
+  f.lines.length = 0;
+  await runDispatch(parseDispatchArgs("jobs", []), f.deps);
+  assert.deepEqual(f.lines, ["job b stopped feat/worker STOP implement exit 3 0s", `  job detail: committed ${head.slice(0, 9)}, not on origin`]);
+  f.lines.length = 0;
+  await runDispatch(parseDispatchArgs("jobs", ["--detail", "job"]), f.deps);
+  assert.deepEqual(f.lines, ["job b stopped feat/worker", "step: STOP implement exit 3", `summary: committed ${head.slice(0, 9)}, not on origin`, `head: ${head}`,
+    "--- pushError", detail.pushError, "--- progressTail", "task 2 open", "--- reportTail", "report\nkey [REDACTED]"]);
+  await assert.rejects(runDispatch(parseDispatchArgs("jobs", ["--detail", "nobody"]), f.deps), /unknown job id/);
+  for (const args of [["--detail"], ["--detail", "../bad"], ["--all"], ["--detail", "job", "x"]]) assert.throws(() => parseDispatchArgs("jobs", args), /--detail/);
+});
+test("a result without detail, from a node before 0.33.0, still sets the state and prints with no summary line", async t => {
+  const f = fixture(t);
+  await runDispatch(parseDispatchArgs("job", [...f.args, "--id", "job"]), f.deps);
+  f.queue({ id: "job", state: "failed", branch: "feat/worker", reason: "push failed" }); dispatchTick(f.deps);
+  const row = readState(f.root, "jobs").job;
+  assert.equal(row.state, "failed"); assert.equal(row.reason, "push failed"); assert.equal(Object.hasOwn(row, "detail"), false);
+  f.lines.length = 0;
+  await runDispatch(parseDispatchArgs("jobs", []), f.deps);
+  assert.deepEqual(f.lines, ["job b failed feat/worker - 0s"]);
+  await runDispatch(parseDispatchArgs("jobs", ["--detail", "job"]), f.deps);
+  assert.match(f.lines.at(-1), /^detail: none/); assert.ok(f.lines.includes("reason: push failed"));
+});
+test("a detail that arrives before the plain result sets the state once; a detail on another state or an oversized detail is refused", async t => {
+  const f = fixture(t);
+  await runDispatch(parseDispatchArgs("job", [...f.args, "--id", "job"]), f.deps);
+  f.queue({ id: "job", state: "started", branch: "feat/worker", detail: { reportTail: "no" } });
+  f.queue({ id: "job", state: "failed", branch: "feat/worker", detail: { reportTail: "x".repeat(50_000) } }); dispatchTick(f.deps);
+  assert.equal(readState(f.root, "jobs").job.state, "queued");
+  f.queue({ id: "job", state: "failed", branch: "feat/worker", reason: "why", detail: { pushError: "hook says no" } });
+  f.queue({ id: "job", state: "failed", branch: "feat/worker", reason: "why" }); dispatchTick(f.deps);
+  const row = readState(f.root, "jobs").job;
+  assert.equal(row.state, "failed"); assert.deepEqual(row.detail, { pushError: "hook says no" });
+  assert.equal(readState(f.root, "inbox").filter(event => event.detail?.includes(" failed ")).length, 1);
+  f.lines.length = 0;
+  await runDispatch(parseDispatchArgs("jobs", []), f.deps);
+  assert.equal(f.lines.at(-1), "  job detail: hook says no");
+});

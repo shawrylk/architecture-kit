@@ -9,14 +9,14 @@
     {
       "name": "architecture",
       "description": "Core Codex work, fleet control, reviews and four hooks.",
-      "version": "0.32.0",
+      "version": "0.33.0",
       "category": "workflow",
       "source": "./"
     },
     {
       "name": "architecture-extras",
       "description": "Optional skills, agents, commands and hooks for the architecture kit.",
-      "version": "0.32.0",
+      "version": "0.33.0",
       "category": "workflow",
       "source": "./plugins/architecture-extras"
     },

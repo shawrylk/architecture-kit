@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { overloaded } from "./fleet-assign.mjs";
 import { liveJob, redactJobText, tailLines, validJob, validJobId } from "./fleet-jobs.mjs";
+import { cleanDetail, detailLines, detailSummary } from "./fleet-job-detail.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { flushOutbox } from "./fleet-node.mjs";
 import { validPlatformBranch } from "./fleet-platform.mjs";
@@ -11,6 +12,10 @@ import { highestTerm, livePeer, readState, writeState } from "./fleet-state.mjs"
 export const DISPATCH_VERBS = ["job", "jobs", "cancel", "slots", "update"];
 export function parseDispatchArgs(verb, args) {
   if (verb === "jobs" && args.length === 0) return { verb };
+  if (verb === "jobs") {
+    if (args.length !== 2 || args[0] !== "--detail" || !validJobId(args[1])) throw new Error("jobs takes only --detail <id>");
+    return { verb, "--detail": args[1] };
+  }
   if (verb === "cancel" && args.length === 1 && validJobId(args[0])) return { verb, id: args[0] };
   if (verb === "update") {
     const [version, flag, node, ...rest] = args;
@@ -70,10 +75,18 @@ async function queueMessage(context, target, kind, body) {
 export async function runDispatch(options, context) {
   const { root, fleet, repo, clock = Date.now, say = console.log } = context;
   if (options.verb === "jobs") {
-    const peers = readState(root, "peers");
-    for (const row of Object.values(readState(root, "jobs"))) {
+    const peers = readState(root, "peers"), jobs = readState(root, "jobs");
+    if (options["--detail"] !== undefined) {
+      if (!Object.hasOwn(jobs, options["--detail"])) throw new Error("unknown job id");
+      for (const line of detailLines(jobs[options["--detail"]])) say(redactJobText(line, fleet.secret));
+      return 0;
+    }
+    for (const row of Object.values(jobs)) {
       const step = peers[row.node]?.jobs?.steps?.find(step => step.id === row.id)?.step || row.step || "-";
       say(redactJobText(`${row.id} ${row.node} ${row.state} ${row.branch} ${step} ${Math.max(0, Math.floor((clock() - row.created) / 1000))}s`, fleet.secret));
+      // A node before 0.33.0 sends no detail, so the row has none.
+      const summary = ["stopped", "failed"].includes(row.state) ? detailSummary(row.detail) : "";
+      if (summary) say(redactJobText(`  ${row.id} detail: ${summary}`, fleet.secret));
     }
     return 0;
   }
@@ -128,7 +141,8 @@ function validResult(body, row) {
     (body.state !== "approved" || (body.branch === row.branch && /^[a-f0-9]{40}$/i.test(body.head ?? ""))) &&
     (body.head === undefined || (typeof body.head === "string" && /^[a-f0-9]{40}$/i.test(body.head))) &&
     ["reason", "status"].every(key => body[key] === undefined || (typeof body[key] === "string" && Buffer.byteLength(JSON.stringify(body[key])) <= 48_000)) &&
-    Object.keys(body).every(key => ["id", "state", "branch", "head", "reason", "status"].includes(key));
+    (body.detail === undefined || (["stopped", "failed"].includes(body.state) && Buffer.byteLength(JSON.stringify(body.detail)) <= 48_000)) &&
+    Object.keys(body).every(key => ["id", "state", "branch", "head", "reason", "status", "detail"].includes(key));
 }
 /** The leader owns state and watch events; only the saved worker can change a job. */
 export function dispatchTick({ root, fleet, clock = Date.now }) {
@@ -141,6 +155,9 @@ export function dispatchTick({ root, fleet, clock = Date.now }) {
   for (const message of messages) {
     const row = jobs[message.body?.id], body = message.body;
     if (!row || row.node !== message.from || row.repo !== message.repo || !validResult(body, row)) continue;
+    const detail = cleanDetail(body.detail, fleet.secret);
+    // The detail follows the plain result in a second message with the same state, so it must reach a final row.
+    if (detail && body.state === row.state && !row.detail) { row.detail = detail; changed = true; continue; }
     // A late started result must not undo a final result or a lost-node decision.
     if (body.state === "started" && !["queued", "starting"].includes(row.state)) continue;
     // A final result stays final; a refusal counts only before the worker started the job.
@@ -150,7 +167,7 @@ export function dispatchTick({ root, fleet, clock = Date.now }) {
     const status = body.status === undefined ? row.status : tailLines(body.status, fleet.secret);
     Object.assign(row, { state: body.state, time: clock(), ...(body.head ? { head: body.head } : {}),
       ...(status === undefined ? {} : { status, step: status.split("\n").at(-1).slice(0, 120) }),
-      ...(body.reason === undefined ? {} : { reason: tailLines(body.reason, fleet.secret) }) });
+      ...(body.reason === undefined ? {} : { reason: tailLines(body.reason, fleet.secret) }), ...(detail ? { detail } : {}) });
     event(root, row, row.state, row.head, clock()); changed = true;
   }
   for (const row of Object.values(jobs)) {

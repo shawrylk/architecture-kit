@@ -136,11 +136,48 @@ test("cancel only from leader aborts job and keeps checkout", async t => {
   assert.equal(f.sent.at(-1).body.state, "cancelled");
   assert.ok(!f.calls.some(row => row.includes("push") || row.includes("remove")));
 });
+test("a stopped job sends the plain result first, then the same result with the detail", async t => {
+  const f = fixture(t);
+  f.deps.git = async (_cwd, ...args) => ({ stdout: args[0] === "rev-parse" ? head : args[0] === "rev-list" ? "1\n" : "" });
+  f.queue(); await jobsTick(f.deps); await f.settle();
+  const saved = readState(f.root, "jobs-local").jobs["job-1"];
+  writeFileSync(path.join(saved.dir, "implement-report.md"), "Committed the change.\nGH_TOKEN=abc\nThe push failed in the pre-push hook.\n");
+  writeFileSync(path.join(saved.dir, "implement-progress.md"), "- task 1 done\n- task 2 open\n");
+  writeFileSync(path.join(saved.dir, "loop.status"), "STOP implement exit 3\n");
+  f.release({ code: 1, tail: "not ok 7 - saves the row\nerror: failed to push some refs to 'origin'\nout of runs: 1 runs and the progress file is not done\nexit 3\n" });
+  await f.settle();
+  const [plain, detailed] = f.sent.filter(row => row.body.state === "stopped").map(row => row.body);
+  assert.deepEqual(plain, { id: "job-1", state: "stopped", branch: "feat/job", status: "STOP implement exit 3" });
+  const { detail, ...rest } = detailed;
+  assert.deepEqual(rest, plain);
+  assert.deepEqual(detail, { pushError: "not ok 7 - saves the row\nerror: failed to push some refs to 'origin'",
+    reportTail: "Committed the change.\nThe push failed in the pre-push hook.", progressTail: "- task 1 done\n- task 2 open", head: { commit: head, ahead: true, onOrigin: false } });
+  assert.equal(f.sent.at(-1).body, detailed);
+});
+test("a push that the worker runs and that fails sends its output as the push error; an approved job sends no detail", async t => {
+  const f = fixture(t), calls = f.calls, base = f.deps.git;
+  f.deps.git = async (cwd, ...args) => {
+    if (args[0] === "push") throw Object.assign(new Error("Command failed: git push"), { stderr: "pre-push: test saves the row failed\nAuthorization: Bearer x\nerror: failed to push some refs\n" });
+    return base(cwd, ...args);
+  };
+  f.queue(); await jobsTick(f.deps); await f.settle();
+  f.release({ code: 0 }); await f.settle();
+  const failed = f.sent.filter(row => row.body.state === "failed").map(row => row.body);
+  assert.equal(failed.length, 2); assert.equal(failed[0].detail, undefined);
+  assert.equal(failed[1].detail.pushError, "pre-push: test saves the row failed\nerror: failed to push some refs");
+  assert.equal(failed[1].detail.head.commit, head);
+  // The detail reads the worktree before the failed job removes it.
+  assert.ok(calls.findLastIndex(row => row[1] === "rev-parse") < calls.findIndex(row => row.includes("prune")));
+  const g = fixture(t); g.queue(); await jobsTick(g.deps); await g.settle();
+  g.release({ code: 0 }); await g.settle();
+  assert.ok(g.sent.some(row => row.body.state === "approved")); assert.ok(g.sent.every(row => row.body.detail === undefined));
+});
 test("restart marks each live job failed once and keeps worktrees", async t => {
   const f = fixture(t);
   writeState(f.root, "jobs-local", { jobs: { old: { id: "old", state: "started", leader: "leader", repo: "o/r", worktree: "keep" } } });
   await recoverJobs(f.deps); await recoverJobs(f.deps);
-  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].body.reason, "node restarted");
+  assert.equal(f.sent.filter(row => !row.body.detail).length, 1); assert.equal(f.sent[0].body.reason, "node restarted");
+  assert.deepEqual(f.sent.slice(1).map(row => [row.body.state, row.body.reason, row.body.detail.head.commit]), [["failed", "node restarted", head]]);
   assert.equal(readState(f.root, "jobs-local").jobs.old.worktree, "keep");
 });
 for (const secret of ["ab".repeat(32), "A".repeat(65), "CD".repeat(64)]) test(`worker redacts shared secret of length ${secret.length}`, async t => {

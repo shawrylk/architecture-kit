@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { jobSlots, validJobMode } from "./fleet-capacity.mjs";
 import { runGit } from "./fleet-git.mjs";
+import { buildJobDetail } from "./fleet-job-detail.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { sendMessage } from "./fleet-node.mjs";
 import { validPlatformBranch } from "./fleet-platform.mjs";
@@ -116,10 +117,19 @@ async function result(context, row, state, extra = {}) {
   if (node.id === fleet.self) writeState(root, "queue", [...readState(root, "queue"), message]);
   else await sendMessage({ root, fleet, node, message, clock, fetch, signal });
 }
+/**
+ * Send a stopped or failed result, then the same result with the detail.
+ * A leader before 0.33.0 refuses a result with an unknown field, so the plain result goes first and still sets the state there.
+ */
+async function finalResult(context, row, state, extra, detail) {
+  await result(context, row, state, extra);
+  if (detail) await result(context, row, state, { ...extra, detail });
+}
 export async function recoverJobs(context) {
   for (const row of Object.values(readState(context.root, "jobs-local").jobs ?? {}).filter(liveJob)) {
     saveJob(context.root, row.id, { state: "failed" });
-    await result(context, row, "failed", { reason: "node restarted" });
+    const detail = await buildJobDetail({ row, git: context.git, secret: context.fleet.secret });
+    await finalResult(context, row, "failed", { reason: "node restarted" }, detail);
   }
 }
 /** Remove what a failed or cancelled job created, so a retry of the same branch is not refused. */
@@ -144,7 +154,7 @@ async function removeJobCheckout(git, root, row) {
 async function executeJob(context, row, entry) {
   const { root, fleet, git = runGit, loop = runJobLoop, spawn, clock = Date.now } = context;
   const signal = entry.controller.signal;
-  let state, extra = {}, checkout = false;
+  let state, extra = {}, checkout = false, pushing = false, pushError, output;
   try {
     await result(context, row, "started");
     signal.throwIfAborted();
@@ -160,13 +170,15 @@ async function executeJob(context, row, entry) {
     }
     writeFileSync(path.join(row.dir, "implement.md"), brief, { mode: 0o600 });
     saveJob(root, row.id, { state: "started" });
-    const output = await loop(row.worktree, ["--dir", row.dir, "--brief", "implement.md", "--rounds", String(row.rounds), "--base", `origin/${row.base}`], { signal, spawn });
+    output = await loop(row.worktree, ["--dir", row.dir, "--brief", "implement.md", "--rounds", String(row.rounds), "--base", `origin/${row.base}`], { signal, spawn });
     if (entry.cancelled || signal.aborted) state = "cancelled";
     else if (output.code === 0) {
       const head = (await git(row.worktree, "rev-parse", "HEAD")).stdout.trim();
       if (!/^[a-f0-9]{40}$/i.test(head)) throw new Error("job head must be 40 hex characters");
       signal.throwIfAborted();
+      pushing = true;
       await git(row.worktree, "push", "-u", "origin", row.branch);
+      pushing = false;
       signal.throwIfAborted();
       await git(root, "worktree", "remove", row.worktree);
       state = "approved"; extra.head = head;
@@ -178,16 +190,19 @@ async function executeJob(context, row, entry) {
   } catch (error) {
     state = entry.cancelled || signal.aborted ? "cancelled" : "failed";
     extra.reason = tailLines(error.message, fleet.secret);
+    if (pushing) pushError = error.stderr || error.message;
   } finally {
     context.signal?.removeEventListener("abort", entry.abort);
     running.get(root)?.delete(row.id);
   }
+  // Read the worktree before a failed job removes it.
+  const detail = ["stopped", "failed"].includes(state) ? await buildJobDetail({ row, git, secret: fleet.secret, pushError, output: output?.tail }) : undefined;
   if (checkout && ["failed", "cancelled"].includes(state)) {
     const problems = await removeJobCheckout(git, root, row);
     if (problems.length) extra.reason = tailLines([extra.reason, ...problems].filter(Boolean).join("\n"), fleet.secret);
   }
   saveJob(root, row.id, { state, time: clock() });
-  await result(context, row, state, extra);
+  await finalResult(context, row, state, extra, detail);
 }
 /** Remove a queue row before the first await, then reserve one slot for each job. */
 export async function jobsTick(context) {
