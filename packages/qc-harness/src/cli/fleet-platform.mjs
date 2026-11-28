@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { load } from "../config.mjs";
 import { appendLeg, hostOS } from "./legs.mjs";
 import { platformRisk } from "./platform-risk.mjs";
+import { runGit } from "./fleet-git.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { sendMessage } from "./fleet-node.mjs";
 import { highestTerm, latestLeader, livePeer, readState, writeState } from "./fleet-state.mjs";
@@ -14,7 +15,6 @@ import { roleComment } from "./role-line.mjs";
 import { runGh } from "./gh-run.mjs";
 
 const execute = promisify(execFile);
-const runGit = (root, ...args) => execute("git", args, { cwd: root, timeout: 60_000 });
 const active = new Set();
 const validIssue = value => Number.isSafeInteger(value) && value > 0;
 export const validPlatformBranch = value => typeof value === "string" && /^[A-Za-z0-9._/-]+$/.test(value) && !value.startsWith("-");
