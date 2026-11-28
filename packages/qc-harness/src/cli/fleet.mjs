@@ -13,12 +13,12 @@ import { sendPushed, validPlatformBranch } from "./fleet-platform.mjs";
 import { DISPATCH_VERBS, parseDispatchArgs, runDispatch } from "./fleet-dispatch.mjs";
 import { TALK_VERBS, parseTalkArgs, runTalk } from "./fleet-talk.mjs";
 import { highestTerm, latestLeader, readState, writeState } from "./fleet-state.mjs";
-import { confirmLeader, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
+import { confirmLeader, nodeJobs, nodeStatus, serveNode, startNode, stopNode } from "./fleet-node.mjs";
 import { createKey, validateKey, pairingDecision, readPairing } from "./fleet-pair.mjs";
 import { effectiveFleet, readDiscovered } from "./fleet-discover.mjs";
 
 const SIZES = ["S", "M", "L"];
-const USAGE = "usage: qc fleet init [--self <id>] [--nodes <id:weight:size,...>] [--port <port>] [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | say <node-id|leader> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] [--jobs <n>] | job --brief <file> --branch <b> --base <ref> [--rounds 3] [--node <id>] [--id <id>] | jobs | cancel <id> | worker [--jobs <n>] | serve [--leader] [--jobs <n>] | stop | allow <code> | deny <code> | accept <code> | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
+const USAGE = "usage: qc fleet init [--self <id>] [--nodes <id:weight:size,...>] [--port <port>] [--secret <hex>] [--addresses <id@host:port,...>] [--force] | next [--repo <o/r>] [--all] | status [--repo <o/r>] | plan <issue> --file <path> | ask <issue> --file <path> | say <node-id|leader> --file <path> | approve <message-id> [--changes] [--file <path>] | answer <message-id> --file <path> | show <message-id> | start [--leader] [--jobs auto|<n>] | job --brief <file> --branch <b> --base <ref> [--rounds 3] [--node <id>] [--id <id>] | jobs | cancel <id> | worker [--jobs auto|<n>] | serve [--leader] [--jobs auto|<n>] | stop | allow <code> | deny <code> | accept <code> | confirm-leader | progress <issue> --step plan|code|review|merge [--branch <b>] [--head <sha40>] | owns <issue> | pushed <issue> --branch <b> --head <sha40>";
 
 function validAddress(address) {
   if (typeof address !== "string" || !address || address.trim() !== address || address === "0.0.0.0") return false;
@@ -174,7 +174,7 @@ function parseArgs(argv) {
     const branch = options["--branch"];
     if (branch !== undefined && (!branch || /[\s~^:?*\[\\\x00-\x1f\x7f]/.test(branch) || /(^[-/.]|[/.]$|\.\.|@\{|\/\/|\.lock(?:\/|$)|\/\.)/.test(branch) || branch === "@")) throw new Error("--branch needs a valid branch name");
   }
-  if (options["--jobs"] !== undefined && (!/^\d+$/.test(options["--jobs"]) || !Number.isSafeInteger(Number(options["--jobs"])))) throw new Error("--jobs needs a nonnegative integer");
+  if (options["--jobs"] !== undefined && options["--jobs"] !== "auto" && (!/^\d+$/.test(options["--jobs"]) || !Number.isSafeInteger(Number(options["--jobs"])))) throw new Error("--jobs needs auto or a nonnegative integer");
   return options;
 }
 
@@ -349,8 +349,13 @@ export function runFleet(argv, { cwd = process.cwd(), env = process.env, gh = ru
   }
 }
 
+/** No flag keeps the saved mode; `worker` always takes jobs. */
+function jobsOption(options) {
+  const value = options["--jobs"] ?? (options.verb === "worker" ? "auto" : undefined);
+  return value === undefined || value === "auto" ? value : Number(value);
+}
 async function runNodeVerb(options, { root, fleet, configuredFleet, env, gh, git, origin, say, warn, node }) {
-  const deps = { gh, git, ...node, root, fleet, configuredFleet, env, fleetFile: fleetPath(env), leader: options["--leader"] === true, jobs: Number(options["--jobs"] ?? (options.verb === "worker" ? 6 : 0)) };
+  const deps = { gh, git, ...node, root, fleet, configuredFleet, env, fleetFile: fleetPath(env), leader: options["--leader"] === true, jobs: jobsOption(options) };
   if (options.verb === "serve") {
     const kitRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const kit = gitOut(kitRoot, "rev-parse", "HEAD")?.trim() || null;
@@ -360,7 +365,8 @@ async function runNodeVerb(options, { root, fleet, configuredFleet, env, gh, git
   }
   if (["start", "worker"].includes(options.verb)) {
     const result = await startNode(deps);
-    say(`fleet node ${result.already ? "already running" : "started"}: ${fleet.self}`);
+    const jobs = nodeJobs(root);
+    say(`fleet node ${result.already ? "already running" : "started"}: ${fleet.self} (jobs ${jobs.mode}, ${jobs.slots} slot${jobs.slots === 1 ? "" : "s"})`);
   } else {
     const result = await stopNode(deps);
     say(`fleet node ${result.already ? "already stopped" : "stopped"}: ${fleet.self}`);

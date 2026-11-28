@@ -350,9 +350,9 @@ test("CLI starts, starts twice, reports running and stops without reading GitHub
   const deps = { cwd: f.cwd, env: f.env, node, origin: () => null, gh: () => { throw new Error("unexpected GitHub read"); },
     say: line => lines.push(line), warn: line => errors.push(line) };
   assert.equal(await runFleet(["start", "--leader"], deps), 0, errors.join("\n"));
-  assert.deepEqual(lines.splice(0), ["fleet node started: a1"]);
+  assert.match(lines.splice(0).join("\n"), /^fleet node started: a1 \(jobs auto, [1-9]\d* slots?\)$/);
   assert.equal(await runFleet(["start"], deps), 0);
-  assert.deepEqual(lines.splice(0), ["fleet node already running: a1"]);
+  assert.match(lines.splice(0).join("\n"), /^fleet node already running: a1 \(jobs auto, [1-9]\d* slots?\)$/);
   assert.equal(spawns, 1);
   assert.equal(readState(f.cwd, "node").leader, true);
   writeState(f.cwd, "peers", { b2: { time: 999999, kit: null, leader: false } });
@@ -391,7 +391,7 @@ test("CLI serve runs the node loop and exits after an injected stop signal", asy
   assert.equal(readState(f.cwd, "node").leader, true);
   signals.get("SIGINT")();
   assert.equal(await serving, 0, errors.join("\n"));
-  assert.deepEqual(readState(f.cwd, "node"), {});
+  assert.deepEqual(readState(f.cwd, "node"), { jobs: { mode: "auto" } });
   assert.equal(signals.size, 0);
 });
 
@@ -650,16 +650,32 @@ test("start migrates keys, leader creates secret, and pairing CLI and status sha
   assert.equal(f.run(["accept", code], { node: { clock: () => now } }).code, 1);
 });
 
-for (const [verb, count] of [["worker", 6], ["worker", 2], ["start", 3]]) test(`CLI ${verb} starts ${count} job slots`, async t => {
+for (const [verb, count] of [["worker", "auto"], ["worker", 2], ["start", 3], ["start", 0]]) test(`CLI ${verb} starts with jobs ${count}`, async t => {
   const f = fixture(t);
   f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]);
   let instance, args;
-  const result = await f.run([verb, ...(count === 6 ? [] : ["--jobs", String(count)])], { node: {
+  const result = await f.run([verb, ...(count === "auto" ? [] : ["--jobs", String(count)])], { node: {
     spawn: (_command, argv, opts) => { args = argv; instance = opts.env.QC_FLEET_INSTANCE; return { pid: 456, once() {}, unref() {} }; },
     kill: () => {}, clock: () => 1000, fetch: async () => ({ status: 200, json: async () => ({ ok: true, instance }) }),
   } });
   assert.equal(result.code, 0, result.errors.join("\n"));
-  assert.equal(readState(f.cwd, "node").jobs.max, count);
+  assert.equal(readState(f.cwd, "node").jobs.mode, count);
   assert.deepEqual(args.slice(-2), ["--jobs", String(count)]);
   for (const bad of ["-1", "1.5", "no", "9007199254740992"]) assert.equal((await f.run([verb, "--jobs", bad])).code, 1);
+});
+
+test("CLI restart keeps the saved job mode until a new --jobs flag", async t => {
+  const f = fixture(t);
+  f.run(["init", "--self", "a1", "--nodes", "a1:1:L", "--addresses", "a1@127.0.0.1:8080", "--secret", "ab".repeat(32)]);
+  let instance, live = false;
+  const spawned = [];
+  const node = { spawn: (_command, argv, opts) => { spawned.push(argv.slice(-2)); instance = opts.env.QC_FLEET_INSTANCE; live = true; return { pid: 456, once() {}, unref() {} }; },
+    kill: (_pid, signal) => { if (!live) throw Object.assign(new Error("gone"), { code: "ESRCH" }); if (signal !== 0) live = false; },
+    clock: () => 1000, fetch: async () => ({ status: 200, json: async () => ({ ok: true, instance }) }) };
+  for (const argv of [["start", "--jobs", "2"], ["stop"], ["start"], ["stop"], ["start", "--jobs", "auto"], ["stop"], ["start"]]) {
+    const result = await f.run(argv, { node });
+    assert.equal(result.code, 0, result.errors.join("\n"));
+  }
+  assert.deepEqual(spawned, [["--jobs", "2"], ["--jobs", "2"], ["--jobs", "auto"], ["--jobs", "auto"]]);
+  assert.equal(readState(f.cwd, "node").jobs.mode, "auto");
 });

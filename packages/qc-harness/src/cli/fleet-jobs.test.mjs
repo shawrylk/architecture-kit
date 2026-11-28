@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
@@ -8,18 +9,19 @@ import { test } from "node:test";
 import { jobsHeartbeat, jobsTick, recoverJobs, runJobLoop } from "./fleet-jobs.mjs";
 import { readState, writeState } from "./fleet-state.mjs";
 
-const now = 100_000, head = "a".repeat(40);
+const now = 100_000, head = "a".repeat(40), GiB = 1024 ** 3;
+const bigHost = { availableParallelism: () => 32, cpus: () => [], totalmem: () => 64 * GiB, freemem: () => 48 * GiB, platform: () => "linux" };
 function fixture(t) {
   const root = mkdtempSync(path.join(os.tmpdir(), "qc-jobs-"));
   mkdirSync(path.join(root, ".git"));
   t.after(() => rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const fleet = { self: "worker", secret: "ab".repeat(32), nodes: ["leader", "worker", "other"].map((id, i) => ({ id, address: "localhost", port: 8000 + i })) };
-  writeState(root, "node", { jobs: { max: 2 } });
+  writeState(root, "node", { jobs: { mode: 2 } });
   writeState(root, "peers", { leader: { leader: true, term: 1, time: now } });
   const sent = [], calls = [];
   let release;
   const pending = new Promise(resolve => { release = resolve; });
-  const deps = { root, fleet, repo: "o/r", clock: () => now, warn: () => {},
+  const deps = { root, fleet, repo: "o/r", clock: () => now, warn: () => {}, os: bigHost,
     fetch: async (_url, opts) => { sent.push(JSON.parse(opts.body)); return { status: 202 }; },
     git: async (cwd, ...args) => { calls.push([cwd, ...args]); return { stdout: args[0] === "rev-parse" ? head : "" }; },
     loop: async (_cwd, _args, { signal }) => { calls.push(["loop", _args]); return Promise.race([pending, new Promise(resolve => signal.addEventListener("abort", () => resolve({ code: 1 }), { once: true }))]); } };
@@ -38,8 +40,8 @@ for (const [label, changes] of Object.entries({ id: { id: "../bad" }, branch: { 
 for (const rule of ["disabled", "full", "limited", "known", "local", "origin", "wrong-leader"]) {
   test(`worker refuses ${rule}`, async t => {
     const f = fixture(t);
-    if (rule === "disabled") writeState(f.root, "node", {});
-    if (rule === "full") writeState(f.root, "node", { jobs: { max: 0 } });
+    if (rule === "disabled") writeState(f.root, "node", { jobs: { mode: 0 } });
+    if (rule === "full") writeState(f.root, "jobs-local", { jobs: { a: { state: "started" }, b: { state: "starting" } } });
     if (rule === "limited") writeState(f.root, "jobs-local", { limitedUntil: now + 1 });
     if (rule === "known") writeState(f.root, "jobs-local", { jobs: { "job-1": { state: "approved" } } });
     if (["local", "origin"].includes(rule)) f.deps.git = async (_cwd, ...args) => ({ stdout: args[0] === (rule === "local" ? "for-each-ref" : "ls-remote") ? (rule === "local" ? "refs/heads/feat/job\n" : `${head}\trefs/heads/feat/job\n`) : "" });
@@ -188,4 +190,53 @@ test("loop spawn error rejects and a pre-aborted loop starts no child", async t 
   await assert.rejects(run, /spawn failed/);
   controller.abort();
   await assert.rejects(runJobLoop(f.root, [], { signal: controller.signal, spawn: () => { assert.fail("unexpected spawn"); } }), /abort/i);
+});
+
+test("heartbeat in auto mode follows free memory and never drops below live jobs", t => {
+  const f = fixture(t), host = free => ({ ...bigHost, availableParallelism: () => 16, freemem: () => free * GiB });
+  writeState(f.root, "node", { jobs: { mode: "auto" } });
+  assert.equal(jobsHeartbeat(f.root, f.fleet.secret, host(48)).max, 8);
+  assert.equal(jobsHeartbeat(f.root, f.fleet.secret, host(6)).max, 2);
+  writeState(f.root, "jobs-local", { jobs: Object.fromEntries(["a", "b", "c"].map(id => [id, { id, state: "started" }])) });
+  assert.equal(jobsHeartbeat(f.root, f.fleet.secret, host(1)).max, 3);
+  writeState(f.root, "node", { jobs: { mode: 0 } });
+  assert.equal(jobsHeartbeat(f.root, f.fleet.secret, host(48)).max, 0);
+});
+
+const until = async (check, ms = 20_000) => {
+  for (const end = Date.now() + ms; !check();) {
+    if (Date.now() > end) throw new Error("condition not met in time");
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+};
+test("a failed job removes its worktree and branch", { skip: process.platform === "win32" && "needs a POSIX hook" }, async t => {
+  for (const failure of ["loop", "hook"]) await t.test(failure, async t => {
+    const f = fixture(t), git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const origin = mkdtempSync(path.join(os.tmpdir(), "qc-jobs-origin-"));
+    t.after(() => rmSync(origin, { recursive: true, force: true }));
+    git(origin, "init", "--bare", "--quiet");
+    rmSync(path.join(f.root, ".git"), { recursive: true });
+    git(f.root, "init", "--quiet");
+    git(f.root, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "--allow-empty", "-m", "first");
+    git(f.root, "remote", "add", "origin", origin);
+    git(f.root, "push", "--quiet", "origin", "HEAD:refs/heads/main");
+    writeState(f.root, "node", { jobs: { mode: 2 } });
+    writeState(f.root, "peers", { leader: { leader: true, term: 1, time: now } });
+    if (failure === "hook") {
+      const hooks = path.join(f.root, ".git", "test-hooks");
+      mkdirSync(hooks);
+      writeFileSync(path.join(hooks, "post-checkout"), "#!/bin/sh\nexit 1\n");
+      chmodSync(path.join(hooks, "post-checkout"), 0o755);
+      git(f.root, "config", "core.hooksPath", hooks);
+    }
+    delete f.deps.git;
+    f.deps.loop = async () => { throw new Error("loop broke"); };
+    f.queue(); await jobsTick(f.deps);
+    await until(() => readState(f.root, "jobs-local").jobs?.["job-1"]?.state === "failed");
+    await until(() => f.sent.at(-1)?.body.state === "failed");
+    assert.equal(existsSync(path.join(f.root, ".worktree", "fleet-job-1")), false);
+    assert.equal(git(f.root, "branch", "--list", "feat/job"), "");
+    assert.equal(git(f.root, "worktree", "list", "--porcelain").includes("fleet-job-1"), false);
+    assert.match(f.sent.at(-1).body.reason, failure === "loop" ? /loop broke/ : /worktree/);
+  });
 });

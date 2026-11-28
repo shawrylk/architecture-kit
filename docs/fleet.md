@@ -5,12 +5,15 @@
 Pair the fleet as shown below. Install Codex and sign in on each node. Each node uses its own Codex login. Then start the worker on each node:
 
 ```sh
-qc fleet worker                 # six job slots
-qc fleet worker --jobs 2        # two job slots
-qc fleet start --leader --jobs 2 # the leader can also run jobs
+qc fleet start                   # job slots follow this machine's capacity
+qc fleet start --jobs 2          # at most two job slots
+qc fleet start --jobs 0          # no jobs
+qc fleet start --leader          # the leader also runs jobs
 ```
 
-`fleet worker` is `fleet start --jobs 6`. Use `fleet stop` before you change the slot count of a running node. Plain `fleet start` has zero job slots. Pairing, issue assignment, platform checks and heartbeats still work with no `--jobs` flag.
+A node takes jobs by default. Without `--jobs`, the node uses `auto` mode. A number caps the slots. `--jobs 0` turns jobs off. `--jobs auto` goes back to the default. The node saves the mode in `node.json`. A restart without `--jobs`, also after `fleet stop`, keeps the saved mode. `fleet worker` is `fleet start --jobs auto`. Use `fleet stop` before you change the mode of a running node. `fleet start` prints the mode and the slot count, for example `fleet node started: 5c96 (jobs auto, 6 slots)`. Pairing, issue assignment, platform checks and heartbeats work in every mode.
+
+In `auto` mode, the node gives one slot for each two logical cores and one slot for each 2.5 GB of free memory. It takes the smaller count. The count is at least 1 and has no fixed ceiling. macOS reports low free memory because it keeps idle memory as cache. On macOS, the node counts the larger of free memory and half of total memory. The node counts the slots again at each heartbeat, so the count follows the load. The count never drops below the jobs that run now. With a number, the slot count is the smaller of that number and the `auto` count. The load rule still blocks placement: CPU at 90% or more, memory at 90% or more off macOS, or a round-trip time of 2000 ms or more.
 
 Send a brief from the current leader:
 
@@ -26,7 +29,7 @@ The leader picks an active, addressed node with a recent heartbeat, free slots a
 
 A worker accepts job and cancel messages only from the current leader. It refuses known job IDs, existing branches, full slots and a live limit window. It runs only the installed `qc codex-loop` on the brief; it does not run a command supplied in a message field. Codex follows the brief in a separate worktree. The worker replaces the Worktree, Report and Progress paths with local paths. Keep the shared fleet secret out of briefs. Messages are signed and contain no fleet secret.
 
-Code moves through GitHub. The worker fetches the base and creates the requested branch. After approval it pushes the branch without force, then removes the worktree. The leader ships the branch. A limit exit holds new jobs for 60 minutes. A limit, stop, error or cancel keeps the worktree for inspection. A restart reports each job that was live as failed with reason `node restarted` and keeps its worktree. A missed heartbeat marks live jobs as lost once; a later result can update them.
+Code moves through GitHub. Git calls that can run a repository hook, such as `worktree add`, `commit` and `push`, stop after 20 minutes. Other git calls stop after 60 seconds. The worker fetches the base and creates the requested branch. After approval it pushes the branch without force, then removes the worktree. The leader ships the branch. A limit exit holds new jobs for 60 minutes. A limit or stop keeps the worktree for inspection. A failed or cancelled job removes its worktree and its local branch, so a retry of the same branch is not refused. A restart reports each job that was live as failed with reason `node restarted` and keeps its worktree. A missed heartbeat marks live jobs as lost once; a later result can update them.
 
 `fleet jobs` shows the ID, node, state, branch, last step and age. Heartbeats carry slot counts, the limit time and the last loop status line for each live job, cut to 120 characters. `watch --fleet` emits `EVENT fleet:codex-result <id> <state> <branch> <head|->` once per result or lost-node event.
 

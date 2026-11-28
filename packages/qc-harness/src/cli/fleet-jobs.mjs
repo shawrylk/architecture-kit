@@ -1,15 +1,17 @@
 import { execFile, spawn as spawnProcess } from "node:child_process";
-import { closeSync, fstatSync, mkdirSync, openSync, readSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { jobSlots, validJobMode } from "./fleet-capacity.mjs";
+import { runGit } from "./fleet-git.mjs";
 import { createMessage } from "./fleet-message.mjs";
 import { sendMessage } from "./fleet-node.mjs";
 import { validPlatformBranch } from "./fleet-platform.mjs";
 import { highestTerm, latestLeader, livePeer, readState, stateDir, writeState } from "./fleet-state.mjs";
 
 const execute = promisify(execFile);
-const runGit = (root, ...args) => execute("git", args, { cwd: root, timeout: 60_000 });
 const ticks = new Set(), running = new Map();
 export const liveJob = row => ["starting", "started"].includes(row?.state);
 export const validJobId = id => typeof id === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(id);
@@ -40,9 +42,15 @@ function status(row, secret) {
   } catch (error) { if (error.code === "ENOENT") return ""; throw error; }
   finally { if (fd !== undefined) closeSync(fd); }
 }
-export function jobsHeartbeat(root, secret) {
+/** A node saved before 0.31.3 holds only `max`; treat it as a cap. */
+export function savedJobMode(node) {
+  const mode = node?.jobs?.mode ?? node?.jobs?.max;
+  return validJobMode(mode) ? mode : undefined;
+}
+export function jobsHeartbeat(root, secret, host = os) {
   const saved = readState(root, "jobs-local"), rows = Object.values(saved.jobs ?? {}).filter(liveJob);
-  return { max: readState(root, "node").jobs?.max ?? 0, live: rows.length, limitedUntil: saved.limitedUntil ?? 0,
+  const mode = savedJobMode(readState(root, "node")) ?? "auto";
+  return { max: jobSlots(mode, { host, live: rows.length }), live: rows.length, limitedUntil: saved.limitedUntil ?? 0,
     steps: rows.map(row => ({ id: row.id, step: status(row, secret).split("\n").at(-1).slice(0, 120) })) };
 }
 export function jobLeader(root, now, self) {
@@ -110,15 +118,36 @@ export async function recoverJobs(context) {
     await result(context, row, "failed", { reason: "node restarted" });
   }
 }
+/** Remove what a failed or cancelled job created, so a retry of the same branch is not refused. */
+async function removeJobCheckout(git, root, row) {
+  const problems = [];
+  if (existsSync(row.worktree)) {
+    try { await git(root, "worktree", "remove", "--force", row.worktree); }
+    catch (error) {
+      problems.push(`worktree remove: ${error.message}`);
+      try { rmSync(row.worktree, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+      catch (removeError) { problems.push(`worktree delete: ${removeError.message}`); }
+    }
+  }
+  try {
+    await git(root, "worktree", "prune");
+    const refs = (await git(root, "for-each-ref", "--format=%(refname)", `refs/heads/${row.branch}`)).stdout.trim().split(/\r?\n/);
+    // jobsTick refused a branch that already existed, so this branch belongs to the job.
+    if (refs.includes(`refs/heads/${row.branch}`)) await git(root, "branch", "-D", row.branch);
+  } catch (error) { problems.push(`branch delete: ${error.message}`); }
+  return problems;
+}
 async function executeJob(context, row, entry) {
   const { root, fleet, git = runGit, loop = runJobLoop, spawn, clock = Date.now } = context;
   const signal = entry.controller.signal;
-  let state, extra = {};
+  let state, extra = {}, checkout = false;
   try {
     await result(context, row, "started");
     signal.throwIfAborted();
     mkdirSync(row.dir, { recursive: true, mode: 0o700 });
     await git(root, "fetch", "origin", row.base); signal.throwIfAborted();
+    // A hook that fails or times out can leave the checkout and the branch behind.
+    checkout = true;
     await git(root, "worktree", "add", "-b", row.branch, row.worktree, `origin/${row.base}`); signal.throwIfAborted();
     let brief = row.brief;
     for (const [field, value] of [["Worktree", row.worktree], ["Report", path.join(row.dir, "implement-report.md")], ["Progress", path.join(row.dir, "implement-progress.md")]]) {
@@ -149,12 +178,16 @@ async function executeJob(context, row, entry) {
     context.signal?.removeEventListener("abort", entry.abort);
     running.get(root)?.delete(row.id);
   }
+  if (checkout && ["failed", "cancelled"].includes(state)) {
+    const problems = await removeJobCheckout(git, root, row);
+    if (problems.length) extra.reason = tailLines([extra.reason, ...problems].filter(Boolean).join("\n"), fleet.secret);
+  }
   saveJob(root, row.id, { state, time: clock() });
   await result(context, row, state, extra);
 }
 /** Remove a queue row before the first await, then reserve one slot for each job. */
 export async function jobsTick(context) {
-  const { root, fleet, repo, clock = Date.now, git = runGit, signal, warn = console.error } = context;
+  const { root, fleet, repo, clock = Date.now, git = runGit, signal, warn = console.error, os: host = os } = context;
   if (ticks.has(root) || signal?.aborted) return;
   ticks.add(root);
   try {
@@ -172,7 +205,7 @@ export async function jobsTick(context) {
       if (entry) { entry.cancelled = true; entry.controller.abort(); }
       return;
     }
-    const heartbeat = jobsHeartbeat(root, fleet.secret), saved = readState(root, "jobs-local");
+    const heartbeat = jobsHeartbeat(root, fleet.secret, host), saved = readState(root, "jobs-local");
     const refusal = !validJob(body) ? "invalid job body" : redactJobText(JSON.stringify(body), fleet.secret) !== JSON.stringify(body) ? "job contains fleet secret" :
       Object.hasOwn(saved.jobs ?? {}, body.id) ? "job id already known" : heartbeat.live >= heartbeat.max ? "no free job slots" :
         clock() < heartbeat.limitedUntil ? "node is limited" : null;

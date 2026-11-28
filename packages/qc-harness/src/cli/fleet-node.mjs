@@ -3,7 +3,8 @@ import { sampleLoad } from "./fleet-load.mjs";
 import { hostOS } from "./legs.mjs";
 import { dispatchTick } from "./fleet-dispatch.mjs";
 import { platformTick } from "./fleet-platform.mjs";
-import { jobsHeartbeat, jobsTick, recoverJobs } from "./fleet-jobs.mjs";
+import { jobsHeartbeat, jobsTick, liveJob, recoverJobs, savedJobMode } from "./fleet-jobs.mjs";
+import { jobSlots } from "./fleet-capacity.mjs";
 import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
 import { spawn as spawnProcess } from "node:child_process";
@@ -211,7 +212,7 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
       return { repo: row.repo, issue: row.issue, epoch: row.epoch, step: current.step ?? null,
         branch: current.branch ?? row.branch ?? null, head: current.head ?? row.head ?? null };
     });
-    return { kit, os: hostOS(), load, ...role, work, jobs: jobsHeartbeat(root, fleet.secret), ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
+    return { kit, os: hostOS(), load, ...role, work, jobs: jobsHeartbeat(root, fleet.secret, host), ...(role.leader ? { assigned: assignments.filter(row => row.node === id)
       .map(({ repo, issue, epoch }) => ({ repo, issue, epoch })) } : {}) };
   };
   const local = bodyFor(fleet.self);
@@ -243,7 +244,18 @@ export async function heartbeat({ root = process.cwd(), fleet, repo, kit = null,
 }
 
 const sleepFor = ms => new Promise(resolve => setTimeout(resolve, ms));
-const removeNode = root => rmSync(path.join(stateDir(root), "node.json"), { force: true, maxRetries: 10, retryDelay: 100 });
+/** Remove the process record but keep the job mode, so the next start uses it. */
+function removeNode(root, record = readState(root, "node")) {
+  const mode = savedJobMode(record);
+  if (mode === undefined) rmSync(path.join(stateDir(root), "node.json"), { force: true, maxRetries: 10, retryDelay: 100 });
+  else writeState(root, "node", { jobs: { mode } });
+}
+/** Report the job mode and the slots it gives now, for `fleet start`. */
+export function nodeJobs(root, host = os) {
+  const mode = savedJobMode(readState(root, "node")) ?? "auto";
+  const live = Object.values(readState(root, "jobs-local").jobs ?? {}).filter(liveJob).length;
+  return { mode, slots: jobSlots(mode, { host, live }) };
+}
 function isLive(pid, kill) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try { kill(pid, 0); return true; }
@@ -265,7 +277,8 @@ async function healthy(node, instance, fetch, timeout) {
   } catch { return false; }
 }
 
-export async function startNode({ root = process.cwd(), fleet, leader = false, jobs = 0, spawn = spawnProcess,
+/** Without `jobs`, the node keeps its saved mode, else `auto`. */
+export async function startNode({ root = process.cwd(), fleet, leader = false, jobs, spawn = spawnProcess,
   kill = process.kill, clock = Date.now, fetch = nodeFetch, sleep = sleepFor, env = process.env }) {
   const self = localNode(fleet);
   const record = readState(root, "node");
@@ -274,21 +287,22 @@ export async function startNode({ root = process.cwd(), fleet, leader = false, j
       if (!await healthy(self, record.instance, fetch, 1000)) throw new Error("fleet node is stale: instance health does not match");
       return { running: true, already: true };
     }
-    removeNode(root);
+    removeNode(root, record);
   }
+  jobs ??= savedJobMode(record) ?? "auto";
   const instance = randomUUID();
   mkdirSync(stateDir(root), { recursive: true, mode: 0o700 });
   const log = openSync(path.join(stateDir(root), "node.log"), "a", 0o600);
   let child, spawnError;
   try {
-    child = spawn(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "fleet", "serve", ...(leader ? ["--leader"] : []), ...(jobs ? ["--jobs", String(jobs)] : [])],
+    child = spawn(process.execPath, [fileURLToPath(new URL("./qc.mjs", import.meta.url)), "fleet", "serve", ...(leader ? ["--leader"] : []), "--jobs", String(jobs)],
       { cwd: root, env: { ...env, QC_FLEET_INSTANCE: instance }, detached: true, stdio: ["ignore", log, log], windowsHide: true });
     child.once("error", error => { spawnError = error; });
     child.unref();
   } finally { closeSync(log); }
   try {
     if (!Number.isSafeInteger(child.pid) || child.pid <= 0) throw new Error("fleet node spawn failed");
-    writeState(root, "node", { pid: child.pid, leader, instance, jobs: { max: jobs } });
+    writeState(root, "node", { pid: child.pid, leader, instance, jobs: { mode: jobs } });
     const deadline = clock() + 5000;
     while (clock() < deadline) {
       if (spawnError) throw spawnError;
@@ -516,7 +530,7 @@ export function confirmLeader({ root, fleet, clock = Date.now }) {
 }
 
 /** One serial tick avoids overlapping network retries and heartbeats. */
-export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, jobs = 0, os: host = os, clock = Date.now,
+export async function serveNode({ root = process.cwd(), fleet, repo, kit = null, leader = false, jobs, os: host = os, clock = Date.now,
   configuredFleet = fleet, interfaces, discovery = {}, env = process.env, fleetFile = env.QC_FLEET_FILE,
   fetch = nodeFetch, gh = runGh, git, platform = {}, holdLabel = "hold", listen, instance = process.env.QC_FLEET_INSTANCE || randomUUID(), pid = process.pid, timer = setInterval, clearTimer = clearInterval,
   onSignal = (name, fn) => process.once(name, fn), offSignal = (name, fn) => process.off(name, fn), warn = console.error }) {
@@ -562,7 +576,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
   try {
     const previous = readState(root, "node"), election = readState(root, "election");
     leader = leader || previous.leader === true;
-    writeState(root, "node", { pid, leader, instance, term: previous.term ?? highestTerm(root), jobs: { max: jobs } });
+    writeState(root, "node", { pid, leader, instance, term: previous.term ?? highestTerm(root), jobs: { mode: jobs ?? savedJobMode(previous) ?? "auto" } });
     writeState(root, "election", { ...election, started: election.started ?? clock(), highest: highestTerm(root) });
     await recoverJobs({ root, fleet, clock, fetch, signal: sends.signal });
   }
@@ -585,7 +599,7 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       dispatchTick({ root, fleet, clock });
       void platformTick({ ...platform, root, fleet, clock, gh, fetch, signal: sends.signal, warn })
         .catch(error => warn(`fleet platform: ${error.message}`));
-      void jobsTick({ root, fleet, repo, clock, fetch, signal: sends.signal, warn }).catch(error => warn(`fleet jobs: ${error.message}`));
+      void jobsTick({ root, fleet, repo, clock, fetch, signal: sends.signal, warn, os: host }).catch(error => warn(`fleet jobs: ${error.message}`));
       await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
         allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) });
       if (!closing && clock() >= nextAssign) {
