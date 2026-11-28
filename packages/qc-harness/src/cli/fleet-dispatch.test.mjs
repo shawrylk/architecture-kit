@@ -34,6 +34,28 @@ test("node pick uses free slots, load, limits, live status and id; leader can wo
   assert.equal(pickJobNode({ fleet: f.fleet, peers: f.peers, now }).id, "a");
   assert.throws(() => pickJobNode({ fleet: f.fleet, peers: f.peers, now, node: "dead" }), /live|available/);
 });
+test("slots sets the local mode without a send and sends the mode of another node as leader only", async t => {
+  const f = fixture(t);
+  await runDispatch(parseDispatchArgs("slots", ["3"]), f.deps);
+  assert.deepEqual(readState(f.root, "node"), { leader: true, term: 1, jobs: { mode: 3 } }); assert.equal(f.sent.length, 0);
+  await runDispatch(parseDispatchArgs("slots", ["auto", "--node", "b"]), f.deps);
+  assert.equal(f.sent.at(-1).kind, "codex-slots"); assert.deepEqual(f.sent.at(-1).body, { mode: "auto" });
+  await assert.rejects(runDispatch(parseDispatchArgs("slots", ["2", "--node", "nobody"]), f.deps), /unknown node/);
+  writeState(f.root, "node", { leader: false });
+  await assert.rejects(runDispatch(parseDispatchArgs("slots", ["2", "--node", "b"]), f.deps), /leader/i);
+  for (const args of [[], ["-1"], ["many"], ["2", "--node"], ["2", "--id", "b"], ["2", "--node", "b", "x"]]) assert.throws(() => parseDispatchArgs("slots", args));
+});
+test("update sends the version to every other active node, or to one named node, as leader only", async t => {
+  const f = fixture(t);
+  await runDispatch(parseDispatchArgs("update", ["999.0.0", "--node", "b"]), f.deps);
+  assert.equal(f.sent.at(-1).kind, "kit-update"); assert.deepEqual(f.sent.at(-1).body, { version: "999.0.0" });
+  await runDispatch(parseDispatchArgs("update", ["999.0.0"]), f.deps);
+  assert.match(f.lines.at(-1), /^update 999\.0\.0 b c dead full limited hot no-address$/);
+  await assert.rejects(runDispatch(parseDispatchArgs("update", ["999.0.0", "--node", "nobody"]), f.deps), /unknown node/);
+  writeState(f.root, "node", { leader: false });
+  await assert.rejects(runDispatch(parseDispatchArgs("update", ["999.0.0"]), f.deps), /leader/i);
+  for (const args of [[], ["latest"], ["1.2"], ["1.2.3", "--node"], ["1.2.3", "--id", "b"]]) assert.throws(() => parseDispatchArgs("update", args));
+});
 test("job and cancel require current leader; malformed arguments fail", async t => {
   const f = fixture(t);
   writeState(f.root, "node", { leader: false });

@@ -16,6 +16,8 @@ import { runGh } from "./gh-run.mjs";
 
 const execute = promisify(execFile);
 const active = new Set();
+/** True while a platform tick of this checkout runs, for example a check of a pushed head. */
+export const platformBusy = root => active.has(root);
 const validIssue = value => Number.isSafeInteger(value) && value > 0;
 export const validPlatformBranch = value => typeof value === "string" && /^[A-Za-z0-9._/-]+$/.test(value) && !value.startsWith("-");
 const validHead = value => typeof value === "string" && /^[a-f0-9]{40}$/i.test(value);

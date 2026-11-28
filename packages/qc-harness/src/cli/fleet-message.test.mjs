@@ -21,7 +21,7 @@ test("canonical JSON sorts recursively and signatures cover all unsigned fields"
 });
 
 test("good messages accept every fixed kind, keep command text inert, and reject replays", () => {
-  assert.deepEqual(KINDS, ["assign", "plan", "approve", "question", "answer", "say", "pushed", "verdict", "platform-check", "platform-result", "codex-job", "codex-result", "codex-cancel", "heartbeat", "propose-leader", "leader"]);
+  assert.deepEqual(KINDS, ["assign", "plan", "approve", "question", "answer", "say", "pushed", "verdict", "platform-check", "platform-result", "codex-job", "codex-result", "codex-cancel", "codex-slots", "kit-update", "heartbeat", "propose-leader", "leader"]);
   for (const kind of KINDS) assert.deepEqual(verifyMessage(signed({ kind, body: { command: "do not execute" } }), options()), { ok: true });
   const context = options();
   const message = signed();
