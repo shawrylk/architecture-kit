@@ -9,6 +9,7 @@ qc fleet start                   # job slots follow this machine's capacity
 qc fleet start --jobs 2          # at most two job slots
 qc fleet start --jobs 0          # no jobs
 qc fleet start --leader          # the leader also runs jobs
+qc fleet worker                  # the same as fleet start --jobs auto
 ```
 
 A node takes jobs by default. Without `--jobs`, the node uses `auto` mode. A number caps the slots. `--jobs 0` turns jobs off. `--jobs auto` goes back to the default. The node saves the mode in `node.json`. A restart without `--jobs`, also after `fleet stop`, keeps the saved mode. `fleet worker` is `fleet start --jobs auto`. Use `fleet stop` before you change the mode of a running node. `fleet start` prints the mode and the slot count, for example `fleet node started: 5c96 (jobs auto, 6 slots)`. Pairing, issue assignment, platform checks and heartbeats work in every mode.
