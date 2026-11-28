@@ -14,6 +14,8 @@ import { highestTerm, latestLeader, livePeer, readState, stateDir, writeState } 
 
 const execute = promisify(execFile);
 const ticks = new Set(), running = new Map();
+/** True while a jobs tick of this checkout runs: a job can be between its queue row and its saved row. */
+export const jobsBusy = root => ticks.has(root);
 export const liveJob = row => ["starting", "started"].includes(row?.state);
 export const validJobId = id => typeof id === "string" && /^[a-z0-9][a-z0-9-]{0,39}$/.test(id);
 export function redactJobText(value, secret) {

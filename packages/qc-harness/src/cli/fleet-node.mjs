@@ -2,8 +2,8 @@ import os from "node:os";
 import { sampleLoad } from "./fleet-load.mjs";
 import { hostOS } from "./legs.mjs";
 import { dispatchTick } from "./fleet-dispatch.mjs";
-import { platformTick } from "./fleet-platform.mjs";
-import { jobsHeartbeat, jobsTick, liveJob, recoverJobs, savedJobMode } from "./fleet-jobs.mjs";
+import { platformBusy, platformTick } from "./fleet-platform.mjs";
+import { jobsBusy, jobsHeartbeat, jobsTick, liveJob, recoverJobs, savedJobMode } from "./fleet-jobs.mjs";
 import { jobSlots } from "./fleet-capacity.mjs";
 import { KIT_VERSION, pendingUpdate, startUpdate } from "./fleet-update.mjs";
 import { randomUUID } from "node:crypto";
@@ -598,16 +598,16 @@ export async function serveNode({ root = process.cwd(), fleet, repo, kit = null,
       receiveAssignments(root, fleet, clock(), leader);
       receiveTalk(root, fleet, leader, clock());
       dispatchTick({ root, fleet, clock });
-      void platformTick({ ...platform, root, fleet, clock, gh, fetch, signal: sends.signal, warn })
-        .catch(error => warn(`fleet platform: ${error.message}`));
-      void jobsTick({ root, fleet, repo, clock, fetch, signal: sends.signal, warn, os: host }).catch(error => warn(`fleet jobs: ${error.message}`));
+      // Checked before this tick starts its work: a platform check or a job start from an earlier tick must end first.
       const update = pendingUpdate(root);
-      if (update && jobsHeartbeat(root, fleet.secret, host).live === 0) {
+      if (update && !platformBusy(root) && !jobsBusy(root) && jobsHeartbeat(root, fleet.secret, host).live === 0) {
         warn(`fleet update: ${KIT_VERSION} stops and ${update} starts`);
         startUpdate({ root, version: update, leader, mode: savedJobMode(readState(root, "node")) ?? "auto" });
         shutdown(); return;
       }
-      await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
+      void platformTick({ ...platform, root, fleet, clock, gh, fetch, signal: sends.signal, warn })
+        .catch(error => warn(`fleet platform: ${error.message}`));
+      void jobsTick({ root, fleet, repo, clock, fetch, signal: sends.signal, warn, os: host }).catch(error => warn(`fleet jobs: ${error.message}`));      await flushOutbox({ root, fleet, clock, fetch, signal: sends.signal, gh, leader,
         allow: (message, role) => allowLeaderMessage(root, fleet, clock(), message, undefined, role) });
       if (!closing && clock() >= nextAssign) {
         nextAssign = clock() + 60_000;

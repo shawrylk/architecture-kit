@@ -30,7 +30,8 @@ export function requestUpdate(root, version) {
   writeState(root, "node", { ...readState(root, "node"), update: { version } });
   return true;
 }
-export const pendingUpdate = root => { const version = readState(root, "node").update?.version; return validKitVersion(version) ? version : undefined; };
+/** The running version is never pending, so a saved request that outlives the restart cannot restart the node again. */
+export const pendingUpdate = root => { const version = readState(root, "node").update?.version; return validKitVersion(version) && version !== KIT_VERSION ? version : undefined; };
 
 /** Start the helper that waits for this process to stop and then starts the new version. The caller stops the node next. */
 export function startUpdate({ root, version, leader, mode, pid = process.pid, env = process.env, run = spawn }) {

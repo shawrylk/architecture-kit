@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { jobsHeartbeat } from "./fleet-jobs.mjs";
+import { jobsBusy, jobsHeartbeat, jobsTick } from "./fleet-jobs.mjs";
+import { platformBusy } from "./fleet-platform.mjs";
 import { readState, writeState } from "./fleet-state.mjs";
 import { KIT_VERSION, pendingUpdate, requestUpdate, startUpdate, validKitVersion } from "./fleet-update.mjs";
 
@@ -30,6 +31,25 @@ test("a requested update is saved, stops new jobs and ignores the running versio
   assert.deepEqual(readState(root, "node"), { pid: 1, jobs: { mode: 5 }, update: { version: "999.0.0" } });
   assert.equal(pendingUpdate(root), "999.0.0");
   assert.equal(jobsHeartbeat(root).max, 0);
+});
+
+test("a saved request for the running version is not pending, so a node cannot restart in a loop", t => {
+  const root = tempRoot(t);
+  writeState(root, "node", { pid: 1, jobs: { mode: 5 }, update: { version: KIT_VERSION } });
+  assert.equal(pendingUpdate(root), undefined);
+  assert.equal(jobsHeartbeat(root).max, 5);
+});
+
+test("a node is busy for an update while a jobs tick or a platform tick runs", async t => {
+  const root = tempRoot(t);
+  assert.equal(jobsBusy(root), false); assert.equal(platformBusy(root), false);
+  let release; const gate = new Promise(resolve => { release = resolve; });
+  writeState(root, "queue", [{ id: "1", repo: "o/r", from: "leader", kind: "codex-slots", body: { mode: 1 } }]);
+  writeState(root, "peers", { leader: { time: Date.now(), leader: true, term: 1 } });
+  const tick = jobsTick({ root, fleet: { self: "b", secret: "ab".repeat(32), nodes: [] }, repo: "o/r", warn() {},
+    git: async () => { await gate; return { stdout: "" }; }, fetch: async () => ({ status: 202 }) });
+  release(); await tick;
+  assert.equal(jobsBusy(root), false);
 });
 
 test("the update helper gets the old process id, the version, the role and the job mode", t => {
