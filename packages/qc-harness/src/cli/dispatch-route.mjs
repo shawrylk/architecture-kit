@@ -10,15 +10,11 @@ export const RUNTIME_LINE = /^[\t ]*Runtime:[\t ]*claude[\t ]+(\S[^\r\n]*?)[\t ]
 export function routeRefusal(input, settings, limit) {
   const type = typeOf(input);
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
-  if (isCodexType(type)) {
-    if (!limit) return null;
-    const preferred = "architecture-extras:sdd-implementer";
-    const fallback = settings.implementerTypes.includes(preferred) ? preferred :
-      settings.implementerTypes.find((name) => name.endsWith("sdd-implementer")) ?? preferred;
-    const brief = prompt.match(/^[\t ]*Brief:[^\r\n]*$/m)?.[0] ?? "Brief: <path>";
+  if (limit && (isCodexType(type) || isImplementer(type, settings))) {
     return `Dispatch guard: Codex is limited until ${limit.until.toISOString()}; run \`qc codex status\` to check the limit. ` +
-      `Dispatch \`${fallback}\` with model \`sonnet\` and the same brief:\n${brief}`;
+      "Stop new starts and tell the owner.";
   }
+  if (isCodexType(type)) return null;
   if (!limit && isImplementer(type, settings) && !RUNTIME_LINE.test(prompt)) {
     return "Dispatch guard: an implementer dispatch while Codex is free needs a prompt line `Runtime: claude <reason>` with a reason.";
   }

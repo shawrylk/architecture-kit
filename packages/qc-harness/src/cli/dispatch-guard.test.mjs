@@ -96,16 +96,20 @@ test("a tagged dispatch passes", (t) => {
   assert.equal(decide(untaggedCall(ws.on, input), ws.tmp, Date.now(), { codexModel: "gpt-6.1-sol" }), null);
 });
 
-test("a codex dispatch while Codex is limited is refused and names the sonnet implementer", (t) => {
+test("Codex and implementer dispatches during a limit stop new starts, tell the owner, and claim no slot", (t) => {
   const ws = workspace(t);
   writeLimit(limitFileOf({}, ws.tmp), { until: Date.now() + 3_600_000, source: "codex" });
-  const input = { subagent_type: "codex", model: "gpt-6.1-sol", prompt: "Brief: brief.md" };
-  const reason = reasonOf(decide(agentCall(ws.on, input), ws.tmp, Date.now(), { codexModel: null })) ?? "";
-  for (const text of ["qc codex status", "architecture-extras:sdd-implementer", "sonnet", "Brief: brief.md"]) {
-    assert.ok(reason.includes(text), text);
+  for (const subagent_type of ["codex", "architecture:codex", implementer.subagent_type]) {
+    for (const prompt of ["Brief: brief.md", implementer.prompt]) {
+      const input = { subagent_type, prompt, ...(subagent_type.endsWith("codex") ? { model: "gpt-6.1-sol" } : {}) };
+      const reason = reasonOf(decide(agentCall(ws.on, input), ws.tmp, Date.now(), { codexModel: null })) ?? "";
+      for (const text of ["qc codex status", "Stop new starts", "tell the owner"]) {
+        assert.ok(reason.includes(text), `${subagent_type}: ${text}`);
+      }
+      assert.doesNotMatch(reason, /sdd-implementer|sonnet|Brief:/);
+      assert.equal(existsSync(ws.slots), false);
+    }
   }
-  assert.equal(existsSync(ws.slots), false);
-  assert.equal(decide(agentCall(ws.on, { ...implementer, prompt: "Brief: brief.md" }), ws.tmp), null);
 });
 
 test("a limit that has passed counts as free", (t) => {

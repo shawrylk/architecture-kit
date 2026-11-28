@@ -64,17 +64,20 @@ test("tagRefusal quotes the exact tag for a missing description, wrong runtime, 
 const settings = { implementerTypes: ["codex", "architecture:codex", "architecture-extras:sdd-implementer"] };
 const limit = { until: new Date("2026-10-26T15:00:00Z"), source: "codex" };
 
-test("routeRefusal refuses Codex while limited and names the Sonnet implementer with the same brief", () => {
-  for (const subagent_type of ["codex", "architecture:codex"]) {
-    const refusal = routeRefusal({ subagent_type, prompt: "Read the brief.\nBrief: brief.md\nReport: report.md" }, settings, limit);
-    for (const text of ["2026-10-26T15:00:00.000Z", "qc codex status", "architecture-extras:sdd-implementer", "sonnet", "Brief: brief.md"]) {
-      assert.ok(refusal.includes(text), text);
+test("routeRefusal stops Codex and implementer starts while Codex is limited and tells the owner", () => {
+  for (const subagent_type of settings.implementerTypes) {
+    for (const prompt of ["Brief: task.md", "Brief: task.md\nRuntime: claude test"]) {
+      const refusal = routeRefusal({ subagent_type, prompt }, settings, limit);
+      assert.ok(refusal, subagent_type);
+      for (const text of ["2026-10-26T15:00:00.000Z", "qc codex status", "Stop new starts", "tell the owner"]) {
+        assert.ok(refusal.includes(text), text);
+      }
+      assert.doesNotMatch(refusal, /sdd-implementer|sonnet|Brief:/);
     }
   }
 });
 
-test("routeRefusal allows an implementer while Codex is limited and Codex while free", () => {
-  assert.equal(routeRefusal({ subagent_type: "architecture-extras:sdd-implementer", prompt: "Brief: brief.md" }, settings, limit), null);
+test("routeRefusal allows Codex while free", () => {
   for (const subagent_type of ["codex", "architecture:codex"]) {
     assert.equal(routeRefusal({ subagent_type, prompt: "Brief: brief.md" }, settings, null), null);
   }
@@ -88,10 +91,14 @@ test("routeRefusal requires a Claude Runtime line with a reason for an implement
   assert.equal(routeRefusal({ subagent_type: "architecture-extras:sdd-implementer", prompt: "Brief: brief.md\nRuntime: claude codex is down" }, settings, null), null);
 });
 
-test("routeRefusal uses the configured sdd-implementer fallback and leaves other roles alone", () => {
+test("routeRefusal stops a custom implementer during a limit and leaves other roles alone", () => {
   const custom = { implementerTypes: ["codex", "custom:sdd-implementer"] };
-  assert.ok(routeRefusal({ subagent_type: "codex", prompt: "Brief: brief.md" }, custom, limit).includes("custom:sdd-implementer"));
-  assert.equal(routeRefusal({ subagent_type: "general-purpose" }, settings, null), null);
+  assert.match(routeRefusal({ subagent_type: "custom:sdd-implementer", prompt: "Brief: task.md" }, custom, limit), /Stop new starts/);
+  for (const subagent_type of ["general-purpose", "architecture:sdd-reviewer", "architecture:sdd-branch-reviewer"]) {
+    for (const activeLimit of [null, limit]) {
+      assert.equal(routeRefusal({ subagent_type }, settings, activeLimit), null);
+    }
+  }
 });
 
 test("routeRefusal accepts case variants and zero or more horizontal spaces after Runtime:", () => {
